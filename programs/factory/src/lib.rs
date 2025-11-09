@@ -130,6 +130,17 @@ struct QueuedAction {
     execute_after: u64,
 }
 
+/// Public representation of a queued governance action.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QueuedGovernanceAction {
+    /// Unique identifier assigned to the action when queued.
+    pub id: u64,
+    /// The action that will be executed after the timelock expires.
+    pub action: GovernanceAction,
+    /// Unix timestamp after which the action becomes executable.
+    pub execute_after: u64,
+}
+
 /// Global factory state storing mappings and governance settings.
 #[derive(Debug)]
 pub struct FactoryState {
@@ -331,6 +342,15 @@ impl FactoryState {
         self.apply_action(action)
     }
 
+    /// Returns metadata about a queued governance action, if present.
+    pub fn queued_action(&self, action_id: u64) -> Option<QueuedGovernanceAction> {
+        self.queued_actions.get(&action_id).map(|queued| QueuedGovernanceAction {
+            id: queued.id,
+            action: queued.action.clone(),
+            execute_after: queued.execute_after,
+        })
+    }
+
     fn apply_action(&mut self, action: GovernanceAction) -> Result<(), FactoryError> {
         match action {
             GovernanceAction::UpdateDefaultFeeBps(bps) => {
@@ -364,6 +384,7 @@ impl FactoryState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ptf_common::FEATURE_PRIVATE_TRANSFER;
 
     const DAO: Pubkey = Pubkey::new([9u8; 32]);
     const MINT_A: Pubkey = Pubkey::new([1u8; 32]);
@@ -479,6 +500,49 @@ mod tests {
             .expect("second register");
         let mapping = factory.mapping(&PTKN_A).unwrap();
         assert_eq!(mapping.effective_fee_bps(), 25);
+    }
+
+    #[test]
+    fn queue_action_metadata_visible() {
+        let mut factory = FactoryState::new(DAO);
+        let action_id = factory
+            .queue_action(DAO, GovernanceAction::Pause, 42)
+            .expect("queue");
+        let queued = factory.queued_action(action_id).expect("action exists");
+        assert_eq!(queued.id, action_id);
+        assert_eq!(queued.action, GovernanceAction::Pause);
+        assert_eq!(queued.execute_after, 42);
+    }
+
+    #[test]
+    fn governance_updates_default_features() {
+        let mut factory = FactoryState::new(DAO);
+        let timelock_id = factory
+            .queue_action(DAO, GovernanceAction::SetTimelockSeconds(5), 0)
+            .expect("queue timelock");
+        factory
+            .execute_action(DAO, timelock_id, 0)
+            .expect("apply timelock");
+
+        let action_id = factory
+            .queue_action(DAO, GovernanceAction::SetDefaultFeatures(FEATURE_PRIVATE_TRANSFER), 3)
+            .expect("queue features");
+        let queued = factory.queued_action(action_id).expect("queued metadata");
+        assert_eq!(queued.execute_after, 8);
+
+        let err = factory
+            .execute_action(DAO, action_id, 7)
+            .expect_err("timelock not expired");
+        assert_eq!(err, FactoryError::ActionNotReady);
+
+        factory
+            .execute_action(DAO, action_id, 8)
+            .expect("execute features update");
+        factory
+            .register_mint(MINT_A, 6, false, None)
+            .expect("register after update");
+        let mapping = factory.mapping(&MINT_A).unwrap();
+        assert_eq!(mapping.feature_flags(), FEATURE_PRIVATE_TRANSFER);
     }
 
     #[test]
