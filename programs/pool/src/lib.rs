@@ -1,16 +1,19 @@
 use anchor_lang::prelude::*;
-use anchor_spl::token::{Mint, Token, TokenAccount};
+use anchor_lang::solana_program::program_option::COption;
+use anchor_spl::token::spl_token::instruction::AuthorityType;
+use anchor_spl::token::{self, Mint, MintTo, SetAuthority, Token, TokenAccount};
 use core::convert::TryFrom;
 
 use ptf_common::{
     seeds, FeatureFlags, FEATURE_HOOKS_ENABLED, FEATURE_PRIVATE_TRANSFER_ENABLED, MAX_BPS,
 };
+use ptf_factory::MintMapping;
 use ptf_vault::program::PtfVault;
 use ptf_vault::{self};
 use ptf_verifier_groth16::program::PtfVerifierGroth16;
 use ptf_verifier_groth16::{self, VerifyingKeyAccount};
 
-declare_id!("ptfPool11111111111111111111111111111111111");
+declare_id!("4Tx3v6is7qeVjdHvL3a16ggB9VVMBPVhpPSkUGoXZhre");
 
 #[program]
 pub mod ptf_pool {
@@ -22,6 +25,11 @@ pub mod ptf_pool {
         let pool_state = &mut ctx.accounts.pool_state;
         require_keys_eq!(
             ctx.accounts.vault_state.origin_mint,
+            ctx.accounts.origin_mint.key(),
+            PoolError::OriginMintMismatch,
+        );
+        require_keys_eq!(
+            ctx.accounts.mint_mapping.origin_mint,
             ctx.accounts.origin_mint.key(),
             PoolError::OriginMintMismatch,
         );
@@ -40,8 +48,50 @@ pub mod ptf_pool {
         pool_state.protocol_fees = 0;
         pool_state.hook_config = Pubkey::default();
         pool_state.hook_config_present = false;
-        pool_state.twin_mint = Pubkey::default();
-        pool_state.twin_mint_enabled = false;
+
+        if ctx.accounts.mint_mapping.has_ptkn {
+            let twin_mint = ctx
+                .accounts
+                .twin_mint
+                .as_ref()
+                .ok_or(PoolError::TwinMintNotConfigured)?;
+            require_keys_eq!(
+                twin_mint.key(),
+                ctx.accounts.mint_mapping.ptkn_mint,
+                PoolError::TwinMintMismatch,
+            );
+            require!(
+                twin_mint.decimals == ctx.accounts.origin_mint.decimals,
+                PoolError::TwinMintDecimalsMismatch,
+            );
+            match twin_mint.mint_authority {
+                COption::Some(authority) => {
+                    require_keys_eq!(
+                        authority,
+                        ctx.accounts.authority.key(),
+                        PoolError::TwinMintAuthorityMismatch,
+                    );
+                }
+                COption::None => return err!(PoolError::TwinMintAuthorityMismatch),
+            }
+
+            let cpi_accounts = SetAuthority {
+                account_or_mint: twin_mint.to_account_info(),
+                current_authority: ctx.accounts.authority.to_account_info(),
+            };
+            let cpi_ctx =
+                CpiContext::new(ctx.accounts.token_program.to_account_info(), cpi_accounts);
+            token::set_authority(cpi_ctx, AuthorityType::MintTokens, Some(pool_state.key()))?;
+            pool_state.twin_mint = twin_mint.key();
+            pool_state.twin_mint_enabled = true;
+        } else {
+            require!(
+                ctx.accounts.twin_mint.is_none(),
+                PoolError::TwinMintMismatch,
+            );
+            pool_state.twin_mint = Pubkey::default();
+            pool_state.twin_mint_enabled = false;
+        }
 
         require_keys_eq!(
             ctx.accounts.vault_state.pool_authority,
@@ -144,6 +194,19 @@ pub mod ptf_pool {
             PoolError::OriginMintMismatch,
         );
 
+        if pool_state.twin_mint_enabled {
+            let twin_mint = ctx
+                .accounts
+                .twin_mint
+                .as_ref()
+                .ok_or(PoolError::TwinMintNotConfigured)?;
+            require_keys_eq!(
+                twin_mint.key(),
+                pool_state.twin_mint,
+                PoolError::TwinMintMismatch,
+            );
+        }
+
         let cpi_accounts = ptf_verifier_groth16::cpi::accounts::VerifyGroth16 {
             verifier_state: ctx.accounts.verifying_key.to_account_info(),
         };
@@ -186,7 +249,11 @@ pub mod ptf_pool {
             amount_commit: args.amount_commit,
         });
 
-        enforce_supply_invariant(pool_state, &ctx.accounts.vault_token_account, None)?;
+        enforce_supply_invariant(
+            pool_state,
+            &ctx.accounts.vault_token_account,
+            ctx.accounts.twin_mint.as_ref(),
+        )?;
         Ok(())
     }
 
@@ -260,11 +327,19 @@ fn process_unshield(ctx: Context<Unshield>, args: UnshieldArgs, mode: UnshieldMo
         pool_state.origin_mint,
         PoolError::OriginMintMismatch,
     );
-    require_keys_eq!(
-        ctx.accounts.destination_token_account.mint,
-        pool_state.origin_mint,
-        PoolError::OriginMintMismatch,
-    );
+
+    if pool_state.twin_mint_enabled {
+        let twin_mint = ctx
+            .accounts
+            .twin_mint
+            .as_ref()
+            .ok_or(PoolError::TwinMintNotConfigured)?;
+        require_keys_eq!(
+            twin_mint.key(),
+            pool_state.twin_mint,
+            PoolError::TwinMintMismatch,
+        );
+    }
 
     require!(
         pool_state.is_known_root(&args.old_root),
@@ -312,28 +387,32 @@ fn process_unshield(ctx: Context<Unshield>, args: UnshieldArgs, mode: UnshieldMo
         .ok_or(PoolError::AmountOverflow)?;
     pool_state.push_root(args.new_root);
 
-    let signer_seeds: [&[u8]; 3] = [
-        seeds::POOL,
-        pool_state.origin_mint.as_ref(),
-        &[pool_state.bump],
-    ];
-    let cpi_accounts = ptf_vault::cpi::accounts::Release {
-        vault_state: ctx.accounts.vault_state.to_account_info(),
-        vault_token_account: ctx.accounts.vault_token_account.to_account_info(),
-        destination_token_account: ctx.accounts.destination_token_account.to_account_info(),
-        pool_authority: ctx.accounts.pool_state.to_account_info(),
-        token_program: ctx.accounts.token_program.to_account_info(),
-    };
-    let signer = &[&signer_seeds[..]];
-    let cpi_ctx = CpiContext::new_with_signer(
-        ctx.accounts.vault_program.to_account_info(),
-        cpi_accounts,
-        signer,
-    );
-    ptf_vault::cpi::release(cpi_ctx, args.amount)?;
-
     match mode {
         UnshieldMode::Origin => {
+            require_keys_eq!(
+                ctx.accounts.destination_token_account.mint,
+                pool_state.origin_mint,
+                PoolError::OriginMintMismatch,
+            );
+            let signer_seeds: [&[u8]; 3] = [
+                seeds::POOL,
+                pool_state.origin_mint.as_ref(),
+                &[pool_state.bump],
+            ];
+            let cpi_accounts = ptf_vault::cpi::accounts::Release {
+                vault_state: ctx.accounts.vault_state.to_account_info(),
+                vault_token_account: ctx.accounts.vault_token_account.to_account_info(),
+                destination_token_account: ctx.accounts.destination_token_account.to_account_info(),
+                pool_authority: pool_state.to_account_info(),
+                token_program: ctx.accounts.token_program.to_account_info(),
+            };
+            let signer = &[&signer_seeds[..]];
+            let cpi_ctx = CpiContext::new_with_signer(
+                ctx.accounts.vault_program.to_account_info(),
+                cpi_accounts,
+                signer,
+            );
+            ptf_vault::cpi::release(cpi_ctx, args.amount)?;
             emit!(UnshieldOrigin {
                 origin_mint: pool_state.origin_mint,
                 destination: ctx.accounts.destination_token_account.owner,
@@ -342,6 +421,37 @@ fn process_unshield(ctx: Context<Unshield>, args: UnshieldArgs, mode: UnshieldMo
             });
         }
         UnshieldMode::Twin => {
+            require!(
+                pool_state.twin_mint_enabled,
+                PoolError::TwinMintNotConfigured
+            );
+            let twin_mint = ctx
+                .accounts
+                .twin_mint
+                .as_ref()
+                .ok_or(PoolError::TwinMintNotConfigured)?;
+            require_keys_eq!(
+                ctx.accounts.destination_token_account.mint,
+                pool_state.twin_mint,
+                PoolError::TwinMintMismatch,
+            );
+            let signer_seeds: [&[u8]; 3] = [
+                seeds::POOL,
+                pool_state.origin_mint.as_ref(),
+                &[pool_state.bump],
+            ];
+            let mint_accounts = MintTo {
+                mint: twin_mint.to_account_info(),
+                to: ctx.accounts.destination_token_account.to_account_info(),
+                authority: pool_state.to_account_info(),
+            };
+            let signer = &[&signer_seeds[..]];
+            let mint_ctx = CpiContext::new_with_signer(
+                ctx.accounts.token_program.to_account_info(),
+                mint_accounts,
+                signer,
+            );
+            token::mint_to(mint_ctx, args.amount)?;
             emit!(UnshieldTwin {
                 origin_mint: pool_state.origin_mint,
                 destination: ctx.accounts.destination_token_account.owner,
@@ -364,7 +474,11 @@ fn process_unshield(ctx: Context<Unshield>, args: UnshieldArgs, mode: UnshieldMo
         });
     }
 
-    enforce_supply_invariant(pool_state, &ctx.accounts.vault_token_account, None)
+    enforce_supply_invariant(
+        pool_state,
+        &ctx.accounts.vault_token_account,
+        ctx.accounts.twin_mint.as_ref(),
+    )
 }
 
 fn enforce_supply_invariant(
@@ -428,13 +542,20 @@ pub struct InitializePool<'info> {
     pub nullifier_set: Account<'info, NullifierSet>,
     #[account(mut)]
     pub vault_state: Account<'info, ptf_vault::VaultState>,
-    /// CHECK: Seed used for PDA derivation.
-    pub origin_mint: AccountInfo<'info>,
+    pub origin_mint: Account<'info, Mint>,
+    #[account(
+        seeds = [seeds::MINT_MAPPING, origin_mint.key().as_ref()],
+        bump = mint_mapping.bump
+    )]
+    pub mint_mapping: Account<'info, MintMapping>,
+    #[account(mut)]
+    pub twin_mint: Option<Account<'info, Mint>>,
     pub verifier_program: Program<'info, PtfVerifierGroth16>,
     pub verifying_key: Account<'info, VerifyingKeyAccount>,
     #[account(mut)]
     pub payer: Signer<'info>,
     pub system_program: Program<'info, System>,
+    pub token_program: Program<'info, Token>,
 }
 
 #[derive(Accounts)]
@@ -458,6 +579,8 @@ pub struct Shield<'info> {
     pub vault_token_account: Account<'info, TokenAccount>,
     #[account(mut)]
     pub depositor_token_account: Account<'info, TokenAccount>,
+    #[account(mut)]
+    pub twin_mint: Option<Account<'info, Mint>>,
     pub verifier_program: Program<'info, PtfVerifierGroth16>,
     #[account(address = pool_state.verifying_key)]
     pub verifying_key: Account<'info, VerifyingKeyAccount>,
@@ -482,6 +605,8 @@ pub struct Unshield<'info> {
     pub vault_token_account: Account<'info, TokenAccount>,
     #[account(mut)]
     pub destination_token_account: Account<'info, TokenAccount>,
+    #[account(mut)]
+    pub twin_mint: Option<Account<'info, Mint>>,
     pub vault_program: Program<'info, PtfVault>,
     pub token_program: Program<'info, Token>,
 }
@@ -693,6 +818,10 @@ pub enum PoolError {
     TwinMintMismatch,
     #[msg("twin mint account required")]
     TwinMintNotConfigured,
+    #[msg("twin mint authority mismatch")]
+    TwinMintAuthorityMismatch,
+    #[msg("twin mint decimals mismatch")]
+    TwinMintDecimalsMismatch,
     #[msg("supply invariant breached")]
     InvariantBreach,
 }
