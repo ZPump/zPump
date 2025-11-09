@@ -29,6 +29,7 @@ pub mod ptf_pool {
         pool_state.vault = ctx.accounts.vault_state.key();
         pool_state.verifier_program = ctx.accounts.verifier_program.key();
         pool_state.verifying_key = ctx.accounts.verifying_key.key();
+        pool_state.verifying_key_id = ctx.accounts.verifying_key.verifying_key_id;
         pool_state.authority = ctx.accounts.authority.key();
         pool_state.fee_bps = fee_bps;
         pool_state.features = FeatureFlags::from(features);
@@ -103,6 +104,10 @@ pub mod ptf_pool {
             pool_state.verifying_key,
             PoolError::VerifierMismatch,
         );
+        require!(
+            ctx.accounts.verifying_key.verifying_key_id == pool_state.verifying_key_id,
+            PoolError::VerifierMismatch,
+        );
         require_keys_eq!(
             ctx.accounts.vault_state.key(),
             pool_state.vault,
@@ -148,6 +153,7 @@ pub mod ptf_pool {
         );
         ptf_verifier_groth16::cpi::verify_groth16(
             cpi_ctx,
+            pool_state.verifying_key_id,
             args.proof.clone(),
             args.public_inputs.clone(),
         )?;
@@ -225,6 +231,10 @@ fn process_unshield(ctx: Context<Unshield>, args: UnshieldArgs, mode: UnshieldMo
         pool_state.verifying_key,
         PoolError::VerifierMismatch,
     );
+    require!(
+        ctx.accounts.verifying_key.verifying_key_id == pool_state.verifying_key_id,
+        PoolError::VerifierMismatch,
+    );
     require_keys_eq!(
         ctx.accounts.vault_state.key(),
         pool_state.vault,
@@ -270,6 +280,7 @@ fn process_unshield(ctx: Context<Unshield>, args: UnshieldArgs, mode: UnshieldMo
     );
     ptf_verifier_groth16::cpi::verify_groth16(
         cpi_ctx,
+        pool_state.verifying_key_id,
         args.proof.clone(),
         args.public_inputs.clone(),
     )?;
@@ -502,6 +513,7 @@ pub struct PoolState {
     pub vault: Pubkey,
     pub verifier_program: Pubkey,
     pub verifying_key: Pubkey,
+    pub verifying_key_id: [u8; 32],
     pub current_root: [u8; 32],
     pub recent_roots: [[u8; 32]; Self::MAX_ROOTS],
     pub roots_len: u8,
@@ -519,7 +531,7 @@ pub struct PoolState {
 impl PoolState {
     pub const MAX_ROOTS: usize = 16;
     pub const SPACE: usize =
-        8 + (32 * 7) + 32 + (Self::MAX_ROOTS * 32) + 1 + 2 + 1 + 8 + 8 + 1 + 1 + 1 + 7;
+        8 + (32 * 7) + 32 + 32 + (Self::MAX_ROOTS * 32) + 1 + 2 + 1 + 8 + 8 + 1 + 1 + 1 + 7;
 
     pub fn push_root(&mut self, root: [u8; 32]) {
         if self.roots_len as usize >= Self::MAX_ROOTS {
