@@ -1,9 +1,7 @@
-//! Common types and constants shared across the Privacy Twin Factory workspace.
+//! Common constants, helpers, and shared types for the Privacy Twin Factory programs.
 
-use std::{
-    fmt,
-    hash::{Hash, Hasher},
-};
+use anchor_lang::prelude::*;
+use thiserror::Error;
 
 /// Depth of the Merkle tree used by shielded pools.
 pub const MERKLE_DEPTH: u8 = 32;
@@ -13,57 +11,22 @@ pub const FEE_BPS_DEFAULT: u16 = 5;
 pub const FEATURE_PRIVATE_TRANSFER_ENABLED: u8 = 0x01;
 /// Feature flag enabling hook CPIs.
 pub const FEATURE_HOOKS_ENABLED: u8 = 0x02;
-
 /// Maximum basis points value accepted by the protocol (100%).
 pub const MAX_BPS: u16 = 10_000;
 
-/// Lightweight replacement for Solana's `Pubkey`.
-#[derive(Clone, Copy, Default)]
-pub struct Pubkey([u8; 32]);
-
-impl Pubkey {
-    /// Creates a new public key from raw bytes.
-    pub const fn new(bytes: [u8; 32]) -> Self {
-        Self(bytes)
-    }
-
-    /// Returns the underlying bytes.
-    pub const fn to_bytes(self) -> [u8; 32] {
-        self.0
-    }
-}
-
-impl PartialEq for Pubkey {
-    fn eq(&self, other: &Self) -> bool {
-        self.0 == other.0
-    }
-}
-
-impl Eq for Pubkey {}
-
-impl Hash for Pubkey {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        state.write(&self.0);
-    }
-}
-
-impl fmt::Debug for Pubkey {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Pubkey({:02x?})", self.0)
-    }
-}
-
-impl fmt::Display for Pubkey {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        for byte in &self.0 {
-            write!(f, "{:02x}", byte)?;
-        }
-        Ok(())
-    }
+/// Prefix seeds used across PDAs.
+pub mod seeds {
+    pub const FACTORY: &[u8] = b"factory";
+    pub const MINT_MAPPING: &[u8] = b"map";
+    pub const VAULT: &[u8] = b"vault";
+    pub const POOL: &[u8] = b"pool";
+    pub const HOOKS: &[u8] = b"hooks";
+    pub const VERIFIER: &[u8] = b"vk";
+    pub const NULLIFIERS: &[u8] = b"nulls";
 }
 
 /// Runtime feature flags represented as a bit field.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, AnchorSerialize, AnchorDeserialize, Eq, PartialEq)]
 pub struct FeatureFlags(u8);
 
 impl FeatureFlags {
@@ -98,41 +61,49 @@ impl FeatureFlags {
     }
 }
 
-impl Default for FeatureFlags {
-    fn default() -> Self {
-        FeatureFlags::empty()
+impl From<u8> for FeatureFlags {
+    fn from(value: u8) -> FeatureFlags {
+        FeatureFlags::from_bits(value)
     }
 }
 
-impl fmt::Display for FeatureFlags {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl From<FeatureFlags> for u8 {
+    fn from(value: FeatureFlags) -> u8 {
+        value.bits()
+    }
+}
+
+impl core::fmt::Display for FeatureFlags {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(f, "0x{:02x}", self.0)
     }
 }
 
-/// Convenience constructors for individual feature bits.
-pub const FEATURE_PRIVATE_TRANSFER: FeatureFlags = FeatureFlags(FEATURE_PRIVATE_TRANSFER_ENABLED);
-pub const FEATURE_HOOKS: FeatureFlags = FeatureFlags(FEATURE_HOOKS_ENABLED);
+/// Shared protocol errors that are surfaced across programs.
+#[derive(Error, Debug)]
+pub enum ProtocolError {
+    /// Attempted to mutate a mapping while the protocol is paused.
+    #[error("protocol paused")]
+    Paused,
+    /// Attempted to enable a feature that is not compiled into the current build.
+    #[error("feature unavailable in current build profile")]
+    FeatureUnavailable,
+    /// Invalid fee configuration.
+    #[error("invalid fee basis points")]
+    InvalidFee,
+}
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn pubkey_display_hex_roundtrip() {
-        let bytes = [0x11u8; 32];
-        let pk = Pubkey::new(bytes);
-        assert_eq!(pk.to_string(), "11".repeat(32));
-        assert_eq!(pk, Pubkey::new(bytes));
-    }
-
-    #[test]
     fn feature_flag_combinations() {
         let mut flags = FeatureFlags::from_bits(FEATURE_PRIVATE_TRANSFER_ENABLED);
-        assert!(flags.contains(FEATURE_PRIVATE_TRANSFER));
-        flags.insert(FEATURE_HOOKS);
-        assert!(flags.contains(FEATURE_HOOKS));
-        flags.remove(FEATURE_HOOKS);
-        assert!(!flags.contains(FEATURE_HOOKS));
+        assert!(flags.contains(FeatureFlags::from_bits(FEATURE_PRIVATE_TRANSFER_ENABLED)));
+        flags.insert(FeatureFlags::from_bits(FEATURE_HOOKS_ENABLED));
+        assert!(flags.contains(FeatureFlags::from_bits(FEATURE_HOOKS_ENABLED)));
+        flags.remove(FeatureFlags::from_bits(FEATURE_HOOKS_ENABLED));
+        assert!(!flags.contains(FeatureFlags::from_bits(FEATURE_HOOKS_ENABLED)));
     }
 }
