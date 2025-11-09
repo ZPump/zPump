@@ -1,0 +1,11 @@
+[package]
+name = "ptf-pool"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+ptf-common = { path = "../common" }
+ptf-vault = { path = "../vault" }
+
+[features]
+default = []

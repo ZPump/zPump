@@ -1,0 +1,9 @@
+[workspace]
+members = [
+    "programs/common",
+    "programs/factory",
+    "programs/vault",
+    "programs/pool",
+    "programs/verifier-groth16"
+]
+resolver = "2"
