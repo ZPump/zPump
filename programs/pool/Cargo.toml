@@ -11,7 +11,20 @@ name = "ptf_pool"
 anchor-lang = { workspace = true }
 anchor-spl = { workspace = true }
 ptf-common = { path = "../common" }
-ptf-vault = { path = "../vault" }
-ptf-verifier-groth16 = { path = "../verifier-groth16" }
+ptf-factory = { path = "../factory", features = ["no-entrypoint"] }
+ptf-vault = { path = "../vault", features = ["no-entrypoint", "cpi"] }
+ptf-verifier-groth16 = { path = "../verifier-groth16", features = ["no-entrypoint", "cpi"] }
 thiserror = { workspace = true }
 hex = { workspace = true }
+
+[features]
+default = []
+no-entrypoint = []
+cpi = ["no-entrypoint"]
+no-idl = []
+idl-build = ["no-entrypoint"]
+anchor-debug = []
+no-log-ix-name = []
+custom-heap = []
+custom-panic = []
+solana = []
