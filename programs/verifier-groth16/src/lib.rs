@@ -1,7 +1,7 @@
 use anchor_lang::prelude::*;
 use sha3::{Digest, Keccak256};
 
-declare_id!("ptfVeri1111111111111111111111111111111111");
+declare_id!("11111111111111111111111111111111");
 
 #[program]
 pub mod ptf_verifier_groth16 {
@@ -51,15 +51,17 @@ pub mod ptf_verifier_groth16 {
 }
 
 #[derive(Accounts)]
+#[instruction(circuit_tag: [u8; 32], _hash: [u8; 32], version: u8)]
 pub struct InitializeVerifyingKey<'info> {
     #[account(
         init,
         payer = payer,
-        seeds = [ptf_common::seeds::VERIFIER, authority.key().as_ref()],
+        seeds = [ptf_common::seeds::VERIFIER, &circuit_tag, &[version]],
         bump,
         space = VerifyingKeyAccount::SPACE,
     )]
     pub verifying_key: Account<'info, VerifyingKeyAccount>,
+    /// Governance or authority that owns this verifying key.
     pub authority: Signer<'info>,
     #[account(mut)]
     pub payer: Signer<'info>,
@@ -69,7 +71,11 @@ pub struct InitializeVerifyingKey<'info> {
 #[derive(Accounts)]
 pub struct VerifyGroth16<'info> {
     #[account(
-        seeds = [ptf_common::seeds::VERIFIER, verifying_key.authority.as_ref()],
+        seeds = [
+            ptf_common::seeds::VERIFIER,
+            &verifying_key.circuit_tag,
+            &[verifying_key.version],
+        ],
         bump = verifying_key.bump,
     )]
     pub verifying_key: Account<'info, VerifyingKeyAccount>,
