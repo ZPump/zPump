@@ -1,0 +1,44 @@
+# Node.js dependencies
+node_modules/
+.npm/
+pnpm-lock.yaml
+package-lock.json
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Build outputs
+build/
+dist/
+.cache/
+.tmp/
+coverage/
+
+# Environment and config
+.env
+.env.*
+*.local
+*.secret
+*.pem
+
+# Editor directories and files
+.vscode/
+.idea/
+.DS_Store
+*.swp
+
+# Logs
+*.log
+logs/
+
+# Solana / Anchor artifacts
+target/
+.mpl-cache/
+.anchor/
+*.keypair.json
+*.so
+*.dylib
+
+# Misc
+*.tsbuildinfo
