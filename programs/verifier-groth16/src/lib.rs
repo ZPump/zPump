@@ -10,6 +10,7 @@ pub mod ptf_verifier_groth16 {
     pub fn initialize_verifying_key(
         ctx: Context<InitializeVerifyingKey>,
         circuit_tag: [u8; 32],
+        verifying_key_id: [u8; 32],
         hash: [u8; 32],
         version: u8,
         verifying_key_data: Vec<u8>,
@@ -17,6 +18,10 @@ pub mod ptf_verifier_groth16 {
         require!(
             !verifying_key_data.is_empty(),
             VerifierError::EmptyVerifyingKey
+        );
+        require!(
+            verifying_key_id != [0u8; 32],
+            VerifierError::InvalidVerifyingKeyId
         );
 
         let mut hasher = Keccak256::new();
@@ -27,6 +32,7 @@ pub mod ptf_verifier_groth16 {
         let vk = &mut ctx.accounts.verifier_state;
         vk.authority = ctx.accounts.authority.key();
         vk.circuit_tag = circuit_tag;
+        vk.verifying_key_id = verifying_key_id;
         vk.hash = hash;
         vk.bump = ctx.bumps.verifier_state;
         vk.version = version;
@@ -34,6 +40,7 @@ pub mod ptf_verifier_groth16 {
         emit!(VerifyingKeyRegistered {
             authority: vk.authority,
             circuit_tag,
+            verifying_key_id,
             hash,
             version,
         });
@@ -42,10 +49,15 @@ pub mod ptf_verifier_groth16 {
 
     pub fn verify_groth16(
         ctx: Context<VerifyGroth16>,
+        verifying_key_id: [u8; 32],
         proof: Vec<u8>,
         public_inputs: Vec<u8>,
     ) -> Result<()> {
         let vk = &ctx.accounts.verifier_state;
+        require!(
+            vk.verifying_key_id == verifying_key_id,
+            VerifierError::InvalidVerifyingKeyId,
+        );
         require!(verify_account_hash(vk), VerifierError::HashMismatch,);
 
         require!(
@@ -54,6 +66,7 @@ pub mod ptf_verifier_groth16 {
         );
         emit!(ProofVerified {
             circuit_tag: vk.circuit_tag,
+            verifying_key_id,
             hash: vk.hash,
             version: vk.version,
         });
@@ -62,12 +75,23 @@ pub mod ptf_verifier_groth16 {
 }
 
 #[derive(Accounts)]
-#[instruction(circuit_tag: [u8; 32], _hash: [u8; 32], version: u8, verifying_key_data: Vec<u8>)]
+#[instruction(
+    circuit_tag: [u8; 32],
+    verifying_key_id: [u8; 32],
+    _hash: [u8; 32],
+    version: u8,
+    verifying_key_data: Vec<u8>
+)]
 pub struct InitializeVerifyingKey<'info> {
     #[account(
         init,
         payer = payer,
-        seeds = [ptf_common::seeds::VERIFIER, &circuit_tag, &[version]],
+        seeds = [
+            ptf_common::seeds::VERIFIER,
+            &circuit_tag,
+            &verifying_key_id,
+            &[version]
+        ],
         bump,
         space = VerifyingKeyAccount::space(verifying_key_data.len()),
     )]
@@ -80,11 +104,13 @@ pub struct InitializeVerifyingKey<'info> {
 }
 
 #[derive(Accounts)]
+#[instruction(verifying_key_id: [u8; 32])]
 pub struct VerifyGroth16<'info> {
     #[account(
         seeds = [
             ptf_common::seeds::VERIFIER,
             &verifier_state.circuit_tag,
+            &verifying_key_id,
             &[verifier_state.version],
         ],
         bump = verifier_state.bump,
@@ -96,6 +122,7 @@ pub struct VerifyGroth16<'info> {
 pub struct VerifyingKeyAccount {
     pub authority: Pubkey,
     pub circuit_tag: [u8; 32],
+    pub verifying_key_id: [u8; 32],
     pub hash: [u8; 32],
     pub bump: u8,
     pub version: u8,
@@ -103,7 +130,7 @@ pub struct VerifyingKeyAccount {
 }
 
 impl VerifyingKeyAccount {
-    pub const BASE_SIZE: usize = 8 + 32 + 32 + 32 + 1 + 1 + 4;
+    pub const BASE_SIZE: usize = 8 + 32 + 32 + 32 + 32 + 1 + 1 + 4;
 
     pub const fn space(key_len: usize) -> usize {
         Self::BASE_SIZE + key_len
@@ -114,6 +141,7 @@ impl VerifyingKeyAccount {
 pub struct VerifyingKeyRegistered {
     pub authority: Pubkey,
     pub circuit_tag: [u8; 32],
+    pub verifying_key_id: [u8; 32],
     pub hash: [u8; 32],
     pub version: u8,
 }
@@ -121,6 +149,7 @@ pub struct VerifyingKeyRegistered {
 #[event]
 pub struct ProofVerified {
     pub circuit_tag: [u8; 32],
+    pub verifying_key_id: [u8; 32],
     pub hash: [u8; 32],
     pub version: u8,
 }
@@ -133,6 +162,8 @@ pub enum VerifierError {
     HashMismatch,
     #[msg("verifying key data must not be empty")]
     EmptyVerifyingKey,
+    #[msg("verifying key id must be provided")]
+    InvalidVerifyingKeyId,
 }
 
 fn verify_account_hash(account: &VerifyingKeyAccount) -> bool {
