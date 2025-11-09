@@ -1,5 +1,6 @@
 use anchor_lang::prelude::*;
-use anchor_spl::token::{Token, TokenAccount};
+use anchor_spl::token::{Mint, Token, TokenAccount};
+use core::convert::TryFrom;
 
 use ptf_common::{
     seeds, FeatureFlags, FEATURE_HOOKS_ENABLED, FEATURE_PRIVATE_TRANSFER_ENABLED, MAX_BPS,
@@ -38,6 +39,8 @@ pub mod ptf_pool {
         pool_state.protocol_fees = 0;
         pool_state.hook_config = Pubkey::default();
         pool_state.hook_config_present = false;
+        pool_state.twin_mint = Pubkey::default();
+        pool_state.twin_mint_enabled = false;
 
         require_keys_eq!(
             ctx.accounts.vault_state.pool_authority,
@@ -100,6 +103,41 @@ pub mod ptf_pool {
             pool_state.verifying_key,
             PoolError::VerifierMismatch,
         );
+        require_keys_eq!(
+            ctx.accounts.vault_state.key(),
+            pool_state.vault,
+            PoolError::MismatchedVaultAuthority,
+        );
+        require_keys_eq!(
+            ctx.accounts.vault_state.pool_authority,
+            pool_state.key(),
+            PoolError::MismatchedVaultAuthority,
+        );
+        require_keys_eq!(
+            ctx.accounts.vault_token_account.owner,
+            pool_state.vault,
+            PoolError::VaultTokenAccountMismatch,
+        );
+        require_keys_eq!(
+            ctx.accounts.vault_token_account.mint,
+            pool_state.origin_mint,
+            PoolError::OriginMintMismatch,
+        );
+        require_keys_eq!(
+            ctx.accounts.origin_mint.key(),
+            pool_state.origin_mint,
+            PoolError::OriginMintMismatch,
+        );
+        require_keys_eq!(
+            ctx.accounts.depositor_token_account.owner,
+            ctx.accounts.payer.key(),
+            PoolError::InvalidDepositorAccount,
+        );
+        require_keys_eq!(
+            ctx.accounts.depositor_token_account.mint,
+            pool_state.origin_mint,
+            PoolError::OriginMintMismatch,
+        );
 
         let cpi_accounts = ptf_verifier_groth16::cpi::accounts::VerifyGroth16 {
             verifier_state: ctx.accounts.verifying_key.to_account_info(),
@@ -114,6 +152,20 @@ pub mod ptf_pool {
             args.public_inputs.clone(),
         )?;
 
+        let deposit_accounts = ptf_vault::cpi::accounts::Deposit {
+            vault_state: ctx.accounts.vault_state.to_account_info(),
+            vault_token_account: ctx.accounts.vault_token_account.to_account_info(),
+            origin_mint: ctx.accounts.origin_mint.to_account_info(),
+            depositor: ctx.accounts.payer.to_account_info(),
+            depositor_token_account: ctx.accounts.depositor_token_account.to_account_info(),
+            token_program: ctx.accounts.token_program.to_account_info(),
+        };
+        let deposit_ctx = CpiContext::new(
+            ctx.accounts.vault_program.to_account_info(),
+            deposit_accounts,
+        );
+        ptf_vault::cpi::deposit(deposit_ctx, args.amount)?;
+
         pool_state.push_root(args.new_root);
         pool_state.total_shielded = pool_state
             .total_shielded
@@ -127,6 +179,8 @@ pub mod ptf_pool {
             root: pool_state.current_root,
             amount_commit: args.amount_commit,
         });
+
+        enforce_supply_invariant(pool_state, &ctx.accounts.vault_token_account, None)?;
         Ok(())
     }
 
@@ -170,6 +224,36 @@ fn process_unshield(ctx: Context<Unshield>, args: UnshieldArgs, mode: UnshieldMo
         ctx.accounts.verifying_key.key(),
         pool_state.verifying_key,
         PoolError::VerifierMismatch,
+    );
+    require_keys_eq!(
+        ctx.accounts.vault_state.key(),
+        pool_state.vault,
+        PoolError::MismatchedVaultAuthority,
+    );
+    require_keys_eq!(
+        ctx.accounts.vault_state.pool_authority,
+        pool_state.key(),
+        PoolError::MismatchedVaultAuthority,
+    );
+    require_keys_eq!(
+        ctx.accounts.vault_state.origin_mint,
+        pool_state.origin_mint,
+        PoolError::OriginMintMismatch,
+    );
+    require_keys_eq!(
+        ctx.accounts.vault_token_account.owner,
+        pool_state.vault,
+        PoolError::VaultTokenAccountMismatch,
+    );
+    require_keys_eq!(
+        ctx.accounts.vault_token_account.mint,
+        pool_state.origin_mint,
+        PoolError::OriginMintMismatch,
+    );
+    require_keys_eq!(
+        ctx.accounts.destination_token_account.mint,
+        pool_state.origin_mint,
+        PoolError::OriginMintMismatch,
     );
 
     require!(
@@ -269,6 +353,46 @@ fn process_unshield(ctx: Context<Unshield>, args: UnshieldArgs, mode: UnshieldMo
         });
     }
 
+    enforce_supply_invariant(pool_state, &ctx.accounts.vault_token_account, None)
+}
+
+fn enforce_supply_invariant(
+    pool_state: &PoolState,
+    vault_token_account: &TokenAccount,
+    twin_mint: Option<&Account<Mint>>,
+) -> Result<()> {
+    let vault_balance = u128::from(vault_token_account.amount);
+    let twin_supply = match (pool_state.twin_mint_enabled, twin_mint) {
+        (true, Some(mint)) => {
+            require_keys_eq!(
+                mint.key(),
+                pool_state.twin_mint,
+                PoolError::TwinMintMismatch
+            );
+            u128::from(mint.supply)
+        }
+        (true, None) => return err!(PoolError::TwinMintNotConfigured),
+        (false, Some(_)) => return err!(PoolError::TwinMintMismatch),
+        (false, None) => 0u128,
+    };
+
+    let expected = twin_supply
+        .checked_add(u128::from(pool_state.total_shielded))
+        .ok_or(PoolError::AmountOverflow)?
+        .checked_add(u128::from(pool_state.protocol_fees))
+        .ok_or(PoolError::AmountOverflow)?;
+
+    require!(vault_balance == expected, PoolError::InvariantBreach);
+
+    let supply_ptkn = u64::try_from(twin_supply).map_err(|_| PoolError::AmountOverflow)?;
+    emit!(InvariantOk {
+        origin_mint: pool_state.origin_mint,
+        vault: pool_state.vault,
+        supply_ptkn,
+        live_notes: pool_state.total_shielded,
+        protocol_fees: pool_state.protocol_fees,
+    });
+
     Ok(())
 }
 
@@ -317,10 +441,19 @@ pub struct Shield<'info> {
     pub pool_state: Account<'info, PoolState>,
     #[account(mut, seeds = [seeds::NULLIFIERS, pool_state.origin_mint.as_ref()], bump = nullifier_set.bump)]
     pub nullifier_set: Account<'info, NullifierSet>,
+    #[account(mut, seeds = [seeds::VAULT, pool_state.origin_mint.as_ref()], bump = vault_state.bump)]
+    pub vault_state: Account<'info, ptf_vault::VaultState>,
+    #[account(mut)]
+    pub vault_token_account: Account<'info, TokenAccount>,
+    #[account(mut)]
+    pub depositor_token_account: Account<'info, TokenAccount>,
     pub verifier_program: Program<'info, PtfVerifierGroth16>,
     #[account(address = pool_state.verifying_key)]
     pub verifying_key: Account<'info, VerifyingKeyAccount>,
     pub payer: Signer<'info>,
+    pub origin_mint: Account<'info, Mint>,
+    pub vault_program: Program<'info, PtfVault>,
+    pub token_program: Program<'info, Token>,
 }
 
 #[derive(Accounts)]
@@ -379,12 +512,14 @@ pub struct PoolState {
     pub hook_config: Pubkey,
     pub hook_config_present: bool,
     pub bump: u8,
+    pub twin_mint: Pubkey,
+    pub twin_mint_enabled: bool,
 }
 
 impl PoolState {
     pub const MAX_ROOTS: usize = 16;
     pub const SPACE: usize =
-        8 + 32 + 32 + 32 + 32 + 32 + (Self::MAX_ROOTS * 32) + 1 + 2 + 1 + 8 + 8 + 32 + 1 + 1 + 8;
+        8 + (32 * 7) + 32 + (Self::MAX_ROOTS * 32) + 1 + 2 + 1 + 8 + 8 + 1 + 1 + 1 + 7;
 
     pub fn push_root(&mut self, root: [u8; 32]) {
         if self.roots_len as usize >= Self::MAX_ROOTS {
@@ -490,6 +625,15 @@ pub struct HookPostUnshield {
 }
 
 #[event]
+pub struct InvariantOk {
+    pub origin_mint: Pubkey,
+    pub vault: Pubkey,
+    pub supply_ptkn: u64,
+    pub live_notes: u64,
+    pub protocol_fees: u64,
+}
+
+#[event]
 pub struct FeeUpdated {
     pub origin_mint: Pubkey,
     pub fee_bps: u16,
@@ -529,4 +673,14 @@ pub enum PoolError {
     MismatchedVaultAuthority,
     #[msg("origin mint mismatch")]
     OriginMintMismatch,
+    #[msg("vault token account mismatch")]
+    VaultTokenAccountMismatch,
+    #[msg("invalid depositor token account")]
+    InvalidDepositorAccount,
+    #[msg("twin mint mismatch")]
+    TwinMintMismatch,
+    #[msg("twin mint account required")]
+    TwinMintNotConfigured,
+    #[msg("supply invariant breached")]
+    InvariantBreach,
 }
