@@ -1,139 +1,183 @@
-//! Simplified representation of the program-owned vault.
+use anchor_lang::prelude::*;
+use anchor_spl::token::{self, Mint, Token, TokenAccount, Transfer};
 
-use std::error::Error;
-use std::fmt;
+use ptf_common::seeds;
 
-use ptf_common::Pubkey;
+declare_id!("ptfVault1111111111111111111111111111111111");
 
-/// Errors raised by vault operations.
-#[derive(Debug, PartialEq, Eq)]
-pub enum VaultError {
-    /// Caller is not authorized to release funds from the vault.
-    UnauthorizedCaller,
-    /// Attempted to withdraw more funds than available.
-    InsufficientBalance,
-    /// Deposits must be non-zero amounts.
-    InvalidDepositAmount,
-}
-
-impl fmt::Display for VaultError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let message = match self {
-            VaultError::UnauthorizedCaller => "unauthorized release caller",
-            VaultError::InsufficientBalance => "insufficient vault balance",
-            VaultError::InvalidDepositAmount => "deposit amount must be positive",
-        };
-        write!(f, "{}", message)
-    }
-}
-
-impl Error for VaultError {}
-
-/// Program state representing custody for a single origin mint.
-#[derive(Debug)]
-pub struct Vault {
-    origin_mint: Pubkey,
-    pool_authority: Pubkey,
-    balance: u64,
-}
-
-impl Vault {
-    /// Creates a new vault tied to the provided origin mint and pool authority.
-    pub fn new(origin_mint: Pubkey, pool_authority: Pubkey) -> Self {
-        Self {
-            origin_mint,
-            pool_authority,
-            balance: 0,
-        }
-    }
-
-    /// Returns the vault balance.
-    pub fn balance(&self) -> u64 {
-        self.balance
-    }
-
-    /// Returns the associated pool authority.
-    pub fn pool_authority(&self) -> Pubkey {
-        self.pool_authority
-    }
-
-    /// Deposits tokens into the vault.
-    pub fn deposit(&mut self, amount: u64) -> Result<(), VaultError> {
-        if amount == 0 {
-            return Err(VaultError::InvalidDepositAmount);
-        }
-        self.balance = self.balance.checked_add(amount).expect("overflow");
-        Ok(())
-    }
-
-    /// Releases tokens to a destination, callable only by the pool authority.
-    pub fn release(&mut self, caller: Pubkey, amount: u64) -> Result<(), VaultError> {
-        if caller != self.pool_authority {
-            return Err(VaultError::UnauthorizedCaller);
-        }
-        if self.balance < amount {
-            return Err(VaultError::InsufficientBalance);
-        }
-        self.balance -= amount;
-        Ok(())
-    }
-
-    /// Changes the pool authority (used when governance migrates ownership).
-    pub fn set_pool_authority(&mut self, new_authority: Pubkey) {
-        self.pool_authority = new_authority;
-    }
-}
-
-#[cfg(test)]
-mod tests {
+#[program]
+pub mod ptf_vault {
     use super::*;
 
-    const ORIGIN_MINT: Pubkey = Pubkey::new([1u8; 32]);
-    const POOL_AUTHORITY: Pubkey = Pubkey::new([2u8; 32]);
-    const OTHER_AUTHORITY: Pubkey = Pubkey::new([3u8; 32]);
-
-    #[test]
-    fn deposit_increases_balance() {
-        let mut vault = Vault::new(ORIGIN_MINT, POOL_AUTHORITY);
-        vault.deposit(5).expect("deposit");
-        assert_eq!(vault.balance(), 5);
+    pub fn initialize_vault(ctx: Context<InitializeVault>, pool_authority: Pubkey) -> Result<()> {
+        let state = &mut ctx.accounts.vault_state;
+        state.origin_mint = ctx.accounts.origin_mint.key();
+        state.pool_authority = pool_authority;
+        state.bump = ctx.bumps.vault_state;
+        Ok(())
     }
 
-    #[test]
-    fn zero_deposit_rejected() {
-        let mut vault = Vault::new(ORIGIN_MINT, POOL_AUTHORITY);
-        let err = vault.deposit(0).expect_err("zero deposit");
-        assert_eq!(err, VaultError::InvalidDepositAmount);
+    pub fn deposit(ctx: Context<Deposit>, amount: u64) -> Result<()> {
+        require!(amount > 0, VaultError::InvalidDepositAmount);
+
+        let vault_state = &ctx.accounts.vault_state;
+        require_keys_eq!(
+            ctx.accounts.vault_token_account.mint,
+            vault_state.origin_mint,
+            VaultError::InvalidMint,
+        );
+
+        let cpi_accounts = Transfer {
+            from: ctx.accounts.depositor_token_account.to_account_info(),
+            to: ctx.accounts.vault_token_account.to_account_info(),
+            authority: ctx.accounts.depositor.to_account_info(),
+        };
+        let cpi_ctx = CpiContext::new(ctx.accounts.token_program.to_account_info(), cpi_accounts);
+        token::transfer(cpi_ctx, amount)?;
+
+        emit!(VaultDeposit {
+            origin_mint: vault_state.origin_mint,
+            depositor: ctx.accounts.depositor.key(),
+            amount,
+        });
+        Ok(())
     }
 
-    #[test]
-    fn release_requires_authority() {
-        let mut vault = Vault::new(ORIGIN_MINT, POOL_AUTHORITY);
-        vault.deposit(10).expect("deposit");
-        let err = vault.release(OTHER_AUTHORITY, 4).expect_err("unauthorized");
-        assert_eq!(err, VaultError::UnauthorizedCaller);
-        vault
-            .release(POOL_AUTHORITY, 4)
-            .expect("release authorized");
-        assert_eq!(vault.balance(), 6);
+    pub fn release(ctx: Context<Release>, amount: u64) -> Result<()> {
+        require!(amount > 0, VaultError::InvalidReleaseAmount);
+        let vault_state = &ctx.accounts.vault_state;
+        require_keys_eq!(
+            ctx.accounts.pool_authority.key(),
+            vault_state.pool_authority,
+            VaultError::UnauthorizedCaller,
+        );
+
+        let seeds = &[
+            seeds::VAULT,
+            vault_state.origin_mint.as_ref(),
+            &[vault_state.bump],
+        ];
+        let signer = &[&seeds[..]];
+        let cpi_accounts = Transfer {
+            from: ctx.accounts.vault_token_account.to_account_info(),
+            to: ctx.accounts.destination_token_account.to_account_info(),
+            authority: ctx.accounts.vault_state.to_account_info(),
+        };
+        let cpi_ctx = CpiContext::new_with_signer(
+            ctx.accounts.token_program.to_account_info(),
+            cpi_accounts,
+            signer,
+        );
+        token::transfer(cpi_ctx, amount)?;
+
+        emit!(VaultRelease {
+            origin_mint: vault_state.origin_mint,
+            destination: ctx.accounts.destination_token_account.owner,
+            amount,
+        });
+        Ok(())
     }
 
-    #[test]
-    fn release_respects_balance() {
-        let mut vault = Vault::new(ORIGIN_MINT, POOL_AUTHORITY);
-        vault.deposit(5).expect("deposit");
-        let err = vault.release(POOL_AUTHORITY, 6).expect_err("insufficient");
-        assert_eq!(err, VaultError::InsufficientBalance);
+    pub fn set_pool_authority(
+        ctx: Context<SetPoolAuthority>,
+        new_pool_authority: Pubkey,
+    ) -> Result<()> {
+        let state = &mut ctx.accounts.vault_state;
+        require_keys_eq!(
+            ctx.accounts.authority.key(),
+            state.pool_authority,
+            VaultError::UnauthorizedCaller
+        );
+        state.pool_authority = new_pool_authority;
+        Ok(())
     }
+}
 
-    #[test]
-    fn update_pool_authority() {
-        let mut vault = Vault::new(ORIGIN_MINT, POOL_AUTHORITY);
-        vault.set_pool_authority(OTHER_AUTHORITY);
-        let err = vault.release(POOL_AUTHORITY, 1).expect_err("old authority");
-        assert_eq!(err, VaultError::UnauthorizedCaller);
-        vault.deposit(2).expect("deposit");
-        vault.release(OTHER_AUTHORITY, 1).expect("release new auth");
-        assert_eq!(vault.balance(), 1);
-    }
+#[derive(Accounts)]
+pub struct InitializeVault<'info> {
+    #[account(
+        init,
+        payer = payer,
+        seeds = [seeds::VAULT, origin_mint.key().as_ref()],
+        bump,
+        space = VaultState::SPACE,
+    )]
+    pub vault_state: Account<'info, VaultState>,
+    /// CHECK: Anchor verifies ownership when initializing the associated token account externally.
+    pub origin_mint: AccountInfo<'info>,
+    #[account(mut)]
+    pub payer: Signer<'info>,
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct Deposit<'info> {
+    #[account(mut, seeds = [seeds::VAULT, vault_state.origin_mint.as_ref()], bump = vault_state.bump)]
+    pub vault_state: Account<'info, VaultState>,
+    #[account(mut)]
+    pub vault_token_account: Account<'info, TokenAccount>,
+    pub origin_mint: Account<'info, Mint>,
+    #[account(mut)]
+    pub depositor: Signer<'info>,
+    #[account(mut)]
+    pub depositor_token_account: Account<'info, TokenAccount>,
+    pub token_program: Program<'info, Token>,
+}
+
+#[derive(Accounts)]
+pub struct Release<'info> {
+    #[account(mut, seeds = [seeds::VAULT, vault_state.origin_mint.as_ref()], bump = vault_state.bump)]
+    pub vault_state: Account<'info, VaultState>,
+    #[account(mut)]
+    pub vault_token_account: Account<'info, TokenAccount>,
+    #[account(mut)]
+    pub destination_token_account: Account<'info, TokenAccount>,
+    /// CHECK: Pool authority must be provided by the caller program.
+    pub pool_authority: AccountInfo<'info>,
+    pub token_program: Program<'info, Token>,
+}
+
+#[derive(Accounts)]
+pub struct SetPoolAuthority<'info> {
+    #[account(mut)]
+    pub authority: Signer<'info>,
+    #[account(mut, seeds = [seeds::VAULT, vault_state.origin_mint.as_ref()], bump = vault_state.bump)]
+    pub vault_state: Account<'info, VaultState>,
+}
+
+#[account]
+pub struct VaultState {
+    pub origin_mint: Pubkey,
+    pub pool_authority: Pubkey,
+    pub bump: u8,
+}
+
+impl VaultState {
+    pub const SPACE: usize = 8 + 32 + 32 + 1 + 7;
+}
+
+#[event]
+pub struct VaultDeposit {
+    pub origin_mint: Pubkey,
+    pub depositor: Pubkey,
+    pub amount: u64,
+}
+
+#[event]
+pub struct VaultRelease {
+    pub origin_mint: Pubkey,
+    pub destination: Pubkey,
+    pub amount: u64,
+}
+
+#[error_code]
+pub enum VaultError {
+    #[msg("caller not authorized to release funds")]
+    UnauthorizedCaller,
+    #[msg("vault mint mismatch")]
+    InvalidMint,
+    #[msg("deposit amount must be positive")]
+    InvalidDepositAmount,
+    #[msg("release amount must be positive")]
+    InvalidReleaseAmount,
 }
