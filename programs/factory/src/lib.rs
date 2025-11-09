@@ -15,6 +15,21 @@ pub enum MintStatus {
     Frozen,
 }
 
+/// Governance actions enforced through a timelock queue.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GovernanceAction {
+    /// Update the default fee charged by new mint registrations.
+    UpdateDefaultFeeBps(u16),
+    /// Update the default feature flags assigned to new mint registrations.
+    SetDefaultFeatures(FeatureFlags),
+    /// Pause the factory, blocking new registrations and updates.
+    Pause,
+    /// Unpause the factory.
+    Unpause,
+    /// Update the timelock delay (in seconds) required for future actions.
+    SetTimelockSeconds(u64),
+}
+
 /// Error type for factory operations.
 #[derive(Debug, PartialEq, Eq)]
 pub enum FactoryError {
@@ -28,6 +43,14 @@ pub enum FactoryError {
     PtknMintMissing,
     /// Invalid fee configuration provided.
     InvalidFeeBps,
+    /// Caller does not match the DAO authority.
+    Unauthorized,
+    /// The provided timestamp would overflow when applying the timelock.
+    TimelockOverflow,
+    /// The requested governance action is not yet ready for execution.
+    ActionNotReady,
+    /// Governance action with the supplied identifier does not exist.
+    ActionNotFound,
 }
 
 impl fmt::Display for FactoryError {
@@ -38,6 +61,10 @@ impl fmt::Display for FactoryError {
             FactoryError::Paused => "factory is paused",
             FactoryError::PtknMintMissing => "privacy twin mint is required",
             FactoryError::InvalidFeeBps => "fee bps must not exceed MAX_BPS",
+            FactoryError::Unauthorized => "caller is not the DAO authority",
+            FactoryError::TimelockOverflow => "timelock addition overflowed",
+            FactoryError::ActionNotReady => "governance action not ready",
+            FactoryError::ActionNotFound => "governance action not found",
         };
         write!(f, "{}", message)
     }
@@ -96,14 +123,24 @@ impl MintMapping {
     }
 }
 
+#[derive(Debug, Clone)]
+struct QueuedAction {
+    id: u64,
+    action: GovernanceAction,
+    execute_after: u64,
+}
+
 /// Global factory state storing mappings and governance settings.
 #[derive(Debug)]
 pub struct FactoryState {
     dao_authority: Pubkey,
     paused: bool,
+    timelock_seconds: u64,
     mappings: HashMap<Pubkey, MintMapping>,
     default_features: FeatureFlags,
     default_fee_bps: u16,
+    queued_actions: HashMap<u64, QueuedAction>,
+    next_action_id: u64,
 }
 
 impl FactoryState {
@@ -112,9 +149,12 @@ impl FactoryState {
         Self {
             dao_authority,
             paused: false,
+            timelock_seconds: 0,
             mappings: HashMap::new(),
             default_features: FeatureFlags::default(),
             default_fee_bps: FEE_BPS_DEFAULT,
+            queued_actions: HashMap::new(),
+            next_action_id: 1,
         }
     }
 
@@ -123,11 +163,24 @@ impl FactoryState {
         self.paused
     }
 
+    /// Returns the currently configured timelock delay.
+    pub fn timelock_seconds(&self) -> u64 {
+        self.timelock_seconds
+    }
+
     fn ensure_not_paused(&self) -> Result<(), FactoryError> {
         if self.paused {
             Err(FactoryError::Paused)
         } else {
             Ok(())
+        }
+    }
+
+    fn assert_dao(&self, caller: Pubkey) -> Result<(), FactoryError> {
+        if caller == self.dao_authority {
+            Ok(())
+        } else {
+            Err(FactoryError::Unauthorized)
         }
     }
 
@@ -219,14 +272,87 @@ impl FactoryState {
         Ok(())
     }
 
-    /// Globally pauses the factory.
-    pub fn pause(&mut self) {
+    /// Globally pauses the factory (DAO only).
+    pub fn pause(&mut self, caller: Pubkey) -> Result<(), FactoryError> {
+        self.assert_dao(caller)?;
         self.paused = true;
+        Ok(())
     }
 
-    /// Resumes normal operation for the factory.
-    pub fn unpause(&mut self) {
+    /// Resumes normal operation for the factory (DAO only).
+    pub fn unpause(&mut self, caller: Pubkey) -> Result<(), FactoryError> {
+        self.assert_dao(caller)?;
         self.paused = false;
+        Ok(())
+    }
+
+    /// Queues a governance action for future execution once the timelock expires.
+    pub fn queue_action(
+        &mut self,
+        caller: Pubkey,
+        action: GovernanceAction,
+        current_time: u64,
+    ) -> Result<u64, FactoryError> {
+        self.assert_dao(caller)?;
+        let execute_after = current_time
+            .checked_add(self.timelock_seconds)
+            .ok_or(FactoryError::TimelockOverflow)?;
+        let id = self.next_action_id;
+        self.next_action_id = self
+            .next_action_id
+            .checked_add(1)
+            .expect("action ids overflowed");
+        let queued = QueuedAction {
+            id,
+            action,
+            execute_after,
+        };
+        self.queued_actions.insert(id, queued);
+        Ok(id)
+    }
+
+    /// Executes a previously queued action when the timelock has elapsed.
+    pub fn execute_action(
+        &mut self,
+        caller: Pubkey,
+        action_id: u64,
+        current_time: u64,
+    ) -> Result<(), FactoryError> {
+        self.assert_dao(caller)?;
+        let queued = self
+            .queued_actions
+            .get(&action_id)
+            .ok_or(FactoryError::ActionNotFound)?;
+        if current_time < queued.execute_after {
+            return Err(FactoryError::ActionNotReady);
+        }
+        let action = queued.action.clone();
+        self.queued_actions.remove(&action_id);
+        self.apply_action(action)
+    }
+
+    fn apply_action(&mut self, action: GovernanceAction) -> Result<(), FactoryError> {
+        match action {
+            GovernanceAction::UpdateDefaultFeeBps(bps) => {
+                if bps > MAX_BPS {
+                    return Err(FactoryError::InvalidFeeBps);
+                }
+                self.default_fee_bps = bps;
+            }
+            GovernanceAction::SetDefaultFeatures(flags) => {
+                self.default_features = flags;
+            }
+            GovernanceAction::Pause => {
+                self.paused = true;
+            }
+            GovernanceAction::Unpause => {
+                self.paused = false;
+            }
+            GovernanceAction::SetTimelockSeconds(seconds) => {
+                self.timelock_seconds = seconds;
+            }
+        }
+        Ok(())
     }
 
     /// Fetches a copy of the requested mint mapping.
@@ -242,6 +368,7 @@ mod tests {
     const DAO: Pubkey = Pubkey::new([9u8; 32]);
     const MINT_A: Pubkey = Pubkey::new([1u8; 32]);
     const PTKN_A: Pubkey = Pubkey::new([2u8; 32]);
+    const NOT_DAO: Pubkey = Pubkey::new([3u8; 32]);
 
     #[test]
     fn register_new_mint() {
@@ -294,15 +421,22 @@ mod tests {
     #[test]
     fn pause_blocks_mutations() {
         let mut factory = FactoryState::new(DAO);
-        factory.pause();
+        factory.pause(DAO).expect("pause");
         let err = factory
             .register_mint(MINT_A, 6, false, None)
             .expect_err("paused");
         assert_eq!(err, FactoryError::Paused);
-        factory.unpause();
+        factory.unpause(DAO).expect("unpause");
         factory
             .register_mint(MINT_A, 6, false, None)
             .expect("register");
+    }
+
+    #[test]
+    fn pause_requires_dao() {
+        let mut factory = FactoryState::new(DAO);
+        let err = factory.pause(NOT_DAO).expect_err("unauthorized");
+        assert_eq!(err, FactoryError::Unauthorized);
     }
 
     #[test]
@@ -315,5 +449,53 @@ mod tests {
             .update_mint(MINT_A, None, None, Some(MAX_BPS + 1), None)
             .expect_err("invalid fee");
         assert_eq!(err, FactoryError::InvalidFeeBps);
+    }
+
+    #[test]
+    fn queue_and_execute_fee_update() {
+        let mut factory = FactoryState::new(DAO);
+        factory
+            .register_mint(MINT_A, 6, false, None)
+            .expect("register");
+        factory
+            .queue_action(DAO, GovernanceAction::SetTimelockSeconds(10), 0)
+            .expect("queue timelock");
+        factory
+            .execute_action(DAO, 1, 0)
+            .expect("execute timelock change");
+        assert_eq!(factory.timelock_seconds(), 10);
+        let action_id = factory
+            .queue_action(DAO, GovernanceAction::UpdateDefaultFeeBps(25), 5)
+            .expect("queue fee update");
+        let err = factory
+            .execute_action(DAO, action_id, 10)
+            .expect_err("not ready");
+        assert_eq!(err, FactoryError::ActionNotReady);
+        factory
+            .execute_action(DAO, action_id, 15)
+            .expect("execute fee update");
+        factory
+            .register_mint(PTKN_A, 6, false, None)
+            .expect("second register");
+        let mapping = factory.mapping(&PTKN_A).unwrap();
+        assert_eq!(mapping.effective_fee_bps(), 25);
+    }
+
+    #[test]
+    fn unauthorized_queue_rejected() {
+        let mut factory = FactoryState::new(DAO);
+        let err = factory
+            .queue_action(NOT_DAO, GovernanceAction::Pause, 0)
+            .expect_err("unauthorized");
+        assert_eq!(err, FactoryError::Unauthorized);
+    }
+
+    #[test]
+    fn executing_missing_action_errors() {
+        let mut factory = FactoryState::new(DAO);
+        let err = factory
+            .execute_action(DAO, 42, 0)
+            .expect_err("missing action");
+        assert_eq!(err, FactoryError::ActionNotFound);
     }
 }
