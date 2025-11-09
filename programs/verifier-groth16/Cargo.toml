@@ -3,4 +3,12 @@ name = "ptf-verifier-groth16"
 version = "0.1.0"
 edition = "2021"
 
+[lib]
+crate-type = ["cdylib", "lib"]
+name = "ptf_verifier_groth16"
+
 [dependencies]
+anchor-lang = { workspace = true }
+sha3 = { workspace = true }
+hex = { workspace = true }
+ptf-common = { path = "../common" }

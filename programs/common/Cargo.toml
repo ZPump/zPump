@@ -4,6 +4,6 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-
-[features]
-default = []
+anchor-lang = { workspace = true }
+thiserror = { workspace = true }
+hex = { workspace = true }
