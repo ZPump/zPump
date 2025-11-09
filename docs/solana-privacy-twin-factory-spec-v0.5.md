@@ -1,9 +1,19 @@
 # Solana Privacy Twin Factory — Project Specification
 **Edition:** No‑Relayer Core with Relayer‑Ready Hooks  
 **Version:** 0.5 (Committed Decisions) • **Date:** 2025‑11‑09  
-**Owner:** Hendo  
-**Chain:** Solana Mainnet‑Beta (prototype on localnet/devnet)  
+**Owner:** Hendo
+**Chain:** Solana Mainnet‑Beta (prototype on localnet/devnet)
 **Path:** `docs/solana-privacy-twin-factory-spec-v0.5.md`
+
+---
+
+## Recommended Next Steps
+- Implement private transfer instruction with commitment/nullifier bookkeeping and Poseidon Merkle updates.
+- Design HookConfig PDA and CPI callouts for `post_shield_hook`/`post_unshield_hook`, wired through governed enablement.
+- Replace array-based root/nullifier storage with the Poseidon/zk-compression model (Merkle tree, canopy window, compressed nullifier set) and store live notes for invariant enforcement.
+- Harden Groth16 verification: enforce hash pinning, integrate real verifier syscall (or host-side fallback with full proof checking), and expose verifying-key governance.
+- Re-introduce timelocked governance actions in factory (queue → execute), and expose twin-mint enablement controls consistent with factory mappings.
+- Stand up circuits, proving pipeline, indexer, proof RPC, and dApp; add program-test/localnet suites covering shield → unshield (origin & twin), hook toggles, and error codes.
 
 ---
 
