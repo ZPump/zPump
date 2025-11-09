@@ -3,8 +3,7 @@ use anchor_spl::token::Mint;
 
 use ptf_common::{seeds, FeatureFlags, MAX_BPS};
 
-// Dummy program id for local testing. Replace with the deployed value when available.
-declare_id!("ptfFctry1111111111111111111111111111111111");
+declare_id!("4z618BY2dXGqAUiegqDt8omo3e81TSdXRHt64ikX1bTy");
 
 #[program]
 pub mod ptf_factory {
@@ -196,7 +195,7 @@ pub mod ptf_factory {
 pub struct InitializeFactory<'info> {
     #[account(
         init,
-        seeds = [seeds::FACTORY, ctx.program_id.as_ref()],
+        seeds = [seeds::FACTORY, crate::ID.as_ref()],
         bump,
         payer = payer,
         space = FactoryState::SPACE,

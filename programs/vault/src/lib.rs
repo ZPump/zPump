@@ -3,7 +3,7 @@ use anchor_spl::token::{self, Mint, Token, TokenAccount, Transfer};
 
 use ptf_common::seeds;
 
-declare_id!("ptfVault1111111111111111111111111111111111");
+declare_id!("9g6ZodQwxK8MN6MX3dbvFC3E7vGVqFtKZEHY7PByRAuh");
 
 #[program]
 pub mod ptf_vault {

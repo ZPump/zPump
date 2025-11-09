@@ -1,7 +1,7 @@
 use anchor_lang::prelude::*;
 use sha3::{Digest, Keccak256};
 
-declare_id!("11111111111111111111111111111111");
+declare_id!("Gm2KXvGhWrEeYERh3sxs1gwffMXeajVQXqY7CcBpm7Ua");
 
 #[program]
 pub mod ptf_verifier_groth16 {
