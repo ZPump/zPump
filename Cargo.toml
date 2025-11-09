@@ -9,9 +9,9 @@ members = [
 resolver = "2"
 
 [workspace.dependencies]
-anchor-lang = "0.29.0"
-anchor-spl = "0.29.0"
-solana-program = "1.16.24"
+anchor-lang = "0.32.1"
+anchor-spl = "0.32.1"
+solana-program = "1.17.20"
 thiserror = "1.0"
 borsh = { version = "0.10", features = ["derive"] }
 bytemuck = { version = "1.14", features = ["derive"] }
