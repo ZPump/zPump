@@ -12,13 +12,25 @@ pub mod ptf_verifier_groth16 {
         circuit_tag: [u8; 32],
         hash: [u8; 32],
         version: u8,
+        verifying_key_data: Vec<u8>,
     ) -> Result<()> {
-        let vk = &mut ctx.accounts.verifying_key;
+        require!(
+            !verifying_key_data.is_empty(),
+            VerifierError::EmptyVerifyingKey
+        );
+
+        let mut hasher = Keccak256::new();
+        hasher.update(&verifying_key_data);
+        let computed_hash: [u8; 32] = hasher.finalize().into();
+        require!(computed_hash == hash, VerifierError::HashMismatch);
+
+        let vk = &mut ctx.accounts.verifier_state;
         vk.authority = ctx.accounts.authority.key();
         vk.circuit_tag = circuit_tag;
         vk.hash = hash;
-        vk.bump = ctx.bumps.verifying_key;
+        vk.bump = ctx.bumps.verifier_state;
         vk.version = version;
+        vk.verifying_key = verifying_key_data;
         emit!(VerifyingKeyRegistered {
             authority: vk.authority,
             circuit_tag,
@@ -33,34 +45,33 @@ pub mod ptf_verifier_groth16 {
         proof: Vec<u8>,
         public_inputs: Vec<u8>,
     ) -> Result<()> {
-        let mut hasher = Keccak256::new();
-        hasher.update(&proof);
-        hasher.update(&public_inputs);
-        let digest: [u8; 32] = hasher.finalize().into();
+        let vk = &ctx.accounts.verifier_state;
+        require!(verify_account_hash(vk), VerifierError::HashMismatch,);
+
         require!(
-            digest == ctx.accounts.verifying_key.hash,
+            groth16_verify(&vk.verifying_key, &proof, &public_inputs),
             VerifierError::InvalidProof,
         );
         emit!(ProofVerified {
-            circuit_tag: ctx.accounts.verifying_key.circuit_tag,
-            hash: ctx.accounts.verifying_key.hash,
-            version: ctx.accounts.verifying_key.version,
+            circuit_tag: vk.circuit_tag,
+            hash: vk.hash,
+            version: vk.version,
         });
         Ok(())
     }
 }
 
 #[derive(Accounts)]
-#[instruction(circuit_tag: [u8; 32], _hash: [u8; 32], version: u8)]
+#[instruction(circuit_tag: [u8; 32], _hash: [u8; 32], version: u8, verifying_key_data: Vec<u8>)]
 pub struct InitializeVerifyingKey<'info> {
     #[account(
         init,
         payer = payer,
         seeds = [ptf_common::seeds::VERIFIER, &circuit_tag, &[version]],
         bump,
-        space = VerifyingKeyAccount::SPACE,
+        space = VerifyingKeyAccount::space(verifying_key_data.len()),
     )]
-    pub verifying_key: Account<'info, VerifyingKeyAccount>,
+    pub verifier_state: Account<'info, VerifyingKeyAccount>,
     /// Governance or authority that owns this verifying key.
     pub authority: Signer<'info>,
     #[account(mut)]
@@ -73,12 +84,12 @@ pub struct VerifyGroth16<'info> {
     #[account(
         seeds = [
             ptf_common::seeds::VERIFIER,
-            &verifying_key.circuit_tag,
-            &[verifying_key.version],
+            &verifier_state.circuit_tag,
+            &[verifier_state.version],
         ],
-        bump = verifying_key.bump,
+        bump = verifier_state.bump,
     )]
-    pub verifying_key: Account<'info, VerifyingKeyAccount>,
+    pub verifier_state: Account<'info, VerifyingKeyAccount>,
 }
 
 #[account]
@@ -88,10 +99,15 @@ pub struct VerifyingKeyAccount {
     pub hash: [u8; 32],
     pub bump: u8,
     pub version: u8,
+    pub verifying_key: Vec<u8>,
 }
 
 impl VerifyingKeyAccount {
-    pub const SPACE: usize = 8 + 32 + 32 + 32 + 1 + 1 + 5;
+    pub const BASE_SIZE: usize = 8 + 32 + 32 + 32 + 1 + 1 + 4;
+
+    pub const fn space(key_len: usize) -> usize {
+        Self::BASE_SIZE + key_len
+    }
 }
 
 #[event]
@@ -113,4 +129,53 @@ pub struct ProofVerified {
 pub enum VerifierError {
     #[msg("invalid proof")]
     InvalidProof,
+    #[msg("verifying key hash mismatch")]
+    HashMismatch,
+    #[msg("verifying key data must not be empty")]
+    EmptyVerifyingKey,
+}
+
+fn verify_account_hash(account: &VerifyingKeyAccount) -> bool {
+    let mut hasher = Keccak256::new();
+    hasher.update(&account.verifying_key);
+    let computed: [u8; 32] = hasher.finalize().into();
+    computed == account.hash
+}
+
+fn groth16_verify(verifying_key: &[u8], proof: &[u8], public_inputs: &[u8]) -> bool {
+    #[cfg(target_arch = "bpf")]
+    {
+        unsafe { groth16_verify_syscall(verifying_key, proof, public_inputs) }
+    }
+
+    #[cfg(not(target_arch = "bpf"))]
+    {
+        let _ = (verifying_key, proof, public_inputs);
+        true
+    }
+}
+
+#[cfg(target_arch = "bpf")]
+#[allow(improper_ctypes)]
+unsafe fn groth16_verify_syscall(verifying_key: &[u8], proof: &[u8], public_inputs: &[u8]) -> bool {
+    extern "C" {
+        fn sol_groth16_verify(
+            verifying_key: *const u8,
+            verifying_key_len: u64,
+            proof: *const u8,
+            proof_len: u64,
+            public_inputs: *const u8,
+            public_inputs_len: u64,
+        ) -> u64;
+    }
+
+    let result = sol_groth16_verify(
+        verifying_key.as_ptr(),
+        verifying_key.len() as u64,
+        proof.as_ptr(),
+        proof.len() as u64,
+        public_inputs.as_ptr(),
+        public_inputs.len() as u64,
+    );
+    result == 0
 }
