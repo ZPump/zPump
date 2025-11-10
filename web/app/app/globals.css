@@ -1,0 +1,16 @@
+:root {
+  color-scheme: dark;
+}
+
+body {
+  margin: 0;
+  background: transparent;
+}
+
+a {
+  color: inherit;
+}
+
+* {
+  box-sizing: border-box;
+}
