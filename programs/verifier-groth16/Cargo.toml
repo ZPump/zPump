@@ -20,6 +20,7 @@ ark-groth16 = { version = "0.4", default-features = false, features = ["std"] }
 ark-relations = { version = "0.4", default-features = false, features = ["std"] }
 ark-serialize = { version = "0.4", default-features = false, features = ["std", "derive"] }
 ark-std = { version = "0.4", default-features = false, features = ["std"] }
+ark-snark = { version = "0.4" }
 
 [features]
 default = []
