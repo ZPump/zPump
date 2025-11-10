@@ -319,7 +319,7 @@ pub mod ptf_pool {
             );
             ptf_vault::cpi::deposit(deposit_ctx, args.amount)?;
 
-            let new_root = ctx
+            let (new_root, note_index) = ctx
                 .accounts
                 .commitment_tree
                 .append_note(args.commitment, args.amount_commit)?;
@@ -336,6 +336,7 @@ pub mod ptf_pool {
                 commitment: args.commitment,
                 root: new_root,
                 amount_commit: args.amount_commit,
+                note_index,
             });
 
             let hook_enabled = pool_state
@@ -511,7 +512,7 @@ pub mod ptf_pool {
             args.output_commitments.len() == args.output_amount_commitments.len(),
             PoolError::OutputSetMismatch,
         );
-        let new_root = ctx.accounts.commitment_tree.append_many(
+        let (new_root, output_indices) = ctx.accounts.commitment_tree.append_many(
             args.output_commitments.as_slice(),
             args.output_amount_commitments.as_slice(),
         )?;
@@ -527,6 +528,7 @@ pub mod ptf_pool {
             nullifiers: args.nullifiers.clone(),
             new_root,
             outputs: args.output_commitments.clone(),
+            output_indices,
         });
         Ok(())
     }
@@ -651,7 +653,7 @@ fn process_unshield<'info>(
         });
     }
 
-    let new_root = ctx.accounts.commitment_tree.append_many(
+    let (new_root, output_indices) = ctx.accounts.commitment_tree.append_many(
         args.output_commitments.as_slice(),
         args.output_amount_commitments.as_slice(),
     )?;
@@ -699,6 +701,8 @@ fn process_unshield<'info>(
                 destination: destination_owner,
                 amount: args.amount,
                 fee,
+                change_commitments: args.output_commitments.clone(),
+                change_indices: output_indices.clone(),
             });
         }
         UnshieldMode::Twin => {
@@ -738,6 +742,8 @@ fn process_unshield<'info>(
                 destination: destination_owner,
                 amount: args.amount,
                 fee,
+                change_commitments: args.output_commitments.clone(),
+                change_indices: output_indices.clone(),
             });
         }
     }
@@ -1127,6 +1133,7 @@ pub struct CommitmentTree {
     pub canopy: [[u8; 32]; Self::MAX_CANOPY],
     pub recent_commitments: [[u8; 32]; Self::MAX_CANOPY],
     pub recent_amount_commitments: [[u8; 32]; Self::MAX_CANOPY],
+    pub recent_indices: [u64; Self::MAX_CANOPY],
     pub recent_len: u8,
     pub bump: u8,
 }
@@ -1144,6 +1151,7 @@ impl CommitmentTree {
         + (Self::MAX_CANOPY * 32)
         + (Self::MAX_CANOPY * 32)
         + (Self::MAX_CANOPY * 32)
+        + (Self::MAX_CANOPY * 8)
         + 1
         + 1
         + 6;
@@ -1163,6 +1171,7 @@ impl CommitmentTree {
         self.canopy = [[0u8; 32]; Self::MAX_CANOPY];
         self.recent_commitments = [[0u8; 32]; Self::MAX_CANOPY];
         self.recent_amount_commitments = [[0u8; 32]; Self::MAX_CANOPY];
+        self.recent_indices = [0u64; Self::MAX_CANOPY];
         self.recent_len = 0;
         Ok(())
     }
@@ -1171,7 +1180,7 @@ impl CommitmentTree {
         &mut self,
         commitment: [u8; 32],
         amount_commit: [u8; 32],
-    ) -> Result<[u8; 32]> {
+    ) -> Result<([u8; 32], u64)> {
         self.insert_leaf(commitment, amount_commit)
     }
 
@@ -1179,26 +1188,34 @@ impl CommitmentTree {
         &mut self,
         commitments: &[[u8; 32]],
         amount_commitments: &[[u8; 32]],
-    ) -> Result<[u8; 32]> {
+    ) -> Result<([u8; 32], Vec<u64>)> {
         if commitments.is_empty() {
-            return Ok(self.current_root);
+            return Ok((self.current_root, Vec::new()));
         }
         require!(
             commitments.len() == amount_commitments.len(),
             PoolError::OutputSetMismatch,
         );
         let mut root = self.current_root;
+        let mut indices = Vec::with_capacity(commitments.len());
         for (commitment, amount_commit) in commitments.iter().zip(amount_commitments.iter()) {
-            root = self.insert_leaf(*commitment, *amount_commit)?;
+            let (new_root, index) = self.insert_leaf(*commitment, *amount_commit)?;
+            root = new_root;
+            indices.push(index);
         }
-        Ok(root)
+        Ok((root, indices))
     }
 
-    fn insert_leaf(&mut self, commitment: [u8; 32], amount_commit: [u8; 32]) -> Result<[u8; 32]> {
+    fn insert_leaf(
+        &mut self,
+        commitment: [u8; 32],
+        amount_commit: [u8; 32],
+    ) -> Result<([u8; 32], u64)> {
         require!(
             self.next_index < (1u128 << Self::DEPTH) as u64,
             PoolError::TreeFull,
         );
+        let index_position = self.next_index;
         let mut node = commitment;
         let mut index = self.next_index;
         let mut path_hashes = [[0u8; 32]; Self::DEPTH];
@@ -1221,8 +1238,8 @@ impl CommitmentTree {
             .ok_or(PoolError::AmountOverflow)?;
         self.current_root = node;
         self.update_canopy(&path_hashes);
-        self.record_recent(commitment, amount_commit);
-        Ok(self.current_root)
+        self.record_recent(index_position, commitment, amount_commit);
+        Ok((self.current_root, index_position))
     }
 
     fn update_canopy(&mut self, path_hashes: &[[u8; 32]; Self::DEPTH]) {
@@ -1236,19 +1253,22 @@ impl CommitmentTree {
         }
     }
 
-    fn record_recent(&mut self, commitment: [u8; 32], amount_commit: [u8; 32]) {
+    fn record_recent(&mut self, index: u64, commitment: [u8; 32], amount_commit: [u8; 32]) {
         if (self.recent_len as usize) < Self::MAX_CANOPY {
             let idx = self.recent_len as usize;
             self.recent_commitments[idx] = commitment;
             self.recent_amount_commitments[idx] = amount_commit;
+            self.recent_indices[idx] = index;
             self.recent_len += 1;
         } else {
             for idx in 1..Self::MAX_CANOPY {
                 self.recent_commitments[idx - 1] = self.recent_commitments[idx];
                 self.recent_amount_commitments[idx - 1] = self.recent_amount_commitments[idx];
+                self.recent_indices[idx - 1] = self.recent_indices[idx];
             }
             self.recent_commitments[Self::MAX_CANOPY - 1] = commitment;
             self.recent_amount_commitments[Self::MAX_CANOPY - 1] = amount_commit;
+            self.recent_indices[Self::MAX_CANOPY - 1] = index;
         }
     }
 
@@ -1669,6 +1689,7 @@ pub struct Shielded {
     pub commitment: [u8; 32],
     pub root: [u8; 32],
     pub amount_commit: [u8; 32],
+    pub note_index: u64,
 }
 
 #[event]
@@ -1677,6 +1698,8 @@ pub struct UnshieldOrigin {
     pub destination: Pubkey,
     pub amount: u64,
     pub fee: u64,
+    pub change_commitments: Vec<[u8; 32]>,
+    pub change_indices: Vec<u64>,
 }
 
 #[event]
@@ -1685,6 +1708,8 @@ pub struct UnshieldTwin {
     pub destination: Pubkey,
     pub amount: u64,
     pub fee: u64,
+    pub change_commitments: Vec<[u8; 32]>,
+    pub change_indices: Vec<u64>,
 }
 
 #[event]
@@ -1707,6 +1732,7 @@ pub struct Transferred {
     pub nullifiers: Vec<[u8; 32]>,
     pub outputs: Vec<[u8; 32]>,
     pub new_root: [u8; 32],
+    pub output_indices: Vec<u64>,
 }
 
 #[event]
@@ -1831,36 +1857,60 @@ fn validate_hook_accounts(
     mode: HookAccountMode,
     remaining_accounts: &[AccountInfo<'_>],
 ) -> Result<()> {
+    let provided: Vec<Pubkey> = remaining_accounts
+        .iter()
+        .map(|account| account.key())
+        .collect();
+    validate_hook_keys(required_accounts, mode, &provided)
+}
+
+fn validate_hook_keys(
+    required_accounts: &[Pubkey],
+    mode: HookAccountMode,
+    provided_accounts: &[Pubkey],
+) -> Result<()> {
     match mode {
         HookAccountMode::Strict => {
             require!(
-                remaining_accounts.len() == required_accounts.len(),
+                provided_accounts.len() == required_accounts.len(),
                 PoolError::HookAccountMismatch
             );
-            for (expected, provided) in required_accounts.iter().zip(remaining_accounts.iter()) {
-                require_keys_eq!(*expected, provided.key(), PoolError::HookAccountMismatch);
+            for (expected, provided) in required_accounts.iter().zip(provided_accounts.iter()) {
+                require_keys_eq!(*expected, *provided, PoolError::HookAccountMismatch);
             }
         }
         HookAccountMode::Lenient => {
             for expected in required_accounts {
                 require!(
-                    remaining_accounts
-                        .iter()
-                        .any(|account| account.key() == *expected),
+                    provided_accounts.iter().any(|account| account == expected),
                     PoolError::HookAccountMissing
                 );
             }
         }
     }
 
-    if matches!(mode, HookAccountMode::Strict) {
-        for account in remaining_accounts.iter() {
-            require!(
-                required_accounts.iter().any(|key| *key == account.key()),
-                PoolError::HookAccountUnexpected
-            );
-        }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn strict_mode_requires_exact_accounts() {
+        let a = Pubkey::new_unique();
+        let b = Pubkey::new_unique();
+        assert!(validate_hook_keys(&[a, b], HookAccountMode::Strict, &[a, b]).is_ok());
+        assert!(validate_hook_keys(&[a, b], HookAccountMode::Strict, &[b, a]).is_err());
+        assert!(validate_hook_keys(&[a, b], HookAccountMode::Strict, &[a]).is_err());
     }
 
-    Ok(())
+    #[test]
+    fn lenient_mode_requires_subset_only() {
+        let a = Pubkey::new_unique();
+        let b = Pubkey::new_unique();
+        let c = Pubkey::new_unique();
+        assert!(validate_hook_keys(&[a, b], HookAccountMode::Lenient, &[c, a, b]).is_ok());
+        assert!(validate_hook_keys(&[a, b], HookAccountMode::Lenient, &[c, a]).is_err());
+    }
 }
