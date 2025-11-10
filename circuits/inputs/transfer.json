@@ -1,0 +1,17 @@
+{
+  "old_root": "0",
+  "mint_id": "1",
+  "pool_id": "2",
+  "in_note_amount_0": "400",
+  "in_note_amount_1": "600",
+  "in_note_id_0": "11",
+  "in_note_id_1": "12",
+  "in_spending_key_0": "21",
+  "in_spending_key_1": "22",
+  "out_amount_0": "500",
+  "out_amount_1": "500",
+  "out_recipient_0": "333",
+  "out_recipient_1": "444",
+  "out_blinding_0": "55",
+  "out_blinding_1": "66"
+}
