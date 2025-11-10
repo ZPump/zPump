@@ -1,0 +1,12 @@
+{
+  "old_root": "0",
+  "amount": "500",
+  "fee": "5",
+  "dest_pubkey": "987654321",
+  "mode": "1",
+  "mint_id": "1",
+  "pool_id": "2",
+  "note_amount": "505",
+  "note_id": "101",
+  "spending_key": "202"
+}

@@ -1,0 +1,17 @@
+[
+  {
+    "circuit": "shield",
+    "version": "v1",
+    "path": "../../circuits/keys/shield.json"
+  },
+  {
+    "circuit": "unshield",
+    "version": "v1",
+    "path": "../../circuits/keys/unshield.json"
+  },
+  {
+    "circuit": "transfer",
+    "version": "v1",
+    "path": "../../circuits/keys/transfer.json"
+  }
+]
