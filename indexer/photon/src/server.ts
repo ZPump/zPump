@@ -12,6 +12,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const logger = pino({ level: process.env.LOG_LEVEL ?? 'info' });
+const API_KEY_HEADER = 'x-ptf-api-key';
 
 const RootResponseSchema = z.object({
   current: z.string(),
@@ -25,14 +26,25 @@ const NoteSchema = z.object({
   slot: z.number()
 });
 
+const NullifierResponseSchema = z.object({
+  mint: z.string().optional(),
+  nullifiers: z.array(z.string())
+});
+
+const NotesResponseSchema = z.object({
+  viewKey: z.string().optional(),
+  notes: z.array(NoteSchema)
+});
+
+const SnapshotSchema = z.object({
+  roots: z.record(RootResponseSchema).default({}),
+  nullifiers: z.record(z.array(z.string())).default({}),
+  notes: z.record(z.array(NoteSchema)).default({})
+});
+
 type RootResponse = z.infer<typeof RootResponseSchema>;
 type Note = z.infer<typeof NoteSchema>;
-
-interface SnapshotShape {
-  roots: Record<string, RootResponse>;
-  nullifiers: Record<string, string[]>;
-  notes: Record<string, Note[]>;
-}
+type SnapshotShape = z.infer<typeof SnapshotSchema>;
 
 class StateStore {
   private snapshotPath: string;
@@ -53,16 +65,17 @@ class StateStore {
       return;
     }
     const fixture = await this.tryRead(this.fixturePath);
-    if (!fixture) {
-      throw new Error('Unable to load indexer snapshot or fixture');
+    if (fixture) {
+      this.state = fixture;
+      return;
     }
-    this.state = fixture;
+    this.state = SnapshotSchema.parse({});
   }
 
-  async tryRead(target: string): Promise<SnapshotShape | null> {
+  private async tryRead(target: string): Promise<SnapshotShape | null> {
     try {
       const contents = await fs.readFile(target, 'utf8');
-      return JSON.parse(contents) as SnapshotShape;
+      return SnapshotSchema.parse(JSON.parse(contents));
     } catch (error: unknown) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
         return null;
@@ -72,12 +85,17 @@ class StateStore {
     }
   }
 
-  async persist(): Promise<void> {
+  private ensureState(): SnapshotShape {
     if (!this.state) {
-      return;
+      this.state = SnapshotSchema.parse({});
     }
+    return this.state;
+  }
+
+  async persist(): Promise<void> {
+    const state = this.ensureState();
     await fs.mkdir(path.dirname(this.snapshotPath), { recursive: true });
-    await fs.writeFile(this.snapshotPath, JSON.stringify(this.state, null, 2));
+    await fs.writeFile(this.snapshotPath, JSON.stringify(state, null, 2));
   }
 
   getRoots(mint: string): RootResponse | null {
@@ -93,27 +111,115 @@ class StateStore {
   }
 
   upsertRoots(mint: string, payload: RootResponse): void {
-    if (!this.state) {
-      throw new Error('state not initialised');
-    }
-    this.state.roots[mint] = payload;
+    const state = this.ensureState();
+    state.roots[mint] = payload;
   }
 
   upsertNotes(viewKey: string, notes: Note[]): void {
-    if (!this.state) {
-      throw new Error('state not initialised');
-    }
-    this.state.notes[viewKey] = notes;
+    const state = this.ensureState();
+    state.notes[viewKey] = notes;
+  }
+
+  replaceNullifiers(mint: string, values: string[]): void {
+    const state = this.ensureState();
+    state.nullifiers[mint] = Array.from(new Set(values));
   }
 
   addNullifiers(mint: string, nullifiers: string[]): void {
-    if (!this.state) {
-      throw new Error('state not initialised');
-    }
-    const existing = new Set(this.state.nullifiers[mint] ?? []);
+    const state = this.ensureState();
+    const existing = new Set(state.nullifiers[mint] ?? []);
     nullifiers.forEach((value) => existing.add(value));
-    this.state.nullifiers[mint] = Array.from(existing);
+    state.nullifiers[mint] = Array.from(existing);
   }
+}
+
+class PhotonClient {
+  constructor(private readonly baseUrl: string, private readonly apiKey?: string) {}
+
+  private headers(): Record<string, string> {
+    const headers: Record<string, string> = { Accept: 'application/json' };
+    if (this.apiKey) {
+      headers.Authorization = `Bearer ${this.apiKey}`;
+    }
+    return headers;
+  }
+
+  private async request<T>(path: string): Promise<T | null> {
+    const url = new URL(path, this.baseUrl);
+    const response = await fetch(url, { headers: this.headers() });
+    if (response.status === 404) {
+      return null;
+    }
+    if (!response.ok) {
+      throw new Error(`upstream status ${response.status}`);
+    }
+    return (await response.json()) as T;
+  }
+
+  async getRoots(mint: string): Promise<RootResponse | null> {
+    const payload = await this.request<unknown>(`/roots/${mint}`);
+    if (!payload) {
+      return null;
+    }
+    const parsed = RootResponseSchema.safeParse(payload);
+    if (parsed.success) {
+      return parsed.data;
+    }
+    if (
+      typeof payload === 'object' &&
+      payload !== null &&
+      'result' in payload &&
+      typeof (payload as { result?: unknown }).result === 'object'
+    ) {
+      const nested = RootResponseSchema.safeParse((payload as { result: unknown }).result);
+      if (nested.success) {
+        return nested.data;
+      }
+    }
+    throw new Error('unexpected upstream roots payload');
+  }
+
+  async getNullifiers(mint: string): Promise<string[] | null> {
+    const payload = await this.request<unknown>(`/nullifiers/${mint}`);
+    if (!payload) {
+      return null;
+    }
+    const parsed = NullifierResponseSchema.safeParse(payload);
+    if (parsed.success) {
+      return parsed.data.nullifiers;
+    }
+    if (Array.isArray(payload) && payload.every((value) => typeof value === 'string')) {
+      return payload as string[];
+    }
+    throw new Error('unexpected upstream nullifier payload');
+  }
+
+  async getNotes(viewKey: string): Promise<Note[] | null> {
+    const payload = await this.request<unknown>(`/notes/${viewKey}`);
+    if (!payload) {
+      return null;
+    }
+    const parsed = NotesResponseSchema.safeParse(payload);
+    if (parsed.success) {
+      return parsed.data.notes;
+    }
+    if (Array.isArray(payload)) {
+      return payload.map((entry) => NoteSchema.parse(entry));
+    }
+    throw new Error('unexpected upstream notes payload');
+  }
+}
+
+function extractApiKey(req: express.Request): string | null {
+  const header = req.header(API_KEY_HEADER);
+  if (header) {
+    return header.trim();
+  }
+  const authorization = req.header('authorization');
+  if (authorization?.toLowerCase().startsWith('bearer ')) {
+    return authorization.slice(7).trim();
+  }
+  return null;
 }
 
 async function bootstrap() {
@@ -121,6 +227,12 @@ async function bootstrap() {
   const port = Number(process.env.PORT ?? 8787);
   const store = new StateStore();
   await store.load();
+
+  const upstreamUrl = process.env.PHOTON_URL;
+  const upstreamClient = upstreamUrl
+    ? new PhotonClient(upstreamUrl, process.env.PHOTON_API_KEY)
+    : null;
+  const apiKey = process.env.INDEXER_API_KEY ?? process.env.API_KEY;
 
   app.use(helmet());
   app.use(cors());
@@ -133,34 +245,84 @@ async function bootstrap() {
     })
   );
 
+  if (apiKey) {
+    app.use((req, res, next) => {
+      const provided = extractApiKey(req);
+      if (!provided || provided !== apiKey) {
+        res.status(401).json({ error: 'unauthorized' });
+        return;
+      }
+      next();
+    });
+  }
+
   app.get('/health', (_req, res) => {
-    res.json({ ok: true });
+    res.json({ ok: true, upstream: Boolean(upstreamClient) });
   });
 
-  app.get('/roots/:mint', (req, res) => {
+  app.get('/roots/:mint', async (req, res) => {
     const mint = req.params.mint;
-    const roots = store.getRoots(mint);
-    if (!roots) {
-      res.status(404).json({ error: 'mint_not_found' });
-      return;
+    try {
+      if (upstreamClient) {
+        const remote = await upstreamClient.getRoots(mint);
+        if (remote) {
+          store.upsertRoots(mint, remote);
+          res.json({ mint, ...remote, source: 'upstream' });
+          return;
+        }
+      }
+      const local = store.getRoots(mint);
+      if (!local) {
+        res.status(404).json({ error: 'mint_not_found' });
+        return;
+      }
+      res.json({ mint, ...local, source: upstreamClient ? 'cache' : 'snapshot' });
+    } catch (error) {
+      logger.error({ err: error, mint }, 'failed to resolve roots');
+      res.status(502).json({ error: 'upstream_failed' });
     }
-    res.json({ mint, ...roots });
   });
 
-  app.get('/nullifiers/:mint', (req, res) => {
+  app.get('/nullifiers/:mint', async (req, res) => {
     const mint = req.params.mint;
-    const nullifiers = store.getNullifiers(mint);
-    res.json({ mint, nullifiers });
+    try {
+      if (upstreamClient) {
+        const remote = await upstreamClient.getNullifiers(mint);
+        if (remote) {
+          store.replaceNullifiers(mint, remote);
+          res.json({ mint, nullifiers: remote, source: 'upstream' });
+          return;
+        }
+      }
+      const local = store.getNullifiers(mint);
+      res.json({ mint, nullifiers: local, source: upstreamClient ? 'cache' : 'snapshot' });
+    } catch (error) {
+      logger.error({ err: error, mint }, 'failed to resolve nullifiers');
+      res.status(502).json({ error: 'upstream_failed' });
+    }
   });
 
-  app.get('/notes/:viewKey', (req, res) => {
+  app.get('/notes/:viewKey', async (req, res) => {
     const viewKey = req.params.viewKey;
-    const notes = store.getNotes(viewKey);
-    res.json({ viewKey, notes });
+    try {
+      if (upstreamClient) {
+        const remote = await upstreamClient.getNotes(viewKey);
+        if (remote) {
+          store.upsertNotes(viewKey, remote);
+          res.json({ viewKey, notes: remote, source: 'upstream' });
+          return;
+        }
+      }
+      const notes = store.getNotes(viewKey);
+      res.json({ viewKey, notes, source: upstreamClient ? 'cache' : 'snapshot' });
+    } catch (error) {
+      logger.error({ err: error, viewKey }, 'failed to resolve notes');
+      res.status(502).json({ error: 'upstream_failed' });
+    }
   });
 
   const server = app.listen(port, () => {
-    logger.info({ port }, 'Photon indexer listening');
+    logger.info({ port, upstream: Boolean(upstreamClient) }, 'Photon indexer listening');
   });
 
   const shutdown = async () => {
