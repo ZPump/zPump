@@ -13,11 +13,11 @@ jest.mock('@solana/wallet-adapter-react-ui', () => ({
 }));
 
 describe('ExchangePage', () => {
-  it('allows selecting shielding mode and submitting', async () => {
+  it('allows selecting wrapping mode and submitting', async () => {
     render(<ExchangePage />);
 
     fireEvent.change(screen.getByLabelText(/Amount/i), { target: { value: '10' } });
-    fireEvent.change(screen.getByLabelText(/Mode/i), { target: { value: 'unshield-origin' } });
+    fireEvent.change(screen.getByLabelText(/Mode/i), { target: { value: 'unwrap-origin' } });
 
     fireEvent.click(screen.getByRole('button', { name: /Simulate Exchange/i }));
 

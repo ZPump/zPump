@@ -10,14 +10,14 @@ interface BaseParams {
   poolId: string;
 }
 
-interface ShieldParams extends BaseParams {
+interface WrapParams extends BaseParams {
   commitment: string;
   proof: ProofResponse;
 }
 
-interface UnshieldParams extends BaseParams {
+interface UnwrapParams extends BaseParams {
   destination: string;
-  mode: 'origin' | 'ptkn';
+  mode: 'origin' | 'ztkn';
   proof: ProofResponse;
 }
 
@@ -43,19 +43,19 @@ async function simulateTransaction(
   // We do not push real instructions here.  The goal is to provide a deterministic
   // signature placeholder so the UI flow can continue end-to-end.
   const signature = await wallet.sendTransaction(tx, connection, { skipPreflight: true });
-  console.info(`[PTF SDK] simulated ${description} → ${signature}`);
+  console.info(`[zPump SDK] simulated ${description} → ${signature}`);
   return signature;
 }
 
-export async function shield(params: ShieldParams): Promise<string> {
+export async function wrap(params: WrapParams): Promise<string> {
   const { connection, wallet, amount } = params;
-  const description = `shield ${amount} lamports for mint ${params.originMint}`;
+  const description = `wrap ${amount} lamports for mint ${params.originMint}`;
   return simulateTransaction(connection, wallet, description);
 }
 
-export async function unshield(params: UnshieldParams): Promise<string> {
+export async function unwrap(params: UnwrapParams): Promise<string> {
   const { connection, wallet, amount, mode } = params;
-  const description = `unshield ${amount} lamports via ${mode}`;
+  const description = `unwrap ${amount} lamports via ${mode}`;
   return simulateTransaction(connection, wallet, description);
 }
 

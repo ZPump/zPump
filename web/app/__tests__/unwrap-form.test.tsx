@@ -1,10 +1,10 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { PublicKey } from '@solana/web3.js';
-import { UnshieldForm } from '../components/ptf/UnshieldForm';
+import { UnwrapForm } from '../components/ptf/UnwrapForm';
 
 const useWalletMock = jest.fn();
 const requestProofMock = jest.fn();
-const unshieldMock = jest.fn();
+const unwrapMock = jest.fn();
 const resolvePublicKeyMock = jest.fn();
 
 jest.mock('@solana/wallet-adapter-react', () => ({
@@ -19,31 +19,31 @@ jest.mock('../lib/proofClient', () => ({
 }));
 
 jest.mock('../lib/sdk', () => ({
-  unshield: unshieldMock,
+  unwrap: unwrapMock,
   resolvePublicKey: resolvePublicKeyMock
 }));
 
-describe('UnshieldForm', () => {
+describe('UnwrapForm', () => {
   beforeEach(() => {
     useWalletMock.mockReset();
     requestProofMock.mockReset();
-    unshieldMock.mockReset();
+    unwrapMock.mockReset();
     resolvePublicKeyMock.mockReset();
   });
 
   it('requires a connected wallet', async () => {
     useWalletMock.mockReturnValue({ publicKey: null });
 
-    render(<UnshieldForm />);
+    render(<UnwrapForm />);
 
-    fireEvent.click(screen.getByRole('button', { name: /Generate proof & submit/i }));
+    fireEvent.click(screen.getByRole('button', { name: /Generate unwrap proof & submit/i }));
 
     await waitFor(() => expect(screen.getByText(/Connect your wallet/i)).toBeInTheDocument());
     expect(requestProofMock).not.toHaveBeenCalled();
-    expect(unshieldMock).not.toHaveBeenCalled();
+    expect(unwrapMock).not.toHaveBeenCalled();
   });
 
-  it('submits an unshield request via the SDK', async () => {
+  it('submits an unwrap request via the SDK', async () => {
     const publicKey = { toBase58: () => 'Wallet222222222222222222222222222222222222' };
     useWalletMock.mockReturnValue({ publicKey });
 
@@ -53,15 +53,15 @@ describe('UnshieldForm', () => {
       verifyingKeyHash: '0xvk'
     });
     resolvePublicKeyMock.mockResolvedValue(new PublicKey('Destination1111111111111111111111111111111'));
-    unshieldMock.mockResolvedValue('tx-111');
+    unwrapMock.mockResolvedValue('tx-111');
 
-    render(<UnshieldForm />);
+    render(<UnwrapForm />);
 
-    fireEvent.click(screen.getByRole('button', { name: /Generate proof & submit/i }));
+    fireEvent.click(screen.getByRole('button', { name: /Generate unwrap proof & submit/i }));
 
-    await waitFor(() => expect(unshieldMock).toHaveBeenCalledTimes(1));
-    expect(requestProofMock).toHaveBeenCalledWith('unshield', expect.objectContaining({ mintId: expect.any(String) }));
+    await waitFor(() => expect(unwrapMock).toHaveBeenCalledTimes(1));
+    expect(requestProofMock).toHaveBeenCalledWith('unwrap', expect.objectContaining({ mintId: expect.any(String) }));
     expect(resolvePublicKeyMock).toHaveBeenCalled();
-    expect(screen.getByText(/Exit transaction sent/i)).toBeInTheDocument();
+    expect(screen.getByText(/Unwrap transaction sent/i)).toBeInTheDocument();
   });
 });

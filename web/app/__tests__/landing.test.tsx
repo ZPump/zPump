@@ -13,8 +13,8 @@ describe('HomePage', () => {
   it('renders key landing content', () => {
     render(<HomePage />);
 
-    expect(screen.getByText(/Privacy rails for every SPL asset/i)).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /Enter the Pool/i })).toBeInTheDocument();
+    expect(screen.getByText(/Wrap any SPL asset into zTokens/i)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Try the Wrapper/i })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: /Exchange/i })).toBeInTheDocument();
   });
 });

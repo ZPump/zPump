@@ -22,9 +22,9 @@ import { useWallet } from '@solana/wallet-adapter-react';
 import { useMemo, useState } from 'react';
 import { MINTS } from '../../config/mints';
 import { ProofClient, ProofResponse } from '../../lib/proofClient';
-import { shield as shieldSdk } from '../../lib/sdk';
+import { wrap as wrapSdk } from '../../lib/sdk';
 
-interface ShieldState {
+interface WrapState {
   originMint: string;
   amount: string;
   depositId: string;
@@ -34,7 +34,7 @@ interface ShieldState {
   noteMemo: string;
 }
 
-const DEFAULT_STATE: ShieldState = {
+const DEFAULT_STATE: WrapState = {
   originMint: MINTS[0]?.originMint ?? '',
   amount: '1',
   depositId: '1',
@@ -44,10 +44,10 @@ const DEFAULT_STATE: ShieldState = {
   noteMemo: ''
 };
 
-export function ShieldForm() {
+export function WrapForm() {
   const { connection } = useConnection();
   const wallet = useWallet();
-  const [state, setState] = useState<ShieldState>(DEFAULT_STATE);
+  const [state, setState] = useState<WrapState>(DEFAULT_STATE);
   const [isSubmitting, setSubmitting] = useState(false);
   const [result, setResult] = useState<string | null>(null);
   const [proof, setProof] = useState<ProofResponse | null>(null);
@@ -66,7 +66,7 @@ export function ShieldForm() {
     verifyingKeyHash: ''
   }), []);
 
-  const handleChange = (field: keyof ShieldState) => (event: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
+  const handleChange = (field: keyof WrapState) => (event: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
     const value = event.target.type === 'checkbox' ? (event.target as HTMLInputElement).checked : event.target.value;
     setState((prev) => ({ ...prev, [field]: value }));
   };
@@ -85,7 +85,7 @@ export function ShieldForm() {
 
     try {
       if (!wallet.publicKey) {
-        throw new Error('Connect your wallet before shielding.');
+        throw new Error('Connect your wallet before wrapping.');
       }
       const payload = {
         oldRoot: '0',
@@ -99,11 +99,11 @@ export function ShieldForm() {
 
       let proofResponse: ProofResponse | null = null;
       if (state.useProofRpc) {
-        proofResponse = await proofClient.requestProof('shield', payload);
+        proofResponse = await proofClient.requestProof('wrap', payload);
         setProof(proofResponse);
       }
 
-      const signature = await shieldSdk({
+      const signature = await wrapSdk({
         connection,
         wallet,
         originMint: state.originMint,
@@ -125,10 +125,10 @@ export function ShieldForm() {
     <Box as="section" bg="rgba(8,12,40,0.6)" p={8} rounded="2xl" boxShadow="xl" border="1px solid" borderColor="whiteAlpha.200">
       <form onSubmit={handleSubmit}>
         <Stack spacing={6}>
-          <Heading size="lg">Shield tokens</Heading>
+          <Heading size="lg">Wrap tokens into zTokens</Heading>
           <Text color="whiteAlpha.700">
-            Shielding moves public SPL tokens into the privacy pool. Your wallet crafts a deposit
-            note commitment and submits a Groth16 proof that authorises the Vault transfer.
+            Wrapping hands public SPL tokens to zPump so they emerge as zk-proof-backed zTokens. Your wallet crafts a wrap
+            note commitment and submits a Groth16 proof that authorises the vault transfer.
           </Text>
 
           <FormControl>
@@ -150,21 +150,21 @@ export function ShieldForm() {
           </FormControl>
 
           <FormControl isRequired>
-            <FormLabel>Deposit identifier</FormLabel>
+            <FormLabel>Wrap identifier</FormLabel>
             <Input value={state.depositId} onChange={handleChange('depositId')} bg="blackAlpha.500" />
-            <FormHelperText>Bind the shield proof to the pending Vault deposit.</FormHelperText>
+            <FormHelperText>Bind the wrap proof to the pending vault deposit.</FormHelperText>
           </FormControl>
 
           <FormControl>
             <FormLabel>Viewing key (optional)</FormLabel>
             <Input value={state.viewKey} onChange={handleChange('viewKey')} bg="blackAlpha.500" />
-            <FormHelperText>Provide a viewing key to indexers if you want to auto-sync notes.</FormHelperText>
+            <FormHelperText>Provide a viewing key to indexers if you want to auto-sync wrapped notes.</FormHelperText>
           </FormControl>
 
           <FormControl>
             <FormLabel>Blinding</FormLabel>
             <Input value={state.blinding} onChange={handleChange('blinding')} bg="blackAlpha.500" />
-            <FormHelperText>Use a unique random value to keep the note unlinkable.</FormHelperText>
+            <FormHelperText>Use a unique random value to keep the wrap note unlinkable.</FormHelperText>
           </FormControl>
 
           <FormControl>
@@ -179,15 +179,15 @@ export function ShieldForm() {
             <Switch id="useProofRpc" isChecked={state.useProofRpc} onChange={handleChange('useProofRpc')} colorScheme="teal" />
           </FormControl>
 
-          <Button type="submit" colorScheme="teal" size="lg" isLoading={isSubmitting} loadingText="Shielding">
-            Generate proof &amp; submit
+          <Button type="submit" colorScheme="teal" size="lg" isLoading={isSubmitting} loadingText="Wrapping">
+            Generate wrap proof &amp; submit
           </Button>
 
           {result && (
             <Alert status="success" variant="subtle">
               <AlertIcon />
               <AlertDescription>
-                Shield transaction sent. Signature <Text as="span" fontFamily="mono">{result}</Text>
+                Wrap transaction sent. Signature <Text as="span" fontFamily="mono">{result}</Text>
               </AlertDescription>
             </Alert>
           )}

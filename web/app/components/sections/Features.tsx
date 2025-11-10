@@ -5,21 +5,21 @@ import { LinkIcon, LockIcon, RadarIcon } from 'lucide-react';
 
 const featureList = [
   {
-    title: 'Shield with certainty',
+    title: 'Wrap with certainty',
     description:
-      'Vault custody and zero-knowledge commitments enforce the supply invariant. Every deposit is provable and auditable.',
+      'zPump vault custody and zero-knowledge commitments enforce the wrap invariant. Every conversion is provable and auditable.',
     icon: LockIcon
   },
   {
     title: 'Governance-gated hooks',
     description:
-      'Relayer-ready CPI rails exist but stay dormant until governance flips the switch. Extend without redeploying.',
+      'Relayer-ready CPI rails exist but stay dormant until governance flips the switch. Extend wrapped flows without redeploying.',
     icon: LinkIcon
   },
   {
     title: 'Frictionless UX',
     description:
-      'Client-side proving, WebGPU acceleration, and a calming interface make privacy feel invisible to the user.',
+      'Client-side proving, WebGPU acceleration, and a calming interface make zero-knowledge wrapping feel invisible to the user.',
     icon: RadarIcon
   }
 ];
@@ -28,10 +28,9 @@ export function Features() {
   return (
     <Stack id="vision" spacing={16} px={{ base: 4, md: 10 }} py={{ base: 12, md: 20 }}>
       <Stack spacing={4} maxW="xl">
-        <Heading size="2xl">Privacy that fades into the background.</Heading>
+        <Heading size="2xl">Zero-knowledge wrapping that feels native.</Heading>
         <Text fontSize="lg" color="whiteAlpha.700">
-          The Privacy Twin Factory turns any SPL mint into a shielded experience. Vaults, pools, and future relayers are
-          already aligned.
+          zPump transforms any SPL mint into a wrapped zToken flow. Vaults, pools, and future relayers are already aligned.
         </Text>
       </Stack>
       <Grid templateColumns={{ base: '1fr', md: 'repeat(3, 1fr)' }} gap={8}>

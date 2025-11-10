@@ -8,15 +8,15 @@ export function Hero() {
     <Flex direction={{ base: 'column', md: 'row' }} align="center" py={{ base: 16, md: 24 }} px={{ base: 4, md: 10 }} gap={16}>
       <Stack spacing={8} flex={1}>
         <Heading as="h1" size="3xl" lineHeight="1.1" textShadow="0 0 30px rgba(59,205,255,0.45)">
-          Privacy rails for every SPL asset.
+          Wrap any SPL asset into zTokens.
         </Heading>
         <Text fontSize="lg" color="whiteAlpha.700" maxW="lg">
-          Shield liquidity into cryptographic silence. Exit back to the public chain only when you want to be seen.
-          The Privacy Twin Factory enables private balances without redeploying your mint.
+          Hand zPump your liquidity and receive zk-proof-backed balances you control. Unwrap whenever you want
+          public supply again—no token redeploys, no new mint infra.
         </Text>
         <HStack spacing={4}>
           <Button as={NextLink} href="/exchange" size="lg" variant="glow">
-            Enter the Pool
+            Try the Wrapper
           </Button>
           <Button as={NextLink} href="#vision" size="lg" variant="outline">
             Explore the Spec
@@ -49,7 +49,7 @@ export function Hero() {
             ZERO-KNOWLEDGE DRIVEN
           </Text>
           <Heading as="h2" size="lg" mt={4}>
-            Shield. Transfer. Redeem.
+            Wrap. Prove. Unwrap.
           </Heading>
           <Text fontSize="md" color="whiteAlpha.700" mt={4}>
             Governance gated hooks keep relayers optional. Future proof from day one.
