@@ -2005,10 +2005,15 @@ fn validate_hook_keys(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use anchor_lang::prelude::Account;
-    use anchor_spl::token_interface::TokenAccount;
-    use solana_program::account_info::AccountInfo;
-    use spl_token::state::Mint as SplMintState;
+    use anchor_lang::prelude::InterfaceAccount;
+    use anchor_lang::solana_program::{
+        account_info::AccountInfo,
+        entrypoint::ProgramResult,
+        program_pack::Pack,
+    };
+    use anchor_spl::token::spl_token;
+    use anchor_spl::token::spl_token::state::{Account as SplAccountState, AccountState, Mint as SplMintState};
+    use anchor_spl::token_interface::{Mint as InterfaceMint, TokenAccount};
 
     #[test]
     fn strict_mode_requires_exact_accounts() {
@@ -2033,35 +2038,45 @@ mod tests {
         let pool_key = Pubkey::new_unique();
         let mut pool_state = dummy_pool_state(false);
         let mut ledger = dummy_note_ledger(pool_key);
-        let mut vault_account = TokenAccount::default();
+        let mut vault_harness =
+            TokenAccountHarness::new(pool_state.vault, pool_state.origin_mint);
 
         ledger
             .record_shield(400, random_bytes(1))
             .expect("shield should succeed");
-        vault_account.amount = 400;
+        vault_harness.set_amount(400);
 
-        validate_supply_components(&pool_state, &ledger, 0, u128::from(vault_account.amount))
-            .expect("initial shield balances must align");
-        enforce_supply_invariant(&pool_state, &ledger, &vault_account, None)
-            .expect("invariant should hold after shield");
+        {
+            let vault_account = vault_harness.interface_account();
+            validate_supply_components(&pool_state, &ledger, 0, u128::from(vault_account.amount))
+                .expect("initial shield balances must align");
+            enforce_supply_invariant(&pool_state, &ledger, &vault_account, None)
+                .expect("invariant should hold after shield");
+        }
 
         ledger
             .record_transfer(&[random_bytes(2)], &[random_bytes(3), random_bytes(4)])
             .expect("transfer accounting must succeed");
-        validate_supply_components(&pool_state, &ledger, 0, u128::from(vault_account.amount))
-            .expect("transfer should not disturb totals");
+        {
+            let vault_account = vault_harness.interface_account();
+            validate_supply_components(&pool_state, &ledger, 0, u128::from(vault_account.amount))
+                .expect("transfer should not disturb totals");
+        }
 
         ledger
             .record_unshield(155, &[random_bytes(5)], &[random_bytes(6)])
             .expect("unshield accounting must succeed");
         pool_state.protocol_fees = 5;
-        vault_account.amount = 250;
+        vault_harness.set_amount(250);
 
         assert_eq!(ledger.live_value, 245);
-        validate_supply_components(&pool_state, &ledger, 0, u128::from(vault_account.amount))
-            .expect("origin invariant must hold");
-        enforce_supply_invariant(&pool_state, &ledger, &vault_account, None)
-            .expect("origin invariant should pass");
+        {
+            let vault_account = vault_harness.interface_account();
+            validate_supply_components(&pool_state, &ledger, 0, u128::from(vault_account.amount))
+                .expect("origin invariant must hold");
+            enforce_supply_invariant(&pool_state, &ledger, &vault_account, None)
+                .expect("origin invariant should pass");
+        }
     }
 
     #[test]
@@ -2069,19 +2084,23 @@ mod tests {
         let pool_key = Pubkey::new_unique();
         let mut pool_state = dummy_pool_state(true);
         let mut ledger = dummy_note_ledger(pool_key);
-        let mut vault_account = TokenAccount::default();
+        let mut vault_harness =
+            TokenAccountHarness::new(pool_state.vault, pool_state.origin_mint);
 
         ledger
             .record_shield(720, random_bytes(7))
             .expect("shield should succeed");
-        vault_account.amount = 720;
+        vault_harness.set_amount(720);
 
         let mut twin_supply = 0u128;
         validate_supply_components(
             &pool_state,
             &ledger,
             twin_supply,
-            u128::from(vault_account.amount),
+            {
+                let vault_account = vault_harness.interface_account();
+                u128::from(vault_account.amount)
+            },
         )
         .expect("initial twin shield should balance");
 
@@ -2094,20 +2113,31 @@ mod tests {
             .expect("unshield accounting must succeed");
         pool_state.protocol_fees = 6;
         twin_supply += 300;
-
         assert_eq!(ledger.live_value, 414);
-        let harness = MintHarness::new(pool_state.twin_mint, twin_supply as u64, 6);
-        let mint_account = harness.account();
+        let mut mint_harness = MintHarness::new(pool_state.twin_mint, twin_supply as u64, 6);
+        mint_harness.set_supply(twin_supply as u64);
 
         validate_supply_components(
             &pool_state,
             &ledger,
             twin_supply,
-            u128::from(vault_account.amount),
+            {
+                let vault_account = vault_harness.interface_account();
+                u128::from(vault_account.amount)
+            },
         )
         .expect("twin invariant must hold");
-        enforce_supply_invariant(&pool_state, &ledger, &vault_account, Some(&mint_account))
+        {
+            let vault_account = vault_harness.interface_account();
+            let mint_account = mint_harness.interface_account();
+            enforce_supply_invariant(
+                &pool_state,
+                &ledger,
+                &vault_account,
+                Some(&mint_account),
+            )
             .expect("twin invariant should pass");
+        }
     }
 
     fn dummy_pool_state(twin_enabled: bool) -> PoolState {
@@ -2165,9 +2195,10 @@ mod tests {
     }
 
     struct MintHarness {
-        _lamports: &'static mut u64,
-        _data: &'static mut [u8],
-        account_info: AccountInfo<'static>,
+        account_info: &'static AccountInfo<'static>,
+        data_ptr: *mut u8,
+        data_len: usize,
+        state: SplMintState,
     }
 
     impl MintHarness {
@@ -2177,41 +2208,113 @@ mod tests {
             state.decimals = decimals;
             state.is_initialized = true;
 
-            let data_slice = {
-                let mut buffer = vec![0u8; SplMintState::LEN];
-                state.pack_into_slice(&mut buffer);
-                Box::leak(buffer.into_boxed_slice())
-            };
+            let mut buffer = vec![0u8; SplMintState::LEN];
+            SplMintState::pack(state, &mut buffer).expect("pack mint");
+            let data_box = buffer.into_boxed_slice();
+            let data_len = data_box.len();
+            let data_slice = Box::leak(data_box);
+            let data_ptr = data_slice.as_mut_ptr();
             let lamports = Box::leak(Box::new(0u64));
-            let account_info = AccountInfo::new(
-                &key,
+            let account_info_value = AccountInfo::new(
+                Box::leak(Box::new(key)),
                 false,
                 false,
                 lamports,
                 data_slice,
-                &spl_token::id(),
+                Box::leak(Box::new(spl_token::id())),
                 false,
                 0,
             );
+            let account_info = Box::leak(Box::new(account_info_value));
 
             Self {
-                _lamports: lamports,
-                _data: data_slice,
                 account_info,
+                data_ptr,
+                data_len,
+                state,
             }
         }
 
-        fn account(&self) -> Account<Mint> {
-            Account::try_from(&self.account_info).expect("mint account should deserialize")
+        fn set_supply(&mut self, supply: u64) {
+            self.state.supply = supply;
+        }
+
+        fn interface_account(&mut self) -> InterfaceAccount<'static, InterfaceMint> {
+            unsafe {
+                let data_slice =
+                    std::slice::from_raw_parts_mut(self.data_ptr, self.data_len);
+                SplMintState::pack(self.state.clone(), data_slice).expect("pack mint");
+            }
+            InterfaceAccount::try_from(self.account_info).expect("mint account should deserialize")
         }
     }
 
+    struct TokenAccountHarness {
+        account_info: &'static AccountInfo<'static>,
+        data_ptr: *mut u8,
+        data_len: usize,
+        state: SplAccountState,
+    }
+
+    impl TokenAccountHarness {
+        fn new(owner: Pubkey, mint: Pubkey) -> Self {
+            let mut state = SplAccountState::default();
+            state.owner = owner;
+            state.mint = mint;
+            state.state = AccountState::Initialized;
+
+            let mut buffer = vec![0u8; SplAccountState::LEN];
+            SplAccountState::pack(state, &mut buffer).expect("pack token account");
+            let data_box = buffer.into_boxed_slice();
+            let data_len = data_box.len();
+            let data_slice = Box::leak(data_box);
+            let data_ptr = data_slice.as_mut_ptr();
+            let lamports = Box::leak(Box::new(0u64));
+            let key = Box::leak(Box::new(Pubkey::new_unique()));
+            let account_info_value = AccountInfo::new(
+                key,
+                false,
+                false,
+                lamports,
+                data_slice,
+                Box::leak(Box::new(spl_token::id())),
+                false,
+                0,
+            );
+            let account_info = Box::leak(Box::new(account_info_value));
+
+            Self {
+                account_info,
+                data_ptr,
+                data_len,
+                state,
+            }
+        }
+
+        fn set_amount(&mut self, amount: u64) {
+            self.state.amount = amount;
+        }
+
+        fn interface_account(&mut self) -> InterfaceAccount<'static, TokenAccount> {
+            unsafe {
+                let data_slice =
+                    std::slice::from_raw_parts_mut(self.data_ptr, self.data_len);
+                SplAccountState::pack(self.state.clone(), data_slice)
+                    .expect("pack token account");
+            }
+            InterfaceAccount::try_from(self.account_info)
+                .expect("token account should deserialize")
+        }
+    }
+
+    #[cfg(feature = "integration-tests")]
     mod integration {
         use super::*;
         use anchor_lang::prelude::Rent;
         use anchor_lang::{
             prelude::AccountInfo, AccountDeserialize, InstructionData, ToAccountMetas,
         };
+        use std::result::Result as StdResult;
         use ark_bn254::{Bn254, Fr};
         use ark_groth16::{Groth16, Parameters};
         use ark_relations::r1cs::{
@@ -2966,7 +3069,7 @@ mod tests {
             context: &mut ProgramTestContext,
             instruction: Instruction,
             additional_signers: &[&Keypair],
-        ) -> Result<(), BanksClientError> {
+        ) -> StdResult<(), BanksClientError> {
             let mut signers = vec![&context.payer];
             signers.extend_from_slice(additional_signers);
 
@@ -3047,3 +3150,4 @@ mod tests {
         }
     }
 }
+
