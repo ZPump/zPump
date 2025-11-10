@@ -46,8 +46,18 @@ pub mod ptf_pool {
         pool_state.current_root = [0u8; 32];
         pool_state.total_shielded = 0;
         pool_state.protocol_fees = 0;
-        pool_state.hook_config = Pubkey::default();
+        pool_state.hook_config = ctx.accounts.hook_config.key();
         pool_state.hook_config_present = false;
+        pool_state.hook_config_bump = ctx.bumps.hook_config;
+
+        let hook_config = &mut ctx.accounts.hook_config;
+        hook_config.pool = pool_state.key();
+        hook_config.post_shield_program_id = Pubkey::default();
+        hook_config.post_unshield_program_id = Pubkey::default();
+        hook_config.required_accounts = [[0u8; 32]; HookConfig::MAX_REQUIRED_ACCOUNTS];
+        hook_config.required_accounts_len = 0;
+        hook_config.mode = HookAccountMode::Strict;
+        hook_config.bump = ctx.bumps.hook_config;
 
         if ctx.accounts.mint_mapping.has_ptkn {
             let twin_mint = ctx
@@ -131,14 +141,46 @@ pub mod ptf_pool {
         Ok(())
     }
 
-    pub fn set_hook_config(
-        ctx: Context<UpdateAuthority>,
-        hook_config: Pubkey,
-        enabled: bool,
-    ) -> Result<()> {
+    pub fn configure_hooks(ctx: Context<ConfigureHooks>, args: HookConfigArgs) -> Result<()> {
         let pool_state = &mut ctx.accounts.pool_state;
-        pool_state.hook_config = hook_config;
-        pool_state.hook_config_present = enabled;
+        require!(
+            pool_state
+                .features
+                .contains(FeatureFlags::from(FEATURE_HOOKS_ENABLED)),
+            PoolError::HooksDisabled,
+        );
+
+        let hook_config = &mut ctx.accounts.hook_config;
+        hook_config.pool = pool_state.key();
+        hook_config.post_shield_program_id = args.post_shield_program;
+        hook_config.post_unshield_program_id = args.post_unshield_program;
+        hook_config.mode = args.mode;
+        hook_config.required_accounts_len = 0;
+        hook_config.required_accounts = [[0u8; 32]; HookConfig::MAX_REQUIRED_ACCOUNTS];
+        for (idx, key) in args.required_accounts.iter().enumerate() {
+            require!(
+                idx < HookConfig::MAX_REQUIRED_ACCOUNTS,
+                PoolError::TooManyHookAccounts
+            );
+            hook_config.required_accounts[idx] = key.to_bytes();
+            hook_config.required_accounts_len += 1;
+        }
+
+        pool_state.hook_config = hook_config.key();
+        if args.post_shield_program == Pubkey::default()
+            && args.post_unshield_program == Pubkey::default()
+        {
+            pool_state.hook_config_present = false;
+        } else {
+            pool_state.hook_config_present = true;
+        }
+
+        emit!(HookConfigUpdated {
+            origin_mint: pool_state.origin_mint,
+            post_shield_program: args.post_shield_program,
+            post_unshield_program: args.post_unshield_program,
+            mode: args.mode as u8,
+        });
         Ok(())
     }
 
@@ -249,6 +291,17 @@ pub mod ptf_pool {
             amount_commit: args.amount_commit,
         });
 
+        if pool_state
+            .features
+            .contains(FeatureFlags::from(FEATURE_HOOKS_ENABLED))
+            && pool_state.hook_config_present
+        {
+            emit!(HookPostShield {
+                origin_mint: pool_state.origin_mint,
+                commitment: args.commitment,
+            });
+        }
+
         enforce_supply_invariant(
             pool_state,
             &ctx.accounts.vault_token_account,
@@ -282,6 +335,50 @@ pub mod ptf_pool {
             .nullifier_set
             .insert(nullifier)
             .map_err(|_| PoolError::NullifierReuse)?;
+        Ok(())
+    }
+
+    pub fn private_transfer(ctx: Context<PrivateTransfer>, args: TransferArgs) -> Result<()> {
+        let pool_state = &mut ctx.accounts.pool_state;
+        require!(
+            pool_state
+                .features
+                .contains(FeatureFlags::from(FEATURE_PRIVATE_TRANSFER_ENABLED)),
+            PoolError::FeatureDisabled,
+        );
+        require!(
+            pool_state.is_known_root(&args.old_root),
+            PoolError::UnknownRoot,
+        );
+
+        let cpi_accounts = ptf_verifier_groth16::cpi::accounts::VerifyGroth16 {
+            verifier_state: ctx.accounts.verifying_key.to_account_info(),
+        };
+        let cpi_ctx = CpiContext::new(
+            ctx.accounts.verifier_program.to_account_info(),
+            cpi_accounts,
+        );
+        ptf_verifier_groth16::cpi::verify_groth16(
+            cpi_ctx,
+            pool_state.verifying_key_id,
+            args.proof.clone(),
+            args.public_inputs.clone(),
+        )?;
+
+        for nullifier in &args.nullifiers {
+            ctx.accounts
+                .nullifier_set
+                .insert(*nullifier)
+                .map_err(|_| PoolError::NullifierReuse)?;
+        }
+
+        pool_state.push_root(args.new_root);
+
+        emit!(Transferred {
+            origin_mint: pool_state.origin_mint,
+            nullifiers: args.nullifiers.clone(),
+            new_root: args.new_root,
+        });
         Ok(())
     }
 }
@@ -540,6 +637,14 @@ pub struct InitializePool<'info> {
         space = NullifierSet::SPACE,
     )]
     pub nullifier_set: Account<'info, NullifierSet>,
+    #[account(
+        init,
+        payer = payer,
+        seeds = [seeds::HOOKS, origin_mint.key().as_ref()],
+        bump,
+        space = HookConfig::SPACE,
+    )]
+    pub hook_config: Account<'info, HookConfig>,
     #[account(mut)]
     pub vault_state: Account<'info, ptf_vault::VaultState>,
     pub origin_mint: Account<'info, Mint>,
@@ -611,6 +716,30 @@ pub struct Unshield<'info> {
     pub token_program: Program<'info, Token>,
 }
 
+#[derive(Accounts)]
+pub struct ConfigureHooks<'info> {
+    pub authority: Signer<'info>,
+    #[account(mut, seeds = [seeds::POOL, pool_state.origin_mint.as_ref()], bump = pool_state.bump, has_one = authority)]
+    pub pool_state: Account<'info, PoolState>,
+    #[account(
+        mut,
+        seeds = [seeds::HOOKS, pool_state.origin_mint.as_ref()],
+        bump = pool_state.hook_config_bump,
+    )]
+    pub hook_config: Account<'info, HookConfig>,
+}
+
+#[derive(Accounts)]
+pub struct PrivateTransfer<'info> {
+    #[account(mut, seeds = [seeds::POOL, pool_state.origin_mint.as_ref()], bump = pool_state.bump)]
+    pub pool_state: Account<'info, PoolState>,
+    #[account(mut, seeds = [seeds::NULLIFIERS, pool_state.origin_mint.as_ref()], bump = nullifier_set.bump)]
+    pub nullifier_set: Account<'info, NullifierSet>,
+    pub verifier_program: Program<'info, PtfVerifierGroth16>,
+    #[account(address = pool_state.verifying_key)]
+    pub verifying_key: Account<'info, VerifyingKeyAccount>,
+}
+
 #[derive(AnchorSerialize, AnchorDeserialize, Clone)]
 pub struct ShieldArgs {
     pub new_root: [u8; 32],
@@ -631,6 +760,23 @@ pub struct UnshieldArgs {
     pub public_inputs: Vec<u8>,
 }
 
+#[derive(AnchorSerialize, AnchorDeserialize, Clone)]
+pub struct TransferArgs {
+    pub old_root: [u8; 32],
+    pub new_root: [u8; 32],
+    pub nullifiers: Vec<[u8; 32]>,
+    pub proof: Vec<u8>,
+    pub public_inputs: Vec<u8>,
+}
+
+#[derive(AnchorSerialize, AnchorDeserialize, Clone)]
+pub struct HookConfigArgs {
+    pub post_shield_program: Pubkey,
+    pub post_unshield_program: Pubkey,
+    pub required_accounts: Vec<Pubkey>,
+    pub mode: HookAccountMode,
+}
+
 #[account]
 pub struct PoolState {
     pub authority: Pubkey,
@@ -648,6 +794,7 @@ pub struct PoolState {
     pub protocol_fees: u64,
     pub hook_config: Pubkey,
     pub hook_config_present: bool,
+    pub hook_config_bump: u8,
     pub bump: u8,
     pub twin_mint: Pubkey,
     pub twin_mint_enabled: bool,
@@ -656,7 +803,7 @@ pub struct PoolState {
 impl PoolState {
     pub const MAX_ROOTS: usize = 16;
     pub const SPACE: usize =
-        8 + (32 * 7) + 32 + 32 + (Self::MAX_ROOTS * 32) + 1 + 2 + 1 + 8 + 8 + 1 + 1 + 1 + 7;
+        8 + (32 * 7) + 32 + 32 + (Self::MAX_ROOTS * 32) + 1 + 2 + 1 + 8 + 8 + 1 + 1 + 1 + 1 + 7;
 
     pub fn push_root(&mut self, root: [u8; 32]) {
         if self.roots_len as usize >= Self::MAX_ROOTS {
@@ -721,6 +868,29 @@ impl NullifierSet {
     }
 }
 
+#[account]
+pub struct HookConfig {
+    pub pool: Pubkey,
+    pub post_shield_program_id: Pubkey,
+    pub post_unshield_program_id: Pubkey,
+    pub required_accounts: [[u8; 32]; Self::MAX_REQUIRED_ACCOUNTS],
+    pub required_accounts_len: u8,
+    pub mode: HookAccountMode,
+    pub bump: u8,
+}
+
+impl HookConfig {
+    pub const MAX_REQUIRED_ACCOUNTS: usize = 8;
+    pub const SPACE: usize = 8 + 32 + 32 + 32 + (Self::MAX_REQUIRED_ACCOUNTS * 32) + 1 + 1 + 1 + 6;
+
+    pub fn required_keys(&self) -> impl Iterator<Item = Pubkey> + '_ {
+        self.required_accounts
+            .iter()
+            .take(self.required_accounts_len as usize)
+            .map(|bytes| Pubkey::new_from_array(*bytes))
+    }
+}
+
 #[event]
 pub struct PoolInitialized {
     pub origin_mint: Pubkey,
@@ -762,6 +932,27 @@ pub struct HookPostUnshield {
 }
 
 #[event]
+pub struct HookPostShield {
+    pub origin_mint: Pubkey,
+    pub commitment: [u8; 32],
+}
+
+#[event]
+pub struct Transferred {
+    pub origin_mint: Pubkey,
+    pub nullifiers: Vec<[u8; 32]>,
+    pub new_root: [u8; 32],
+}
+
+#[event]
+pub struct HookConfigUpdated {
+    pub origin_mint: Pubkey,
+    pub post_shield_program: Pubkey,
+    pub post_unshield_program: Pubkey,
+    pub mode: u8,
+}
+
+#[event]
 pub struct InvariantOk {
     pub origin_mint: Pubkey,
     pub vault: Pubkey,
@@ -786,6 +977,12 @@ pub struct FeaturesUpdated {
 pub enum UnshieldMode {
     Origin = 0,
     Twin = 1,
+}
+
+#[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, PartialEq, Eq)]
+pub enum HookAccountMode {
+    Strict = 0,
+    Lenient = 1,
 }
 
 #[error_code]
@@ -824,4 +1021,8 @@ pub enum PoolError {
     TwinMintDecimalsMismatch,
     #[msg("supply invariant breached")]
     InvariantBreach,
+    #[msg("hooks feature disabled")]
+    HooksDisabled,
+    #[msg("too many hook accounts configured")]
+    TooManyHookAccounts,
 }
