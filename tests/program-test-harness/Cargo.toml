@@ -11,5 +11,4 @@ ptf-factory = { path = "../../programs/factory", features = ["no-entrypoint"] }
 
 [dev-dependencies]
 solana-program-test = "3.0.10"
-spl-token = { version = "9.0.0", features = ["no-entrypoint"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

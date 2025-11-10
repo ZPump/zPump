@@ -27,9 +27,27 @@ Each crate includes unit tests that exercise invariants, feature gating, and err
 
 ## Testing
 
-Run the full suite without accessing the public crates index:
+### Unit tests (Rust workspace)
+
+Run the entire workspace with offline crates.io usage:
 
 ```
 cargo test --offline
 ```
 
+### Program-test harness (Branch A loop)
+
+Token-CPI integration tests now live under `tests/program-test-harness`. They require the Anchor 0.32.1 toolchain to produce `.so` artifacts before running:
+
+```
+anchor build
+cargo test -p program-test-harness -- --ignored
+```
+
+For convenience, use the helper script:
+
+```
+scripts/run-local-ci.sh
+```
+
+The script enforces the `anchor build` → harness flow so local CI stays in sync with the spec. It intentionally fails if the Anchor CLI is not installed.
