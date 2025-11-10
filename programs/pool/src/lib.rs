@@ -2105,4 +2105,844 @@ mod tests {
             Account::try_from(&self.account_info).expect("mint account should deserialize")
         }
     }
+
+    mod integration {
+        use super::*;
+        use anchor_lang::prelude::Rent;
+        use anchor_lang::{
+            prelude::AccountInfo, AccountDeserialize, InstructionData, ToAccountMetas,
+        };
+        use ark_bn254::{Bn254, Fr};
+        use ark_groth16::{Groth16, Parameters};
+        use ark_relations::r1cs::{
+            ConstraintSynthesizer, ConstraintSystemRef, LinearCombination, SynthesisError, Variable,
+        };
+        use ark_serialize::CanonicalSerialize;
+        use ark_snark::SNARK;
+        use ark_std::rand::{rngs::StdRng, SeedableRng};
+        use ptf_common::{seeds, FEATURE_HOOKS_ENABLED, FEATURE_PRIVATE_TRANSFER_ENABLED};
+        use sha3::Keccak256;
+        use solana_program::instruction::AccountMeta;
+        use solana_program_test::{processor, BanksClientError, ProgramTest, ProgramTestContext};
+        use solana_sdk::{
+            instruction::Instruction,
+            signature::Keypair,
+            signer::Signer,
+            system_instruction, system_program,
+            transaction::{Transaction, TransactionError},
+        };
+        use spl_associated_token_account::{
+            get_associated_token_address, instruction as ata_instruction,
+        };
+        use spl_token::state::{Account as SplAccount, Mint as SplMint};
+
+        const IDENTITY_PUBLIC_INPUTS: usize = 16;
+
+        #[derive(Clone)]
+        struct IdentityCircuit {
+            public: Vec<Fr>,
+        }
+
+        impl ConstraintSynthesizer<Fr> for IdentityCircuit {
+            fn generate_constraints(
+                self,
+                cs: ConstraintSystemRef<Fr>,
+            ) -> std::result::Result<(), SynthesisError> {
+                for value in self.public.iter().copied() {
+                    let witness = cs.new_witness_variable(|| Ok(value))?;
+                    let public = cs.new_input_variable(|| Ok(value))?;
+                    cs.enforce_constraint(
+                        LinearCombination::from(witness),
+                        LinearCombination::from(Variable::One),
+                        LinearCombination::from(public),
+                    )?;
+                }
+                Ok(())
+            }
+        }
+
+        struct IdentityFixture {
+            params: Parameters<Bn254>,
+            verifying_key: Vec<u8>,
+            verifying_key_hash: [u8; 32],
+            verifying_key_id: [u8; 32],
+            seed: std::cell::RefCell<u64>,
+        }
+
+        impl IdentityFixture {
+            fn new() -> Self {
+                let mut rng = StdRng::seed_from_u64(7);
+                let params = Groth16::<Bn254>::generate_random_parameters_with_reduction(
+                    IdentityCircuit {
+                        public: vec![Fr::from(0u64); IDENTITY_PUBLIC_INPUTS],
+                    },
+                    &mut rng,
+                )
+                .expect("identity params");
+
+                let mut vk_bytes = Vec::new();
+                params
+                    .vk
+                    .serialize_uncompressed(&mut vk_bytes)
+                    .expect("serialize vk");
+
+                let mut hasher = Keccak256::new();
+                hasher.update(&vk_bytes);
+                let hash: [u8; 32] = hasher.finalize().into();
+
+                Self {
+                    params,
+                    verifying_key: vk_bytes,
+                    verifying_key_hash: hash,
+                    verifying_key_id: hash,
+                    seed: std::cell::RefCell::new(11),
+                }
+            }
+
+            fn proof(&self, public_inputs: &[Fr]) -> (Vec<u8>, Vec<u8>) {
+                assert_eq!(public_inputs.len(), IDENTITY_PUBLIC_INPUTS);
+                let mut seed = self.seed.borrow_mut();
+                let current = *seed;
+                *seed += 1;
+                drop(seed);
+                let mut rng = StdRng::seed_from_u64(current);
+                let proof = Groth16::<Bn254>::prove(
+                    &self.params,
+                    IdentityCircuit {
+                        public: public_inputs.to_vec(),
+                    },
+                    &mut rng,
+                )
+                .expect("prove identity");
+
+                let mut proof_bytes = Vec::new();
+                proof
+                    .serialize_uncompressed(&mut proof_bytes)
+                    .expect("serialize proof");
+
+                let mut public_bytes = Vec::new();
+                public_inputs
+                    .to_vec()
+                    .serialize_uncompressed(&mut public_bytes)
+                    .expect("serialize inputs");
+
+                (proof_bytes, public_bytes)
+            }
+        }
+
+        struct PoolSetup {
+            pool_state: Pubkey,
+            nullifier_set: Pubkey,
+            note_ledger: Pubkey,
+            commitment_tree: Pubkey,
+            hook_config: Pubkey,
+            vault_state: Pubkey,
+            vault_token_account: Pubkey,
+            depositor_token_account: Pubkey,
+            mint_mapping: Pubkey,
+            verifier_state: Pubkey,
+            origin_mint: Keypair,
+            vault_token: Keypair,
+            circuit_tag: [u8; 32],
+            version: u8,
+        }
+
+        mod hook_stub {
+            use super::*;
+
+            pub const ID: Pubkey = Pubkey::new_from_array([42u8; 32]);
+
+            pub fn process_instruction(
+                _program_id: &Pubkey,
+                _accounts: &[AccountInfo],
+                data: &[u8],
+            ) -> ProgramResult {
+                let _hook: ptf_common::hooks::HookInstruction =
+                    ptf_common::hooks::HookInstruction::try_from_slice(data)?;
+                Ok(())
+            }
+        }
+
+        #[tokio::test]
+        async fn shield_transfer_unshield_flow() {
+            let fixture = IdentityFixture::new();
+            let (mut context, setup) = setup_pool_test(&fixture).await;
+
+            let mut tree: CommitmentTree = fetch_account(&mut context, setup.commitment_tree).await;
+            let mut ledger: NoteLedger = fetch_account(&mut context, setup.note_ledger).await;
+            let mut pool_state: PoolState = fetch_account(&mut context, setup.pool_state).await;
+
+            let amount: u64 = 1_000_000;
+            let commitment = [1u8; 32];
+            let amount_commit = [2u8; 32];
+            let (new_root, _) = tree.append_note(commitment, amount_commit).unwrap();
+            ledger.record_shield(amount, amount_commit).unwrap();
+
+            let zeros = vec![Fr::from(0u64); IDENTITY_PUBLIC_INPUTS];
+            let (proof_bytes, public_inputs) = fixture.proof(&zeros);
+
+            let shield_ix = Instruction {
+                program_id: crate::id(),
+                accounts: crate::accounts::Shield {
+                    pool_state: setup.pool_state,
+                    hook_config: setup.hook_config,
+                    nullifier_set: setup.nullifier_set,
+                    commitment_tree: setup.commitment_tree,
+                    note_ledger: setup.note_ledger,
+                    vault_state: setup.vault_state,
+                    vault_token_account: setup.vault_token_account,
+                    depositor_token_account: setup.depositor_token_account,
+                    twin_mint: None,
+                    verifier_program: ptf_verifier_groth16::id(),
+                    verifying_key: setup.verifier_state,
+                    payer: context.payer.pubkey(),
+                    origin_mint: setup.origin_mint.pubkey(),
+                    vault_program: ptf_vault::id(),
+                    token_program: spl_token::id(),
+                }
+                .to_account_metas(None),
+                data: crate::instruction::Shield {
+                    args: ShieldArgs {
+                        new_root,
+                        commitment,
+                        amount_commit,
+                        amount,
+                        proof: proof_bytes.clone(),
+                        public_inputs: public_inputs.clone(),
+                    },
+                }
+                .data(),
+            };
+            process_instruction(&mut context, shield_ix, &[])
+                .await
+                .expect("shield");
+
+            let vault_after = get_token_balance(&mut context, setup.vault_token_account).await;
+            assert_eq!(vault_after, amount);
+
+            pool_state.push_root(new_root);
+
+            let set_features_ix = Instruction {
+                program_id: crate::id(),
+                accounts: crate::accounts::UpdateAuthority {
+                    authority: context.payer.pubkey(),
+                    pool_state: setup.pool_state,
+                    nullifier_set: setup.nullifier_set,
+                }
+                .to_account_metas(None),
+                data: crate::instruction::SetFeatures {
+                    features: FEATURE_PRIVATE_TRANSFER_ENABLED,
+                }
+                .data(),
+            };
+            process_instruction(&mut context, set_features_ix, &[])
+                .await
+                .expect("set features");
+
+            let old_root = tree.current_root;
+            let outputs = vec![[3u8; 32], [4u8; 32]];
+            let output_amounts = vec![[5u8; 32], [6u8; 32]];
+            let (transfer_root, _) = tree.append_many(&outputs, &output_amounts).unwrap();
+            ledger
+                .record_transfer(&[], &output_amounts)
+                .expect("ledger transfer");
+
+            let transfer_ix = Instruction {
+                program_id: crate::id(),
+                accounts: crate::accounts::PrivateTransfer {
+                    pool_state: setup.pool_state,
+                    nullifier_set: setup.nullifier_set,
+                    commitment_tree: setup.commitment_tree,
+                    note_ledger: setup.note_ledger,
+                    verifier_program: ptf_verifier_groth16::id(),
+                    verifying_key: setup.verifier_state,
+                }
+                .to_account_metas(None),
+                data: crate::instruction::PrivateTransfer {
+                    args: TransferArgs {
+                        old_root,
+                        new_root: transfer_root,
+                        nullifiers: vec![],
+                        output_commitments: outputs.clone(),
+                        output_amount_commitments: output_amounts.clone(),
+                        proof: proof_bytes.clone(),
+                        public_inputs: public_inputs.clone(),
+                    },
+                }
+                .data(),
+            };
+            process_instruction(&mut context, transfer_ix, &[])
+                .await
+                .expect("transfer");
+
+            pool_state.push_root(transfer_root);
+
+            let nullifier = [7u8; 32];
+            let unshield_outputs = vec![[8u8; 32]];
+            let unshield_amount_commits = vec![[9u8; 32]];
+            let (unshield_root, _) = tree
+                .append_many(&unshield_outputs, &unshield_amount_commits)
+                .unwrap();
+
+            let fee = pool_state.calculate_fee(amount).unwrap();
+            ledger
+                .record_unshield(amount + fee, &[nullifier], &unshield_amount_commits)
+                .expect("ledger unshield");
+
+            let mut public_fields = build_unshield_fields(
+                &pool_state,
+                setup.pool_state,
+                transfer_root,
+                unshield_root,
+                &[nullifier],
+                amount,
+                fee,
+                context.payer.pubkey(),
+                UnshieldMode::Origin,
+            );
+            while public_fields.len() < IDENTITY_PUBLIC_INPUTS {
+                public_fields.push(Fr::from(0u64));
+            }
+            let (unshield_proof, unshield_inputs) = fixture.proof(&public_fields);
+
+            let unshield_ix = Instruction {
+                program_id: crate::id(),
+                accounts: crate::accounts::Unshield {
+                    pool_state: setup.pool_state,
+                    hook_config: setup.hook_config,
+                    nullifier_set: setup.nullifier_set,
+                    commitment_tree: setup.commitment_tree,
+                    note_ledger: setup.note_ledger,
+                    verifier_program: ptf_verifier_groth16::id(),
+                    verifying_key: setup.verifier_state,
+                    vault_state: setup.vault_state,
+                    vault_token_account: setup.vault_token_account,
+                    destination_token_account: setup.depositor_token_account,
+                    twin_mint: None,
+                    vault_program: ptf_vault::id(),
+                    token_program: spl_token::id(),
+                }
+                .to_account_metas(None),
+                data: crate::instruction::UnshieldToOrigin {
+                    args: UnshieldArgs {
+                        old_root: transfer_root,
+                        new_root: unshield_root,
+                        nullifiers: vec![nullifier],
+                        output_commitments: unshield_outputs.clone(),
+                        output_amount_commitments: unshield_amount_commits.clone(),
+                        amount,
+                        proof: unshield_proof,
+                        public_inputs: unshield_inputs,
+                    },
+                }
+                .data(),
+            };
+            process_instruction(&mut context, unshield_ix, &[])
+                .await
+                .expect("unshield");
+
+            let vault_final = get_token_balance(&mut context, setup.vault_token_account).await;
+            assert_eq!(vault_final, 0);
+
+            let ledger_account: NoteLedger = fetch_account(&mut context, setup.note_ledger).await;
+            assert_eq!(ledger_account.live_value, 0);
+        }
+
+        #[tokio::test]
+        async fn governance_actions_and_hook_toggles() {
+            let fixture = IdentityFixture::new();
+            let (mut context, setup) = setup_pool_test(&fixture).await;
+
+            let configure_attempt = Instruction {
+                program_id: crate::id(),
+                accounts: crate::accounts::ConfigureHooks {
+                    authority: context.payer.pubkey(),
+                    pool_state: setup.pool_state,
+                    hook_config: setup.hook_config,
+                }
+                .to_account_metas(None),
+                data: crate::instruction::ConfigureHooks {
+                    args: HookConfigArgs {
+                        post_shield_program: hook_stub::ID,
+                        post_unshield_program: Pubkey::default(),
+                        required_accounts: vec![],
+                        mode: HookAccountMode::Strict,
+                    },
+                }
+                .data(),
+            };
+
+            let err = process_instruction(&mut context, configure_attempt, &[])
+                .await
+                .unwrap_err();
+            assert_anchor_error(err, PoolError::HooksDisabled);
+
+            let enable_hooks_ix = Instruction {
+                program_id: crate::id(),
+                accounts: crate::accounts::UpdateAuthority {
+                    authority: context.payer.pubkey(),
+                    pool_state: setup.pool_state,
+                    nullifier_set: setup.nullifier_set,
+                }
+                .to_account_metas(None),
+                data: crate::instruction::SetFeatures {
+                    features: FEATURE_PRIVATE_TRANSFER_ENABLED | FEATURE_HOOKS_ENABLED,
+                }
+                .data(),
+            };
+            process_instruction(&mut context, enable_hooks_ix, &[])
+                .await
+                .expect("enable hooks");
+
+            let required = Keypair::new();
+            let create_required = system_instruction::create_account(
+                &context.payer.pubkey(),
+                &required.pubkey(),
+                Rent::default().minimum_balance(0),
+                0,
+                &hook_stub::ID,
+            );
+            process_instruction(&mut context, create_required, &[&required])
+                .await
+                .expect("create hook acc");
+
+            let configure_hooks_ix = Instruction {
+                program_id: crate::id(),
+                accounts: crate::accounts::ConfigureHooks {
+                    authority: context.payer.pubkey(),
+                    pool_state: setup.pool_state,
+                    hook_config: setup.hook_config,
+                }
+                .to_account_metas(None),
+                data: crate::instruction::ConfigureHooks {
+                    args: HookConfigArgs {
+                        post_shield_program: hook_stub::ID,
+                        post_unshield_program: hook_stub::ID,
+                        required_accounts: vec![required.pubkey()],
+                        mode: HookAccountMode::Strict,
+                    },
+                }
+                .data(),
+            };
+
+            let mut metas = configure_hooks_ix.accounts.clone();
+            metas.push(AccountMeta::new_readonly(required.pubkey(), false));
+            let configure_with_remaining = Instruction {
+                program_id: configure_hooks_ix.program_id,
+                accounts: metas,
+                data: configure_hooks_ix.data.clone(),
+            };
+            process_instruction(&mut context, configure_with_remaining, &[&required])
+                .await
+                .expect("configure hooks");
+
+            let mut tree: CommitmentTree = fetch_account(&mut context, setup.commitment_tree).await;
+            let commitment = [11u8; 32];
+            let amount_commit = [12u8; 32];
+            let (new_root, _) = tree.append_note(commitment, amount_commit).unwrap();
+            let (proof_bytes, public_inputs) =
+                fixture.proof(&vec![Fr::from(0u64); IDENTITY_PUBLIC_INPUTS]);
+
+            let mut accounts = crate::accounts::Shield {
+                pool_state: setup.pool_state,
+                hook_config: setup.hook_config,
+                nullifier_set: setup.nullifier_set,
+                commitment_tree: setup.commitment_tree,
+                note_ledger: setup.note_ledger,
+                vault_state: setup.vault_state,
+                vault_token_account: setup.vault_token_account,
+                depositor_token_account: setup.depositor_token_account,
+                twin_mint: None,
+                verifier_program: ptf_verifier_groth16::id(),
+                verifying_key: setup.verifier_state,
+                payer: context.payer.pubkey(),
+                origin_mint: setup.origin_mint.pubkey(),
+                vault_program: ptf_vault::id(),
+                token_program: spl_token::id(),
+            }
+            .to_account_metas(None);
+            accounts.push(AccountMeta::new_readonly(required.pubkey(), false));
+
+            let shield_with_hook = Instruction {
+                program_id: crate::id(),
+                accounts,
+                data: crate::instruction::Shield {
+                    args: ShieldArgs {
+                        new_root,
+                        commitment,
+                        amount_commit,
+                        amount: 10,
+                        proof: proof_bytes,
+                        public_inputs,
+                    },
+                }
+                .data(),
+            };
+            process_instruction(&mut context, shield_with_hook, &[])
+                .await
+                .expect("shield with hook");
+
+            let pool_state_after: PoolState = fetch_account(&mut context, setup.pool_state).await;
+            assert!(pool_state_after
+                .features
+                .contains(FeatureFlags::from(FEATURE_HOOKS_ENABLED)));
+        }
+
+        async fn setup_pool_test(fixture: &IdentityFixture) -> (ProgramTestContext, PoolSetup) {
+            let mut program_test =
+                ProgramTest::new("ptf_pool", crate::id(), processor!(ptf_pool::entry));
+            program_test.add_program("ptf_vault", ptf_vault::id(), processor!(ptf_vault::entry));
+            program_test.add_program(
+                "ptf_verifier_groth16",
+                ptf_verifier_groth16::id(),
+                processor!(ptf_verifier_groth16::entry),
+            );
+            program_test.add_program(
+                "ptf_factory",
+                ptf_factory::id(),
+                processor!(ptf_factory::entry),
+            );
+            program_test.add_program("hook_stub", hook_stub::ID, hook_stub::process_instruction);
+
+            let mut context = program_test.start_with_context().await;
+            context.last_blockhash = context.banks_client.get_latest_blockhash().await.unwrap();
+
+            let origin_mint = Keypair::new();
+            let rent = Rent::default();
+            let create_mint = system_instruction::create_account(
+                &context.payer.pubkey(),
+                &origin_mint.pubkey(),
+                rent.minimum_balance(SplMint::LEN),
+                SplMint::LEN as u64,
+                &spl_token::id(),
+            );
+            let init_mint = spl_token::instruction::initialize_mint(
+                &spl_token::id(),
+                &origin_mint.pubkey(),
+                &context.payer.pubkey(),
+                None,
+                6,
+            )
+            .unwrap();
+            process_instruction(&mut context, create_mint, &[&origin_mint])
+                .await
+                .expect("create mint");
+            process_instruction(&mut context, init_mint, &[])
+                .await
+                .expect("init mint");
+
+            let ata_ix = ata_instruction::create_associated_token_account(
+                &context.payer.pubkey(),
+                &context.payer.pubkey(),
+                &origin_mint.pubkey(),
+                &spl_token::id(),
+            );
+            process_instruction(&mut context, ata_ix, &[])
+                .await
+                .expect("create ata");
+            let depositor_token_account =
+                get_associated_token_address(&context.payer.pubkey(), &origin_mint.pubkey());
+
+            let mint_to = spl_token::instruction::mint_to(
+                &spl_token::id(),
+                &origin_mint.pubkey(),
+                &depositor_token_account,
+                &context.payer.pubkey(),
+                &[],
+                5_000_000,
+            )
+            .unwrap();
+            process_instruction(&mut context, mint_to, &[])
+                .await
+                .expect("mint tokens");
+
+            let circuit_tag = [5u8; 32];
+            let version = 1u8;
+            let (verifier_state, _) = Pubkey::find_program_address(
+                &[
+                    seeds::VERIFIER,
+                    &circuit_tag,
+                    &fixture.verifying_key_id,
+                    &[version],
+                ],
+                &ptf_verifier_groth16::id(),
+            );
+
+            let init_verifier = Instruction {
+                program_id: ptf_verifier_groth16::id(),
+                accounts: ptf_verifier_groth16::accounts::InitializeVerifyingKey {
+                    verifier_state,
+                    authority: context.payer.pubkey(),
+                    payer: context.payer.pubkey(),
+                    system_program: system_program::id(),
+                }
+                .to_account_metas(None),
+                data: ptf_verifier_groth16::instruction::InitializeVerifyingKey {
+                    circuit_tag,
+                    verifying_key_id: fixture.verifying_key_id,
+                    hash: fixture.verifying_key_hash,
+                    version,
+                    verifying_key_data: fixture.verifying_key.clone(),
+                }
+                .data(),
+            };
+            process_instruction(&mut context, init_verifier, &[])
+                .await
+                .expect("init verifier");
+
+            let (factory_state, _) = Pubkey::find_program_address(
+                &[seeds::FACTORY, ptf_factory::id().as_ref()],
+                &ptf_factory::id(),
+            );
+            let (mint_mapping, _) = Pubkey::find_program_address(
+                &[seeds::MINT_MAPPING, origin_mint.pubkey().as_ref()],
+                &ptf_factory::id(),
+            );
+
+            let init_factory = Instruction {
+                program_id: ptf_factory::id(),
+                accounts: ptf_factory::accounts::InitializeFactory {
+                    factory_state,
+                    authority: context.payer.pubkey(),
+                    payer: context.payer.pubkey(),
+                    system_program: system_program::id(),
+                }
+                .to_account_metas(None),
+                data: ptf_factory::instruction::InitializeFactory {
+                    authority: context.payer.pubkey(),
+                    default_fee_bps: 5,
+                    timelock_seconds: 0,
+                }
+                .data(),
+            };
+            process_instruction(&mut context, init_factory, &[])
+                .await
+                .expect("init factory");
+
+            let register_mint = Instruction {
+                program_id: ptf_factory::id(),
+                accounts: ptf_factory::accounts::RegisterMint {
+                    factory_state,
+                    authority: context.payer.pubkey(),
+                    mint_mapping,
+                    origin_mint: origin_mint.pubkey(),
+                    ptkn_mint: None,
+                    payer: context.payer.pubkey(),
+                    system_program: system_program::id(),
+                }
+                .to_account_metas(None),
+                data: ptf_factory::instruction::RegisterMint {
+                    decimals: 6,
+                    enable_ptkn: false,
+                    feature_flags: None,
+                    fee_bps_override: None,
+                }
+                .data(),
+            };
+            process_instruction(&mut context, register_mint, &[])
+                .await
+                .expect("register mint");
+
+            let (pool_state, _) = Pubkey::find_program_address(
+                &[seeds::POOL, origin_mint.pubkey().as_ref()],
+                &crate::id(),
+            );
+            let (vault_state, _) = Pubkey::find_program_address(
+                &[seeds::VAULT, origin_mint.pubkey().as_ref()],
+                &ptf_vault::id(),
+            );
+
+            let init_vault = Instruction {
+                program_id: ptf_vault::id(),
+                accounts: ptf_vault::accounts::InitializeVault {
+                    vault_state,
+                    origin_mint: origin_mint.pubkey(),
+                    payer: context.payer.pubkey(),
+                    system_program: system_program::id(),
+                }
+                .to_account_metas(None),
+                data: ptf_vault::instruction::InitializeVault {
+                    pool_authority: pool_state,
+                }
+                .data(),
+            };
+            process_instruction(&mut context, init_vault, &[])
+                .await
+                .expect("init vault");
+
+            let vault_token = Keypair::new();
+            let create_vault_token = system_instruction::create_account(
+                &context.payer.pubkey(),
+                &vault_token.pubkey(),
+                rent.minimum_balance(SplAccount::LEN),
+                SplAccount::LEN as u64,
+                &spl_token::id(),
+            );
+            let init_vault_token = spl_token::instruction::initialize_account(
+                &spl_token::id(),
+                &vault_token.pubkey(),
+                &origin_mint.pubkey(),
+                &vault_state,
+            )
+            .unwrap();
+            process_instruction(&mut context, create_vault_token, &[&vault_token])
+                .await
+                .expect("create vault token");
+            process_instruction(&mut context, init_vault_token, &[])
+                .await
+                .expect("init vault token");
+
+            let (nullifier_set, _) = Pubkey::find_program_address(
+                &[seeds::NULLIFIERS, origin_mint.pubkey().as_ref()],
+                &crate::id(),
+            );
+            let (note_ledger, _) = Pubkey::find_program_address(
+                &[seeds::NOTES, origin_mint.pubkey().as_ref()],
+                &crate::id(),
+            );
+            let (commitment_tree, _) = Pubkey::find_program_address(
+                &[seeds::TREE, origin_mint.pubkey().as_ref()],
+                &crate::id(),
+            );
+            let (hook_config, _) = Pubkey::find_program_address(
+                &[seeds::HOOKS, origin_mint.pubkey().as_ref()],
+                &crate::id(),
+            );
+
+            let init_pool = Instruction {
+                program_id: crate::id(),
+                accounts: crate::accounts::InitializePool {
+                    authority: context.payer.pubkey(),
+                    pool_state,
+                    nullifier_set,
+                    note_ledger,
+                    commitment_tree,
+                    hook_config,
+                    vault_state,
+                    origin_mint: origin_mint.pubkey(),
+                    mint_mapping,
+                    twin_mint: None,
+                    verifier_program: ptf_verifier_groth16::id(),
+                    verifying_key: verifier_state,
+                    payer: context.payer.pubkey(),
+                    system_program: system_program::id(),
+                    token_program: spl_token::id(),
+                }
+                .to_account_metas(None),
+                data: crate::instruction::InitializePool {
+                    fee_bps: 5,
+                    features: 0,
+                }
+                .data(),
+            };
+            process_instruction(&mut context, init_pool, &[])
+                .await
+                .expect("init pool");
+
+            context.last_blockhash = context.banks_client.get_latest_blockhash().await.unwrap();
+
+            let setup = PoolSetup {
+                pool_state,
+                nullifier_set,
+                note_ledger,
+                commitment_tree,
+                hook_config,
+                vault_state,
+                vault_token_account: vault_token.pubkey(),
+                depositor_token_account,
+                mint_mapping,
+                verifier_state,
+                origin_mint,
+                vault_token,
+                circuit_tag,
+                version,
+            };
+
+            (context, setup)
+        }
+
+        async fn process_instruction(
+            context: &mut ProgramTestContext,
+            instruction: Instruction,
+            additional_signers: &[&Keypair],
+        ) -> Result<(), BanksClientError> {
+            let mut signers = vec![&context.payer];
+            signers.extend_from_slice(additional_signers);
+
+            let mut transaction =
+                Transaction::new_with_payer(&[instruction], Some(&context.payer.pubkey()));
+            transaction.sign(&signers, context.last_blockhash);
+            let result = context.banks_client.process_transaction(transaction).await;
+            if result.is_ok() {
+                context.last_blockhash = context.banks_client.get_latest_blockhash().await.unwrap();
+            }
+            result
+        }
+
+        async fn fetch_account<T: AccountDeserialize>(
+            context: &mut ProgramTestContext,
+            address: Pubkey,
+        ) -> T {
+            let account = context
+                .banks_client
+                .get_account(address)
+                .await
+                .unwrap()
+                .unwrap();
+            let mut data: &[u8] = &account.data;
+            T::try_deserialize(&mut data).unwrap()
+        }
+
+        async fn get_token_balance(context: &mut ProgramTestContext, address: Pubkey) -> u64 {
+            let account = context
+                .banks_client
+                .get_account(address)
+                .await
+                .unwrap()
+                .unwrap();
+            let token = SplAccount::unpack(&account.data).unwrap();
+            token.amount
+        }
+
+        fn build_unshield_fields(
+            pool_state: &PoolState,
+            pool_state_key: Pubkey,
+            old_root: [u8; 32],
+            new_root: [u8; 32],
+            nullifiers: &[[u8; 32]],
+            amount: u64,
+            fee: u64,
+            destination: Pubkey,
+            mode: UnshieldMode,
+        ) -> Vec<Fr> {
+            let mut fields = Vec::new();
+            fields.push(Fr::from_le_bytes_mod_order(&old_root));
+            fields.push(Fr::from_le_bytes_mod_order(&new_root));
+            for nullifier in nullifiers {
+                fields.push(Fr::from_le_bytes_mod_order(nullifier));
+            }
+            fields.push(Fr::from_le_bytes_mod_order(&u64_to_field_bytes(amount)));
+            fields.push(Fr::from_le_bytes_mod_order(&u64_to_field_bytes(fee)));
+            fields.push(Fr::from_le_bytes_mod_order(&destination.to_bytes()));
+            fields.push(Fr::from_le_bytes_mod_order(&u8_to_field_bytes(mode as u8)));
+            fields.push(Fr::from_le_bytes_mod_order(
+                &pool_state.origin_mint.to_bytes(),
+            ));
+            fields.push(Fr::from_le_bytes_mod_order(&pool_state_key.to_bytes()));
+            fields
+        }
+
+        fn assert_anchor_error(err: BanksClientError, expected: PoolError) {
+            match err {
+                BanksClientError::TransactionError(TransactionError::InstructionError(
+                    _,
+                    solana_sdk::instruction::InstructionError::Custom(code),
+                )) => {
+                    let expected_code: u32 = expected.into();
+                    assert_eq!(code, expected_code);
+                }
+                other => panic!("unexpected error: {:?}", other),
+            }
+        }
+    }
 }
