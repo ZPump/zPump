@@ -232,6 +232,9 @@ mod tests {
     use ark_serialize::CanonicalSerialize;
     use ark_snark::SNARK;
     use ark_std::rand::{rngs::StdRng, SeedableRng};
+    use sha3::{Digest, Keccak256};
+
+    const IDENTITY_PUBLIC_INPUTS: usize = 16;
 
     #[derive(Clone)]
     struct SquareCircuit {
@@ -262,6 +265,38 @@ mod tests {
 
             Ok(())
         }
+    }
+
+    #[derive(Clone)]
+    struct IdentityCircuit {
+        public: Vec<Fr>,
+    }
+
+    impl ConstraintSynthesizer<Fr> for IdentityCircuit {
+        fn generate_constraints(
+            self,
+            cs: ConstraintSystemRef<Fr>,
+        ) -> std::result::Result<(), SynthesisError> {
+            for value in self.public.iter().copied() {
+                let witness = cs.new_witness_variable(|| Ok(value))?;
+                let public = cs.new_input_variable(|| Ok(value))?;
+                cs.enforce_constraint(
+                    LinearCombination::from(witness),
+                    LinearCombination::from(Variable::One),
+                    LinearCombination::from(public),
+                )?;
+            }
+            Ok(())
+        }
+    }
+
+    fn serialize_public_inputs(values: &[Fr]) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        values
+            .to_vec()
+            .serialize_uncompressed(&mut bytes)
+            .expect("serialize inputs");
+        bytes
     }
 
     #[test]
@@ -338,6 +373,144 @@ mod tests {
             .expect("serialize inputs");
 
         assert!(!groth16_verify(truncated_vk, &[], &public_bytes));
+    }
+
+    #[test]
+    fn groth16_host_fallback_detects_mismatched_vk_and_proof() {
+        let mut rng = StdRng::seed_from_u64(44);
+        let identity_params =
+            Groth16::<ark_bn254::Bn254>::generate_random_parameters_with_reduction(
+                IdentityCircuit {
+                    public: vec![Fr::from(0u64); IDENTITY_PUBLIC_INPUTS],
+                },
+                &mut rng,
+            )
+            .expect("parameters generation");
+
+        let mut vk_identity = Vec::new();
+        identity_params
+            .vk
+            .serialize_uncompressed(&mut vk_identity)
+            .expect("serialize vk");
+
+        let mut square_rng = StdRng::seed_from_u64(45);
+        let square_params = Groth16::<ark_bn254::Bn254>::generate_random_parameters_with_reduction(
+            SquareCircuit {
+                x: Fr::from(5u64),
+                y: Fr::from(25u64),
+            },
+            &mut square_rng,
+        )
+        .expect("square params");
+
+        let proof = Groth16::<ark_bn254::Bn254>::prove(
+            &square_params,
+            SquareCircuit {
+                x: Fr::from(5u64),
+                y: Fr::from(25u64),
+            },
+            &mut square_rng,
+        )
+        .expect("prove square");
+
+        let mut proof_bytes = Vec::new();
+        proof
+            .serialize_uncompressed(&mut proof_bytes)
+            .expect("serialize proof");
+
+        let public_inputs = vec![Fr::from(25u64)];
+        let public_bytes = serialize_public_inputs(&public_inputs);
+
+        assert!(!groth16_verify(&vk_identity, &proof_bytes, &public_bytes));
+    }
+
+    #[test]
+    fn groth16_host_fallback_detects_public_input_mismatch() {
+        let mut rng = StdRng::seed_from_u64(46);
+        let params = Groth16::<ark_bn254::Bn254>::generate_random_parameters_with_reduction(
+            IdentityCircuit {
+                public: vec![Fr::from(0u64); IDENTITY_PUBLIC_INPUTS],
+            },
+            &mut rng,
+        )
+        .expect("identity params");
+
+        let mut vk_bytes = Vec::new();
+        params
+            .vk
+            .serialize_uncompressed(&mut vk_bytes)
+            .expect("serialize vk");
+
+        let proof_inputs: Vec<Fr> = (0..IDENTITY_PUBLIC_INPUTS)
+            .map(|idx| Fr::from(idx as u64 + 1))
+            .collect();
+        let proof = Groth16::<ark_bn254::Bn254>::prove(
+            &params,
+            IdentityCircuit {
+                public: proof_inputs.clone(),
+            },
+            &mut rng,
+        )
+        .expect("prove identity");
+
+        let mut proof_bytes = Vec::new();
+        proof
+            .serialize_uncompressed(&mut proof_bytes)
+            .expect("serialize proof");
+
+        let public_bytes = serialize_public_inputs(&proof_inputs);
+        assert!(groth16_verify(&vk_bytes, &proof_bytes, &public_bytes));
+
+        let mut tampered_inputs = proof_inputs.clone();
+        tampered_inputs[0] = Fr::from(99u64);
+        let tampered_bytes = serialize_public_inputs(&tampered_inputs);
+        assert!(!groth16_verify(&vk_bytes, &proof_bytes, &tampered_bytes));
+    }
+
+    #[test]
+    fn verify_account_hash_detects_tampering() {
+        let mut rng = StdRng::seed_from_u64(47);
+        let params = Groth16::<ark_bn254::Bn254>::generate_random_parameters_with_reduction(
+            IdentityCircuit {
+                public: vec![Fr::from(0u64); IDENTITY_PUBLIC_INPUTS],
+            },
+            &mut rng,
+        )
+        .expect("identity params");
+
+        let mut vk_bytes = Vec::new();
+        params
+            .vk
+            .serialize_uncompressed(&mut vk_bytes)
+            .expect("serialize vk");
+
+        let mut hasher = Keccak256::new();
+        hasher.update(&vk_bytes);
+        let hash: [u8; 32] = hasher.finalize().into();
+
+        let account = VerifyingKeyAccount {
+            authority: Pubkey::default(),
+            circuit_tag: [1u8; 32],
+            verifying_key_id: hash,
+            hash,
+            bump: 255,
+            version: 1,
+            verifying_key: vk_bytes.clone(),
+        };
+
+        assert!(verify_account_hash(&account));
+
+        let mut tampered = VerifyingKeyAccount {
+            authority: account.authority,
+            circuit_tag: account.circuit_tag,
+            verifying_key_id: account.verifying_key_id,
+            hash: account.hash,
+            bump: account.bump,
+            version: account.version,
+            verifying_key: account.verifying_key.clone(),
+        };
+        tampered.verifying_key[0] ^= 0xFF;
+        assert!(!verify_account_hash(&tampered));
     }
 }
 

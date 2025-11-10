@@ -7,7 +7,8 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "test": "jest"
+    "test": "jest",
+    "test:e2e": "cypress run"
   },
   "dependencies": {
     "@chakra-ui/react": "^2.8.2",
@@ -39,6 +40,7 @@
     "jest-environment-jsdom": "^29.7.0",
     "ts-jest": "^29.1.2",
     "ts-node": "^10.9.2",
-    "typescript": "5.5.4"
+    "typescript": "5.5.4",
+    "cypress": "^13.13.2"
   }
 }
