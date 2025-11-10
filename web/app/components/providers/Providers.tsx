@@ -1,6 +1,6 @@
 'use client';
 
-import { ChakraProvider } from '@chakra-ui/react';
+import { ChakraProvider, ColorModeScript } from '@chakra-ui/react';
 import { ReactNode } from 'react';
 import { WalletProvider } from './WalletProvider';
 import { theme } from '../../theme';
@@ -12,6 +12,7 @@ interface ProvidersProps {
 export function Providers({ children }: ProvidersProps) {
   return (
     <ChakraProvider theme={theme}>
+      <ColorModeScript initialColorMode={theme.config.initialColorMode} />
       <WalletProvider>{children}</WalletProvider>
     </ChakraProvider>
   );
