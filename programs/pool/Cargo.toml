@@ -11,7 +11,7 @@ name = "ptf_pool"
 anchor-lang = { workspace = true }
 anchor-spl = { workspace = true }
 ptf-common = { path = "../common" }
-ptf-factory = { path = "../factory", features = ["no-entrypoint"] }
+ptf-factory = { path = "../factory", features = ["no-entrypoint", "cpi"] }
 ptf-vault = { path = "../vault", features = ["no-entrypoint", "cpi"] }
 ptf-verifier-groth16 = { path = "../verifier-groth16", features = ["no-entrypoint", "cpi"] }
 thiserror = { workspace = true }

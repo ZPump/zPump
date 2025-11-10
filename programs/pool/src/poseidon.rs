@@ -1,5 +1,5 @@
 use ark_bn254::Fr;
-use ark_ff::{BigInteger256, Field};
+use ark_ff::{BigInteger256, Field, Zero};
 
 const WIDTH: usize = 3;
 const FULL_ROUNDS: usize = 8;

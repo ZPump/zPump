@@ -4,7 +4,8 @@ members = [
     "programs/factory",
     "programs/vault",
     "programs/pool",
-    "programs/verifier-groth16"
+    "programs/verifier-groth16",
+    "tests/program-test-harness"
 ]
 resolver = "2"
 

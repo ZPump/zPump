@@ -206,7 +206,7 @@ pub mod ptf_pool {
         ctx: Context<'_, '_, '_, 'info, Shield<'info>>,
         args: ShieldArgs,
     ) -> Result<()> {
-        let (origin_mint, hook_enabled, pool_key, pool_bump) = {
+        let (origin_mint, note_index, hook_enabled, pool_key, pool_bump) = {
             let pool_state = &mut ctx.accounts.pool_state;
             require_keys_eq!(
                 ctx.accounts.verifier_program.key(),
@@ -337,9 +337,9 @@ pub mod ptf_pool {
             let pool_key = pool_state.key();
             let pool_bump = pool_state.bump;
 
-            (origin_mint, hook_enabled, pool_key, pool_bump)
+            let origin_mint = pool_state.origin_mint;
+            (origin_mint, note_index, hook_enabled, pool_key, pool_bump)
         };
-
         if hook_enabled {
             let hook_config_account = &ctx.accounts.hook_config;
             let required_accounts: Vec<Pubkey> = hook_config_account.required_keys().collect();
@@ -628,7 +628,15 @@ fn process_unshield<'info>(
         .amount
         .checked_add(fee)
         .ok_or(PoolError::AmountOverflow)?;
-    validate_unshield_public_inputs(pool_state, &args, mode, destination_owner, fee)?;
+    let pool_account_key = pool_state.key();
+    validate_unshield_public_inputs(
+        pool_state,
+        pool_account_key,
+        &args,
+        mode,
+        destination_owner,
+        fee,
+    )?;
     note_ledger.ensure_capacity(total_spent)?;
 
     for nullifier in &args.nullifiers {
@@ -719,15 +727,16 @@ fn process_unshield<'info>(
             let factory_accounts = ptf_factory::cpi::accounts::MintPtkn {
                 factory_state: ctx.accounts.factory_state.to_account_info(),
                 mint_mapping: ctx.accounts.mint_mapping.to_account_info(),
-                pool_authority: ctx.accounts.pool_state.to_account_info(),
+                pool_authority: pool_state.to_account_info(),
                 ptkn_mint: twin_mint.to_account_info(),
                 destination_token_account: ctx.accounts.destination_token_account.to_account_info(),
                 token_program: ctx.accounts.token_program.to_account_info(),
             };
+            let signer = &[&signer_seeds[..]];
             let mint_ctx = CpiContext::new_with_signer(
                 ctx.accounts.factory_program.to_account_info(),
                 factory_accounts,
-                &[&signer_seeds],
+                signer,
             );
             ptf_factory::cpi::mint_ptkn(mint_ctx, args.amount)?;
             emit!(PTFUnshieldPMint {
@@ -758,7 +767,7 @@ fn process_unshield<'info>(
             let mut infos = Vec::with_capacity(2 + ctx.remaining_accounts.len());
 
             let hook_config_info = ctx.accounts.hook_config.to_account_info();
-            let pool_info = ctx.accounts.pool_state.to_account_info();
+            let pool_info = pool_state.to_account_info();
             metas.push(AccountMeta::new_readonly(hook_config_info.key(), false));
             metas.push(AccountMeta::new_readonly(pool_info.key(), false));
             infos.push(hook_config_info);
@@ -806,11 +815,11 @@ fn process_unshield<'info>(
         ctx.accounts.twin_mint.as_ref(),
     )
 }
-fn enforce_supply_invariant(
+fn enforce_supply_invariant<'info>(
     pool_state: &PoolState,
     note_ledger: &NoteLedger,
-    vault_token_account: &TokenAccount,
-    twin_mint: Option<&Account<Mint>>,
+    vault_token_account: &InterfaceAccount<'info, TokenAccount>,
+    twin_mint: Option<&InterfaceAccount<'info, Mint>>,
 ) -> Result<()> {
     let vault_balance = u128::from(vault_token_account.amount);
     let twin_supply = match (pool_state.twin_mint_enabled, twin_mint) {
@@ -916,7 +925,7 @@ pub struct InitializePool<'info> {
     pub hook_config: Account<'info, HookConfig>,
     #[account(mut)]
     pub vault_state: Account<'info, ptf_vault::VaultState>,
-    pub origin_mint: Account<'info, Mint>,
+    pub origin_mint: InterfaceAccount<'info, Mint>,
     #[account(
         seeds = [seeds::MINT_MAPPING, origin_mint.key().as_ref()],
         bump = mint_mapping.bump
@@ -928,7 +937,7 @@ pub struct InitializePool<'info> {
     )]
     pub factory_state: Account<'info, ptf_factory::FactoryState>,
     #[account(mut)]
-    pub twin_mint: Option<Account<'info, Mint>>,
+    pub twin_mint: Option<InterfaceAccount<'info, Mint>>,
     pub verifier_program: Program<'info, PtfVerifierGroth16>,
     pub verifying_key: Account<'info, VerifyingKeyAccount>,
     #[account(mut)]
@@ -971,11 +980,11 @@ pub struct Shield<'info> {
     #[account(mut, seeds = [seeds::VAULT, pool_state.origin_mint.as_ref()], bump = vault_state.bump)]
     pub vault_state: Account<'info, ptf_vault::VaultState>,
     #[account(mut)]
-    pub vault_token_account: Account<'info, TokenAccount>,
+    pub vault_token_account: InterfaceAccount<'info, TokenAccount>,
     #[account(mut)]
-    pub depositor_token_account: Account<'info, TokenAccount>,
+    pub depositor_token_account: InterfaceAccount<'info, TokenAccount>,
     #[account(mut)]
-    pub twin_mint: Option<Account<'info, Mint>>,
+    pub twin_mint: Option<InterfaceAccount<'info, Mint>>,
     pub verifier_program: Program<'info, PtfVerifierGroth16>,
     #[account(
         address = pool_state.verifying_key,
@@ -983,7 +992,7 @@ pub struct Shield<'info> {
     )]
     pub verifying_key: Account<'info, VerifyingKeyAccount>,
     pub payer: Signer<'info>,
-    pub origin_mint: Account<'info, Mint>,
+    pub origin_mint: InterfaceAccount<'info, Mint>,
     pub vault_program: Program<'info, PtfVault>,
     pub token_program: Interface<'info, TokenInterface>,
 }
@@ -1025,11 +1034,11 @@ pub struct Unshield<'info> {
     #[account(mut)]
     pub vault_state: Account<'info, ptf_vault::VaultState>,
     #[account(mut)]
-    pub vault_token_account: Account<'info, TokenAccount>,
+    pub vault_token_account: InterfaceAccount<'info, TokenAccount>,
     #[account(mut)]
-    pub destination_token_account: Account<'info, TokenAccount>,
+    pub destination_token_account: InterfaceAccount<'info, TokenAccount>,
     #[account(mut)]
-    pub twin_mint: Option<Account<'info, Mint>>,
+    pub twin_mint: Option<InterfaceAccount<'info, Mint>>,
     pub vault_program: Program<'info, PtfVault>,
     #[account(
         seeds = [seeds::FACTORY, ptf_factory::ID.as_ref()],
@@ -1592,6 +1601,7 @@ fn u8_to_field_bytes(value: u8) -> [u8; 32] {
 
 fn validate_unshield_public_inputs(
     pool_state: &PoolState,
+    pool_key: Pubkey,
     args: &UnshieldArgs,
     mode: UnshieldMode,
     destination: Pubkey,
@@ -1639,7 +1649,7 @@ fn validate_unshield_public_inputs(
         return err!(PoolError::PublicInputMismatch);
     }
     index += 1;
-    if fields[index] != pool_state.key().to_bytes() {
+    if fields[index] != pool_key.to_bytes() {
         return err!(PoolError::PublicInputMismatch);
     }
 
