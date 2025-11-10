@@ -1,15 +1,15 @@
 import { Metadata } from 'next';
-import { UnshieldForm } from '../../components/ptf/UnshieldForm';
+import { WrapForm } from '../../components/ptf/WrapForm';
 import { Header } from '../../components/Header';
 import { Footer } from '../../components/Footer';
 import { Box, Container, Stack, Text } from '@chakra-ui/react';
 
 export const metadata: Metadata = {
-  title: 'Unshield | Privacy Twin Factory',
-  description: 'Exit the shielded pool into public origin or twin tokens.'
+  title: 'Wrap | zPump',
+  description: 'Wrap public SPL tokens into zk-proof-backed zTokens powered by zPump.'
 };
 
-export default function UnshieldPage() {
+export default function WrapPage() {
   return (
     <Box minH="100vh" display="flex" flexDirection="column">
       <Header />
@@ -17,18 +17,18 @@ export default function UnshieldPage() {
         <Stack spacing={10}>
           <Box>
             <Text fontSize="sm" color="brand.200" textTransform="uppercase" letterSpacing="0.2em">
-              Unshield
+              Wrap
             </Text>
             <Text fontSize="4xl" fontWeight="bold" mt={2}>
-              Exit to a public account
+              Turn yield into wrapped confidence
             </Text>
             <Text mt={4} color="whiteAlpha.700" maxW="3xl">
-              Supply an encrypted note reference and spending key to unlock your private balance. The
-              proof ensures nullifiers cannot be reused and verifies that the Vault balance stays in
-              sync with privacy twin supply.
+              Follow the guided flow to deposit public SPL tokens into the zPump vault.
+              The circuit helper will generate a Groth16 proof, enforce the wrap invariant, and hand you
+              a new zNote tied to freshly minted zTokens.
             </Text>
           </Box>
-          <UnshieldForm />
+          <WrapForm />
         </Stack>
       </Container>
       <Footer />

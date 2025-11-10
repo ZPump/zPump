@@ -10,6 +10,14 @@ interface ProofClientOptions {
 
 const DEFAULT_BASE_URL = process.env.NEXT_PUBLIC_PROOF_RPC_URL ?? 'http://localhost:8788';
 
+const CIRCUIT_ALIAS = {
+  wrap: 'shield',
+  transfer: 'transfer',
+  unwrap: 'unshield'
+} as const;
+
+type CircuitName = keyof typeof CIRCUIT_ALIAS;
+
 export class ProofClient {
   private readonly baseUrl: string;
 
@@ -18,10 +26,11 @@ export class ProofClient {
   }
 
   async requestProof<TPayload extends Record<string, unknown>>(
-    circuit: 'shield' | 'transfer' | 'unshield',
+    circuit: CircuitName,
     payload: TPayload
   ): Promise<ProofResponse> {
-    const response = await fetch(`${this.baseUrl}/prove/${circuit}`, {
+    const resolvedCircuit = CIRCUIT_ALIAS[circuit];
+    const response = await fetch(`${this.baseUrl}/prove/${resolvedCircuit}`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json'

@@ -8,8 +8,8 @@ import { Providers } from '../components/providers/Providers';
 const spaceGrotesk = Space_Grotesk({ subsets: ['latin'], variable: '--font-space-grotesk' });
 
 export const metadata: Metadata = {
-  title: 'Privacy Twin Factory',
-  description: 'Shield SPL tokens into private balances and emerge with confidence.'
+  title: 'zPump',
+  description: 'Wrap SPL tokens into zk-proof-backed zTokens and move liquidity with privacy.'
 };
 
 export default function RootLayout({ children }: { children: ReactNode }) {

@@ -5,7 +5,7 @@ import { Footer } from '../../components/Footer';
 import { ExchangeForm } from '../../components/exchange/ExchangeForm';
 
 export const metadata: Metadata = {
-  title: 'Exchange | Privacy Twin Factory'
+  title: 'Exchange | zPump'
 };
 
 export default function ExchangePage() {
@@ -14,9 +14,9 @@ export default function ExchangePage() {
       <Header />
       <Stack spacing={12} px={{ base: 4, md: 10 }} py={{ base: 12, md: 20 }}>
         <Stack spacing={3} maxW="2xl">
-          <Heading size="3xl">Exchange tokens for their private twin.</Heading>
+          <Heading size="3xl">Preview the zPump wrapping flow.</Heading>
           <Text fontSize="lg" color="whiteAlpha.700">
-            Simulate how shielding and unshielding will feel when the on-chain programs go live. Plug in program IDs later
+            Simulate how wrapping and unwrapping will feel when the on-chain programs go live. Plug in program IDs later
             without touching the interface.
           </Text>
         </Stack>

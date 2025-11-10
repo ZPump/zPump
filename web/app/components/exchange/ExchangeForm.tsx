@@ -17,17 +17,17 @@ import { useWallet } from '@solana/wallet-adapter-react';
 import { useState } from 'react';
 
 const MOCK_TOKENS = [
-  { label: 'USDC', mint: 'So11111111111111111111111111111111111111112', counterpart: 'pUSDC11111111111111111111111111111111111111' },
-  { label: 'BONK', mint: 'Bonk111111111111111111111111111111111111111', counterpart: 'pBonk1111111111111111111111111111111111111' }
+  { label: 'USDC', mint: 'So11111111111111111111111111111111111111112', wrappedMint: 'zUSDC1111111111111111111111111111111111111' },
+  { label: 'BONK', mint: 'Bonk111111111111111111111111111111111111111', wrappedMint: 'zBONK111111111111111111111111111111111111' }
 ];
 
-export type ExchangeMode = 'shield' | 'unshield-origin' | 'unshield-twin';
+export type ExchangeMode = 'wrap' | 'unwrap-origin' | 'unwrap-ztoken';
 
 export function ExchangeForm() {
   const { connected } = useWallet();
   const [tokenMint, setTokenMint] = useState(MOCK_TOKENS[0].mint);
   const [amount, setAmount] = useState('');
-  const [mode, setMode] = useState<ExchangeMode>('shield');
+  const [mode, setMode] = useState<ExchangeMode>('wrap');
   const [isSubmitting, setIsSubmitting] = useBoolean();
 
   const selectedToken = MOCK_TOKENS.find((token) => token.mint === tokenMint) ?? MOCK_TOKENS[0];
@@ -55,9 +55,9 @@ export function ExchangeForm() {
         <FormControl>
           <FormLabel color="whiteAlpha.700">Mode</FormLabel>
           <Select value={mode} onChange={(event) => setMode(event.target.value as ExchangeMode)} bg="rgba(6, 10, 26, 0.85)">
-            <option value="shield">Shield to Private Pool</option>
-            <option value="unshield-origin">Unshield to Origin Mint</option>
-            <option value="unshield-twin">Unshield to Privacy Twin</option>
+            <option value="wrap">Wrap into zTokens</option>
+            <option value="unwrap-origin">Unwrap to Origin Mint</option>
+            <option value="unwrap-ztoken">Unwrap into fresh zTokens</option>
           </Select>
         </FormControl>
         <FormControl>
@@ -78,13 +78,13 @@ export function ExchangeForm() {
         </FormControl>
         <Box bg="rgba(4, 8, 20, 0.95)" rounded="xl" p={4} border="1px solid rgba(59,205,255,0.15)">
           <Text fontSize="sm" color="whiteAlpha.600">
-            Private counterpart:
+            Wrapped counterpart:
           </Text>
           <HStack justify="space-between" mt={2}>
             <Text fontSize="sm" color="brand.200">
-              {selectedToken.counterpart}
+              {selectedToken.wrappedMint}
             </Text>
-            <Button size="xs" variant="outline" onClick={() => navigator.clipboard.writeText(selectedToken.counterpart)}>
+            <Button size="xs" variant="outline" onClick={() => navigator.clipboard.writeText(selectedToken.wrappedMint)}>
               Copy
             </Button>
           </HStack>

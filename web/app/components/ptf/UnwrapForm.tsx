@@ -22,20 +22,20 @@ import { useConnection, useWallet } from '@solana/wallet-adapter-react';
 import { useMemo, useState } from 'react';
 import { MINTS } from '../../config/mints';
 import { ProofClient, ProofResponse } from '../../lib/proofClient';
-import { resolvePublicKey, unshield as unshieldSdk } from '../../lib/sdk';
+import { resolvePublicKey, unwrap as unwrapSdk } from '../../lib/sdk';
 
-interface UnshieldState {
+interface UnwrapState {
   originMint: string;
   amount: string;
   fee: string;
   destination: string;
-  mode: 'origin' | 'ptkn';
+  mode: 'origin' | 'ztkn';
   noteId: string;
   spendingKey: string;
   useProofRpc: boolean;
 }
 
-const DEFAULT_STATE: UnshieldState = {
+const DEFAULT_STATE: UnwrapState = {
   originMint: MINTS[0]?.originMint ?? '',
   amount: '1',
   fee: '0',
@@ -46,10 +46,10 @@ const DEFAULT_STATE: UnshieldState = {
   useProofRpc: true
 };
 
-export function UnshieldForm() {
+export function UnwrapForm() {
   const { connection } = useConnection();
   const wallet = useWallet();
-  const [state, setState] = useState<UnshieldState>(DEFAULT_STATE);
+  const [state, setState] = useState<UnwrapState>(DEFAULT_STATE);
   const [isSubmitting, setSubmitting] = useState(false);
   const [result, setResult] = useState<string | null>(null);
   const [proof, setProof] = useState<ProofResponse | null>(null);
@@ -68,7 +68,7 @@ export function UnshieldForm() {
     verifyingKeyHash: ''
   }), []);
 
-  const handleChange = (field: keyof UnshieldState) => (event: React.ChangeEvent<HTMLInputElement>) => {
+  const handleChange = (field: keyof UnwrapState) => (event: React.ChangeEvent<HTMLInputElement>) => {
     const value = event.target.type === 'checkbox' ? (event.target as HTMLInputElement).checked : event.target.value;
     setState((prev) => ({ ...prev, [field]: value }));
   };
@@ -78,7 +78,7 @@ export function UnshieldForm() {
     setState((prev) => ({ ...prev, originMint: value }));
   };
 
-  const handleModeChange = (mode: 'origin' | 'ptkn') => {
+  const handleModeChange = (mode: 'origin' | 'ztkn') => {
     setState((prev) => ({ ...prev, mode }));
   };
 
@@ -91,10 +91,10 @@ export function UnshieldForm() {
 
     try {
       if (!wallet.publicKey) {
-        throw new Error('Connect your wallet before unshielding.');
+        throw new Error('Connect your wallet before unwrapping.');
       }
-      if (state.mode === 'ptkn' && !mintConfig?.features.twinEnabled) {
-        throw new Error('This mint has not enabled privacy twin withdrawals.');
+      if (state.mode === 'ztkn' && !mintConfig?.features.zTokenEnabled) {
+        throw new Error('This mint has not enabled zToken minting.');
       }
 
       const payload = {
@@ -111,13 +111,13 @@ export function UnshieldForm() {
 
       let proofResponse: ProofResponse | null = null;
       if (state.useProofRpc) {
-        proofResponse = await proofClient.requestProof('unshield', payload);
+        proofResponse = await proofClient.requestProof('unwrap', payload);
         setProof(proofResponse);
       }
 
       const resolvedDestination = await resolvePublicKey(state.destination, wallet.publicKey!);
 
-      const signature = await unshieldSdk({
+      const signature = await unwrapSdk({
         connection,
         wallet,
         originMint: state.originMint,
@@ -140,10 +140,10 @@ export function UnshieldForm() {
     <Box as="section" bg="rgba(8,12,40,0.6)" p={8} rounded="2xl" boxShadow="xl" border="1px solid" borderColor="whiteAlpha.200">
       <form onSubmit={handleSubmit}>
         <Stack spacing={6}>
-          <Heading size="lg">Unshield tokens</Heading>
+          <Heading size="lg">Unwrap zTokens</Heading>
           <Text color="whiteAlpha.700">
-            Exit the private pool into a public address. The proof spends your note, derives a
-            nullifier, and instructs the Vault or twin mint program to deliver funds on-chain.
+            Deliver your wrapped balance wherever you need it. The proof spends your zNote, derives a
+            nullifier, and instructs the vault or zToken program to release funds on-chain.
           </Text>
 
           <FormControl>
@@ -186,16 +186,16 @@ export function UnshieldForm() {
 
           <FormControl as="fieldset">
             <FormLabel as="legend">Withdrawal rail</FormLabel>
-            <RadioGroup value={state.mode} onChange={(value) => handleModeChange(value as 'origin' | 'ptkn')}>
+            <RadioGroup value={state.mode} onChange={(value) => handleModeChange(value as 'origin' | 'ztkn')}>
               <Stack direction="row" spacing={6}>
                 <Radio value="origin">Redeem origin mint</Radio>
-                <Radio value="ptkn" isDisabled={!mintConfig?.features.twinEnabled}>
-                  Mint privacy twin
+                <Radio value="ztkn" isDisabled={!mintConfig?.features.zTokenEnabled}>
+                  Mint new zTokens
                 </Radio>
               </Stack>
             </RadioGroup>
-            {!mintConfig?.features.twinEnabled && (
-              <FormHelperText>Enable twin minting via governance before using this rail.</FormHelperText>
+            {!mintConfig?.features.zTokenEnabled && (
+              <FormHelperText>Enable zToken minting via governance before using this rail.</FormHelperText>
             )}
           </FormControl>
 
@@ -206,15 +206,15 @@ export function UnshieldForm() {
             <Switch id="useProofRpc" isChecked={state.useProofRpc} onChange={handleChange('useProofRpc')} colorScheme="teal" />
           </FormControl>
 
-          <Button type="submit" colorScheme="orange" size="lg" isLoading={isSubmitting} loadingText="Unshielding">
-            Generate proof &amp; submit
+          <Button type="submit" colorScheme="orange" size="lg" isLoading={isSubmitting} loadingText="Unwrapping">
+            Generate unwrap proof &amp; submit
           </Button>
 
           {result && (
             <Alert status="success" variant="subtle">
               <AlertIcon />
               <AlertDescription>
-                Exit transaction sent. Signature <Text as="span" fontFamily="mono">{result}</Text>
+                Unwrap transaction sent. Signature <Text as="span" fontFamily="mono">{result}</Text>
               </AlertDescription>
             </Alert>
           )}
