@@ -27,7 +27,7 @@ custom-panic = []
 solana = []
 
 [dev-dependencies]
-solana-program-test = "1.17.20"
-solana-sdk = "1.17.20"
+solana-program-test = "3.0.10"
+solana-sdk = "3.0.0"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
-spl-token = { version = "3.5.0", features = ["no-entrypoint"] }
+spl-token = { version = "9.0.0", features = ["no-entrypoint"] }

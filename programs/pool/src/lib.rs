@@ -721,10 +721,7 @@ fn process_unshield<'info>(
                 mint_mapping: ctx.accounts.mint_mapping.to_account_info(),
                 pool_authority: ctx.accounts.pool_state.to_account_info(),
                 ptkn_mint: twin_mint.to_account_info(),
-                destination_token_account: ctx
-                    .accounts
-                    .destination_token_account
-                    .to_account_info(),
+                destination_token_account: ctx.accounts.destination_token_account.to_account_info(),
                 token_program: ctx.accounts.token_program.to_account_info(),
             };
             let mint_ctx = CpiContext::new_with_signer(
@@ -2642,11 +2639,7 @@ mod tests {
             let circuit_tag = [5u8; 32];
             let version = 1u8;
             let (verifier_state, _) = Pubkey::find_program_address(
-                &[
-                    seeds::VERIFIER,
-                    &circuit_tag,
-                    &[version],
-                ],
+                &[seeds::VERIFIER, &circuit_tag, &[version]],
                 &ptf_verifier_groth16::id(),
             );
 

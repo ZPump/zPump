@@ -11,9 +11,14 @@ resolver = "2"
 [workspace.dependencies]
 anchor-lang = "0.32.1"
 anchor-spl = "0.32.1"
-solana-program = "1.17.20"
+solana-program = "2.3.0"
+solana-instruction = "2.3.3"
 thiserror = "1.0"
 borsh = { version = "0.10", features = ["derive"] }
 bytemuck = { version = "1.14", features = ["derive"] }
 sha3 = "0.10"
 hex = "0.4"
+
+[replace]
+"solana-zk-sdk:2.2.0" = { path = "vendor/solana-zk-sdk" }
+"solana-curve25519:2.2.0" = { path = "vendor/solana-curve25519" }
