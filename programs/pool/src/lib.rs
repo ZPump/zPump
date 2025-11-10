@@ -4,7 +4,7 @@ use anchor_lang::solana_program::program::invoke_signed;
 use anchor_lang::solana_program::program_option::COption;
 use anchor_spl::token_interface::{Mint, TokenAccount, TokenInterface};
 use ark_bn254::Fr;
-use ark_ff::{BigInteger, BigInteger256, Field, PrimeField};
+use ark_ff::{BigInteger, BigInteger256, PrimeField};
 use core::convert::TryFrom;
 use sha3::{Digest, Keccak256};
 
@@ -31,7 +31,6 @@ pub mod ptf_pool {
     pub fn initialize_pool(ctx: Context<InitializePool>, fee_bps: u16, features: u8) -> Result<()> {
         require!(fee_bps <= MAX_BPS, PoolError::InvalidFeeBps);
 
-        let pool_state = &mut ctx.accounts.pool_state;
         require_keys_eq!(
             ctx.accounts.vault_state.origin_mint,
             ctx.accounts.origin_mint.key(),
@@ -42,96 +41,106 @@ pub mod ptf_pool {
             ctx.accounts.origin_mint.key(),
             PoolError::OriginMintMismatch,
         );
-        pool_state.origin_mint = ctx.accounts.vault_state.origin_mint;
-        pool_state.vault = ctx.accounts.vault_state.key();
-        pool_state.verifier_program = ctx.accounts.verifier_program.key();
-        pool_state.verifying_key = ctx.accounts.verifying_key.key();
-        pool_state.verifying_key_id = ctx.accounts.verifying_key.verifying_key_id;
-        pool_state.verifying_key_hash = ctx.accounts.verifying_key.hash;
-        pool_state.authority = ctx.accounts.authority.key();
-        pool_state.fee_bps = fee_bps;
-        pool_state.features = FeatureFlags::from(features);
-        pool_state.bump = ctx.bumps.pool_state;
-        pool_state.commitment_tree = ctx.accounts.commitment_tree.key();
-        pool_state.roots_len = 0;
-        pool_state.current_root = [0u8; 32];
-        pool_state.note_ledger = ctx.accounts.note_ledger.key();
-        pool_state.note_ledger_bump = ctx.bumps.note_ledger;
-        pool_state.protocol_fees = 0;
-        pool_state.hook_config = ctx.accounts.hook_config.key();
-        pool_state.hook_config_present = false;
-        pool_state.hook_config_bump = ctx.bumps.hook_config;
 
-        let hook_config = &mut ctx.accounts.hook_config;
-        hook_config.pool = pool_state.key();
-        hook_config.post_shield_program_id = Pubkey::default();
-        hook_config.post_unshield_program_id = Pubkey::default();
-        hook_config.required_accounts = [[0u8; 32]; HookConfig::MAX_REQUIRED_ACCOUNTS];
-        hook_config.required_accounts_len = 0;
-        hook_config.mode = HookAccountMode::Strict;
-        hook_config.bump = ctx.bumps.hook_config;
-
-        if ctx.accounts.mint_mapping.has_ptkn {
-            let twin_mint = ctx
-                .accounts
-                .twin_mint
-                .as_ref()
-                .ok_or(PoolError::TwinMintNotConfigured)?;
-            require_keys_eq!(
-                twin_mint.key(),
-                ctx.accounts.mint_mapping.ptkn_mint,
-                PoolError::TwinMintMismatch,
-            );
-            require!(
-                twin_mint.decimals == ctx.accounts.origin_mint.decimals,
-                PoolError::TwinMintDecimalsMismatch,
-            );
-            match twin_mint.mint_authority {
-                COption::Some(authority) => {
-                    require_keys_eq!(
-                        authority,
-                        ctx.accounts.factory_state.key(),
-                        PoolError::TwinMintAuthorityMismatch,
-                    );
+        let pool_key = ctx.accounts.pool_state.key();
+        {
+            let mut pool_state = ctx.accounts.pool_state.load_init()?;
+            pool_state.origin_mint = ctx.accounts.vault_state.origin_mint;
+            pool_state.vault = ctx.accounts.vault_state.key();
+            pool_state.verifier_program = ctx.accounts.verifier_program.key();
+            pool_state.verifying_key = ctx.accounts.verifying_key.key();
+            pool_state.verifying_key_id = ctx.accounts.verifying_key.verifying_key_id;
+            pool_state.verifying_key_hash = ctx.accounts.verifying_key.hash;
+            pool_state.authority = ctx.accounts.authority.key();
+            pool_state.fee_bps = fee_bps;
+            pool_state.features = FeatureFlags::from(features);
+            pool_state.bump = ctx.bumps.pool_state;
+            pool_state.commitment_tree = ctx.accounts.commitment_tree.key();
+            pool_state.roots_len = 0;
+            pool_state.current_root = [0u8; 32];
+            pool_state.note_ledger = ctx.accounts.note_ledger.key();
+            pool_state.note_ledger_bump = ctx.bumps.note_ledger;
+            pool_state.protocol_fees = 0;
+            pool_state.hook_config = ctx.accounts.hook_config.key();
+            pool_state.hook_config_present = false;
+            pool_state.hook_config_bump = ctx.bumps.hook_config;
+            if ctx.accounts.mint_mapping.has_ptkn {
+                let twin_mint = ctx
+                    .accounts
+                    .twin_mint
+                    .as_ref()
+                    .ok_or(PoolError::TwinMintNotConfigured)?;
+                require_keys_eq!(
+                    twin_mint.key(),
+                    ctx.accounts.mint_mapping.ptkn_mint,
+                    PoolError::TwinMintMismatch,
+                );
+                require!(
+                    twin_mint.decimals == ctx.accounts.origin_mint.decimals,
+                    PoolError::TwinMintDecimalsMismatch,
+                );
+                match twin_mint.mint_authority {
+                    COption::Some(authority) => {
+                        require_keys_eq!(
+                            authority,
+                            ctx.accounts.factory_state.key(),
+                            PoolError::TwinMintAuthorityMismatch,
+                        );
+                    }
+                    COption::None => return err!(PoolError::TwinMintAuthorityMismatch),
                 }
-                COption::None => return err!(PoolError::TwinMintAuthorityMismatch),
+                pool_state.twin_mint = twin_mint.key();
+                pool_state.twin_mint_enabled = true;
+            } else {
+                require!(
+                    ctx.accounts.twin_mint.is_none(),
+                    PoolError::TwinMintMismatch,
+                );
+                pool_state.twin_mint = Pubkey::default();
+                pool_state.twin_mint_enabled = false;
             }
-            pool_state.twin_mint = twin_mint.key();
-            pool_state.twin_mint_enabled = true;
-        } else {
-            require!(
-                ctx.accounts.twin_mint.is_none(),
-                PoolError::TwinMintMismatch,
-            );
-            pool_state.twin_mint = Pubkey::default();
-            pool_state.twin_mint_enabled = false;
         }
 
         require_keys_eq!(
             ctx.accounts.vault_state.pool_authority,
-            pool_state.key(),
+            pool_key,
             PoolError::MismatchedVaultAuthority,
         );
 
-        let nulls = &mut ctx.accounts.nullifier_set;
-        nulls.pool = pool_state.key();
-        nulls.bump = ctx.bumps.nullifier_set;
-        nulls.count = 0;
-        nulls.bloom = [0u8; NullifierSet::BLOOM_BYTES];
+        {
+            let mut hook_config = ctx.accounts.hook_config.load_init()?;
+            hook_config.pool = pool_key;
+            hook_config.post_shield_program_id = Pubkey::default();
+            hook_config.post_unshield_program_id = Pubkey::default();
+            hook_config.required_accounts = [[0u8; 32]; HookConfig::MAX_REQUIRED_ACCOUNTS];
+            hook_config.required_accounts_len = 0;
+            hook_config.mode = HookAccountMode::Strict;
+            hook_config.bump = ctx.bumps.hook_config;
+        }
 
-        let tree = &mut ctx.accounts.commitment_tree;
-        tree.init(
-            pool_state.key(),
-            DEFAULT_CANOPY_DEPTH,
-            ctx.bumps.commitment_tree,
-        )?;
-        pool_state.current_root = tree.current_root;
-        pool_state.roots_len = 1;
-        pool_state.recent_roots[0] = tree.current_root;
+        {
+            let mut nulls = ctx.accounts.nullifier_set.load_init()?;
+            nulls.pool = pool_key;
+            nulls.bump = ctx.bumps.nullifier_set;
+            nulls.count = 0;
+            nulls.bloom = [0u8; NullifierSet::BLOOM_BYTES];
+        }
 
-        let ledger = &mut ctx.accounts.note_ledger;
-        ledger.init(pool_state.key(), ctx.bumps.note_ledger);
+        {
+            let mut tree = ctx.accounts.commitment_tree.load_init()?;
+            tree.init(pool_key, DEFAULT_CANOPY_DEPTH, ctx.bumps.commitment_tree)?;
+            let mut pool_state = ctx.accounts.pool_state.load_mut()?;
+            pool_state.current_root = tree.current_root;
+            pool_state.roots_len = 1;
+            pool_state.recent_roots[0] = tree.current_root;
+        }
 
+        {
+            let mut ledger = ctx.accounts.note_ledger.load_init()?;
+            ledger.init(pool_key, ctx.bumps.note_ledger);
+        }
+
+        let pool_state = ctx.accounts.pool_state.load()?;
         emit!(PoolInitialized {
             origin_mint: pool_state.origin_mint,
             fee_bps,
@@ -142,25 +151,27 @@ pub mod ptf_pool {
 
     pub fn set_fee(ctx: Context<UpdateAuthority>, fee_bps: u16) -> Result<()> {
         require!(fee_bps <= MAX_BPS, PoolError::InvalidFeeBps);
-        ctx.accounts.pool_state.fee_bps = fee_bps;
+        let mut pool_state = ctx.accounts.pool_state.load_mut()?;
+        pool_state.fee_bps = fee_bps;
         emit!(FeeUpdated {
-            origin_mint: ctx.accounts.pool_state.origin_mint,
+            origin_mint: pool_state.origin_mint,
             fee_bps,
         });
         Ok(())
     }
 
     pub fn set_features(ctx: Context<UpdateAuthority>, features: u8) -> Result<()> {
-        ctx.accounts.pool_state.features = FeatureFlags::from(features);
+        let mut pool_state = ctx.accounts.pool_state.load_mut()?;
+        pool_state.features = FeatureFlags::from(features);
         emit!(FeaturesUpdated {
-            origin_mint: ctx.accounts.pool_state.origin_mint,
+            origin_mint: pool_state.origin_mint,
             features,
         });
         Ok(())
     }
 
     pub fn configure_hooks(ctx: Context<ConfigureHooks>, args: HookConfigArgs) -> Result<()> {
-        let pool_state = &mut ctx.accounts.pool_state;
+        let mut pool_state = ctx.accounts.pool_state.load_mut()?;
         require!(
             pool_state
                 .features
@@ -168,8 +179,8 @@ pub mod ptf_pool {
             PoolError::HooksDisabled,
         );
 
-        let hook_config = &mut ctx.accounts.hook_config;
-        hook_config.pool = pool_state.key();
+        let mut hook_config = ctx.accounts.hook_config.load_mut()?;
+        hook_config.pool = ctx.accounts.pool_state.key();
         hook_config.post_shield_program_id = args.post_shield_program;
         hook_config.post_unshield_program_id = args.post_unshield_program;
         hook_config.mode = args.mode;
@@ -184,7 +195,7 @@ pub mod ptf_pool {
             hook_config.required_accounts_len += 1;
         }
 
-        pool_state.hook_config = hook_config.key();
+        pool_state.hook_config = ctx.accounts.hook_config.key();
         if args.post_shield_program == Pubkey::default()
             && args.post_unshield_program == Pubkey::default()
         {
@@ -207,7 +218,8 @@ pub mod ptf_pool {
         args: ShieldArgs,
     ) -> Result<()> {
         let (origin_mint, note_index, hook_enabled, pool_key, pool_bump) = {
-            let pool_state = &mut ctx.accounts.pool_state;
+            let pool_loader = &ctx.accounts.pool_state;
+            let mut pool_state = pool_loader.load_mut()?;
             require_keys_eq!(
                 ctx.accounts.verifier_program.key(),
                 pool_state.verifier_program,
@@ -233,7 +245,7 @@ pub mod ptf_pool {
             );
             require_keys_eq!(
                 ctx.accounts.vault_state.pool_authority,
-                pool_state.key(),
+                pool_loader.key(),
                 PoolError::MismatchedVaultAuthority,
             );
             require_keys_eq!(
@@ -266,10 +278,13 @@ pub mod ptf_pool {
                 pool_state.commitment_tree,
                 PoolError::CommitmentTreeMismatch,
             );
-            require!(
-                ctx.accounts.commitment_tree.current_root == pool_state.current_root,
-                PoolError::RootMismatch,
-            );
+            {
+                let commitment_tree_data = ctx.accounts.commitment_tree.load()?;
+                require!(
+                    commitment_tree_data.current_root == pool_state.current_root,
+                    PoolError::RootMismatch,
+                );
+            }
 
             if pool_state.twin_mint_enabled {
                 let twin_mint = ctx
@@ -312,15 +327,16 @@ pub mod ptf_pool {
             );
             ptf_vault::cpi::deposit(deposit_ctx, args.amount)?;
 
-            let (new_root, note_index) = ctx
-                .accounts
-                .commitment_tree
-                .append_note(args.commitment, args.amount_commit)?;
+            let (new_root, note_index) = {
+                let mut commitment_tree = ctx.accounts.commitment_tree.load_mut()?;
+                commitment_tree.append_note(args.commitment, args.amount_commit)?
+            };
             require!(new_root == args.new_root, PoolError::RootMismatch);
             pool_state.push_root(new_root);
-            ctx.accounts
-                .note_ledger
-                .record_shield(args.amount, args.amount_commit)?;
+            {
+                let mut note_ledger = ctx.accounts.note_ledger.load_mut()?;
+                note_ledger.record_shield(args.amount, args.amount_commit)?;
+            }
 
             emit!(PTFShielded {
                 mint: pool_state.origin_mint,
@@ -334,17 +350,21 @@ pub mod ptf_pool {
                 .features
                 .contains(FeatureFlags::from(FEATURE_HOOKS_ENABLED))
                 && pool_state.hook_config_present;
-            let pool_key = pool_state.key();
+            let pool_key = pool_loader.key();
             let pool_bump = pool_state.bump;
 
             let origin_mint = pool_state.origin_mint;
             (origin_mint, note_index, hook_enabled, pool_key, pool_bump)
         };
         if hook_enabled {
-            let hook_config_account = &ctx.accounts.hook_config;
-            let required_accounts: Vec<Pubkey> = hook_config_account.required_keys().collect();
-            let hook_mode = hook_config_account.mode;
-            let target_program = hook_config_account.post_shield_program_id;
+            let (required_accounts, hook_mode, target_program) = {
+                let hook_config = ctx.accounts.hook_config.load()?;
+                (
+                    hook_config.required_keys().collect::<Vec<_>>(),
+                    hook_config.mode,
+                    hook_config.post_shield_program_id,
+                )
+            };
             if target_program != Pubkey::default() {
                 validate_hook_accounts(&required_accounts, hook_mode, ctx.remaining_accounts)?;
 
@@ -393,9 +413,11 @@ pub mod ptf_pool {
             }
         }
 
+        let pool_state = ctx.accounts.pool_state.load()?;
+        let note_ledger = ctx.accounts.note_ledger.load()?;
         enforce_supply_invariant(
-            &ctx.accounts.pool_state,
-            &ctx.accounts.note_ledger,
+            &pool_state,
+            &note_ledger,
             &ctx.accounts.vault_token_account,
             ctx.accounts.twin_mint.as_ref(),
         )?;
@@ -417,24 +439,29 @@ pub mod ptf_pool {
     }
 
     pub fn accept_root(ctx: Context<UpdateAuthority>, root: [u8; 32]) -> Result<()> {
-        ctx.accounts.pool_state.push_root(root);
+        let mut pool_state = ctx.accounts.pool_state.load_mut()?;
+        pool_state.push_root(root);
         Ok(())
     }
 
     pub fn write_nullifier(ctx: Context<UpdateAuthority>, nullifier: [u8; 32]) -> Result<()> {
-        ctx.accounts
-            .nullifier_set
-            .insert(nullifier)
-            .map_err(|_| PoolError::NullifierReuse)?;
+        {
+            let mut nullifier_set = ctx.accounts.nullifier_set.load_mut()?;
+            nullifier_set
+                .insert(nullifier)
+                .map_err(|_| PoolError::NullifierReuse)?;
+        }
+        let pool_state = ctx.accounts.pool_state.load()?;
         emit!(PTFNullifierUsed {
-            mint: ctx.accounts.pool_state.origin_mint,
+            mint: pool_state.origin_mint,
             nullifier,
         });
         Ok(())
     }
 
     pub fn private_transfer(ctx: Context<PrivateTransfer>, args: TransferArgs) -> Result<()> {
-        let pool_state = &mut ctx.accounts.pool_state;
+        let pool_loader = &ctx.accounts.pool_state;
+        let mut pool_state = pool_loader.load_mut()?;
         require_keys_eq!(
             ctx.accounts.verifier_program.key(),
             pool_state.verifier_program,
@@ -463,10 +490,13 @@ pub mod ptf_pool {
             pool_state.is_known_root(&args.old_root),
             PoolError::UnknownRoot,
         );
-        require!(
-            ctx.accounts.commitment_tree.current_root == args.old_root,
-            PoolError::RootMismatch,
-        );
+        {
+            let commitment_tree = ctx.accounts.commitment_tree.load()?;
+            require!(
+                commitment_tree.current_root == args.old_root,
+                PoolError::RootMismatch,
+            );
+        }
 
         let cpi_accounts = ptf_verifier_groth16::cpi::accounts::VerifyGroth16 {
             verifier_state: ctx.accounts.verifying_key.to_account_info(),
@@ -483,30 +513,37 @@ pub mod ptf_pool {
         )?;
 
         let origin_mint = pool_state.origin_mint;
-        for nullifier in &args.nullifiers {
-            ctx.accounts
-                .nullifier_set
-                .insert(*nullifier)
-                .map_err(|_| PoolError::NullifierReuse)?;
-            emit!(PTFNullifierUsed {
-                mint: origin_mint,
-                nullifier: *nullifier,
-            });
+        {
+            let mut nullifier_set = ctx.accounts.nullifier_set.load_mut()?;
+            for nullifier in &args.nullifiers {
+                nullifier_set
+                    .insert(*nullifier)
+                    .map_err(|_| PoolError::NullifierReuse)?;
+                emit!(PTFNullifierUsed {
+                    mint: origin_mint,
+                    nullifier: *nullifier,
+                });
+            }
         }
         require!(
             args.output_commitments.len() == args.output_amount_commitments.len(),
             PoolError::OutputSetMismatch,
         );
-        let (new_root, _output_indices) = ctx.accounts.commitment_tree.append_many(
-            args.output_commitments.as_slice(),
-            args.output_amount_commitments.as_slice(),
-        )?;
+        let (new_root, _output_indices) = {
+            let mut commitment_tree = ctx.accounts.commitment_tree.load_mut()?;
+            commitment_tree.append_many(
+                args.output_commitments.as_slice(),
+                args.output_amount_commitments.as_slice(),
+            )?
+        };
         require!(new_root == args.new_root, PoolError::RootMismatch);
         pool_state.push_root(new_root);
 
-        ctx.accounts
-            .note_ledger
-            .record_transfer(&args.nullifiers, args.output_amount_commitments.as_slice())?;
+        {
+            let mut note_ledger = ctx.accounts.note_ledger.load_mut()?;
+            note_ledger
+                .record_transfer(&args.nullifiers, args.output_amount_commitments.as_slice())?;
+        }
 
         emit!(PTFTransferred {
             mint: pool_state.origin_mint,
@@ -523,8 +560,9 @@ fn process_unshield<'info>(
     args: UnshieldArgs,
     mode: UnshieldMode,
 ) -> Result<()> {
-    let pool_state = &mut ctx.accounts.pool_state;
-    let note_ledger = &mut ctx.accounts.note_ledger;
+    let pool_loader = &ctx.accounts.pool_state;
+    let mut pool_state = pool_loader.load_mut()?;
+    let mut note_ledger = ctx.accounts.note_ledger.load_mut()?;
     let origin_mint = pool_state.origin_mint;
 
     require_keys_eq!(
@@ -552,7 +590,7 @@ fn process_unshield<'info>(
     );
     require_keys_eq!(
         ctx.accounts.vault_state.pool_authority,
-        pool_state.key(),
+        pool_loader.key(),
         PoolError::MismatchedVaultAuthority,
     );
     require_keys_eq!(
@@ -593,10 +631,13 @@ fn process_unshield<'info>(
         pool_state.is_known_root(&args.old_root),
         PoolError::UnknownRoot,
     );
-    require!(
-        ctx.accounts.commitment_tree.current_root == args.old_root,
-        PoolError::RootMismatch,
-    );
+    {
+        let commitment_tree = ctx.accounts.commitment_tree.load()?;
+        require!(
+            commitment_tree.current_root == args.old_root,
+            PoolError::RootMismatch,
+        );
+    }
     require!(
         args.output_commitments.len() == args.output_amount_commitments.len(),
         PoolError::OutputSetMismatch,
@@ -628,9 +669,9 @@ fn process_unshield<'info>(
         .amount
         .checked_add(fee)
         .ok_or(PoolError::AmountOverflow)?;
-    let pool_account_key = pool_state.key();
+    let pool_account_key = pool_loader.key();
     validate_unshield_public_inputs(
-        pool_state,
+        &pool_state,
         pool_account_key,
         &args,
         mode,
@@ -639,21 +680,26 @@ fn process_unshield<'info>(
     )?;
     note_ledger.ensure_capacity(total_spent)?;
 
-    for nullifier in &args.nullifiers {
-        ctx.accounts
-            .nullifier_set
-            .insert(*nullifier)
-            .map_err(|_| PoolError::NullifierReuse)?;
-        emit!(PTFNullifierUsed {
-            mint: origin_mint,
-            nullifier: *nullifier,
-        });
+    {
+        let mut nullifier_set = ctx.accounts.nullifier_set.load_mut()?;
+        for nullifier in &args.nullifiers {
+            nullifier_set
+                .insert(*nullifier)
+                .map_err(|_| PoolError::NullifierReuse)?;
+            emit!(PTFNullifierUsed {
+                mint: origin_mint,
+                nullifier: *nullifier,
+            });
+        }
     }
 
-    let (new_root, _output_indices) = ctx.accounts.commitment_tree.append_many(
-        args.output_commitments.as_slice(),
-        args.output_amount_commitments.as_slice(),
-    )?;
+    let (new_root, _output_indices) = {
+        let mut commitment_tree = ctx.accounts.commitment_tree.load_mut()?;
+        commitment_tree.append_many(
+            args.output_commitments.as_slice(),
+            args.output_amount_commitments.as_slice(),
+        )?
+    };
     require!(new_root == args.new_root, PoolError::RootMismatch);
     pool_state.push_root(new_root);
 
@@ -683,7 +729,7 @@ fn process_unshield<'info>(
                 vault_state: ctx.accounts.vault_state.to_account_info(),
                 vault_token_account: ctx.accounts.vault_token_account.to_account_info(),
                 destination_token_account: ctx.accounts.destination_token_account.to_account_info(),
-                pool_authority: pool_state.to_account_info(),
+                pool_authority: ctx.accounts.pool_state.to_account_info(),
                 token_program: ctx.accounts.token_program.to_account_info(),
             };
             let signer = &[&signer_seeds[..]];
@@ -727,7 +773,7 @@ fn process_unshield<'info>(
             let factory_accounts = ptf_factory::cpi::accounts::MintPtkn {
                 factory_state: ctx.accounts.factory_state.to_account_info(),
                 mint_mapping: ctx.accounts.mint_mapping.to_account_info(),
-                pool_authority: pool_state.to_account_info(),
+                pool_authority: ctx.accounts.pool_state.to_account_info(),
                 ptkn_mint: twin_mint.to_account_info(),
                 destination_token_account: ctx.accounts.destination_token_account.to_account_info(),
                 token_program: ctx.accounts.token_program.to_account_info(),
@@ -752,14 +798,18 @@ fn process_unshield<'info>(
         .features
         .contains(FeatureFlags::from(FEATURE_HOOKS_ENABLED))
         && pool_state.hook_config_present;
-    let pool_key = pool_state.key();
+    let pool_key = pool_loader.key();
     let pool_bump = pool_state.bump;
 
     if hook_enabled {
-        let hook_config_account = &ctx.accounts.hook_config;
-        let required_accounts: Vec<Pubkey> = hook_config_account.required_keys().collect();
-        let hook_mode = hook_config_account.mode;
-        let target_program = hook_config_account.post_unshield_program_id;
+        let (required_accounts, hook_mode, target_program) = {
+            let hook_config = ctx.accounts.hook_config.load()?;
+            (
+                hook_config.required_keys().collect::<Vec<_>>(),
+                hook_config.mode,
+                hook_config.post_unshield_program_id,
+            )
+        };
         if target_program != Pubkey::default() {
             validate_hook_accounts(&required_accounts, hook_mode, ctx.remaining_accounts)?;
 
@@ -767,7 +817,7 @@ fn process_unshield<'info>(
             let mut infos = Vec::with_capacity(2 + ctx.remaining_accounts.len());
 
             let hook_config_info = ctx.accounts.hook_config.to_account_info();
-            let pool_info = pool_state.to_account_info();
+            let pool_info = ctx.accounts.pool_state.to_account_info();
             metas.push(AccountMeta::new_readonly(hook_config_info.key(), false));
             metas.push(AccountMeta::new_readonly(pool_info.key(), false));
             infos.push(hook_config_info);
@@ -809,8 +859,8 @@ fn process_unshield<'info>(
     }
 
     enforce_supply_invariant(
-        pool_state,
-        note_ledger,
+        &pool_state,
+        &note_ledger,
         &ctx.accounts.vault_token_account,
         ctx.accounts.twin_mint.as_ref(),
     )
@@ -836,7 +886,8 @@ fn enforce_supply_invariant<'info>(
         (false, None) => 0u128,
     };
 
-    let expected = validate_supply_components(pool_state, note_ledger, twin_supply, vault_balance)?;
+    let _expected =
+        validate_supply_components(pool_state, note_ledger, twin_supply, vault_balance)?;
 
     let supply_ptkn = u64::try_from(twin_supply).map_err(|_| PoolError::AmountOverflow)?;
     emit!(PTFInvariantOk {
@@ -890,7 +941,7 @@ pub struct InitializePool<'info> {
         bump,
         space = PoolState::SPACE,
     )]
-    pub pool_state: Account<'info, PoolState>,
+    pub pool_state: AccountLoader<'info, PoolState>,
     #[account(
         init,
         payer = payer,
@@ -898,7 +949,7 @@ pub struct InitializePool<'info> {
         bump,
         space = NullifierSet::SPACE,
     )]
-    pub nullifier_set: Account<'info, NullifierSet>,
+    pub nullifier_set: AccountLoader<'info, NullifierSet>,
     #[account(
         init,
         payer = payer,
@@ -906,7 +957,7 @@ pub struct InitializePool<'info> {
         bump,
         space = NoteLedger::SPACE,
     )]
-    pub note_ledger: Account<'info, NoteLedger>,
+    pub note_ledger: AccountLoader<'info, NoteLedger>,
     #[account(
         init,
         payer = payer,
@@ -914,7 +965,7 @@ pub struct InitializePool<'info> {
         bump,
         space = CommitmentTree::SPACE,
     )]
-    pub commitment_tree: Account<'info, CommitmentTree>,
+    pub commitment_tree: AccountLoader<'info, CommitmentTree>,
     #[account(
         init,
         payer = payer,
@@ -922,7 +973,7 @@ pub struct InitializePool<'info> {
         bump,
         space = HookConfig::SPACE,
     )]
-    pub hook_config: Account<'info, HookConfig>,
+    pub hook_config: AccountLoader<'info, HookConfig>,
     #[account(mut)]
     pub vault_state: Account<'info, ptf_vault::VaultState>,
     pub origin_mint: InterfaceAccount<'info, Mint>,
@@ -949,35 +1000,61 @@ pub struct InitializePool<'info> {
 #[derive(Accounts)]
 pub struct UpdateAuthority<'info> {
     pub authority: Signer<'info>,
-    #[account(mut, seeds = [seeds::POOL, pool_state.origin_mint.as_ref()], bump = pool_state.bump, has_one = authority)]
-    pub pool_state: Account<'info, PoolState>,
-    #[account(mut, seeds = [seeds::NULLIFIERS, pool_state.origin_mint.as_ref()], bump = nullifier_set.bump)]
-    pub nullifier_set: Account<'info, NullifierSet>,
+    #[account(
+        mut,
+        seeds = [seeds::POOL, pool_state.load()?.origin_mint.as_ref()],
+        bump = pool_state.load()?.bump,
+        has_one = authority
+    )]
+    pub pool_state: AccountLoader<'info, PoolState>,
+    #[account(
+        mut,
+        seeds = [seeds::NULLIFIERS, pool_state.load()?.origin_mint.as_ref()],
+        bump = nullifier_set.load()?.bump
+    )]
+    pub nullifier_set: AccountLoader<'info, NullifierSet>,
 }
 
 #[derive(Accounts)]
 pub struct Shield<'info> {
-    #[account(mut, seeds = [seeds::POOL, pool_state.origin_mint.as_ref()], bump = pool_state.bump)]
-    pub pool_state: Account<'info, PoolState>,
-    #[account(
-        seeds = [seeds::HOOKS, pool_state.origin_mint.as_ref()],
-        bump = pool_state.hook_config_bump,
-        constraint = hook_config.pool == pool_state.key() @ PoolError::HookConfigInvalid,
-    )]
-    pub hook_config: Account<'info, HookConfig>,
-    #[account(mut, seeds = [seeds::NULLIFIERS, pool_state.origin_mint.as_ref()], bump = nullifier_set.bump)]
-    pub nullifier_set: Account<'info, NullifierSet>,
-    #[account(mut, seeds = [seeds::TREE, pool_state.origin_mint.as_ref()], bump = commitment_tree.bump, constraint = commitment_tree.pool == pool_state.key() @ PoolError::CommitmentTreeMismatch)]
-    pub commitment_tree: Account<'info, CommitmentTree>,
     #[account(
         mut,
-        seeds = [seeds::NOTES, pool_state.origin_mint.as_ref()],
-        bump = pool_state.note_ledger_bump,
-        constraint = note_ledger.key() == pool_state.note_ledger @ PoolError::NoteLedgerMismatch,
-        constraint = note_ledger.pool == pool_state.key() @ PoolError::NoteLedgerMismatch,
+        seeds = [seeds::POOL, pool_state.load()?.origin_mint.as_ref()],
+        bump = pool_state.load()?.bump
     )]
-    pub note_ledger: Account<'info, NoteLedger>,
-    #[account(mut, seeds = [seeds::VAULT, pool_state.origin_mint.as_ref()], bump = vault_state.bump)]
+    pub pool_state: AccountLoader<'info, PoolState>,
+    #[account(
+        seeds = [seeds::HOOKS, pool_state.load()?.origin_mint.as_ref()],
+        bump = pool_state.load()?.hook_config_bump,
+        constraint = hook_config.load()?.pool == pool_state.key() @ PoolError::HookConfigInvalid,
+    )]
+    pub hook_config: AccountLoader<'info, HookConfig>,
+    #[account(
+        mut,
+        seeds = [seeds::NULLIFIERS, pool_state.load()?.origin_mint.as_ref()],
+        bump = nullifier_set.load()?.bump
+    )]
+    pub nullifier_set: AccountLoader<'info, NullifierSet>,
+    #[account(
+        mut,
+        seeds = [seeds::TREE, pool_state.load()?.origin_mint.as_ref()],
+        bump = commitment_tree.load()?.bump,
+        constraint = commitment_tree.load()?.pool == pool_state.key() @ PoolError::CommitmentTreeMismatch
+    )]
+    pub commitment_tree: AccountLoader<'info, CommitmentTree>,
+    #[account(
+        mut,
+        seeds = [seeds::NOTES, pool_state.load()?.origin_mint.as_ref()],
+        bump = pool_state.load()?.note_ledger_bump,
+        constraint = note_ledger.key() == pool_state.load()?.note_ledger @ PoolError::NoteLedgerMismatch,
+        constraint = note_ledger.load()?.pool == pool_state.key() @ PoolError::NoteLedgerMismatch,
+    )]
+    pub note_ledger: AccountLoader<'info, NoteLedger>,
+    #[account(
+        mut,
+        seeds = [seeds::VAULT, pool_state.load()?.origin_mint.as_ref()],
+        bump = vault_state.bump
+    )]
     pub vault_state: Account<'info, ptf_vault::VaultState>,
     #[account(mut)]
     pub vault_token_account: InterfaceAccount<'info, TokenAccount>,
@@ -987,8 +1064,8 @@ pub struct Shield<'info> {
     pub twin_mint: Option<InterfaceAccount<'info, Mint>>,
     pub verifier_program: Program<'info, PtfVerifierGroth16>,
     #[account(
-        address = pool_state.verifying_key,
-        constraint = verifying_key.hash == pool_state.verifying_key_hash @ PoolError::VerifyingKeyHashMismatch,
+        address = pool_state.load()?.verifying_key,
+        constraint = verifying_key.hash == pool_state.load()?.verifying_key_hash @ PoolError::VerifyingKeyHashMismatch,
     )]
     pub verifying_key: Account<'info, VerifyingKeyAccount>,
     pub payer: Signer<'info>,
@@ -999,36 +1076,49 @@ pub struct Shield<'info> {
 
 #[derive(Accounts)]
 pub struct Unshield<'info> {
-    #[account(mut, seeds = [seeds::POOL, pool_state.origin_mint.as_ref()], bump = pool_state.bump)]
-    pub pool_state: Account<'info, PoolState>,
-    #[account(
-        seeds = [seeds::HOOKS, pool_state.origin_mint.as_ref()],
-        bump = pool_state.hook_config_bump,
-        constraint = hook_config.pool == pool_state.key() @ PoolError::HookConfigInvalid,
-    )]
-    pub hook_config: Account<'info, HookConfig>,
-    #[account(mut, seeds = [seeds::NULLIFIERS, pool_state.origin_mint.as_ref()], bump = nullifier_set.bump)]
-    pub nullifier_set: Account<'info, NullifierSet>,
-    #[account(mut, seeds = [seeds::TREE, pool_state.origin_mint.as_ref()], bump = commitment_tree.bump, constraint = commitment_tree.pool == pool_state.key() @ PoolError::CommitmentTreeMismatch)]
-    pub commitment_tree: Account<'info, CommitmentTree>,
     #[account(
         mut,
-        seeds = [seeds::NOTES, pool_state.origin_mint.as_ref()],
-        bump = pool_state.note_ledger_bump,
-        constraint = note_ledger.key() == pool_state.note_ledger @ PoolError::NoteLedgerMismatch,
-        constraint = note_ledger.pool == pool_state.key() @ PoolError::NoteLedgerMismatch,
+        seeds = [seeds::POOL, pool_state.load()?.origin_mint.as_ref()],
+        bump = pool_state.load()?.bump
     )]
-    pub note_ledger: Account<'info, NoteLedger>,
+    pub pool_state: AccountLoader<'info, PoolState>,
     #[account(
-        seeds = [seeds::MINT_MAPPING, pool_state.origin_mint.as_ref()],
+        seeds = [seeds::HOOKS, pool_state.load()?.origin_mint.as_ref()],
+        bump = pool_state.load()?.hook_config_bump,
+        constraint = hook_config.load()?.pool == pool_state.key() @ PoolError::HookConfigInvalid,
+    )]
+    pub hook_config: AccountLoader<'info, HookConfig>,
+    #[account(
+        mut,
+        seeds = [seeds::NULLIFIERS, pool_state.load()?.origin_mint.as_ref()],
+        bump = nullifier_set.load()?.bump
+    )]
+    pub nullifier_set: AccountLoader<'info, NullifierSet>,
+    #[account(
+        mut,
+        seeds = [seeds::TREE, pool_state.load()?.origin_mint.as_ref()],
+        bump = commitment_tree.load()?.bump,
+        constraint = commitment_tree.load()?.pool == pool_state.key() @ PoolError::CommitmentTreeMismatch
+    )]
+    pub commitment_tree: AccountLoader<'info, CommitmentTree>,
+    #[account(
+        mut,
+        seeds = [seeds::NOTES, pool_state.load()?.origin_mint.as_ref()],
+        bump = pool_state.load()?.note_ledger_bump,
+        constraint = note_ledger.key() == pool_state.load()?.note_ledger @ PoolError::NoteLedgerMismatch,
+        constraint = note_ledger.load()?.pool == pool_state.key() @ PoolError::NoteLedgerMismatch,
+    )]
+    pub note_ledger: AccountLoader<'info, NoteLedger>,
+    #[account(
+        seeds = [seeds::MINT_MAPPING, pool_state.load()?.origin_mint.as_ref()],
         bump = mint_mapping.bump,
-        constraint = mint_mapping.origin_mint == pool_state.origin_mint @ PoolError::OriginMintMismatch,
+        constraint = mint_mapping.origin_mint == pool_state.load()?.origin_mint @ PoolError::OriginMintMismatch,
     )]
     pub mint_mapping: Account<'info, MintMapping>,
     pub verifier_program: Program<'info, PtfVerifierGroth16>,
     #[account(
-        address = pool_state.verifying_key,
-        constraint = verifying_key.hash == pool_state.verifying_key_hash @ PoolError::VerifyingKeyHashMismatch,
+        address = pool_state.load()?.verifying_key,
+        constraint = verifying_key.hash == pool_state.load()?.verifying_key_hash @ PoolError::VerifyingKeyHashMismatch,
     )]
     pub verifying_key: Account<'info, VerifyingKeyAccount>,
     #[account(mut)]
@@ -1052,37 +1142,55 @@ pub struct Unshield<'info> {
 #[derive(Accounts)]
 pub struct ConfigureHooks<'info> {
     pub authority: Signer<'info>,
-    #[account(mut, seeds = [seeds::POOL, pool_state.origin_mint.as_ref()], bump = pool_state.bump, has_one = authority)]
-    pub pool_state: Account<'info, PoolState>,
     #[account(
         mut,
-        seeds = [seeds::HOOKS, pool_state.origin_mint.as_ref()],
-        bump = pool_state.hook_config_bump,
-        constraint = hook_config.pool == pool_state.key() @ PoolError::HookConfigInvalid,
+        seeds = [seeds::POOL, pool_state.load()?.origin_mint.as_ref()],
+        bump = pool_state.load()?.bump,
+        has_one = authority
     )]
-    pub hook_config: Account<'info, HookConfig>,
+    pub pool_state: AccountLoader<'info, PoolState>,
+    #[account(
+        mut,
+        seeds = [seeds::HOOKS, pool_state.load()?.origin_mint.as_ref()],
+        bump = pool_state.load()?.hook_config_bump,
+        constraint = hook_config.load()?.pool == pool_state.key() @ PoolError::HookConfigInvalid,
+    )]
+    pub hook_config: AccountLoader<'info, HookConfig>,
 }
 
 #[derive(Accounts)]
 pub struct PrivateTransfer<'info> {
-    #[account(mut, seeds = [seeds::POOL, pool_state.origin_mint.as_ref()], bump = pool_state.bump)]
-    pub pool_state: Account<'info, PoolState>,
-    #[account(mut, seeds = [seeds::NULLIFIERS, pool_state.origin_mint.as_ref()], bump = nullifier_set.bump)]
-    pub nullifier_set: Account<'info, NullifierSet>,
-    #[account(mut, seeds = [seeds::TREE, pool_state.origin_mint.as_ref()], bump = commitment_tree.bump, constraint = commitment_tree.pool == pool_state.key() @ PoolError::CommitmentTreeMismatch)]
-    pub commitment_tree: Account<'info, CommitmentTree>,
     #[account(
         mut,
-        seeds = [seeds::NOTES, pool_state.origin_mint.as_ref()],
-        bump = pool_state.note_ledger_bump,
-        constraint = note_ledger.key() == pool_state.note_ledger @ PoolError::NoteLedgerMismatch,
-        constraint = note_ledger.pool == pool_state.key() @ PoolError::NoteLedgerMismatch,
+        seeds = [seeds::POOL, pool_state.load()?.origin_mint.as_ref()],
+        bump = pool_state.load()?.bump
     )]
-    pub note_ledger: Account<'info, NoteLedger>,
+    pub pool_state: AccountLoader<'info, PoolState>,
+    #[account(
+        mut,
+        seeds = [seeds::NULLIFIERS, pool_state.load()?.origin_mint.as_ref()],
+        bump = nullifier_set.load()?.bump
+    )]
+    pub nullifier_set: AccountLoader<'info, NullifierSet>,
+    #[account(
+        mut,
+        seeds = [seeds::TREE, pool_state.load()?.origin_mint.as_ref()],
+        bump = commitment_tree.load()?.bump,
+        constraint = commitment_tree.load()?.pool == pool_state.key() @ PoolError::CommitmentTreeMismatch
+    )]
+    pub commitment_tree: AccountLoader<'info, CommitmentTree>,
+    #[account(
+        mut,
+        seeds = [seeds::NOTES, pool_state.load()?.origin_mint.as_ref()],
+        bump = pool_state.load()?.note_ledger_bump,
+        constraint = note_ledger.key() == pool_state.load()?.note_ledger @ PoolError::NoteLedgerMismatch,
+        constraint = note_ledger.load()?.pool == pool_state.key() @ PoolError::NoteLedgerMismatch,
+    )]
+    pub note_ledger: AccountLoader<'info, NoteLedger>,
     pub verifier_program: Program<'info, PtfVerifierGroth16>,
     #[account(
-        address = pool_state.verifying_key,
-        constraint = verifying_key.hash == pool_state.verifying_key_hash @ PoolError::VerifyingKeyHashMismatch,
+        address = pool_state.load()?.verifying_key,
+        constraint = verifying_key.hash == pool_state.load()?.verifying_key_hash @ PoolError::VerifyingKeyHashMismatch,
     )]
     pub verifying_key: Account<'info, VerifyingKeyAccount>,
 }
@@ -1128,18 +1236,19 @@ pub struct HookConfigArgs {
     pub mode: HookAccountMode,
 }
 
-#[account]
+#[account(zero_copy(unsafe))]
+#[repr(C)]
 pub struct CommitmentTree {
     pub pool: Pubkey,
     pub canopy_depth: u8,
     pub next_index: u64,
     pub current_root: [u8; 32],
-    pub frontier: [[u8; 32]; Self::DEPTH],
-    pub zeroes: [[u8; 32]; Self::DEPTH],
-    pub canopy: [[u8; 32]; Self::MAX_CANOPY],
-    pub recent_commitments: [[u8; 32]; Self::MAX_CANOPY],
-    pub recent_amount_commitments: [[u8; 32]; Self::MAX_CANOPY],
-    pub recent_indices: [u64; Self::MAX_CANOPY],
+    pub frontier: [[u8; 32]; CommitmentTree::DEPTH],
+    pub zeroes: [[u8; 32]; CommitmentTree::DEPTH],
+    pub canopy: [[u8; 32]; CommitmentTree::MAX_CANOPY],
+    pub recent_commitments: [[u8; 32]; CommitmentTree::MAX_CANOPY],
+    pub recent_amount_commitments: [[u8; 32]; CommitmentTree::MAX_CANOPY],
+    pub recent_indices: [u64; CommitmentTree::MAX_CANOPY],
     pub recent_len: u8,
     pub bump: u8,
 }
@@ -1290,7 +1399,8 @@ impl CommitmentTree {
     }
 }
 
-#[account]
+#[account(zero_copy(unsafe))]
+#[repr(C)]
 pub struct PoolState {
     pub authority: Pubkey,
     pub origin_mint: Pubkey,
@@ -1301,7 +1411,7 @@ pub struct PoolState {
     pub verifying_key_id: [u8; 32],
     pub verifying_key_hash: [u8; 32],
     pub current_root: [u8; 32],
-    pub recent_roots: [[u8; 32]; Self::MAX_ROOTS],
+    pub recent_roots: [[u8; 32]; PoolState::MAX_ROOTS],
     pub roots_len: u8,
     pub fee_bps: u16,
     pub features: FeatureFlags,
@@ -1378,12 +1488,13 @@ impl PoolState {
     }
 }
 
-#[account]
+#[account(zero_copy(unsafe))]
+#[repr(C)]
 pub struct NullifierSet {
     pub pool: Pubkey,
     pub count: u32,
-    pub entries: [[u8; 32]; Self::MAX_NULLIFIERS],
-    pub bloom: [u8; Self::BLOOM_BYTES],
+    pub entries: [[u8; 32]; NullifierSet::MAX_NULLIFIERS],
+    pub bloom: [u8; NullifierSet::BLOOM_BYTES],
     pub bump: u8,
 }
 
@@ -1453,7 +1564,8 @@ impl NullifierSet {
     }
 }
 
-#[account]
+#[account(zero_copy(unsafe))]
+#[repr(C)]
 pub struct NoteLedger {
     pub pool: Pubkey,
     pub total_minted: u128,
@@ -1656,12 +1768,13 @@ fn validate_unshield_public_inputs(
     Ok(())
 }
 
-#[account]
+#[account(zero_copy(unsafe))]
+#[repr(C)]
 pub struct HookConfig {
     pub pool: Pubkey,
     pub post_shield_program_id: Pubkey,
     pub post_unshield_program_id: Pubkey,
-    pub required_accounts: [[u8; 32]; Self::MAX_REQUIRED_ACCOUNTS],
+    pub required_accounts: [[u8; 32]; HookConfig::MAX_REQUIRED_ACCOUNTS],
     pub required_accounts_len: u8,
     pub mode: HookAccountMode,
     pub bump: u8,
@@ -1774,6 +1887,7 @@ pub enum UnshieldMode {
     Twin = 1,
 }
 
+#[repr(u8)]
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, PartialEq, Eq)]
 pub enum HookAccountMode {
     Strict = 0,

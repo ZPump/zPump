@@ -23,3 +23,6 @@ hex = "0.4"
 [replace]
 "solana-zk-sdk:2.2.0" = { path = "vendor/solana-zk-sdk" }
 "solana-curve25519:2.2.0" = { path = "vendor/solana-curve25519" }
+
+[profile.release]
+overflow-checks = true

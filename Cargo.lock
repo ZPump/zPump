@@ -3697,11 +3697,13 @@ dependencies = [
 name = "program-test-harness"
 version = "0.1.0"
 dependencies = [
+ "anchor-lang",
  "ptf-factory",
  "sha2 0.10.9",
  "solana-program 3.0.0",
  "solana-program-test 3.0.10",
  "solana-sdk 3.0.0",
+ "spl-token-2022",
  "tokio",
 ]
 
@@ -3737,6 +3739,7 @@ dependencies = [
  "anchor-spl",
  "ark-bn254",
  "ark-ff",
+ "bytemuck",
  "hex",
  "ptf-common",
  "ptf-factory",
