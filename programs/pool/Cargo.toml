@@ -19,6 +19,7 @@ hex = { workspace = true }
 ark-bn254 = { version = "0.4", default-features = false, features = ["scalar_field"] }
 ark-ff = { version = "0.4", default-features = false }
 sha3 = { workspace = true }
+bytemuck = { version = "1.15", default-features = false, features = ["derive"] }
 
 [features]
 default = []

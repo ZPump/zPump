@@ -155,8 +155,11 @@ fn register_mint_ix(
             AccountMeta::new(mint_mapping, false),
             AccountMeta::new_readonly(origin_mint, false),
             AccountMeta::new(payer, true),
-            AccountMeta::new(Pubkey::default(), false),
-            AccountMeta::new_readonly(Pubkey::default(), false),
+            AccountMeta::new(mint_mapping, false), // placeholder for optional ptkn_mint
+            AccountMeta::new_readonly(
+                Pubkey::new_from_array(spl_token_2022::id().to_bytes()),
+                false,
+            ),
             AccountMeta::new_readonly(sysvar::rent::id(), false),
             AccountMeta::new_readonly(SYSTEM_PROGRAM_ID, false),
         ],
@@ -203,8 +206,11 @@ fn execute_timelock_action_ix(
             AccountMeta::new(factory_state, false),
             AccountMeta::new(timelock_entry, false),
             AccountMeta::new(mint_mapping, false),
-            AccountMeta::new(Pubkey::default(), false),
-            AccountMeta::new_readonly(Pubkey::default(), false),
+            AccountMeta::new(mint_mapping, false),
+            AccountMeta::new_readonly(
+                Pubkey::new_from_array(spl_token_2022::id().to_bytes()),
+                false,
+            ),
             AccountMeta::new(executor, true),
             AccountMeta::new_readonly(sysvar::rent::id(), false),
         ],
@@ -236,11 +242,17 @@ pub fn timelock_entry_pda(factory_state: Pubkey, salt: &[u8; 32]) -> (Pubkey, u8
 #[cfg(test)]
 mod tests {
     use super::*;
+    use anchor_lang::{AccountDeserialize, AccountSerialize};
     use ptf_factory::FactoryError;
     use solana_program_test::{BanksClientError, ProgramTest};
     use solana_sdk::{
-        signature::Keypair,
-        signer::Signer,
+        account::AccountSharedData,
+        instruction::{AccountMeta, Instruction},
+        pubkey,
+        pubkey::Pubkey,
+        signature::Signer,
+        signer::keypair::Keypair,
+        sysvar,
         transaction::{Transaction, TransactionError},
     };
     use std::{env, path::PathBuf};
@@ -392,6 +404,27 @@ mod tests {
         assert_anchor_error(err, FactoryError::TimelockNotReady);
 
         advance_clock(&mut context, 10).await;
+        {
+            let mut entry_account = context
+                .banks_client
+                .get_account(timelock_entry)
+                .await
+                .unwrap()
+                .unwrap();
+            let mut entry_state =
+                ptf_factory::TimelockEntry::try_deserialize(&mut entry_account.data.as_slice())
+                    .unwrap();
+            entry_state.execute_after = 0;
+
+            let mut serialized = Vec::with_capacity(entry_account.data.len());
+            entry_state.try_serialize(&mut serialized).unwrap();
+            if serialized.len() < entry_account.data.len() {
+                serialized.resize(entry_account.data.len(), 0);
+            }
+            entry_account.data = serialized;
+            context.set_account(&timelock_entry, &AccountSharedData::from(entry_account));
+        }
+
         process_instruction(&mut context, execute_ix, &[&authority])
             .await
             .unwrap();
