@@ -1,5 +1,5 @@
 use anchor_lang::prelude::*;
-use anchor_spl::token::{self, Mint, Token, TokenAccount, Transfer};
+use anchor_spl::token_interface::{self as token_interface, Mint, TokenAccount, TokenInterface, Transfer};
 
 use ptf_common::seeds;
 
@@ -33,7 +33,8 @@ pub mod ptf_vault {
             authority: ctx.accounts.depositor.to_account_info(),
         };
         let cpi_ctx = CpiContext::new(ctx.accounts.token_program.to_account_info(), cpi_accounts);
-        token::transfer(cpi_ctx, amount)?;
+        #[allow(deprecated)]
+        token_interface::transfer(cpi_ctx, amount)?;
 
         emit!(VaultDeposit {
             origin_mint: vault_state.origin_mint,
@@ -68,7 +69,8 @@ pub mod ptf_vault {
             cpi_accounts,
             signer,
         );
-        token::transfer(cpi_ctx, amount)?;
+        #[allow(deprecated)]
+        token_interface::transfer(cpi_ctx, amount)?;
 
         emit!(VaultRelease {
             origin_mint: vault_state.origin_mint,
@@ -121,7 +123,7 @@ pub struct Deposit<'info> {
     pub depositor: Signer<'info>,
     #[account(mut)]
     pub depositor_token_account: Account<'info, TokenAccount>,
-    pub token_program: Program<'info, Token>,
+    pub token_program: Interface<'info, TokenInterface>,
 }
 
 #[derive(Accounts)]
@@ -134,7 +136,7 @@ pub struct Release<'info> {
     pub destination_token_account: Account<'info, TokenAccount>,
     /// CHECK: Pool authority must be provided by the caller program.
     pub pool_authority: AccountInfo<'info>,
-    pub token_program: Program<'info, Token>,
+    pub token_program: Interface<'info, TokenInterface>,
 }
 
 #[derive(Accounts)]
@@ -172,12 +174,12 @@ pub struct VaultRelease {
 
 #[error_code]
 pub enum VaultError {
-    #[msg("caller not authorized to release funds")]
+    #[msg("E_UNAUTHORIZED_CALLER")]
     UnauthorizedCaller,
-    #[msg("vault mint mismatch")]
+    #[msg("E_INVALID_MINT")]
     InvalidMint,
-    #[msg("deposit amount must be positive")]
+    #[msg("E_INVALID_DEPOSIT_AMOUNT")]
     InvalidDepositAmount,
-    #[msg("release amount must be positive")]
+    #[msg("E_INVALID_RELEASE_AMOUNT")]
     InvalidReleaseAmount,
 }

@@ -89,7 +89,6 @@ pub struct InitializeVerifyingKey<'info> {
         seeds = [
             ptf_common::seeds::VERIFIER,
             &circuit_tag,
-            &verifying_key_id,
             &[version]
         ],
         bump,
@@ -110,7 +109,6 @@ pub struct VerifyGroth16<'info> {
         seeds = [
             ptf_common::seeds::VERIFIER,
             &verifier_state.circuit_tag,
-            &verifying_key_id,
             &[verifier_state.version],
         ],
         bump = verifier_state.bump,
