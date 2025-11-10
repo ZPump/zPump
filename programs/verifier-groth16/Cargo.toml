@@ -12,6 +12,15 @@ anchor-lang = { workspace = true }
 sha3 = { workspace = true }
 ptf-common = { path = "../common" }
 
+[target.'cfg(not(target_arch = "bpf"))'.dependencies]
+ark-bn254 = { version = "0.4", default-features = false, features = ["std"] }
+ark-ec = { version = "0.4", default-features = false, features = ["std"] }
+ark-ff = { version = "0.4", default-features = false, features = ["std"] }
+ark-groth16 = { version = "0.4", default-features = false, features = ["std"] }
+ark-relations = { version = "0.4", default-features = false, features = ["std"] }
+ark-serialize = { version = "0.4", default-features = false, features = ["std", "derive"] }
+ark-std = { version = "0.4", default-features = false, features = ["std"] }
+
 [features]
 default = []
 no-entrypoint = []
