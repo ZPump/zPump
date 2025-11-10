@@ -672,3 +672,268 @@ pub enum FactoryError {
     #[msg("origin mint mismatch")]
     OriginMintMismatch,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use anchor_lang::solana_program::{
+        program_option::COption, system_program, sysvar::rent::Rent,
+    };
+    use anchor_lang::{prelude::*, AccountDeserialize, InstructionData, ToAccountMetas};
+    use ptf_common::{seeds, FEATURE_HOOKS_ENABLED};
+    use solana_program_test::{processor, BanksClientError, ProgramTest, ProgramTestContext};
+    use solana_sdk::{
+        instruction::Instruction,
+        instruction::InstructionError,
+        signature::Keypair,
+        signer::Signer,
+        transaction::{Transaction, TransactionError},
+    };
+    use spl_token::state::Mint as SplMint;
+
+    const DEFAULT_FEE_BPS: u16 = 5;
+    const TIMELOCK_SECS: i64 = 5;
+
+    #[tokio::test]
+    async fn timelock_blocks_direct_update() {
+        let authority = Keypair::new();
+        let mut program_test =
+            ProgramTest::new("ptf_factory", crate::id(), processor!(ptf_factory::entry));
+
+        let mut context = program_test.start_with_context().await;
+        context.last_blockhash = context.banks_client.get_latest_blockhash().await.unwrap();
+
+        initialize_factory(&mut context, &authority, DEFAULT_FEE_BPS, TIMELOCK_SECS)
+            .await
+            .unwrap();
+
+        let (factory_state, _) = factory_state_pda();
+        let ix = Instruction {
+            program_id: crate::id(),
+            accounts: crate::accounts::SetDefaultFeatures {
+                factory_state,
+                authority: authority.pubkey(),
+            }
+            .to_account_metas(None),
+            data: crate::instruction::SetDefaultFeatures {
+                default_features: FEATURE_HOOKS_ENABLED,
+            }
+            .data(),
+        };
+
+        let err = process_instruction(&mut context, ix, &[&authority])
+            .await
+            .unwrap_err();
+        assert_anchor_error(err, FactoryError::TimelockOnlyQueue);
+    }
+
+    #[tokio::test]
+    async fn timelock_queue_and_execute_mint_update() {
+        let authority = Keypair::new();
+        let origin_mint = Keypair::new();
+
+        let mut program_test =
+            ProgramTest::new("ptf_factory", crate::id(), processor!(ptf_factory::entry));
+
+        let rent = Rent::default();
+        let mut mint_account = solana_sdk::account::Account::new(
+            rent.minimum_balance(SplMint::LEN),
+            SplMint::LEN,
+            &spl_token::id(),
+        );
+        let mut mint_state = SplMint::default();
+        mint_state.decimals = 6;
+        mint_state.mint_authority = COption::Some(authority.pubkey());
+        mint_state.pack_into_slice(&mut mint_account.data_mut());
+        program_test.add_account(origin_mint.pubkey(), mint_account);
+
+        let mut context = program_test.start_with_context().await;
+        context.last_blockhash = context.banks_client.get_latest_blockhash().await.unwrap();
+
+        initialize_factory(&mut context, &authority, DEFAULT_FEE_BPS, TIMELOCK_SECS)
+            .await
+            .unwrap();
+
+        register_mint(&mut context, &authority, &origin_mint, 6)
+            .await
+            .unwrap();
+
+        let salt = [7u8; 32];
+        let (factory_state, _) = factory_state_pda();
+        let (mint_mapping, _) = mint_mapping_pda(origin_mint.pubkey());
+        let (timelock_entry, _) = timelock_entry_pda(factory_state, &salt);
+
+        let action = TimelockAction::UpdateMint {
+            origin_mint: origin_mint.pubkey(),
+            params: UpdateMintParams {
+                enable_ptkn: None,
+                features: Some(FEATURE_HOOKS_ENABLED),
+                fee_bps_override: None,
+            },
+        };
+
+        let queue_ix = Instruction {
+            program_id: crate::id(),
+            accounts: crate::accounts::QueueTimelockAction {
+                factory_state,
+                authority: authority.pubkey(),
+                timelock_entry,
+                payer: context.payer.pubkey(),
+                system_program: system_program::id(),
+                mint_mapping: Some(mint_mapping),
+            }
+            .to_account_metas(None),
+            data: crate::instruction::QueueTimelockAction {
+                salt,
+                action: action.clone(),
+            }
+            .data(),
+        };
+        process_instruction(&mut context, queue_ix, &[&authority])
+            .await
+            .unwrap();
+
+        let execute_ix = Instruction {
+            program_id: crate::id(),
+            accounts: crate::accounts::ExecuteTimelockAction {
+                factory_state,
+                timelock_entry,
+                mint_mapping: Some(mint_mapping),
+                ptkn_mint: None,
+                executor: authority.pubkey(),
+            }
+            .to_account_metas(None),
+            data: crate::instruction::ExecuteTimelockAction {}.data(),
+        };
+
+        let err = process_instruction(&mut context, execute_ix.clone(), &[&authority])
+            .await
+            .unwrap_err();
+        assert_anchor_error(err, FactoryError::TimelockNotReady);
+
+        advance_clock(&mut context, 10).await;
+
+        process_instruction(&mut context, execute_ix, &[&authority])
+            .await
+            .unwrap();
+
+        let mut account_data = context
+            .banks_client
+            .get_account(mint_mapping)
+            .await
+            .unwrap()
+            .unwrap()
+            .data;
+        let mapping = MintMapping::try_deserialize(&mut account_data.as_slice()).unwrap();
+        assert!(mapping
+            .features
+            .contains(FeatureFlags::from_bits(FEATURE_HOOKS_ENABLED)));
+    }
+
+    async fn initialize_factory(
+        context: &mut ProgramTestContext,
+        authority: &Keypair,
+        default_fee_bps: u16,
+        timelock_seconds: i64,
+    ) -> Result<(), BanksClientError> {
+        let (factory_state, _) = factory_state_pda();
+        let ix = Instruction {
+            program_id: crate::id(),
+            accounts: crate::accounts::InitializeFactory {
+                factory_state,
+                authority: authority.pubkey(),
+                payer: context.payer.pubkey(),
+                system_program: system_program::id(),
+            }
+            .to_account_metas(None),
+            data: crate::instruction::InitializeFactory {
+                authority: authority.pubkey(),
+                default_fee_bps,
+                timelock_seconds,
+            }
+            .data(),
+        };
+        process_instruction(context, ix, &[authority]).await
+    }
+
+    async fn register_mint(
+        context: &mut ProgramTestContext,
+        authority: &Keypair,
+        origin_mint: &Keypair,
+        decimals: u8,
+    ) -> Result<(), BanksClientError> {
+        let (factory_state, _) = factory_state_pda();
+        let (mint_mapping, _) = mint_mapping_pda(origin_mint.pubkey());
+        let ix = Instruction {
+            program_id: crate::id(),
+            accounts: crate::accounts::RegisterMint {
+                factory_state,
+                authority: authority.pubkey(),
+                mint_mapping,
+                origin_mint: origin_mint.pubkey(),
+                ptkn_mint: None,
+                payer: context.payer.pubkey(),
+                system_program: system_program::id(),
+            }
+            .to_account_metas(None),
+            data: crate::instruction::RegisterMint {
+                decimals,
+                enable_ptkn: false,
+                feature_flags: None,
+                fee_bps_override: None,
+            }
+            .data(),
+        };
+        process_instruction(context, ix, &[authority]).await
+    }
+
+    async fn process_instruction(
+        context: &mut ProgramTestContext,
+        instruction: Instruction,
+        additional_signers: &[&Keypair],
+    ) -> Result<(), BanksClientError> {
+        let mut tx = Transaction::new_with_payer(&[instruction], Some(&context.payer.pubkey()));
+        let mut signers = vec![&context.payer];
+        signers.extend_from_slice(additional_signers);
+        tx.sign(&signers, context.last_blockhash);
+        let result = context.banks_client.process_transaction(tx).await;
+        if result.is_ok() {
+            context.last_blockhash = context.banks_client.get_latest_blockhash().await.unwrap();
+        }
+        result
+    }
+
+    async fn advance_clock(context: &mut ProgramTestContext, slots: u64) {
+        let current_slot = context.slot();
+        context.warp_to_slot(current_slot + slots).unwrap();
+        context.last_blockhash = context.banks_client.get_latest_blockhash().await.unwrap();
+    }
+
+    fn factory_state_pda() -> (Pubkey, u8) {
+        Pubkey::find_program_address(&[seeds::FACTORY, crate::id().as_ref()], &crate::id())
+    }
+
+    fn mint_mapping_pda(origin_mint: Pubkey) -> (Pubkey, u8) {
+        Pubkey::find_program_address(&[seeds::MINT_MAPPING, origin_mint.as_ref()], &crate::id())
+    }
+
+    fn timelock_entry_pda(factory_state: Pubkey, salt: &[u8; 32]) -> (Pubkey, u8) {
+        Pubkey::find_program_address(
+            &[seeds::TIMELOCK, factory_state.as_ref(), salt.as_ref()],
+            &crate::id(),
+        )
+    }
+
+    fn assert_anchor_error(err: BanksClientError, expected: FactoryError) {
+        match err {
+            BanksClientError::TransactionError(TransactionError::InstructionError(
+                _,
+                InstructionError::Custom(code),
+            )) => {
+                let expected_code: u32 = expected.into();
+                assert_eq!(code, expected_code);
+            }
+            other => panic!("unexpected error: {:?}", other),
+        }
+    }
+}
