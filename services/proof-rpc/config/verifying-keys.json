@@ -2,16 +2,22 @@
   {
     "circuit": "shield",
     "version": "v1",
-    "path": "../../circuits/keys/shield.json"
+    "path": "../../circuits/keys/shield.json",
+    "wasm": "../../circuits/wasm/shield.wasm",
+    "zkey": "../../circuits/keys/shield.zkey"
   },
   {
     "circuit": "unshield",
     "version": "v1",
-    "path": "../../circuits/keys/unshield.json"
+    "path": "../../circuits/keys/unshield.json",
+    "wasm": "../../circuits/wasm/unshield.wasm",
+    "zkey": "../../circuits/keys/unshield.zkey"
   },
   {
     "circuit": "transfer",
     "version": "v1",
-    "path": "../../circuits/keys/transfer.json"
+    "path": "../../circuits/keys/transfer.json",
+    "wasm": "../../circuits/wasm/transfer.wasm",
+    "zkey": "../../circuits/keys/transfer.zkey"
   }
 ]
