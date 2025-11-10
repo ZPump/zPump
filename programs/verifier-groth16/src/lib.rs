@@ -183,6 +183,7 @@ fn groth16_verify(verifying_key: &[u8], proof: &[u8], public_inputs: &[u8]) -> b
     use ark_bn254::{Bn254, Fr};
     use ark_groth16::{prepare_verifying_key, Groth16, Proof, VerifyingKey};
     use ark_serialize::CanonicalDeserialize;
+    use ark_snark::SNARK;
     use std::io::Cursor;
 
     let mut vk_cursor = Cursor::new(verifying_key);
@@ -196,12 +197,13 @@ fn groth16_verify(verifying_key: &[u8], proof: &[u8], public_inputs: &[u8]) -> b
     }
 
     let mut proof_cursor = Cursor::new(proof);
+    let proof_bytes_len = proof.len();
     let proof = match Proof::<Bn254>::deserialize_uncompressed(&mut proof_cursor) {
         Ok(proof) => proof,
         Err(_) => return false,
     };
 
-    if (proof_cursor.position() as usize) != proof.len() {
+    if (proof_cursor.position() as usize) != proof_bytes_len {
         return false;
     }
 
@@ -216,7 +218,7 @@ fn groth16_verify(verifying_key: &[u8], proof: &[u8], public_inputs: &[u8]) -> b
     }
 
     let prepared = prepare_verifying_key(&vk);
-    Groth16::<Bn254>::verify_with_processed(&prepared, &inputs, &proof).unwrap_or(false)
+    Groth16::<Bn254>::verify_with_processed_vk(&prepared, &inputs, &proof).unwrap_or(false)
 }
 
 #[cfg(test)]
@@ -228,7 +230,8 @@ mod tests {
         ConstraintSynthesizer, ConstraintSystemRef, LinearCombination, SynthesisError, Variable,
     };
     use ark_serialize::CanonicalSerialize;
-    use ark_std::test_rng;
+    use ark_snark::SNARK;
+    use ark_std::rand::{rngs::StdRng, SeedableRng};
 
     #[derive(Clone)]
     struct SquareCircuit {
@@ -237,7 +240,10 @@ mod tests {
     }
 
     impl ConstraintSynthesizer<Fr> for SquareCircuit {
-        fn generate_constraints(self, cs: ConstraintSystemRef<Fr>) -> Result<(), SynthesisError> {
+        fn generate_constraints(
+            self,
+            cs: ConstraintSystemRef<Fr>,
+        ) -> std::result::Result<(), SynthesisError> {
             let witness_x = cs.new_witness_variable(|| Ok(self.x))?;
             let public_y = cs.new_input_variable(|| Ok(self.y))?;
             let witness_sq = cs.new_witness_variable(|| Ok(self.x * self.x))?;
@@ -260,15 +266,17 @@ mod tests {
 
     #[test]
     fn groth16_host_fallback_validates_real_proof() {
-        let mut rng = test_rng();
+        let mut rng = StdRng::seed_from_u64(42);
         let circuit = SquareCircuit {
             x: Fr::from(3u64),
             y: Fr::from(9u64),
         };
 
-        let params =
-            Groth16::<ark_bn254::Bn254>::generate_random_parameters(circuit.clone(), &mut rng)
-                .expect("parameters generation");
+        let params = Groth16::<ark_bn254::Bn254>::generate_random_parameters_with_reduction(
+            circuit.clone(),
+            &mut rng,
+        )
+        .expect("parameters generation");
 
         let mut vk_bytes = Vec::new();
         params
@@ -292,21 +300,27 @@ mod tests {
         assert!(groth16_verify(&vk_bytes, &proof_bytes, &public_bytes));
 
         let mut invalid_proof = proof_bytes.clone();
-        invalid_proof[invalid_proof.len() - 1] ^= 0x42;
+        let last_index = invalid_proof
+            .len()
+            .checked_sub(1)
+            .expect("proof must not be empty");
+        invalid_proof[last_index] ^= 0x42;
         assert!(!groth16_verify(&vk_bytes, &invalid_proof, &public_bytes));
     }
 
     #[test]
     fn groth16_host_fallback_rejects_malformed_buffers() {
-        let mut rng = test_rng();
+        let mut rng = StdRng::seed_from_u64(43);
         let circuit = SquareCircuit {
             x: Fr::from(2u64),
             y: Fr::from(4u64),
         };
 
-        let params =
-            Groth16::<ark_bn254::Bn254>::generate_random_parameters(circuit.clone(), &mut rng)
-                .expect("parameters generation");
+        let params = Groth16::<ark_bn254::Bn254>::generate_random_parameters_with_reduction(
+            circuit.clone(),
+            &mut rng,
+        )
+        .expect("parameters generation");
 
         let mut vk_bytes = Vec::new();
         params
