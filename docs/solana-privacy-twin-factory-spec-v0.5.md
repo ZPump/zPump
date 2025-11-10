@@ -68,13 +68,33 @@ Unshield outputs:
 
 ---
 
-## 4) On‑Chain Programs (Anchor 0.32+)
+## 4) On‑Chain Programs (Anchor 0.32+, Solana 2.3.x)
 **Repo paths:**
 - `programs/factory`
 - `programs/vault`
 - `programs/pool`
 - `programs/verifier-groth16`
 - (reserved, later) `programs/relayer-adapter` *(NOT deployed in MVP)*
+
+### 4.0.1 Dependency & Feature Baseline (Blocking)
+The Anchor 0.32 toolchain is **hard‑pinned** to the Solana **2.3.x** ABI. To avoid the hard failures we hit when trying to mix 3.x crates in, the entire workspace MUST stay on the following stack until Anchor publishes a 3.x‑compatible release:
+
+| Component | Required version / feature | Notes |
+|-----------|---------------------------|-------|
+| Rust toolchain | `stable` 1.78+ | Need `cargo fmt` edition 2021. |
+| Anchor crates (`anchor-lang`, `anchor-spl`) | `0.32.1` | Ships with Solana 2.3.x bindings; do **not** override individual Solana deps. |
+| `solana-program`, `solana-sdk`, `solana-program-test`, `solana-instruction`, etc. | `2.3.x` line | Pulled transitively from Anchor; no 3.x crates in the dependency tree. |
+| `spl-token`, `spl-associated-token-account`, `spl-token-2022` | `8.x` | Matches Anchor’s token_interface module. |
+| `ptf-vault` | features `["no-entrypoint", "cpi"]` | Required so pool CPI calls compile. |
+| `ptf-factory` | features `["no-entrypoint", "cpi"]` | Pool relies on `ptf_factory::cpi::mint_ptkn`. |
+| `ptf-pool` | use `InterfaceAccount<'info, Mint/TokenAccount>` everywhere | Needed for Token‑2022 compatibility and to remove owner checks. |
+
+**Rule:** We only upgrade to the Solana 3.x stack once Anchor publishes an official build that exposes the new `AccountInfo` layout, `ProgramTest` glue, and CPI shims. Until then, attempting to patch in 3.x crates causes type mismatches (two `AccountInfo` structs, incompatible `ProgramResult`, private `entry` wrappers). Documented errors from the aborted attempt:
+1. `ProgramTest::new(..., processor!(crate::entry))` rejected because `crate::entry` exports the Anchor (2.x) ABI, not the new 3.x function pointer.
+2. CPI helpers failed with *“expected solana_sdk::instruction::Instruction, found anchor_lang::solana_program::instruction::Instruction”* due to duplicated crates.
+3. `solana_program::system_instruction` / `system_program` modules disappeared upstream, forcing invasive refactors throughout Factory tests.
+
+Therefore **do not** raise any Solana crate above 2.3.x (and do not add 3.x transitive deps) until the entire stack upgrades in lockstep.
 
 ### 4.1 Factory Registry (finalized API)
 **Purpose:** One mapping from `origin_mint` → **optional** `P(M)`; owns mint authority of `P(M)` when enabled.
@@ -507,3 +527,30 @@ This spec locks in a **no‑relayer MVP** that is **production‑viable** and **
 - `indexer/photon/**`
 - `services/proof-rpc/**`
 - `web/app/**`
+
+---
+
+## 22) Implementation Deviations & Fix‑List (Lessons Learned)
+We hit several integration problems that were **not** called out in earlier drafts of this spec. They are now part of the committed requirements so a fresh rebuild does not repeat them.
+
+### 22.1 Dependency Stack Misalignment
+- **Issue:** Mixing Solana 3.x crates with Anchor 0.32.1 caused duplicate `AccountInfo`, `Instruction`, and `ProgramError` types. `ProgramTest` refused to accept `processor!(crate::entry)` because Anchor still emits the 2.x ABI.
+- **Spec Fix:** Section 4.0.1 now locks the entire workspace to the Solana 2.3.x line until Anchor ships a 3.x‑compatible release. No crate in the tree may opt into 3.x (including tests, SDKs, or direct `solana-program` overrides).
+
+### 22.2 Pool Token Accounts Must Use `InterfaceAccount`
+- **Issue:** `programs/pool` still used `Account<'info, Mint/TokenAccount>`, which forced owner checks and broke Token‑2022 compatibility.
+- **Spec Fix:** Pool instructions must use `InterfaceAccount` everywhere and rely on the SPL Token Interface traits for decimals, authorities, and CPI transfers. All mint metadata reads (decimals, authorities) must go through the interface rather than owner comparisons.
+
+### 22.3 Factory CPI Feature Flags
+- **Issue:** `ptf_factory::cpi::mint_ptkn` was inaccessible because the crate was not compiled with `features = ["no-entrypoint", "cpi"]`. The pool program therefore could not mint the privacy twin.
+- **Spec Fix:** Section 4.0.1 now mandates the feature matrix for every crate (`ptf-factory`, `ptf-vault`, `ptf-pool`). CI should fail if the feature set deviates.
+
+### 22.4 Factory Integration Tests
+- **Issue:** The tests referenced `crate::accounts::SetDefaultFeatures` (which never existed) and attempted to call `ProgramTest::new` with Solana 3.x types. This blocked `cargo test`.
+- **Spec Fix:** Tests must call `UpdateFactoryAuthority` plus `SetDefaultFeatures` instruction data, and they must run on Solana 2.3.x `ProgramTest`. The spec now captures the dependency pin so this configuration is explicit.
+
+### 22.5 Hook + CPI Borrow Rules
+- **Issue:** Hook execution reused `ctx.accounts.pool_state` after handing out mutable references, triggering borrow checker errors once we tried to modernize the code.
+- **Spec Fix:** Hook invocations must snapshot the data they need (mint, mode, bump seeds, etc.) into local variables before issuing CPI calls. The spec now mentions this pattern alongside the invariant check requirements.
+
+**Action:** Treat this section as a regression checklist. Any future upgrade (e.g., Solana 3.x) must update the spec first, then land code changes in lockstep.
