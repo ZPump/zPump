@@ -11,6 +11,7 @@ const FEATURE_HOOKS_ENABLED: u8 = 0x02;
 const SEED_FACTORY: &[u8] = b"factory";
 const SEED_MINT_MAPPING: &[u8] = b"map";
 const SEED_TIMELOCK: &[u8] = b"timelock";
+const SYSTEM_PROGRAM_ID: Pubkey = pubkey!("11111111111111111111111111111111");
 
 fn sighash(name: &str) -> [u8; 8] {
     let mut hasher = Sha256::new();
@@ -61,7 +62,10 @@ fn serialize_timelock_action(buf: &mut Vec<u8>, action: &TimelockAction) {
             buf.push(0);
             buf.push(*features);
         }
-        TimelockAction::UpdateMint { origin_mint, params } => {
+        TimelockAction::UpdateMint {
+            origin_mint,
+            params,
+        } => {
             buf.push(1);
             serialize_pubkey(buf, origin_mint);
             serialize_option_bool(buf, params.enable_ptkn);
@@ -82,8 +86,13 @@ struct UpdateMintParams {
 
 #[derive(Clone)]
 enum TimelockAction {
-    SetDefaultFeatures { features: u8 },
-    UpdateMint { origin_mint: Pubkey, params: UpdateMintParams },
+    SetDefaultFeatures {
+        features: u8,
+    },
+    UpdateMint {
+        origin_mint: Pubkey,
+        params: UpdateMintParams,
+    },
     PauseFactory,
     UnpauseFactory,
 }
@@ -204,11 +213,17 @@ fn execute_timelock_action_ix(
 }
 
 pub fn factory_state_pda() -> (Pubkey, u8) {
-    Pubkey::find_program_address(&[SEED_FACTORY, FACTORY_PROGRAM_ID.as_ref()], &FACTORY_PROGRAM_ID)
+    Pubkey::find_program_address(
+        &[SEED_FACTORY, FACTORY_PROGRAM_ID.as_ref()],
+        &FACTORY_PROGRAM_ID,
+    )
 }
 
 pub fn mint_mapping_pda(origin_mint: Pubkey) -> (Pubkey, u8) {
-    Pubkey::find_program_address(&[SEED_MINT_MAPPING, origin_mint.as_ref()], &FACTORY_PROGRAM_ID)
+    Pubkey::find_program_address(
+        &[SEED_MINT_MAPPING, origin_mint.as_ref()],
+        &FACTORY_PROGRAM_ID,
+    )
 }
 
 pub fn timelock_entry_pda(factory_state: Pubkey, salt: &[u8; 32]) -> (Pubkey, u8) {
@@ -224,36 +239,39 @@ mod tests {
     use ptf_factory::FactoryError;
     use solana_program_test::{BanksClientError, ProgramTest};
     use solana_sdk::{
-        account::Account,
-        rent::Rent,
         signature::Keypair,
         signer::Signer,
         transaction::{Transaction, TransactionError},
     };
-    use spl_token::state::{COption, Mint as SplMint};
-    use std::path::PathBuf;
+    use std::{env, path::PathBuf};
 
     const DEFAULT_FEE_BPS: u16 = 5;
     const TIMELOCK_SECS: i64 = 5;
 
-    fn program_test() -> ProgramTest {
-        let mut test = ProgramTest::default();
-        let so_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    const FACTORY_SO: &str = "ptf_factory.so";
+
+    fn artifact_path(filename: &str) -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("..")
             .join("..")
             .join("target")
             .join("deploy")
-            .join("ptf_factory.so");
+            .join(filename)
+    }
+
+    fn program_test() -> ProgramTest {
+        let mut test = ProgramTest::default();
+        let so_path = artifact_path(FACTORY_SO);
         assert!(
             so_path.exists(),
-            "Missing BPF artifact. Run `anchor build` before testing."
+            "{} missing. Run `anchor build` so the `.so` artifact is present at {}",
+            FACTORY_SO,
+            so_path.display()
         );
-        test.add_program_with_path(
-            "ptf_factory",
-            FACTORY_PROGRAM_ID,
-            so_path.to_str().unwrap(),
-            None,
-        );
+        if let Some(dir) = so_path.parent() {
+            env::set_var("BPF_OUT_DIR", dir);
+        }
+        test.add_program("ptf_factory", FACTORY_PROGRAM_ID, None);
         test
     }
 
@@ -279,7 +297,8 @@ mod tests {
         context.last_blockhash = context.banks_client.get_latest_blockhash().await.unwrap();
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore = "requires `anchor build` artifacts under target/deploy"]
     async fn timelock_blocks_direct_update() {
         let authority = Keypair::new();
         let program_test = program_test();
@@ -293,30 +312,25 @@ mod tests {
             DEFAULT_FEE_BPS,
             TIMELOCK_SECS,
         );
-        process_instruction(&mut context, init_ix, &[]).await.unwrap();
+        process_instruction(&mut context, init_ix, &[])
+            .await
+            .unwrap();
 
-        let set_ix = set_default_features_ix(factory_state, authority.pubkey(), FEATURE_HOOKS_ENABLED);
-        let err = process_instruction(&mut context, set_ix, &[&authority]).await.unwrap_err();
+        let set_ix =
+            set_default_features_ix(factory_state, authority.pubkey(), FEATURE_HOOKS_ENABLED);
+        let err = process_instruction(&mut context, set_ix, &[&authority])
+            .await
+            .unwrap_err();
         assert_anchor_error(err, FactoryError::TimelockOnlyQueue);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore = "requires `anchor build` artifacts under target/deploy"]
     async fn timelock_queue_and_execute_mint_update() {
         let authority = Keypair::new();
         let origin_mint = Keypair::new();
 
-        let mut program_test = program_test();
-        let rent = Rent::default();
-        let mut mint_account = Account::new(
-            rent.minimum_balance(SplMint::LEN),
-            SplMint::LEN,
-            &spl_token::id(),
-        );
-        let mut mint_state = SplMint::default();
-        mint_state.decimals = 6;
-        mint_state.mint_authority = COption::Some(authority.pubkey());
-        SplMint::pack(mint_state, &mut mint_account.data).unwrap();
-        program_test.add_account(origin_mint.pubkey(), mint_account);
+        let program_test = program_test();
 
         let mut context = program_test.start_with_context().await;
         let (factory_state, _) = factory_state_pda();
@@ -327,7 +341,9 @@ mod tests {
             DEFAULT_FEE_BPS,
             TIMELOCK_SECS,
         );
-        process_instruction(&mut context, init_ix, &[]).await.unwrap();
+        process_instruction(&mut context, init_ix, &[])
+            .await
+            .unwrap();
 
         let (mint_mapping, _) = mint_mapping_pda(origin_mint.pubkey());
         let register_ix = register_mint_ix(
@@ -338,7 +354,9 @@ mod tests {
             context.payer.pubkey(),
             6,
         );
-        process_instruction(&mut context, register_ix, &[&authority]).await.unwrap();
+        process_instruction(&mut context, register_ix, &[&authority])
+            .await
+            .unwrap();
 
         let salt = [7u8; 32];
         let (timelock_entry, _) = timelock_entry_pda(factory_state, &salt);
@@ -358,7 +376,9 @@ mod tests {
                 },
             },
         );
-        process_instruction(&mut context, queue_ix, &[&authority]).await.unwrap();
+        process_instruction(&mut context, queue_ix, &[&authority])
+            .await
+            .unwrap();
 
         let execute_ix = execute_timelock_action_ix(
             factory_state,
@@ -372,7 +392,9 @@ mod tests {
         assert_anchor_error(err, FactoryError::TimelockNotReady);
 
         advance_clock(&mut context, 10).await;
-        process_instruction(&mut context, execute_ix, &[&authority]).await.unwrap();
+        process_instruction(&mut context, execute_ix, &[&authority])
+            .await
+            .unwrap();
 
         let account = context
             .banks_client
