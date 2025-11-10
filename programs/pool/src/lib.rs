@@ -432,6 +432,10 @@ pub mod ptf_pool {
             .nullifier_set
             .insert(nullifier)
             .map_err(|_| PoolError::NullifierReuse)?;
+        emit!(NullifierUsed {
+            origin_mint: ctx.accounts.pool_state.origin_mint,
+            nullifier,
+        });
         Ok(())
     }
 
@@ -466,11 +470,16 @@ pub mod ptf_pool {
             args.public_inputs.clone(),
         )?;
 
+        let origin_mint = pool_state.origin_mint;
         for nullifier in &args.nullifiers {
             ctx.accounts
                 .nullifier_set
                 .insert(*nullifier)
                 .map_err(|_| PoolError::NullifierReuse)?;
+            emit!(NullifierUsed {
+                origin_mint,
+                nullifier: *nullifier,
+            });
         }
         require!(
             args.output_commitments.len() == args.output_amount_commitments.len(),
@@ -597,6 +606,10 @@ fn process_unshield<'info>(
                 .nullifier_set
                 .insert(*nullifier)
                 .map_err(|_| PoolError::NullifierReuse)?;
+            emit!(NullifierUsed {
+                origin_mint,
+                nullifier: *nullifier,
+            });
         }
 
         pool_state.total_shielded = pool_state
@@ -1564,6 +1577,12 @@ pub struct Transferred {
     pub nullifiers: Vec<[u8; 32]>,
     pub outputs: Vec<[u8; 32]>,
     pub new_root: [u8; 32],
+}
+
+#[event]
+pub struct NullifierUsed {
+    pub origin_mint: Pubkey,
+    pub nullifier: [u8; 32],
 }
 
 #[event]
