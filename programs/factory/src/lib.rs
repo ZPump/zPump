@@ -1,13 +1,13 @@
 use anchor_lang::prelude::*;
-use anchor_lang::solana_program::program_option::COption;
-use anchor_lang::solana_program::{
-    hash::hashv, program::invoke, system_instruction, system_program,
-};
 use anchor_spl::token_interface::{
     self as token_interface,
     spl_token_2022::{self, instruction::AuthorityType},
     Mint, MintTo, SetAuthority, TokenAccount, TokenInterface,
 };
+use solana_program::program_option::COption;
+use solana_program::program_pack::Pack as Token2022Pack;
+use solana_program::{hash::hashv, program::invoke, system_instruction, system_program};
+use spl_token_2022::state::Mint as Token2022Mint;
 
 use ptf_common::{seeds, FeatureFlags, MAX_BPS};
 use solana_program::pubkey;
@@ -275,7 +275,7 @@ pub mod ptf_factory {
                     FactoryError::OriginMintMismatch
                 );
                 apply_mint_update(
-                    &ctx.accounts.factory_state,
+                    state,
                     mapping,
                     params,
                     ctx.accounts.ptkn_mint.as_ref(),
@@ -373,16 +373,19 @@ pub mod ptf_factory {
             FactoryError::PoolAuthorityMismatch
         );
 
-        let signer_seeds: [&[u8]; 3] = [seeds::FACTORY, crate::ID.as_ref(), &[factory_state.bump]];
+        let bump_seed = &[factory_state.bump];
+        let signer_seeds: [&[u8]; 3] = [seeds::FACTORY, crate::ID.as_ref(), bump_seed];
         let cpi_accounts = MintTo {
             mint: ctx.accounts.ptkn_mint.to_account_info(),
             to: ctx.accounts.destination_token_account.to_account_info(),
             authority: ctx.accounts.factory_state.to_account_info(),
         };
+        let signer_seeds_slice: &[&[u8]] = &signer_seeds;
+        let signer_seeds_for_cpi = [signer_seeds_slice];
         let cpi_ctx = CpiContext::new_with_signer(
             ctx.accounts.token_program.to_account_info(),
             cpi_accounts,
-            &[&signer_seeds],
+            &signer_seeds_for_cpi,
         );
         token_interface::mint_to(cpi_ctx, amount)?;
         Ok(())
@@ -519,9 +522,9 @@ pub struct MintPtkn<'info> {
     /// CHECK: Verified against the expected PDA derived from the pool program id.
     pub pool_authority: AccountInfo<'info>,
     #[account(mut)]
-    pub ptkn_mint: Account<'info, Mint>,
+    pub ptkn_mint: InterfaceAccount<'info, Mint>,
     #[account(mut)]
-    pub destination_token_account: Account<'info, TokenAccount>,
+    pub destination_token_account: InterfaceAccount<'info, TokenAccount>,
     pub token_program: Interface<'info, TokenInterface>,
 }
 
@@ -640,9 +643,9 @@ fn apply_mint_update<'info>(
                     mapping.ptkn_mint,
                     FactoryError::PtknMintMismatch
                 );
-                let mint_account: Account<Mint> = Account::try_from(&ptkn_mint.to_account_info())?;
+                let mint_decimals = load_mint_decimals(&ptkn_mint.to_account_info())?;
                 require!(
-                    mint_account.decimals == mapping.decimals,
+                    mint_decimals == mapping.decimals,
                     FactoryError::InvalidDecimals
                 );
             }
@@ -671,7 +674,7 @@ fn prepare_ptkn_mint<'info>(
     if mint_info.owner == &system_program::ID && mint_info.data_is_empty() {
         let payer = payer.ok_or(FactoryError::PtknPayerMissing)?;
         let rent = rent.ok_or(FactoryError::RentMissing)?;
-        let mint_space = spl_token_2022::state::Mint::LEN;
+        let mint_space = <Token2022Mint as Token2022Pack>::LEN;
         let lamports = rent.minimum_balance(mint_space);
         let create_ix = system_instruction::create_account(
             payer.key,
@@ -692,11 +695,9 @@ fn prepare_ptkn_mint<'info>(
             token_program.key(),
             FactoryError::PtknMintMismatch
         );
-        let mint_account: Account<Mint> = Account::try_from(&mint_info)?;
-        require!(
-            mint_account.decimals == decimals,
-            FactoryError::InvalidDecimals
-        );
+        let mint_decimals = load_mint_decimals(&mint_info)?;
+        require!(mint_decimals == decimals, FactoryError::InvalidDecimals);
+        let mint_account = load_mint_state(&mint_info)?;
         match mint_account.mint_authority {
             COption::Some(current) => {
                 if current != factory_state.key() {
@@ -718,6 +719,18 @@ fn prepare_ptkn_mint<'info>(
     }
 
     Ok(*mint_info.key)
+}
+
+fn load_mint_state(account_info: &AccountInfo<'_>) -> Result<Mint> {
+    let data = account_info
+        .try_borrow_data()
+        .map_err(|_| error!(FactoryError::InvalidDecimals))?;
+    let mut slice: &[u8] = &data;
+    Mint::try_deserialize(&mut slice).map_err(|_| error!(FactoryError::InvalidDecimals))
+}
+
+fn load_mint_decimals(account_info: &AccountInfo<'_>) -> Result<u8> {
+    Ok(load_mint_state(account_info)?.decimals)
 }
 
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Debug, PartialEq, Eq)]
