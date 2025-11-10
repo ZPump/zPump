@@ -173,16 +173,157 @@ fn verify_account_hash(account: &VerifyingKeyAccount) -> bool {
     computed == account.hash
 }
 
+#[cfg(target_arch = "bpf")]
 fn groth16_verify(verifying_key: &[u8], proof: &[u8], public_inputs: &[u8]) -> bool {
-    #[cfg(target_arch = "bpf")]
-    {
-        unsafe { groth16_verify_syscall(verifying_key, proof, public_inputs) }
+    unsafe { groth16_verify_syscall(verifying_key, proof, public_inputs) }
+}
+
+#[cfg(not(target_arch = "bpf"))]
+fn groth16_verify(verifying_key: &[u8], proof: &[u8], public_inputs: &[u8]) -> bool {
+    use ark_bn254::{Bn254, Fr};
+    use ark_groth16::{prepare_verifying_key, Groth16, Proof, VerifyingKey};
+    use ark_serialize::CanonicalDeserialize;
+    use std::io::Cursor;
+
+    let mut vk_cursor = Cursor::new(verifying_key);
+    let vk = match VerifyingKey::<Bn254>::deserialize_uncompressed(&mut vk_cursor) {
+        Ok(vk) => vk,
+        Err(_) => return false,
+    };
+
+    if (vk_cursor.position() as usize) != verifying_key.len() {
+        return false;
     }
 
-    #[cfg(not(target_arch = "bpf"))]
-    {
-        let _ = (verifying_key, proof, public_inputs);
-        true
+    let mut proof_cursor = Cursor::new(proof);
+    let proof = match Proof::<Bn254>::deserialize_uncompressed(&mut proof_cursor) {
+        Ok(proof) => proof,
+        Err(_) => return false,
+    };
+
+    if (proof_cursor.position() as usize) != proof.len() {
+        return false;
+    }
+
+    let mut inputs_cursor = Cursor::new(public_inputs);
+    let inputs = match Vec::<Fr>::deserialize_uncompressed(&mut inputs_cursor) {
+        Ok(inputs) => inputs,
+        Err(_) => return false,
+    };
+
+    if (inputs_cursor.position() as usize) != public_inputs.len() {
+        return false;
+    }
+
+    let prepared = prepare_verifying_key(&vk);
+    Groth16::<Bn254>::verify_with_processed(&prepared, &inputs, &proof).unwrap_or(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ark_bn254::Fr;
+    use ark_groth16::Groth16;
+    use ark_relations::r1cs::{
+        ConstraintSynthesizer, ConstraintSystemRef, LinearCombination, SynthesisError, Variable,
+    };
+    use ark_serialize::CanonicalSerialize;
+    use ark_std::test_rng;
+
+    #[derive(Clone)]
+    struct SquareCircuit {
+        x: Fr,
+        y: Fr,
+    }
+
+    impl ConstraintSynthesizer<Fr> for SquareCircuit {
+        fn generate_constraints(self, cs: ConstraintSystemRef<Fr>) -> Result<(), SynthesisError> {
+            let witness_x = cs.new_witness_variable(|| Ok(self.x))?;
+            let public_y = cs.new_input_variable(|| Ok(self.y))?;
+            let witness_sq = cs.new_witness_variable(|| Ok(self.x * self.x))?;
+
+            cs.enforce_constraint(
+                LinearCombination::from(witness_x),
+                LinearCombination::from(witness_x),
+                LinearCombination::from(witness_sq),
+            )?;
+
+            cs.enforce_constraint(
+                LinearCombination::from(witness_sq),
+                LinearCombination::from(Variable::One),
+                LinearCombination::from(public_y),
+            )?;
+
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn groth16_host_fallback_validates_real_proof() {
+        let mut rng = test_rng();
+        let circuit = SquareCircuit {
+            x: Fr::from(3u64),
+            y: Fr::from(9u64),
+        };
+
+        let params =
+            Groth16::<ark_bn254::Bn254>::generate_random_parameters(circuit.clone(), &mut rng)
+                .expect("parameters generation");
+
+        let mut vk_bytes = Vec::new();
+        params
+            .vk
+            .serialize_uncompressed(&mut vk_bytes)
+            .expect("serialize vk");
+
+        let proof =
+            Groth16::<ark_bn254::Bn254>::prove(&params, circuit.clone(), &mut rng).expect("prove");
+        let mut proof_bytes = Vec::new();
+        proof
+            .serialize_uncompressed(&mut proof_bytes)
+            .expect("serialize proof");
+
+        let public_inputs = vec![circuit.y];
+        let mut public_bytes = Vec::new();
+        public_inputs
+            .serialize_uncompressed(&mut public_bytes)
+            .expect("serialize inputs");
+
+        assert!(groth16_verify(&vk_bytes, &proof_bytes, &public_bytes));
+
+        let mut invalid_proof = proof_bytes.clone();
+        invalid_proof[invalid_proof.len() - 1] ^= 0x42;
+        assert!(!groth16_verify(&vk_bytes, &invalid_proof, &public_bytes));
+    }
+
+    #[test]
+    fn groth16_host_fallback_rejects_malformed_buffers() {
+        let mut rng = test_rng();
+        let circuit = SquareCircuit {
+            x: Fr::from(2u64),
+            y: Fr::from(4u64),
+        };
+
+        let params =
+            Groth16::<ark_bn254::Bn254>::generate_random_parameters(circuit.clone(), &mut rng)
+                .expect("parameters generation");
+
+        let mut vk_bytes = Vec::new();
+        params
+            .vk
+            .serialize_uncompressed(&mut vk_bytes)
+            .expect("serialize vk");
+
+        // Drop the final byte so the cursor length mismatch path is exercised.
+        let truncated_vk = &vk_bytes[..vk_bytes.len() - 1];
+
+        let public_inputs = vec![circuit.y];
+        let mut public_bytes = Vec::new();
+        public_inputs
+            .serialize_uncompressed(&mut public_bytes)
+            .expect("serialize inputs");
+
+        assert!(!groth16_verify(truncated_vk, &[], &public_bytes));
     }
 }
 
