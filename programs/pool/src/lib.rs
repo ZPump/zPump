@@ -1,9 +1,12 @@
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::instruction::{AccountMeta, Instruction};
+use anchor_lang::solana_program::keccak;
 use anchor_lang::solana_program::program::invoke_signed;
 use anchor_lang::solana_program::program_option::COption;
 use anchor_spl::token::spl_token::instruction::AuthorityType;
 use anchor_spl::token::{self, Mint, MintTo, SetAuthority, Token, TokenAccount};
+use ark_bn254::Fr;
+use ark_ff::{BigInteger256, Field, PrimeField};
 use core::convert::TryFrom;
 
 use ptf_common::hooks::{HookInstruction, PostShieldHook, PostUnshieldHook};
@@ -17,6 +20,8 @@ use ptf_verifier_groth16::program::PtfVerifierGroth16;
 use ptf_verifier_groth16::{self, VerifyingKeyAccount};
 
 declare_id!("4Tx3v6is7qeVjdHvL3a16ggB9VVMBPVhpPSkUGoXZhre");
+
+const DEFAULT_CANOPY_DEPTH: u8 = 8;
 
 #[program]
 pub mod ptf_pool {
@@ -45,6 +50,7 @@ pub mod ptf_pool {
         pool_state.fee_bps = fee_bps;
         pool_state.features = FeatureFlags::from(features);
         pool_state.bump = ctx.bumps.pool_state;
+        pool_state.commitment_tree = ctx.accounts.commitment_tree.key();
         pool_state.roots_len = 0;
         pool_state.current_root = [0u8; 32];
         pool_state.total_shielded = 0;
@@ -116,6 +122,17 @@ pub mod ptf_pool {
         nulls.pool = pool_state.key();
         nulls.bump = ctx.bumps.nullifier_set;
         nulls.count = 0;
+        nulls.bloom = [0u8; NullifierSet::BLOOM_BYTES];
+
+        let tree = &mut ctx.accounts.commitment_tree;
+        tree.init(
+            pool_state.key(),
+            DEFAULT_CANOPY_DEPTH,
+            ctx.bumps.commitment_tree,
+        )?;
+        pool_state.current_root = tree.current_root;
+        pool_state.roots_len = 1;
+        pool_state.recent_roots[0] = tree.current_root;
 
         emit!(PoolInitialized {
             origin_mint: pool_state.origin_mint,
@@ -242,6 +259,15 @@ pub mod ptf_pool {
                 pool_state.origin_mint,
                 PoolError::OriginMintMismatch,
             );
+            require_keys_eq!(
+                ctx.accounts.commitment_tree.key(),
+                pool_state.commitment_tree,
+                PoolError::CommitmentTreeMismatch,
+            );
+            require!(
+                ctx.accounts.commitment_tree.current_root == pool_state.current_root,
+                PoolError::RootMismatch,
+            );
 
             if pool_state.twin_mint_enabled {
                 let twin_mint = ctx
@@ -284,19 +310,24 @@ pub mod ptf_pool {
             );
             ptf_vault::cpi::deposit(deposit_ctx, args.amount)?;
 
-            pool_state.push_root(args.new_root);
+            let new_root = ctx
+                .accounts
+                .commitment_tree
+                .append_note(args.commitment, args.amount_commit)?;
+            require!(new_root == args.new_root, PoolError::RootMismatch);
+            pool_state.push_root(new_root);
+
             pool_state.total_shielded = pool_state
                 .total_shielded
                 .checked_add(args.amount)
                 .ok_or(PoolError::AmountOverflow)?;
 
             let origin_mint = pool_state.origin_mint;
-            let current_root = pool_state.current_root;
             emit!(Shielded {
                 origin_mint,
                 depositor: ctx.accounts.payer.key(),
                 commitment: args.commitment,
-                root: current_root,
+                root: new_root,
                 amount_commit: args.amount_commit,
             });
 
@@ -416,6 +447,10 @@ pub mod ptf_pool {
             pool_state.is_known_root(&args.old_root),
             PoolError::UnknownRoot,
         );
+        require!(
+            ctx.accounts.commitment_tree.current_root == args.old_root,
+            PoolError::RootMismatch,
+        );
 
         let cpi_accounts = ptf_verifier_groth16::cpi::accounts::VerifyGroth16 {
             verifier_state: ctx.accounts.verifying_key.to_account_info(),
@@ -437,13 +472,22 @@ pub mod ptf_pool {
                 .insert(*nullifier)
                 .map_err(|_| PoolError::NullifierReuse)?;
         }
-
-        pool_state.push_root(args.new_root);
+        require!(
+            args.output_commitments.len() == args.output_amount_commitments.len(),
+            PoolError::OutputSetMismatch,
+        );
+        let new_root = ctx.accounts.commitment_tree.append_many(
+            args.output_commitments.as_slice(),
+            args.output_amount_commitments.as_slice(),
+        )?;
+        require!(new_root == args.new_root, PoolError::RootMismatch);
+        pool_state.push_root(new_root);
 
         emit!(Transferred {
             origin_mint: pool_state.origin_mint,
             nullifiers: args.nullifiers.clone(),
-            new_root: args.new_root,
+            new_root,
+            outputs: args.output_commitments.clone(),
         });
         Ok(())
     }
@@ -496,6 +540,11 @@ fn process_unshield<'info>(
             origin_mint,
             PoolError::OriginMintMismatch,
         );
+        require_keys_eq!(
+            ctx.accounts.commitment_tree.key(),
+            pool_state.commitment_tree,
+            PoolError::CommitmentTreeMismatch,
+        );
 
         if pool_state.twin_mint_enabled {
             let twin_mint = ctx
@@ -513,6 +562,10 @@ fn process_unshield<'info>(
         require!(
             pool_state.is_known_root(&args.old_root),
             PoolError::UnknownRoot,
+        );
+        require!(
+            ctx.accounts.commitment_tree.current_root == args.old_root,
+            PoolError::RootMismatch,
         );
 
         let cpi_accounts = ptf_verifier_groth16::cpi::accounts::VerifyGroth16 {
@@ -554,7 +607,16 @@ fn process_unshield<'info>(
             .protocol_fees
             .checked_add(fee)
             .ok_or(PoolError::AmountOverflow)?;
-        pool_state.push_root(args.new_root);
+        require!(
+            args.output_commitments.len() == args.output_amount_commitments.len(),
+            PoolError::OutputSetMismatch,
+        );
+        let new_root = ctx.accounts.commitment_tree.append_many(
+            args.output_commitments.as_slice(),
+            args.output_amount_commitments.as_slice(),
+        )?;
+        require!(new_root == args.new_root, PoolError::RootMismatch);
+        pool_state.push_root(new_root);
 
         let destination_owner = ctx.accounts.destination_token_account.owner;
         match mode {
@@ -752,6 +814,37 @@ fn enforce_supply_invariant(
     Ok(())
 }
 
+fn poseidon_hash(left: &[u8; 32], right: &[u8; 32]) -> [u8; 32] {
+    let mut state = [
+        Fr::from(0u64),
+        Fr::from_le_bytes_mod_order(left),
+        Fr::from_le_bytes_mod_order(right),
+    ];
+    const ROUNDS: usize = 8;
+    for round in 0..ROUNDS {
+        let c0 = Fr::from(17u64 + round as u64);
+        let c1 = Fr::from(45u64 + round as u64);
+        let c2 = Fr::from(73u64 + round as u64);
+        state[0] += c0;
+        state[1] += c1;
+        state[2] += c2;
+        for value in state.iter_mut() {
+            *value = value.pow([5u64]);
+        }
+        let mix0 = state[0] + state[1] + state[2];
+        let mix1 = state[0] + state[1].double();
+        let mix2 = state[0] + state[2].double();
+        state = [mix0, mix1, mix2];
+    }
+    fr_to_bytes(&state[0])
+}
+
+fn fr_to_bytes(value: &Fr) -> [u8; 32] {
+    let bigint: BigInteger256 = value.into_bigint();
+    let mut bytes = [0u8; 32];
+    bigint.to_bytes_le(&mut bytes);
+    bytes
+}
 #[derive(Accounts)]
 pub struct InitializePool<'info> {
     pub authority: Signer<'info>,
@@ -771,6 +864,14 @@ pub struct InitializePool<'info> {
         space = NullifierSet::SPACE,
     )]
     pub nullifier_set: Account<'info, NullifierSet>,
+    #[account(
+        init,
+        payer = payer,
+        seeds = [seeds::TREE, origin_mint.key().as_ref()],
+        bump,
+        space = CommitmentTree::SPACE,
+    )]
+    pub commitment_tree: Account<'info, CommitmentTree>,
     #[account(
         init,
         payer = payer,
@@ -818,6 +919,8 @@ pub struct Shield<'info> {
     pub hook_config: Account<'info, HookConfig>,
     #[account(mut, seeds = [seeds::NULLIFIERS, pool_state.origin_mint.as_ref()], bump = nullifier_set.bump)]
     pub nullifier_set: Account<'info, NullifierSet>,
+    #[account(mut, seeds = [seeds::TREE, pool_state.origin_mint.as_ref()], bump = commitment_tree.bump, constraint = commitment_tree.pool == pool_state.key() @ PoolError::CommitmentTreeMismatch)]
+    pub commitment_tree: Account<'info, CommitmentTree>,
     #[account(mut, seeds = [seeds::VAULT, pool_state.origin_mint.as_ref()], bump = vault_state.bump)]
     pub vault_state: Account<'info, ptf_vault::VaultState>,
     #[account(mut)]
@@ -847,6 +950,8 @@ pub struct Unshield<'info> {
     pub hook_config: Account<'info, HookConfig>,
     #[account(mut, seeds = [seeds::NULLIFIERS, pool_state.origin_mint.as_ref()], bump = nullifier_set.bump)]
     pub nullifier_set: Account<'info, NullifierSet>,
+    #[account(mut, seeds = [seeds::TREE, pool_state.origin_mint.as_ref()], bump = commitment_tree.bump, constraint = commitment_tree.pool == pool_state.key() @ PoolError::CommitmentTreeMismatch)]
+    pub commitment_tree: Account<'info, CommitmentTree>,
     pub verifier_program: Program<'info, PtfVerifierGroth16>,
     #[account(address = pool_state.verifying_key)]
     pub verifying_key: Account<'info, VerifyingKeyAccount>,
@@ -882,6 +987,8 @@ pub struct PrivateTransfer<'info> {
     pub pool_state: Account<'info, PoolState>,
     #[account(mut, seeds = [seeds::NULLIFIERS, pool_state.origin_mint.as_ref()], bump = nullifier_set.bump)]
     pub nullifier_set: Account<'info, NullifierSet>,
+    #[account(mut, seeds = [seeds::TREE, pool_state.origin_mint.as_ref()], bump = commitment_tree.bump, constraint = commitment_tree.pool == pool_state.key() @ PoolError::CommitmentTreeMismatch)]
+    pub commitment_tree: Account<'info, CommitmentTree>,
     pub verifier_program: Program<'info, PtfVerifierGroth16>,
     #[account(address = pool_state.verifying_key)]
     pub verifying_key: Account<'info, VerifyingKeyAccount>,
@@ -902,6 +1009,8 @@ pub struct UnshieldArgs {
     pub old_root: [u8; 32],
     pub new_root: [u8; 32],
     pub nullifiers: Vec<[u8; 32]>,
+    pub output_commitments: Vec<[u8; 32]>,
+    pub output_amount_commitments: Vec<[u8; 32]>,
     pub amount: u64,
     pub proof: Vec<u8>,
     pub public_inputs: Vec<u8>,
@@ -912,6 +1021,8 @@ pub struct TransferArgs {
     pub old_root: [u8; 32],
     pub new_root: [u8; 32],
     pub nullifiers: Vec<[u8; 32]>,
+    pub output_commitments: Vec<[u8; 32]>,
+    pub output_amount_commitments: Vec<[u8; 32]>,
     pub proof: Vec<u8>,
     pub public_inputs: Vec<u8>,
 }
@@ -925,12 +1036,309 @@ pub struct HookConfigArgs {
 }
 
 #[account]
+pub struct CommitmentTree {
+    pub pool: Pubkey,
+    pub canopy_depth: u8,
+    pub next_index: u64,
+    pub current_root: [u8; 32],
+    pub frontier: [[u8; 32]; Self::DEPTH],
+    pub zeroes: [[u8; 32]; Self::DEPTH],
+    pub canopy: [[u8; 32]; Self::MAX_CANOPY],
+    pub recent_commitments: [[u8; 32]; Self::MAX_CANOPY],
+    pub recent_amount_commitments: [[u8; 32]; Self::MAX_CANOPY],
+    pub recent_len: u8,
+    pub bump: u8,
+}
+
+impl CommitmentTree {
+    pub const DEPTH: usize = ptf_common::MERKLE_DEPTH as usize;
+    pub const MAX_CANOPY: usize = 16;
+    pub const SPACE: usize = 8
+        + 32
+        + 1
+        + 8
+        + 32
+        + (Self::DEPTH * 32)
+        + (Self::DEPTH * 32)
+        + (Self::MAX_CANOPY * 32)
+        + (Self::MAX_CANOPY * 32)
+        + (Self::MAX_CANOPY * 32)
+        + 1
+        + 1
+        + 6;
+
+    pub fn init(&mut self, pool: Pubkey, canopy_depth: u8, bump: u8) -> Result<()> {
+        require!(
+            (canopy_depth as usize) <= Self::MAX_CANOPY,
+            PoolError::CanopyDepthInvalid,
+        );
+        self.pool = pool;
+        self.canopy_depth = canopy_depth;
+        self.bump = bump;
+        self.next_index = 0;
+        self.zeroes = Self::compute_zeroes();
+        self.frontier = [[0u8; 32]; Self::DEPTH];
+        self.current_root = self.zeroes[Self::DEPTH - 1];
+        self.canopy = [[0u8; 32]; Self::MAX_CANOPY];
+        self.recent_commitments = [[0u8; 32]; Self::MAX_CANOPY];
+        self.recent_amount_commitments = [[0u8; 32]; Self::MAX_CANOPY];
+        self.recent_len = 0;
+        Ok(())
+    }
+
+    pub fn append_note(
+        &mut self,
+        commitment: [u8; 32],
+        amount_commit: [u8; 32],
+    ) -> Result<[u8; 32]> {
+        self.insert_leaf(commitment, amount_commit)
+    }
+
+    pub fn append_many(
+        &mut self,
+        commitments: &[[u8; 32]],
+        amount_commitments: &[[u8; 32]],
+    ) -> Result<[u8; 32]> {
+        if commitments.is_empty() {
+            return Ok(self.current_root);
+        }
+        require!(
+            commitments.len() == amount_commitments.len(),
+            PoolError::OutputSetMismatch,
+        );
+        let mut root = self.current_root;
+        for (commitment, amount_commit) in commitments.iter().zip(amount_commitments.iter()) {
+            root = self.insert_leaf(*commitment, *amount_commit)?;
+        }
+        Ok(root)
+    }
+
+    fn insert_leaf(&mut self, commitment: [u8; 32], amount_commit: [u8; 32]) -> Result<[u8; 32]> {
+        require!(
+            self.next_index < (1u128 << Self::DEPTH) as u64,
+            PoolError::TreeFull,
+        );
+        let mut node = commitment;
+        let mut index = self.next_index;
+        let mut path_hashes = [[0u8; 32]; Self::DEPTH];
+        for level in 0..Self::DEPTH {
+            if index % 2 == 0 {
+                self.frontier[level] = node;
+                let left = node;
+                let right = self.zeroes[level];
+                node = poseidon_hash(&left, &right);
+            } else {
+                let left = self.frontier[level];
+                node = poseidon_hash(&left, &node);
+            }
+            path_hashes[level] = node;
+            index >>= 1;
+        }
+        self.next_index = self
+            .next_index
+            .checked_add(1)
+            .ok_or(PoolError::AmountOverflow)?;
+        self.current_root = node;
+        self.update_canopy(&path_hashes);
+        self.record_recent(commitment, amount_commit);
+        Ok(self.current_root)
+    }
+
+    fn update_canopy(&mut self, path_hashes: &[[u8; 32]; Self::DEPTH]) {
+        if self.canopy_depth == 0 {
+            return;
+        }
+        let canopy_len = core::cmp::min(self.canopy_depth as usize, Self::MAX_CANOPY);
+        for offset in 0..canopy_len {
+            let level = Self::DEPTH - 1 - offset;
+            self.canopy[offset] = path_hashes[level];
+        }
+    }
+
+    fn record_recent(&mut self, commitment: [u8; 32], amount_commit: [u8; 32]) {
+        if (self.recent_len as usize) < Self::MAX_CANOPY {
+            let idx = self.recent_len as usize;
+            self.recent_commitments[idx] = commitment;
+            self.recent_amount_commitments[idx] = amount_commit;
+            self.recent_len += 1;
+        } else {
+            for idx in 1..Self::MAX_CANOPY {
+                self.recent_commitments[idx - 1] = self.recent_commitments[idx];
+                self.recent_amount_commitments[idx - 1] = self.recent_amount_commitments[idx];
+            }
+            self.recent_commitments[Self::MAX_CANOPY - 1] = commitment;
+            self.recent_amount_commitments[Self::MAX_CANOPY - 1] = amount_commit;
+        }
+    }
+
+    fn compute_zeroes() -> [[u8; 32]; Self::DEPTH] {
+        let mut zeroes = [[0u8; 32]; Self::DEPTH];
+        let mut current = poseidon_hash(&[0u8; 32], &[0u8; 32]);
+        zeroes[0] = current;
+        for level in 1..Self::DEPTH {
+            current = poseidon_hash(&zeroes[level - 1], &zeroes[level - 1]);
+            zeroes[level] = current;
+        }
+        zeroes
+    }
+}
+
+#[account]
+pub struct CommitmentTree {
+    pub pool: Pubkey,
+    pub canopy_depth: u8,
+    pub next_index: u64,
+    pub current_root: [u8; 32],
+    pub frontier: [[u8; 32]; Self::DEPTH],
+    pub zeroes: [[u8; 32]; Self::DEPTH],
+    pub canopy: [[u8; 32]; Self::MAX_CANOPY],
+    pub recent_commitments: [[u8; 32]; Self::MAX_CANOPY],
+    pub recent_amount_commitments: [[u8; 32]; Self::MAX_CANOPY],
+    pub recent_len: u8,
+    pub bump: u8,
+}
+
+impl CommitmentTree {
+    pub const DEPTH: usize = ptf_common::MERKLE_DEPTH as usize;
+    pub const MAX_CANOPY: usize = 16;
+    pub const SPACE: usize = 8
+        + 32
+        + 1
+        + 8
+        + 32
+        + (Self::DEPTH * 32)
+        + (Self::DEPTH * 32)
+        + (Self::MAX_CANOPY * 32)
+        + (Self::MAX_CANOPY * 32)
+        + (Self::MAX_CANOPY * 32)
+        + 1
+        + 1
+        + 6;
+
+    pub fn init(&mut self, pool: Pubkey, canopy_depth: u8, bump: u8) -> Result<()> {
+        require!(
+            (canopy_depth as usize) <= Self::MAX_CANOPY,
+            PoolError::CanopyDepthInvalid,
+        );
+        self.pool = pool;
+        self.canopy_depth = canopy_depth;
+        self.bump = bump;
+        self.next_index = 0;
+        self.zeroes = Self::compute_zeroes();
+        self.frontier = [[0u8; 32]; Self::DEPTH];
+        self.current_root = self.zeroes[Self::DEPTH - 1];
+        self.canopy = [[0u8; 32]; Self::MAX_CANOPY];
+        self.recent_commitments = [[0u8; 32]; Self::MAX_CANOPY];
+        self.recent_amount_commitments = [[0u8; 32]; Self::MAX_CANOPY];
+        self.recent_len = 0;
+        Ok(())
+    }
+
+    pub fn append_note(
+        &mut self,
+        commitment: [u8; 32],
+        amount_commit: [u8; 32],
+    ) -> Result<[u8; 32]> {
+        self.insert_leaf(commitment, amount_commit)
+    }
+
+    pub fn append_many(
+        &mut self,
+        commitments: &[[u8; 32]],
+        amount_commitments: &[[u8; 32]],
+    ) -> Result<[u8; 32]> {
+        if commitments.is_empty() {
+            return Ok(self.current_root);
+        }
+        require!(
+            commitments.len() == amount_commitments.len(),
+            PoolError::OutputSetMismatch,
+        );
+        let mut root = self.current_root;
+        for (commitment, amount_commit) in commitments.iter().zip(amount_commitments.iter()) {
+            root = self.insert_leaf(*commitment, *amount_commit)?;
+        }
+        Ok(root)
+    }
+
+    fn insert_leaf(&mut self, commitment: [u8; 32], amount_commit: [u8; 32]) -> Result<[u8; 32]> {
+        require!(
+            self.next_index < (1u128 << Self::DEPTH) as u64,
+            PoolError::TreeFull,
+        );
+        let mut node = commitment;
+        let mut index = self.next_index;
+        let mut path_hashes = [[0u8; 32]; Self::DEPTH];
+        for level in 0..Self::DEPTH {
+            if index % 2 == 0 {
+                self.frontier[level] = node;
+                let left = node;
+                let right = self.zeroes[level];
+                node = poseidon_hash(&left, &right);
+            } else {
+                let left = self.frontier[level];
+                node = poseidon_hash(&left, &node);
+            }
+            path_hashes[level] = node;
+            index >>= 1;
+        }
+        self.next_index = self
+            .next_index
+            .checked_add(1)
+            .ok_or(PoolError::AmountOverflow)?;
+        self.current_root = node;
+        self.update_canopy(&path_hashes);
+        self.record_recent(commitment, amount_commit);
+        Ok(self.current_root)
+    }
+
+    fn update_canopy(&mut self, path_hashes: &[[u8; 32]; Self::DEPTH]) {
+        if self.canopy_depth == 0 {
+            return;
+        }
+        let canopy_len = core::cmp::min(self.canopy_depth as usize, Self::MAX_CANOPY);
+        for offset in 0..canopy_len {
+            let level = Self::DEPTH - 1 - offset;
+            self.canopy[offset] = path_hashes[level];
+        }
+    }
+
+    fn record_recent(&mut self, commitment: [u8; 32], amount_commit: [u8; 32]) {
+        if (self.recent_len as usize) < Self::MAX_CANOPY {
+            let idx = self.recent_len as usize;
+            self.recent_commitments[idx] = commitment;
+            self.recent_amount_commitments[idx] = amount_commit;
+            self.recent_len += 1;
+        } else {
+            for idx in 1..Self::MAX_CANOPY {
+                self.recent_commitments[idx - 1] = self.recent_commitments[idx];
+                self.recent_amount_commitments[idx - 1] = self.recent_amount_commitments[idx];
+            }
+            self.recent_commitments[Self::MAX_CANOPY - 1] = commitment;
+            self.recent_amount_commitments[Self::MAX_CANOPY - 1] = amount_commit;
+        }
+    }
+
+    fn compute_zeroes() -> [[u8; 32]; Self::DEPTH] {
+        let mut zeroes = [[0u8; 32]; Self::DEPTH];
+        let mut current = poseidon_hash(&[0u8; 32], &[0u8; 32]);
+        zeroes[0] = current;
+        for level in 1..Self::DEPTH {
+            current = poseidon_hash(&zeroes[level - 1], &zeroes[level - 1]);
+            zeroes[level] = current;
+        }
+        zeroes
+    }
+}
+
+#[account]
 pub struct PoolState {
     pub authority: Pubkey,
     pub origin_mint: Pubkey,
     pub vault: Pubkey,
     pub verifier_program: Pubkey,
     pub verifying_key: Pubkey,
+    pub commitment_tree: Pubkey,
     pub verifying_key_id: [u8; 32],
     pub current_root: [u8; 32],
     pub recent_roots: [[u8; 32]; Self::MAX_ROOTS],
@@ -949,8 +1357,28 @@ pub struct PoolState {
 
 impl PoolState {
     pub const MAX_ROOTS: usize = 16;
-    pub const SPACE: usize =
-        8 + (32 * 7) + 32 + 32 + (Self::MAX_ROOTS * 32) + 1 + 2 + 1 + 8 + 8 + 1 + 1 + 1 + 1 + 7;
+    pub const SPACE: usize = 8
+        + 32 // authority
+        + 32 // origin mint
+        + 32 // vault
+        + 32 // verifier program
+        + 32 // verifying key
+        + 32 // commitment tree
+        + 32 // verifying key id
+        + 32 // current root
+        + (Self::MAX_ROOTS * 32)
+        + 1 // roots len
+        + 2 // fee bps
+        + 1 // features
+        + 8 // total shielded
+        + 8 // protocol fees
+        + 32 // hook config
+        + 1 // hook config present
+        + 1 // hook config bump
+        + 1 // bump
+        + 32 // twin mint
+        + 1 // twin mint enabled
+        + 5; // padding
 
     pub fn push_root(&mut self, root: [u8; 32]) {
         if self.roots_len as usize >= Self::MAX_ROOTS {
@@ -992,18 +1420,18 @@ pub struct NullifierSet {
     pub pool: Pubkey,
     pub count: u32,
     pub entries: [[u8; 32]; Self::MAX_NULLIFIERS],
+    pub bloom: [u8; Self::BLOOM_BYTES],
     pub bump: u8,
 }
 
 impl NullifierSet {
     pub const MAX_NULLIFIERS: usize = 256;
-    pub const SPACE: usize = 8 + 32 + 4 + (Self::MAX_NULLIFIERS * 32) + 1 + 3;
+    pub const BLOOM_BYTES: usize = 512;
+    pub const SPACE: usize = 8 + 32 + 4 + (Self::MAX_NULLIFIERS * 32) + Self::BLOOM_BYTES + 1 + 3;
 
     pub fn insert(&mut self, value: [u8; 32]) -> Result<()> {
-        for idx in 0..self.count as usize {
-            if self.entries[idx] == value {
-                return err!(PoolError::NullifierReuse);
-            }
+        if self.contains(&value) {
+            return err!(PoolError::NullifierReuse);
         }
         require!(
             (self.count as usize) < Self::MAX_NULLIFIERS,
@@ -1011,7 +1439,53 @@ impl NullifierSet {
         );
         self.entries[self.count as usize] = value;
         self.count += 1;
+        self.set_bloom_bits(&value);
         Ok(())
+    }
+
+    fn contains(&self, value: &[u8; 32]) -> bool {
+        if !self.test_bloom_bits(value) {
+            return false;
+        }
+        for idx in 0..self.count as usize {
+            if self.entries[idx] == *value {
+                return true;
+            }
+        }
+        false
+    }
+
+    fn set_bloom_bits(&mut self, value: &[u8; 32]) {
+        for position in Self::bloom_positions(value) {
+            let byte_index = position / 8;
+            let bit_index = position % 8;
+            self.bloom[byte_index] |= 1 << bit_index;
+        }
+    }
+
+    fn test_bloom_bits(&self, value: &[u8; 32]) -> bool {
+        for position in Self::bloom_positions(value) {
+            let byte_index = position / 8;
+            let bit_index = position % 8;
+            if (self.bloom[byte_index] & (1 << bit_index)) == 0 {
+                return false;
+            }
+        }
+        true
+    }
+
+    fn bloom_positions(value: &[u8; 32]) -> [usize; 3] {
+        let hash = keccak::hashv(&[value]);
+        let bytes = hash.0;
+        let mut positions = [0usize; 3];
+        for (idx, chunk) in positions.iter_mut().enumerate() {
+            let start = idx * 8;
+            let mut slice = [0u8; 8];
+            slice.copy_from_slice(&bytes[start..start + 8]);
+            let value = u64::from_le_bytes(slice) as usize;
+            *chunk = value % (Self::BLOOM_BYTES * 8);
+        }
+        positions
     }
 }
 
@@ -1088,6 +1562,7 @@ pub struct HookPostShield {
 pub struct Transferred {
     pub origin_mint: Pubkey,
     pub nullifiers: Vec<[u8; 32]>,
+    pub outputs: Vec<[u8; 32]>,
     pub new_root: [u8; 32],
 }
 
@@ -1180,6 +1655,16 @@ pub enum PoolError {
     HookAccountMissing,
     #[msg("unexpected hook account provided")]
     HookAccountUnexpected,
+    #[msg("commitment tree account mismatch")]
+    CommitmentTreeMismatch,
+    #[msg("output set mismatch")]
+    OutputSetMismatch,
+    #[msg("merkle tree canopy depth invalid")]
+    CanopyDepthInvalid,
+    #[msg("merkle tree capacity reached")]
+    TreeFull,
+    #[msg("supplied root does not match computed root")]
+    RootMismatch,
 }
 
 fn validate_hook_accounts(

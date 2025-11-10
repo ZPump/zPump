@@ -60,6 +60,7 @@ pub mod seeds {
     pub const HOOKS: &[u8] = b"hooks";
     pub const VERIFIER: &[u8] = b"vk";
     pub const NULLIFIERS: &[u8] = b"nulls";
+    pub const TREE: &[u8] = b"tree";
 }
 
 /// Runtime feature flags represented as a bit field.
