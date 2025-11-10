@@ -837,13 +837,7 @@ fn enforce_supply_invariant(
         (false, None) => 0u128,
     };
 
-    let expected = twin_supply
-        .checked_add(note_ledger.live_value)
-        .ok_or(PoolError::AmountOverflow)?
-        .checked_add(pool_state.protocol_fees)
-        .ok_or(PoolError::AmountOverflow)?;
-
-    require!(vault_balance == expected, PoolError::InvariantBreach);
+    let expected = validate_supply_components(pool_state, note_ledger, twin_supply, vault_balance)?;
 
     let supply_ptkn = u64::try_from(twin_supply).map_err(|_| PoolError::AmountOverflow)?;
     emit!(InvariantOk {
@@ -857,6 +851,22 @@ fn enforce_supply_invariant(
     });
 
     Ok(())
+}
+
+fn validate_supply_components(
+    pool_state: &PoolState,
+    note_ledger: &NoteLedger,
+    twin_supply: u128,
+    vault_balance: u128,
+) -> Result<u128> {
+    let expected = twin_supply
+        .checked_add(note_ledger.live_value)
+        .ok_or(PoolError::AmountOverflow)?
+        .checked_add(pool_state.protocol_fees)
+        .ok_or(PoolError::AmountOverflow)?;
+
+    require!(vault_balance == expected, PoolError::InvariantBreach);
+    Ok(expected)
 }
 
 fn poseidon_hash(left: &[u8; 32], right: &[u8; 32]) -> [u8; 32] {
@@ -1895,6 +1905,10 @@ fn validate_hook_keys(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use anchor_lang::prelude::Account;
+    use anchor_spl::token::TokenAccount;
+    use solana_program::account_info::AccountInfo;
+    use spl_token::state::Mint as SplMintState;
 
     #[test]
     fn strict_mode_requires_exact_accounts() {
@@ -1912,5 +1926,183 @@ mod tests {
         let c = Pubkey::new_unique();
         assert!(validate_hook_keys(&[a, b], HookAccountMode::Lenient, &[c, a, b]).is_ok());
         assert!(validate_hook_keys(&[a, b], HookAccountMode::Lenient, &[c, a]).is_err());
+    }
+
+    #[test]
+    fn supply_invariant_tracks_origin_flow() {
+        let pool_key = Pubkey::new_unique();
+        let mut pool_state = dummy_pool_state(false);
+        let mut ledger = dummy_note_ledger(pool_key);
+        let mut vault_account = TokenAccount::default();
+
+        ledger
+            .record_shield(400, random_bytes(1))
+            .expect("shield should succeed");
+        vault_account.amount = 400;
+
+        validate_supply_components(&pool_state, &ledger, 0, u128::from(vault_account.amount))
+            .expect("initial shield balances must align");
+        enforce_supply_invariant(&pool_state, &ledger, &vault_account, None)
+            .expect("invariant should hold after shield");
+
+        ledger
+            .record_transfer(&[random_bytes(2)], &[random_bytes(3), random_bytes(4)])
+            .expect("transfer accounting must succeed");
+        validate_supply_components(&pool_state, &ledger, 0, u128::from(vault_account.amount))
+            .expect("transfer should not disturb totals");
+
+        ledger
+            .record_unshield(155, &[random_bytes(5)], &[random_bytes(6)])
+            .expect("unshield accounting must succeed");
+        pool_state.protocol_fees = 5;
+        vault_account.amount = 250;
+
+        assert_eq!(ledger.live_value, 245);
+        validate_supply_components(&pool_state, &ledger, 0, u128::from(vault_account.amount))
+            .expect("origin invariant must hold");
+        enforce_supply_invariant(&pool_state, &ledger, &vault_account, None)
+            .expect("origin invariant should pass");
+    }
+
+    #[test]
+    fn supply_invariant_tracks_twin_flow() {
+        let pool_key = Pubkey::new_unique();
+        let mut pool_state = dummy_pool_state(true);
+        let mut ledger = dummy_note_ledger(pool_key);
+        let mut vault_account = TokenAccount::default();
+
+        ledger
+            .record_shield(720, random_bytes(7))
+            .expect("shield should succeed");
+        vault_account.amount = 720;
+
+        let mut twin_supply = 0u128;
+        validate_supply_components(
+            &pool_state,
+            &ledger,
+            twin_supply,
+            u128::from(vault_account.amount),
+        )
+        .expect("initial twin shield should balance");
+
+        ledger
+            .record_transfer(&[random_bytes(8)], &[random_bytes(9)])
+            .expect("transfer accounting must succeed");
+
+        ledger
+            .record_unshield(306, &[random_bytes(10)], &[random_bytes(11)])
+            .expect("unshield accounting must succeed");
+        pool_state.protocol_fees = 6;
+        twin_supply += 300;
+
+        assert_eq!(ledger.live_value, 414);
+        let harness = MintHarness::new(pool_state.twin_mint, twin_supply as u64, 6);
+        let mint_account = harness.account();
+
+        validate_supply_components(
+            &pool_state,
+            &ledger,
+            twin_supply,
+            u128::from(vault_account.amount),
+        )
+        .expect("twin invariant must hold");
+        enforce_supply_invariant(&pool_state, &ledger, &vault_account, Some(&mint_account))
+            .expect("twin invariant should pass");
+    }
+
+    fn dummy_pool_state(twin_enabled: bool) -> PoolState {
+        let twin_mint = if twin_enabled {
+            Pubkey::new_unique()
+        } else {
+            Pubkey::default()
+        };
+        PoolState {
+            authority: Pubkey::new_unique(),
+            origin_mint: Pubkey::new_unique(),
+            vault: Pubkey::new_unique(),
+            verifier_program: Pubkey::new_unique(),
+            verifying_key: Pubkey::new_unique(),
+            commitment_tree: Pubkey::new_unique(),
+            verifying_key_id: [0u8; 32],
+            verifying_key_hash: [0u8; 32],
+            current_root: [0u8; 32],
+            recent_roots: [[0u8; 32]; PoolState::MAX_ROOTS],
+            roots_len: 0,
+            fee_bps: 5,
+            features: FeatureFlags::from(0),
+            note_ledger: Pubkey::new_unique(),
+            note_ledger_bump: 0,
+            protocol_fees: 0,
+            hook_config: Pubkey::new_unique(),
+            hook_config_present: false,
+            hook_config_bump: 0,
+            bump: 255,
+            twin_mint,
+            twin_mint_enabled: twin_enabled,
+        }
+    }
+
+    fn dummy_note_ledger(pool: Pubkey) -> NoteLedger {
+        NoteLedger {
+            pool,
+            total_minted: 0,
+            total_spent: 0,
+            live_value: 0,
+            notes_created: 0,
+            notes_consumed: 0,
+            amount_commitment_digest: [0u8; 32],
+            nullifier_digest: [0u8; 32],
+            bump: 0,
+        }
+    }
+
+    fn random_bytes(seed: u8) -> [u8; 32] {
+        let mut out = [0u8; 32];
+        for (idx, byte) in out.iter_mut().enumerate() {
+            *byte = seed.wrapping_add(idx as u8);
+        }
+        out
+    }
+
+    struct MintHarness {
+        _lamports: &'static mut u64,
+        _data: &'static mut [u8],
+        account_info: AccountInfo<'static>,
+    }
+
+    impl MintHarness {
+        fn new(key: Pubkey, supply: u64, decimals: u8) -> Self {
+            let mut state = SplMintState::default();
+            state.supply = supply;
+            state.decimals = decimals;
+            state.is_initialized = true;
+
+            let data_slice = {
+                let mut buffer = vec![0u8; SplMintState::LEN];
+                state.pack_into_slice(&mut buffer);
+                Box::leak(buffer.into_boxed_slice())
+            };
+            let lamports = Box::leak(Box::new(0u64));
+            let account_info = AccountInfo::new(
+                &key,
+                false,
+                false,
+                lamports,
+                data_slice,
+                &spl_token::id(),
+                false,
+                0,
+            );
+
+            Self {
+                _lamports: lamports,
+                _data: data_slice,
+                account_info,
+            }
+        }
+
+        fn account(&self) -> Account<Mint> {
+            Account::try_from(&self.account_info).expect("mint account should deserialize")
+        }
     }
 }
