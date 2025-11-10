@@ -89,6 +89,21 @@ The Anchor 0.32 toolchain is **hard‑pinned** to the Solana **2.3.x** ABI. To a
 | `ptf-factory` | features `["no-entrypoint", "cpi"]` | Pool relies on `ptf_factory::cpi::mint_ptkn`. |
 | `ptf-pool` | use `InterfaceAccount<'info, Mint/TokenAccount>` everywhere | Needed for Token‑2022 compatibility and to remove owner checks. |
 
+**Exception for host-only testing:** The new `tests/program-test-harness` crate is **the only place** allowed to depend on Solana 3.x/`spl-token 9.x`. It never links against on-chain crates—only the compiled `.so` artifacts under `target/deploy`. This keeps deployable programs on the 2.3 ABI while letting us use the modern host runtime locally.
+
+### 4.0.2 Local Dev Environment Checklist
+To get a clean local build/test loop without waiting for Solana 3.x on-chain support, every contributor needs the following toolchain installed:
+
+1. **Rust** `stable` 1.78+ (`rustup toolchain install stable`).
+2. **Anchor CLI** `0.32.1` (`cargo install --git https://github.com/coral-xyz/anchor --tag v0.32.1 anchor-cli`).
+3. **Solana CLI** `2.3.x` (`sh -c "$(curl -sSfL https://release.solana.com/v2.3.2/install)"`), configured via `solana config set -u localhost`.
+4. **Node.js** 18+ and **pnpm** 8+ (web app + SDK builds).
+5. **Prover toolchain** (`circom` + `snarkjs` or the Arkworks pipeline under `circuits/`) for regenerating Groth16 artifacts.
+6. **sccache** (optional but recommended) to keep `anchor build` under 2 minutes.
+7. **Docker** (optional) for running Postgres + Photon locally when testing the indexer.
+
+> Order of operations for a fresh developer: install toolchains → `anchor keys list` → `anchor build` → run harness tests (see §12.2) → run web/indexer services.
+
 **Rule:** We only upgrade to the Solana 3.x stack once Anchor publishes an official build that exposes the new `AccountInfo` layout, `ProgramTest` glue, and CPI shims. Until then, attempting to patch in 3.x crates causes type mismatches (two `AccountInfo` structs, incompatible `ProgramResult`, private `entry` wrappers). Documented errors from the aborted attempt:
 1. `ProgramTest::new(..., processor!(crate::entry))` rejected because `crate::entry` exports the Anchor (2.x) ABI, not the new 3.x function pointer.
 2. CPI helpers failed with *“expected solana_sdk::instruction::Instruction, found anchor_lang::solana_program::instruction::Instruction”* due to duplicated crates.
@@ -326,6 +341,17 @@ All circuits are versioned `v1.0` and referenced by hash in `vk_pda`.
 - `shield → unshield_to_ptkn` (if mapping enabled)
 - Multi‑user concurrent shields/transfers; randomized fuzz inputs.
 
+### 12.1 Program-Test Harness (Host Runtime)
+- **Crate:** `tests/program-test-harness` (Rust workspace member).
+- **Purpose:** Run CPI-heavy flows locally using `solana-program-test 3.x` while keeping the deployed `.so` binaries on Solana 2.3.
+- **Flow:**  
+  1. `anchor build` (or `cargo build-sbf`) → produces `target/deploy/ptf_{factory,vault,pool}.so`.  
+  2. `cargo test -p program-test-harness -- --ignored` (tests are `#[ignore]` by default to avoid CI load).  
+  3. Harness loads the `.so` paths explicitly via `add_program_with_path`, derives PDAs with the same helpers as on-chain, and manually encodes Anchor instructions (no `borsh` dependency).
+- **Status:** Mirrors the original factory integration tests (register mint, timelock update) and will accumulate more suites (pool, vault) over time.
+
+- Developers must keep the harness’ `.so` path logic in sync with Anchor output naming. If Anchor changes the filename suffix, update the harness `const SO_PATH: &str` before running tests.
+
 **Load & Perf:**
 - Verify CU usage < 500k; measure median proof verify latency.
 - Indexer liveness; root lag thresholds and alerts.
@@ -524,6 +550,7 @@ This spec locks in a **no‑relayer MVP** that is **production‑viable** and **
 - `programs/vault/**`
 - `programs/pool/**`
 - `programs/verifier-groth16/**`
+- `tests/program-test-harness/**`
 - `indexer/photon/**`
 - `services/proof-rpc/**`
 - `web/app/**`
@@ -545,12 +572,63 @@ We hit several integration problems that were **not** called out in earlier draf
 - **Issue:** `ptf_factory::cpi::mint_ptkn` was inaccessible because the crate was not compiled with `features = ["no-entrypoint", "cpi"]`. The pool program therefore could not mint the privacy twin.
 - **Spec Fix:** Section 4.0.1 now mandates the feature matrix for every crate (`ptf-factory`, `ptf-vault`, `ptf-pool`). CI should fail if the feature set deviates.
 
-### 22.4 Factory Integration Tests
-- **Issue:** The tests referenced `crate::accounts::SetDefaultFeatures` (which never existed) and attempted to call `ProgramTest::new` with Solana 3.x types. This blocked `cargo test`.
-- **Spec Fix:** Tests must call `UpdateFactoryAuthority` plus `SetDefaultFeatures` instruction data, and they must run on Solana 2.3.x `ProgramTest`. The spec now captures the dependency pin so this configuration is explicit.
+### 22.4 Factory Integration Tests (Legacy vs Harness)
+- **Issue:** The legacy `programs/factory` tests tried to run under Solana 3.x while linking the crate directly, so they hit duplicate-type errors and referenced instruction helpers that never existed. We removed them temporarily, which left us without any integration coverage.
+- **Spec Fix:** Factory integration coverage now lives inside `tests/program-test-harness`. These tests must:  
+  1) Build the on-chain programs first (Anchor 0.32 + Solana 2.3).  
+  2) Load the `.so` files from `target/deploy` via `add_program_with_path`.  
+  3) Encode instructions manually using Anchor sighashes (matching the harness helpers).  
+  4) Cover the original scenarios (`register_mint`, `timelock update`, pause/unpause) plus any new flows before merging.
+- **Command:** `cargo test -p program-test-harness -- --ignored harness::factory::register_mint_flow` (or `--ignored` with no filter to run all). CI should invoke this target after `anchor build`.
 
-### 22.5 Hook + CPI Borrow Rules
+### 22.5 Dual-Toolchain Test Harness (Current Plan)
+- **Problem:** `solana_program_test` v2.x lacks host stubs for SPL/Token-2022 CPIs, so CPI-heavy tests fail unless we patch the runtime ourselves.
+- **Decision:** Keep deployable programs on Solana 2.3 but run host-side tests on Solana 3.x through the dedicated harness crate. The harness never imports `anchor_lang`; it only works with `solana_sdk`/`Instruction` types and the compiled artifacts, eliminating duplicate `AccountInfo` definitions.
+- **Process (enforced by spec):**
+  1. `anchor build` → `.so` artifacts land at `target/deploy/ptf_{factory,pool,vault}.so`.  
+  2. Harness constant `SO_PATH` must reference the exact filenames Anchor emits (no `.dSYM` or stub).  
+  3. `ProgramTest::add_program_with_path` loads each artifact; tests derive PDAs via shared helper functions to stay aligned with on-chain seeds.  
+  4. Tests run under `tokio::test(flavor = "multi_thread")` with `#[ignore]` to keep default `cargo test` fast.
+- **Implication:** Front-end + CLI workflows continue using Solana 2.3 binaries, but developers have a reliable local testbed. When Anchor ships a Solana 3.x-compatible release we can delete the harness and revert to single-toolchain tests.
+
+### 22.6 Hook + CPI Borrow Rules
 - **Issue:** Hook execution reused `ctx.accounts.pool_state` after handing out mutable references, triggering borrow checker errors once we tried to modernize the code.
 - **Spec Fix:** Hook invocations must snapshot the data they need (mint, mode, bump seeds, etc.) into local variables before issuing CPI calls. The spec now mentions this pattern alongside the invariant check requirements.
 
+### 22.7 Harness Artifacts & SPL Structs
+- **Issue:** The harness initially pointed to `target/deploy/ptf_factory-keypair.json` (Anchor’s stub) instead of the `.so`, and it tried to deserialize `spl_token::state::Mint` via the deprecated `Pack` API, which no longer exists in Solana 3.x.
+- **Spec Fix:** Hard-code the `.so` filenames (`ptf_factory.so`, `ptf_pool.so`, `ptf_vault.so`) and validate their existence before running tests. When the harness needs mint metadata it must either: (a) read decimals from the `register_mint` arguments it just submitted, or (b) deserialize via `spl_token::state::Mint::unpack_from_slice` behind the `spl_token` 9.x feature gate. Do **not** call `Pack::LEN`; use the associated constants on the struct (`Mint::LEN`) or `std::mem::size_of`. This keeps host-side code aligned with both toolchains.
+
 **Action:** Treat this section as a regression checklist. Any future upgrade (e.g., Solana 3.x) must update the spec first, then land code changes in lockstep.
+
+---
+
+## 23) Local Testing & Deployment Paths (Action Plan)
+We now have three clearly defined execution branches. Pick the one with the least risk for the milestone at hand.
+
+### Branch A — **Ship on Solana 2.3 (Recommended, least friction)**
+1. **On-chain:** Stay on Anchor 0.32.1 / Solana 2.3.x (already compiling). Pool/factory/vault programs use interface accounts + CPI features per §4.0.1.  
+2. **Testing:** Use `anchor test` for unit-level coverage and `cargo test -p program-test-harness -- --ignored` for CPI/integration. Both run locally without a validator.  
+3. **Front-end:** Point the dApp/SDK at the generated IDLs in `target/idl` and the local validator or devnet RPC. No dependency bumps required—`@project-serum/anchor` 0.32 client works with Solana 2.3.  
+4. **Devnet/Testnet:** After passing harness tests, run `anchor deploy` against devnet, verify flows via the Next.js app, then promote the same binaries to testnet/mainnet with governance approvals.  
+5. **Status:** Ready now. This is the shortest path to mainnet because every component already builds with these versions.
+
+### Branch B — **Hybrid Toolchain (Current work in progress)**
+- **Host runtime:** Keep `tests/program-test-harness` (Solana 3.x crates) for sophisticated local testing. Continue to isolate it from on-chain crates (no shared dependencies besides `.so` artifacts).  
+- **Use case:** When we need modern `solana-program-test` features (CPI stubs, Token-2022 helpers) without waiting for Anchor updates.  
+- **Risk:** Harness must be kept up to date with `.so` filenames and IDL changes, but no on-chain redeploy is required. This branch is compatible with Branch A front-end + deployment steps.
+
+### Branch C — **Full Solana 3.x Migration (Blocked)**
+- **Status:** Blocked until Anchor releases a 3.x-compatible toolchain. Attempting now reintroduces all of the errors listed in §22.1 (duplicate `AccountInfo`, missing `system_instruction`, `ProgramTest` mismatch).  
+- **Next action:** Monitor Anchor releases; once a 3.x build lands, update this spec first (new dependency matrix, CPI rules), then refactor the workspace as a single change.
+
+### Local Testing Options (Before Front-End Hookup)
+1. **Anchor unit tests:** `anchor test --skip-build` (fast, pure Rust).  
+2. **Program-test harness:** `anchor build && cargo test -p program-test-harness -- --ignored`.  
+3. **Local validator smoke tests:** `solana-test-validator --reset` + `anchor deploy` + run the Next.js app against `http://127.0.0.1:8899`.  
+4. **End-to-end devnet rehearsal:** Deploy to devnet, point Photon/indexer + dApp there, confirm wallet UX before promoting to testnet/mainnet.
+
+### Front-End & Deployment Readiness
+- **Hook-up order:** (1) Build + test programs locally → (2) wire SDK/dApp against local validator → (3) run devnet soak tests → (4) push to testnet/mainnet.  
+- **Mainnet without Solana 3.x:** Yes. As long as we stick to the versions in §4.0.1, the binaries produced today are mainnet-ready. The harness + local validator cover functional testing without waiting for new upstream releases.  
+- **Risk surface:** Largest risk remains the dual-toolchain drift. Mitigate by running the harness in CI and keeping the spec updated before any dependency change.
