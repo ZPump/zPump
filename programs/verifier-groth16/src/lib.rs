@@ -171,12 +171,12 @@ fn verify_account_hash(account: &VerifyingKeyAccount) -> bool {
     computed == account.hash
 }
 
-#[cfg(target_arch = "bpf")]
+#[cfg(any(target_arch = "bpf", target_arch = "sbf"))]
 fn groth16_verify(verifying_key: &[u8], proof: &[u8], public_inputs: &[u8]) -> bool {
     unsafe { groth16_verify_syscall(verifying_key, proof, public_inputs) }
 }
 
-#[cfg(not(target_arch = "bpf"))]
+#[cfg(not(any(target_arch = "bpf", target_arch = "sbf")))]
 fn groth16_verify(verifying_key: &[u8], proof: &[u8], public_inputs: &[u8]) -> bool {
     use ark_bn254::{Bn254, Fr};
     use ark_groth16::{prepare_verifying_key, Groth16, Proof, VerifyingKey};
@@ -512,7 +512,7 @@ mod tests {
     }
 }
 
-#[cfg(target_arch = "bpf")]
+#[cfg(any(target_arch = "bpf", target_arch = "sbf"))]
 #[allow(improper_ctypes)]
 unsafe fn groth16_verify_syscall(verifying_key: &[u8], proof: &[u8], public_inputs: &[u8]) -> bool {
     extern "C" {
