@@ -1,9 +1,12 @@
 use anchor_lang::prelude::*;
+use anchor_lang::solana_program::instruction::{AccountMeta, Instruction};
+use anchor_lang::solana_program::program::invoke_signed;
 use anchor_lang::solana_program::program_option::COption;
 use anchor_spl::token::spl_token::instruction::AuthorityType;
 use anchor_spl::token::{self, Mint, MintTo, SetAuthority, Token, TokenAccount};
 use core::convert::TryFrom;
 
+use ptf_common::hooks::{HookInstruction, PostShieldHook, PostUnshieldHook};
 use ptf_common::{
     seeds, FeatureFlags, FEATURE_HOOKS_ENABLED, FEATURE_PRIVATE_TRANSFER_ENABLED, MAX_BPS,
 };
@@ -184,137 +187,200 @@ pub mod ptf_pool {
         Ok(())
     }
 
-    pub fn shield(ctx: Context<Shield>, args: ShieldArgs) -> Result<()> {
-        let pool_state = &mut ctx.accounts.pool_state;
-        require_keys_eq!(
-            ctx.accounts.verifier_program.key(),
-            pool_state.verifier_program,
-            PoolError::VerifierMismatch,
-        );
-        require_keys_eq!(
-            ctx.accounts.verifying_key.key(),
-            pool_state.verifying_key,
-            PoolError::VerifierMismatch,
-        );
-        require!(
-            ctx.accounts.verifying_key.verifying_key_id == pool_state.verifying_key_id,
-            PoolError::VerifierMismatch,
-        );
-        require_keys_eq!(
-            ctx.accounts.vault_state.key(),
-            pool_state.vault,
-            PoolError::MismatchedVaultAuthority,
-        );
-        require_keys_eq!(
-            ctx.accounts.vault_state.pool_authority,
-            pool_state.key(),
-            PoolError::MismatchedVaultAuthority,
-        );
-        require_keys_eq!(
-            ctx.accounts.vault_token_account.owner,
-            pool_state.vault,
-            PoolError::VaultTokenAccountMismatch,
-        );
-        require_keys_eq!(
-            ctx.accounts.vault_token_account.mint,
-            pool_state.origin_mint,
-            PoolError::OriginMintMismatch,
-        );
-        require_keys_eq!(
-            ctx.accounts.origin_mint.key(),
-            pool_state.origin_mint,
-            PoolError::OriginMintMismatch,
-        );
-        require_keys_eq!(
-            ctx.accounts.depositor_token_account.owner,
-            ctx.accounts.payer.key(),
-            PoolError::InvalidDepositorAccount,
-        );
-        require_keys_eq!(
-            ctx.accounts.depositor_token_account.mint,
-            pool_state.origin_mint,
-            PoolError::OriginMintMismatch,
-        );
-
-        if pool_state.twin_mint_enabled {
-            let twin_mint = ctx
-                .accounts
-                .twin_mint
-                .as_ref()
-                .ok_or(PoolError::TwinMintNotConfigured)?;
+    pub fn shield<'info>(
+        ctx: Context<'_, '_, '_, 'info, Shield<'info>>,
+        args: ShieldArgs,
+    ) -> Result<()> {
+        let (origin_mint, hook_enabled, pool_key, pool_bump) = {
+            let pool_state = &mut ctx.accounts.pool_state;
             require_keys_eq!(
-                twin_mint.key(),
-                pool_state.twin_mint,
-                PoolError::TwinMintMismatch,
+                ctx.accounts.verifier_program.key(),
+                pool_state.verifier_program,
+                PoolError::VerifierMismatch,
             );
-        }
+            require_keys_eq!(
+                ctx.accounts.verifying_key.key(),
+                pool_state.verifying_key,
+                PoolError::VerifierMismatch,
+            );
+            require!(
+                ctx.accounts.verifying_key.verifying_key_id == pool_state.verifying_key_id,
+                PoolError::VerifierMismatch,
+            );
+            require_keys_eq!(
+                ctx.accounts.vault_state.key(),
+                pool_state.vault,
+                PoolError::MismatchedVaultAuthority,
+            );
+            require_keys_eq!(
+                ctx.accounts.vault_state.pool_authority,
+                pool_state.key(),
+                PoolError::MismatchedVaultAuthority,
+            );
+            require_keys_eq!(
+                ctx.accounts.vault_token_account.owner,
+                pool_state.vault,
+                PoolError::VaultTokenAccountMismatch,
+            );
+            require_keys_eq!(
+                ctx.accounts.vault_token_account.mint,
+                pool_state.origin_mint,
+                PoolError::OriginMintMismatch,
+            );
+            require_keys_eq!(
+                ctx.accounts.origin_mint.key(),
+                pool_state.origin_mint,
+                PoolError::OriginMintMismatch,
+            );
+            require_keys_eq!(
+                ctx.accounts.depositor_token_account.owner,
+                ctx.accounts.payer.key(),
+                PoolError::InvalidDepositorAccount,
+            );
+            require_keys_eq!(
+                ctx.accounts.depositor_token_account.mint,
+                pool_state.origin_mint,
+                PoolError::OriginMintMismatch,
+            );
 
-        let cpi_accounts = ptf_verifier_groth16::cpi::accounts::VerifyGroth16 {
-            verifier_state: ctx.accounts.verifying_key.to_account_info(),
-        };
-        let cpi_ctx = CpiContext::new(
-            ctx.accounts.verifier_program.to_account_info(),
-            cpi_accounts,
-        );
-        ptf_verifier_groth16::cpi::verify_groth16(
-            cpi_ctx,
-            pool_state.verifying_key_id,
-            args.proof.clone(),
-            args.public_inputs.clone(),
-        )?;
+            if pool_state.twin_mint_enabled {
+                let twin_mint = ctx
+                    .accounts
+                    .twin_mint
+                    .as_ref()
+                    .ok_or(PoolError::TwinMintNotConfigured)?;
+                require_keys_eq!(
+                    twin_mint.key(),
+                    pool_state.twin_mint,
+                    PoolError::TwinMintMismatch,
+                );
+            }
 
-        let deposit_accounts = ptf_vault::cpi::accounts::Deposit {
-            vault_state: ctx.accounts.vault_state.to_account_info(),
-            vault_token_account: ctx.accounts.vault_token_account.to_account_info(),
-            origin_mint: ctx.accounts.origin_mint.to_account_info(),
-            depositor: ctx.accounts.payer.to_account_info(),
-            depositor_token_account: ctx.accounts.depositor_token_account.to_account_info(),
-            token_program: ctx.accounts.token_program.to_account_info(),
-        };
-        let deposit_ctx = CpiContext::new(
-            ctx.accounts.vault_program.to_account_info(),
-            deposit_accounts,
-        );
-        ptf_vault::cpi::deposit(deposit_ctx, args.amount)?;
+            let cpi_accounts = ptf_verifier_groth16::cpi::accounts::VerifyGroth16 {
+                verifier_state: ctx.accounts.verifying_key.to_account_info(),
+            };
+            let cpi_ctx = CpiContext::new(
+                ctx.accounts.verifier_program.to_account_info(),
+                cpi_accounts,
+            );
+            ptf_verifier_groth16::cpi::verify_groth16(
+                cpi_ctx,
+                pool_state.verifying_key_id,
+                args.proof.clone(),
+                args.public_inputs.clone(),
+            )?;
 
-        pool_state.push_root(args.new_root);
-        pool_state.total_shielded = pool_state
-            .total_shielded
-            .checked_add(args.amount)
-            .ok_or(PoolError::AmountOverflow)?;
+            let deposit_accounts = ptf_vault::cpi::accounts::Deposit {
+                vault_state: ctx.accounts.vault_state.to_account_info(),
+                vault_token_account: ctx.accounts.vault_token_account.to_account_info(),
+                origin_mint: ctx.accounts.origin_mint.to_account_info(),
+                depositor: ctx.accounts.payer.to_account_info(),
+                depositor_token_account: ctx.accounts.depositor_token_account.to_account_info(),
+                token_program: ctx.accounts.token_program.to_account_info(),
+            };
+            let deposit_ctx = CpiContext::new(
+                ctx.accounts.vault_program.to_account_info(),
+                deposit_accounts,
+            );
+            ptf_vault::cpi::deposit(deposit_ctx, args.amount)?;
 
-        emit!(Shielded {
-            origin_mint: pool_state.origin_mint,
-            depositor: ctx.accounts.payer.key(),
-            commitment: args.commitment,
-            root: pool_state.current_root,
-            amount_commit: args.amount_commit,
-        });
+            pool_state.push_root(args.new_root);
+            pool_state.total_shielded = pool_state
+                .total_shielded
+                .checked_add(args.amount)
+                .ok_or(PoolError::AmountOverflow)?;
 
-        if pool_state
-            .features
-            .contains(FeatureFlags::from(FEATURE_HOOKS_ENABLED))
-            && pool_state.hook_config_present
-        {
-            emit!(HookPostShield {
-                origin_mint: pool_state.origin_mint,
+            let origin_mint = pool_state.origin_mint;
+            let current_root = pool_state.current_root;
+            emit!(Shielded {
+                origin_mint,
+                depositor: ctx.accounts.payer.key(),
                 commitment: args.commitment,
+                root: current_root,
+                amount_commit: args.amount_commit,
             });
+
+            let hook_enabled = pool_state
+                .features
+                .contains(FeatureFlags::from(FEATURE_HOOKS_ENABLED))
+                && pool_state.hook_config_present;
+            let pool_key = pool_state.key();
+            let pool_bump = pool_state.bump;
+
+            (origin_mint, hook_enabled, pool_key, pool_bump)
+        };
+
+        if hook_enabled {
+            let hook_config_account = &ctx.accounts.hook_config;
+            let required_accounts: Vec<Pubkey> = hook_config_account.required_keys().collect();
+            let hook_mode = hook_config_account.mode;
+            let target_program = hook_config_account.post_shield_program_id;
+            if target_program != Pubkey::default() {
+                validate_hook_accounts(&required_accounts, hook_mode, ctx.remaining_accounts)?;
+
+                let mut metas = Vec::with_capacity(2 + ctx.remaining_accounts.len());
+                let mut infos = Vec::with_capacity(2 + ctx.remaining_accounts.len());
+
+                let hook_config_info = ctx.accounts.hook_config.to_account_info();
+                let pool_info = ctx.accounts.pool_state.to_account_info();
+                metas.push(AccountMeta::new_readonly(hook_config_info.key(), false));
+                metas.push(AccountMeta::new_readonly(pool_info.key(), false));
+                infos.push(hook_config_info);
+                infos.push(pool_info);
+
+                for account in ctx.remaining_accounts.iter() {
+                    let meta = if account.is_writable {
+                        AccountMeta::new(account.key(), account.is_signer)
+                    } else {
+                        AccountMeta::new_readonly(account.key(), account.is_signer)
+                    };
+                    metas.push(meta);
+                    infos.push(account.clone());
+                }
+
+                let ix = Instruction {
+                    program_id: target_program,
+                    accounts: metas,
+                    data: HookInstruction::PostShield(PostShieldHook {
+                        origin_mint,
+                        pool: pool_key,
+                        depositor: ctx.accounts.payer.key(),
+                        commitment: args.commitment,
+                        amount_commit: args.amount_commit,
+                        amount: args.amount,
+                    })
+                    .try_to_vec()?,
+                };
+
+                let signer_seeds: [&[u8]; 3] = [seeds::POOL, origin_mint.as_ref(), &[pool_bump]];
+                invoke_signed(&ix, &infos, &[&signer_seeds])?;
+
+                emit!(HookPostShield {
+                    origin_mint,
+                    commitment: args.commitment,
+                });
+            }
         }
 
         enforce_supply_invariant(
-            pool_state,
+            &ctx.accounts.pool_state,
             &ctx.accounts.vault_token_account,
             ctx.accounts.twin_mint.as_ref(),
         )?;
         Ok(())
     }
 
-    pub fn unshield_to_origin(ctx: Context<Unshield>, args: UnshieldArgs) -> Result<()> {
+    pub fn unshield_to_origin<'info>(
+        ctx: Context<'_, '_, '_, 'info, Unshield<'info>>,
+        args: UnshieldArgs,
+    ) -> Result<()> {
         process_unshield(ctx, args, UnshieldMode::Origin)
     }
 
-    pub fn unshield_to_ptkn(ctx: Context<Unshield>, args: UnshieldArgs) -> Result<()> {
+    pub fn unshield_to_ptkn<'info>(
+        ctx: Context<'_, '_, '_, 'info, Unshield<'info>>,
+        args: UnshieldArgs,
+    ) -> Result<()> {
         let pool_state = &ctx.accounts.pool_state;
         require!(
             pool_state
@@ -383,196 +449,264 @@ pub mod ptf_pool {
     }
 }
 
-fn process_unshield(ctx: Context<Unshield>, args: UnshieldArgs, mode: UnshieldMode) -> Result<()> {
-    let pool_state = &mut ctx.accounts.pool_state;
-    require_keys_eq!(
-        ctx.accounts.verifier_program.key(),
-        pool_state.verifier_program,
-        PoolError::VerifierMismatch,
-    );
-    require_keys_eq!(
-        ctx.accounts.verifying_key.key(),
-        pool_state.verifying_key,
-        PoolError::VerifierMismatch,
-    );
-    require!(
-        ctx.accounts.verifying_key.verifying_key_id == pool_state.verifying_key_id,
-        PoolError::VerifierMismatch,
-    );
-    require_keys_eq!(
-        ctx.accounts.vault_state.key(),
-        pool_state.vault,
-        PoolError::MismatchedVaultAuthority,
-    );
-    require_keys_eq!(
-        ctx.accounts.vault_state.pool_authority,
-        pool_state.key(),
-        PoolError::MismatchedVaultAuthority,
-    );
-    require_keys_eq!(
-        ctx.accounts.vault_state.origin_mint,
-        pool_state.origin_mint,
-        PoolError::OriginMintMismatch,
-    );
-    require_keys_eq!(
-        ctx.accounts.vault_token_account.owner,
-        pool_state.vault,
-        PoolError::VaultTokenAccountMismatch,
-    );
-    require_keys_eq!(
-        ctx.accounts.vault_token_account.mint,
-        pool_state.origin_mint,
-        PoolError::OriginMintMismatch,
-    );
-
-    if pool_state.twin_mint_enabled {
-        let twin_mint = ctx
-            .accounts
-            .twin_mint
-            .as_ref()
-            .ok_or(PoolError::TwinMintNotConfigured)?;
+fn process_unshield<'info>(
+    ctx: Context<'_, '_, '_, 'info, Unshield<'info>>,
+    args: UnshieldArgs,
+    mode: UnshieldMode,
+) -> Result<()> {
+    let (origin_mint, destination_owner, fee, hook_enabled, pool_key, pool_bump) = {
+        let pool_state = &mut ctx.accounts.pool_state;
+        let origin_mint = pool_state.origin_mint;
         require_keys_eq!(
-            twin_mint.key(),
-            pool_state.twin_mint,
-            PoolError::TwinMintMismatch,
+            ctx.accounts.verifier_program.key(),
+            pool_state.verifier_program,
+            PoolError::VerifierMismatch,
         );
-    }
+        require_keys_eq!(
+            ctx.accounts.verifying_key.key(),
+            pool_state.verifying_key,
+            PoolError::VerifierMismatch,
+        );
+        require!(
+            ctx.accounts.verifying_key.verifying_key_id == pool_state.verifying_key_id,
+            PoolError::VerifierMismatch,
+        );
+        require_keys_eq!(
+            ctx.accounts.vault_state.key(),
+            pool_state.vault,
+            PoolError::MismatchedVaultAuthority,
+        );
+        require_keys_eq!(
+            ctx.accounts.vault_state.pool_authority,
+            pool_state.key(),
+            PoolError::MismatchedVaultAuthority,
+        );
+        require_keys_eq!(
+            ctx.accounts.vault_state.origin_mint,
+            origin_mint,
+            PoolError::OriginMintMismatch,
+        );
+        require_keys_eq!(
+            ctx.accounts.vault_token_account.owner,
+            pool_state.vault,
+            PoolError::VaultTokenAccountMismatch,
+        );
+        require_keys_eq!(
+            ctx.accounts.vault_token_account.mint,
+            origin_mint,
+            PoolError::OriginMintMismatch,
+        );
 
-    require!(
-        pool_state.is_known_root(&args.old_root),
-        PoolError::UnknownRoot,
-    );
-
-    let cpi_accounts = ptf_verifier_groth16::cpi::accounts::VerifyGroth16 {
-        verifier_state: ctx.accounts.verifying_key.to_account_info(),
-    };
-    let cpi_ctx = CpiContext::new(
-        ctx.accounts.verifier_program.to_account_info(),
-        cpi_accounts,
-    );
-    ptf_verifier_groth16::cpi::verify_groth16(
-        cpi_ctx,
-        pool_state.verifying_key_id,
-        args.proof.clone(),
-        args.public_inputs.clone(),
-    )?;
-
-    let fee = pool_state.calculate_fee(args.amount)?;
-    let total_spent = args
-        .amount
-        .checked_add(fee)
-        .ok_or(PoolError::AmountOverflow)?;
-    require!(
-        total_spent <= pool_state.total_shielded,
-        PoolError::InsufficientLiquidity,
-    );
-
-    for nullifier in &args.nullifiers {
-        ctx.accounts
-            .nullifier_set
-            .insert(*nullifier)
-            .map_err(|_| PoolError::NullifierReuse)?;
-    }
-
-    pool_state.total_shielded = pool_state
-        .total_shielded
-        .checked_sub(total_spent)
-        .ok_or(PoolError::AmountOverflow)?;
-    pool_state.protocol_fees = pool_state
-        .protocol_fees
-        .checked_add(fee)
-        .ok_or(PoolError::AmountOverflow)?;
-    pool_state.push_root(args.new_root);
-
-    match mode {
-        UnshieldMode::Origin => {
-            require_keys_eq!(
-                ctx.accounts.destination_token_account.mint,
-                pool_state.origin_mint,
-                PoolError::OriginMintMismatch,
-            );
-            let signer_seeds: [&[u8]; 3] = [
-                seeds::POOL,
-                pool_state.origin_mint.as_ref(),
-                &[pool_state.bump],
-            ];
-            let cpi_accounts = ptf_vault::cpi::accounts::Release {
-                vault_state: ctx.accounts.vault_state.to_account_info(),
-                vault_token_account: ctx.accounts.vault_token_account.to_account_info(),
-                destination_token_account: ctx.accounts.destination_token_account.to_account_info(),
-                pool_authority: pool_state.to_account_info(),
-                token_program: ctx.accounts.token_program.to_account_info(),
-            };
-            let signer = &[&signer_seeds[..]];
-            let cpi_ctx = CpiContext::new_with_signer(
-                ctx.accounts.vault_program.to_account_info(),
-                cpi_accounts,
-                signer,
-            );
-            ptf_vault::cpi::release(cpi_ctx, args.amount)?;
-            emit!(UnshieldOrigin {
-                origin_mint: pool_state.origin_mint,
-                destination: ctx.accounts.destination_token_account.owner,
-                amount: args.amount,
-                fee,
-            });
-        }
-        UnshieldMode::Twin => {
-            require!(
-                pool_state.twin_mint_enabled,
-                PoolError::TwinMintNotConfigured
-            );
+        if pool_state.twin_mint_enabled {
             let twin_mint = ctx
                 .accounts
                 .twin_mint
                 .as_ref()
                 .ok_or(PoolError::TwinMintNotConfigured)?;
             require_keys_eq!(
-                ctx.accounts.destination_token_account.mint,
+                twin_mint.key(),
                 pool_state.twin_mint,
                 PoolError::TwinMintMismatch,
             );
-            let signer_seeds: [&[u8]; 3] = [
-                seeds::POOL,
-                pool_state.origin_mint.as_ref(),
-                &[pool_state.bump],
-            ];
-            let mint_accounts = MintTo {
-                mint: twin_mint.to_account_info(),
-                to: ctx.accounts.destination_token_account.to_account_info(),
-                authority: pool_state.to_account_info(),
+        }
+
+        require!(
+            pool_state.is_known_root(&args.old_root),
+            PoolError::UnknownRoot,
+        );
+
+        let cpi_accounts = ptf_verifier_groth16::cpi::accounts::VerifyGroth16 {
+            verifier_state: ctx.accounts.verifying_key.to_account_info(),
+        };
+        let cpi_ctx = CpiContext::new(
+            ctx.accounts.verifier_program.to_account_info(),
+            cpi_accounts,
+        );
+        ptf_verifier_groth16::cpi::verify_groth16(
+            cpi_ctx,
+            pool_state.verifying_key_id,
+            args.proof.clone(),
+            args.public_inputs.clone(),
+        )?;
+
+        let fee = pool_state.calculate_fee(args.amount)?;
+        let total_spent = args
+            .amount
+            .checked_add(fee)
+            .ok_or(PoolError::AmountOverflow)?;
+        require!(
+            total_spent <= pool_state.total_shielded,
+            PoolError::InsufficientLiquidity,
+        );
+
+        for nullifier in &args.nullifiers {
+            ctx.accounts
+                .nullifier_set
+                .insert(*nullifier)
+                .map_err(|_| PoolError::NullifierReuse)?;
+        }
+
+        pool_state.total_shielded = pool_state
+            .total_shielded
+            .checked_sub(total_spent)
+            .ok_or(PoolError::AmountOverflow)?;
+        pool_state.protocol_fees = pool_state
+            .protocol_fees
+            .checked_add(fee)
+            .ok_or(PoolError::AmountOverflow)?;
+        pool_state.push_root(args.new_root);
+
+        let destination_owner = ctx.accounts.destination_token_account.owner;
+        match mode {
+            UnshieldMode::Origin => {
+                require_keys_eq!(
+                    ctx.accounts.destination_token_account.mint,
+                    origin_mint,
+                    PoolError::OriginMintMismatch,
+                );
+                let signer_seeds: [&[u8]; 3] = [
+                    seeds::POOL,
+                    pool_state.origin_mint.as_ref(),
+                    &[pool_state.bump],
+                ];
+                let cpi_accounts = ptf_vault::cpi::accounts::Release {
+                    vault_state: ctx.accounts.vault_state.to_account_info(),
+                    vault_token_account: ctx.accounts.vault_token_account.to_account_info(),
+                    destination_token_account: ctx
+                        .accounts
+                        .destination_token_account
+                        .to_account_info(),
+                    pool_authority: pool_state.to_account_info(),
+                    token_program: ctx.accounts.token_program.to_account_info(),
+                };
+                let signer = &[&signer_seeds[..]];
+                let cpi_ctx = CpiContext::new_with_signer(
+                    ctx.accounts.vault_program.to_account_info(),
+                    cpi_accounts,
+                    signer,
+                );
+                ptf_vault::cpi::release(cpi_ctx, args.amount)?;
+                emit!(UnshieldOrigin {
+                    origin_mint,
+                    destination: destination_owner,
+                    amount: args.amount,
+                    fee,
+                });
+            }
+            UnshieldMode::Twin => {
+                require!(
+                    pool_state.twin_mint_enabled,
+                    PoolError::TwinMintNotConfigured
+                );
+                let twin_mint = ctx
+                    .accounts
+                    .twin_mint
+                    .as_ref()
+                    .ok_or(PoolError::TwinMintNotConfigured)?;
+                require_keys_eq!(
+                    ctx.accounts.destination_token_account.mint,
+                    pool_state.twin_mint,
+                    PoolError::TwinMintMismatch,
+                );
+                let signer_seeds: [&[u8]; 3] = [
+                    seeds::POOL,
+                    pool_state.origin_mint.as_ref(),
+                    &[pool_state.bump],
+                ];
+                let mint_accounts = MintTo {
+                    mint: twin_mint.to_account_info(),
+                    to: ctx.accounts.destination_token_account.to_account_info(),
+                    authority: pool_state.to_account_info(),
+                };
+                let signer = &[&signer_seeds[..]];
+                let mint_ctx = CpiContext::new_with_signer(
+                    ctx.accounts.token_program.to_account_info(),
+                    mint_accounts,
+                    signer,
+                );
+                token::mint_to(mint_ctx, args.amount)?;
+                emit!(UnshieldTwin {
+                    origin_mint,
+                    destination: destination_owner,
+                    amount: args.amount,
+                    fee,
+                });
+            }
+        }
+
+        let hook_enabled = pool_state
+            .features
+            .contains(FeatureFlags::from(FEATURE_HOOKS_ENABLED))
+            && pool_state.hook_config_present;
+        let pool_key = pool_state.key();
+        let pool_bump = pool_state.bump;
+
+        (
+            origin_mint,
+            destination_owner,
+            fee,
+            hook_enabled,
+            pool_key,
+            pool_bump,
+        )
+    };
+
+    if hook_enabled {
+        let hook_config_account = &ctx.accounts.hook_config;
+        let required_accounts: Vec<Pubkey> = hook_config_account.required_keys().collect();
+        let hook_mode = hook_config_account.mode;
+        let target_program = hook_config_account.post_unshield_program_id;
+        if target_program != Pubkey::default() {
+            validate_hook_accounts(&required_accounts, hook_mode, ctx.remaining_accounts)?;
+
+            let mut metas = Vec::with_capacity(2 + ctx.remaining_accounts.len());
+            let mut infos = Vec::with_capacity(2 + ctx.remaining_accounts.len());
+
+            let hook_config_info = ctx.accounts.hook_config.to_account_info();
+            let pool_info = ctx.accounts.pool_state.to_account_info();
+            metas.push(AccountMeta::new_readonly(hook_config_info.key(), false));
+            metas.push(AccountMeta::new_readonly(pool_info.key(), false));
+            infos.push(hook_config_info);
+            infos.push(pool_info);
+
+            for account in ctx.remaining_accounts.iter() {
+                let meta = if account.is_writable {
+                    AccountMeta::new(account.key(), account.is_signer)
+                } else {
+                    AccountMeta::new_readonly(account.key(), account.is_signer)
+                };
+                metas.push(meta);
+                infos.push(account.clone());
+            }
+
+            let ix = Instruction {
+                program_id: target_program,
+                accounts: metas,
+                data: HookInstruction::PostUnshield(PostUnshieldHook {
+                    origin_mint,
+                    pool: pool_key,
+                    destination: destination_owner,
+                    mode: mode as u8,
+                    amount: args.amount,
+                    fee,
+                })
+                .try_to_vec()?,
             };
-            let signer = &[&signer_seeds[..]];
-            let mint_ctx = CpiContext::new_with_signer(
-                ctx.accounts.token_program.to_account_info(),
-                mint_accounts,
-                signer,
-            );
-            token::mint_to(mint_ctx, args.amount)?;
-            emit!(UnshieldTwin {
-                origin_mint: pool_state.origin_mint,
-                destination: ctx.accounts.destination_token_account.owner,
+
+            let signer_seeds: [&[u8]; 3] = [seeds::POOL, origin_mint.as_ref(), &[pool_bump]];
+            invoke_signed(&ix, &infos, &[&signer_seeds])?;
+
+            emit!(HookPostUnshield {
+                origin_mint,
+                mode: mode as u8,
+                destination: destination_owner,
                 amount: args.amount,
-                fee,
             });
         }
     }
 
-    if pool_state
-        .features
-        .contains(FeatureFlags::from(FEATURE_HOOKS_ENABLED))
-        && pool_state.hook_config_present
-    {
-        emit!(HookPostUnshield {
-            origin_mint: pool_state.origin_mint,
-            mode: mode as u8,
-            destination: ctx.accounts.destination_token_account.owner,
-            amount: args.amount,
-        });
-    }
-
     enforce_supply_invariant(
-        pool_state,
+        &ctx.accounts.pool_state,
         &ctx.accounts.vault_token_account,
         ctx.accounts.twin_mint.as_ref(),
     )
@@ -676,6 +810,12 @@ pub struct UpdateAuthority<'info> {
 pub struct Shield<'info> {
     #[account(mut, seeds = [seeds::POOL, pool_state.origin_mint.as_ref()], bump = pool_state.bump)]
     pub pool_state: Account<'info, PoolState>,
+    #[account(
+        seeds = [seeds::HOOKS, pool_state.origin_mint.as_ref()],
+        bump = pool_state.hook_config_bump,
+        constraint = hook_config.pool == pool_state.key() @ PoolError::HookConfigInvalid,
+    )]
+    pub hook_config: Account<'info, HookConfig>,
     #[account(mut, seeds = [seeds::NULLIFIERS, pool_state.origin_mint.as_ref()], bump = nullifier_set.bump)]
     pub nullifier_set: Account<'info, NullifierSet>,
     #[account(mut, seeds = [seeds::VAULT, pool_state.origin_mint.as_ref()], bump = vault_state.bump)]
@@ -699,6 +839,12 @@ pub struct Shield<'info> {
 pub struct Unshield<'info> {
     #[account(mut, seeds = [seeds::POOL, pool_state.origin_mint.as_ref()], bump = pool_state.bump)]
     pub pool_state: Account<'info, PoolState>,
+    #[account(
+        seeds = [seeds::HOOKS, pool_state.origin_mint.as_ref()],
+        bump = pool_state.hook_config_bump,
+        constraint = hook_config.pool == pool_state.key() @ PoolError::HookConfigInvalid,
+    )]
+    pub hook_config: Account<'info, HookConfig>,
     #[account(mut, seeds = [seeds::NULLIFIERS, pool_state.origin_mint.as_ref()], bump = nullifier_set.bump)]
     pub nullifier_set: Account<'info, NullifierSet>,
     pub verifier_program: Program<'info, PtfVerifierGroth16>,
@@ -725,6 +871,7 @@ pub struct ConfigureHooks<'info> {
         mut,
         seeds = [seeds::HOOKS, pool_state.origin_mint.as_ref()],
         bump = pool_state.hook_config_bump,
+        constraint = hook_config.pool == pool_state.key() @ PoolError::HookConfigInvalid,
     )]
     pub hook_config: Account<'info, HookConfig>,
 }
@@ -1025,4 +1172,51 @@ pub enum PoolError {
     HooksDisabled,
     #[msg("too many hook accounts configured")]
     TooManyHookAccounts,
+    #[msg("hook configuration invalid")]
+    HookConfigInvalid,
+    #[msg("hook account set is invalid")]
+    HookAccountMismatch,
+    #[msg("required hook account missing")]
+    HookAccountMissing,
+    #[msg("unexpected hook account provided")]
+    HookAccountUnexpected,
+}
+
+fn validate_hook_accounts(
+    required_accounts: &[Pubkey],
+    mode: HookAccountMode,
+    remaining_accounts: &[AccountInfo<'_>],
+) -> Result<()> {
+    match mode {
+        HookAccountMode::Strict => {
+            require!(
+                remaining_accounts.len() == required_accounts.len(),
+                PoolError::HookAccountMismatch
+            );
+            for (expected, provided) in required_accounts.iter().zip(remaining_accounts.iter()) {
+                require_keys_eq!(*expected, provided.key(), PoolError::HookAccountMismatch);
+            }
+        }
+        HookAccountMode::Lenient => {
+            for expected in required_accounts {
+                require!(
+                    remaining_accounts
+                        .iter()
+                        .any(|account| account.key() == *expected),
+                    PoolError::HookAccountMissing
+                );
+            }
+        }
+    }
+
+    if matches!(mode, HookAccountMode::Strict) {
+        for account in remaining_accounts.iter() {
+            require!(
+                required_accounts.iter().any(|key| *key == account.key()),
+                PoolError::HookAccountUnexpected
+            );
+        }
+    }
+
+    Ok(())
 }
