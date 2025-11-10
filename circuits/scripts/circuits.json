@@ -1,0 +1,29 @@
+[
+  {
+    "name": "shield",
+    "entry": "shield/circuit.circom",
+    "wasm": "shield.wasm",
+    "r1cs": "shield.r1cs",
+    "zkey": "shield_final.zkey",
+    "beacon": "ptf-mvp-no-relayer",
+    "description": "Deposits an origin mint into the shielded pool and emits the note commitment"
+  },
+  {
+    "name": "unshield",
+    "entry": "unshield/circuit.circom",
+    "wasm": "unshield.wasm",
+    "r1cs": "unshield.r1cs",
+    "zkey": "unshield_final.zkey",
+    "beacon": "ptf-mvp-no-relayer",
+    "description": "Withdraws from the shielded pool into origin or twin mints"
+  },
+  {
+    "name": "transfer",
+    "entry": "transfer/circuit.circom",
+    "wasm": "transfer.wasm",
+    "r1cs": "transfer.r1cs",
+    "zkey": "transfer_final.zkey",
+    "beacon": "ptf-mvp-no-relayer",
+    "description": "Private in-pool transfers (feature flagged for v1.1)"
+  }
+]

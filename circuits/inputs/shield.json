@@ -1,0 +1,9 @@
+{
+  "old_root": "0",
+  "mint_id": "1",
+  "pool_id": "2",
+  "deposit_id": "3",
+  "amount": "1000",
+  "recipient_pk": "123456789",
+  "blinding": "42"
+}
