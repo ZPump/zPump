@@ -14,6 +14,43 @@ pub const FEATURE_HOOKS_ENABLED: u8 = 0x02;
 /// Maximum basis points value accepted by the protocol (100%).
 pub const MAX_BPS: u16 = 10_000;
 
+/// Hook instruction payloads shared between the pool program and downstream
+/// integrators. These payloads only contain public data that is already emitted
+/// in on-chain events so that hooks can reason about shield and unshield
+/// operations without needing to parse logs.
+pub mod hooks {
+    use super::*;
+
+    /// Payload dispatched after a successful shield.
+    #[derive(AnchorSerialize, AnchorDeserialize, Clone, Debug, PartialEq, Eq)]
+    pub struct PostShieldHook {
+        pub origin_mint: Pubkey,
+        pub pool: Pubkey,
+        pub depositor: Pubkey,
+        pub commitment: [u8; 32],
+        pub amount_commit: [u8; 32],
+        pub amount: u64,
+    }
+
+    /// Payload dispatched after a successful unshield.
+    #[derive(AnchorSerialize, AnchorDeserialize, Clone, Debug, PartialEq, Eq)]
+    pub struct PostUnshieldHook {
+        pub origin_mint: Pubkey,
+        pub pool: Pubkey,
+        pub destination: Pubkey,
+        pub mode: u8,
+        pub amount: u64,
+        pub fee: u64,
+    }
+
+    /// Serialized instruction discriminant for hook dispatch.
+    #[derive(AnchorSerialize, AnchorDeserialize, Clone, Debug, PartialEq, Eq)]
+    pub enum HookInstruction {
+        PostShield(PostShieldHook),
+        PostUnshield(PostUnshieldHook),
+    }
+}
+
 /// Prefix seeds used across PDAs.
 pub mod seeds {
     pub const FACTORY: &[u8] = b"factory";
