@@ -1,8 +1,25 @@
 use anchor_lang::prelude::*;
-use anchor_spl::token::Mint;
+use anchor_lang::solana_program::{
+    hash::hashv,
+    program::invoke,
+    system_instruction,
+    system_program,
+};
+use anchor_lang::solana_program::program_option::COption;
+use anchor_spl::token_interface::{
+    self as token_interface,
+    spl_token_2022::{self, instruction::AuthorityType},
+    Mint,
+    MintTo,
+    SetAuthority,
+    TokenAccount,
+    TokenInterface,
+};
 
 use ptf_common::{seeds, FeatureFlags, MAX_BPS};
-use solana_program::hash::hashv;
+use solana_program::pubkey;
+
+const PTF_POOL_PROGRAM_ID: Pubkey = pubkey!("4Tx3v6is7qeVjdHvL3a16ggB9VVMBPVhpPSkUGoXZhre");
 
 declare_id!("4z618BY2dXGqAUiegqDt8omo3e81TSdXRHt64ikX1bTy");
 
@@ -79,17 +96,17 @@ pub mod ptf_factory {
         let effective_fee_bps = fee_bps_override.unwrap_or(state.default_fee_bps);
 
         if enable_ptkn {
-            let ptkn_mint = ctx
-                .accounts
-                .ptkn_mint
-                .as_ref()
-                .ok_or(FactoryError::PtknMintMissing)?;
-            require!(
-                ptkn_mint.decimals == decimals,
-                FactoryError::InvalidDecimals
-            );
+            let mint_key = prepare_ptkn_mint(
+                state,
+                ctx.accounts.ptkn_mint.as_ref(),
+                ctx.accounts.token_program.as_ref(),
+                Some(&ctx.accounts.rent),
+                Some(&ctx.accounts.payer),
+                decimals,
+                Some(&ctx.accounts.authority),
+            )?;
             mapping.has_ptkn = true;
-            mapping.ptkn_mint = ptkn_mint.key();
+            mapping.ptkn_mint = mint_key;
         }
 
         emit!(MintRegistered {
@@ -113,7 +130,16 @@ pub mod ptf_factory {
         );
         ensure_direct_update_allowed(state)?;
 
-        apply_mint_update(mapping, &params, ctx.accounts.ptkn_mint.as_ref())?;
+        apply_mint_update(
+            &ctx.accounts.factory_state,
+            mapping,
+            &params,
+            ctx.accounts.ptkn_mint.as_ref(),
+            ctx.accounts.token_program.as_ref(),
+            Some(&ctx.accounts.rent),
+            Some(&ctx.accounts.authority),
+            Some(&ctx.accounts.authority),
+        )?;
 
         emit!(MintUpdated {
             origin_mint: mapping.origin_mint,
@@ -255,7 +281,16 @@ pub mod ptf_factory {
                     *origin_mint,
                     FactoryError::OriginMintMismatch
                 );
-                apply_mint_update(mapping, params, ctx.accounts.ptkn_mint.as_ref())?;
+                apply_mint_update(
+                    &ctx.accounts.factory_state,
+                    mapping,
+                    params,
+                    ctx.accounts.ptkn_mint.as_ref(),
+                    ctx.accounts.token_program.as_ref(),
+                    Some(&ctx.accounts.rent),
+                    Some(&ctx.accounts.executor),
+                    None,
+                )?;
                 emit!(MintUpdated {
                     origin_mint: mapping.origin_mint,
                     ptkn_mint: mapping.ptkn_mint,
@@ -307,6 +342,61 @@ pub mod ptf_factory {
         });
         Ok(())
     }
+
+    pub fn mint_ptkn(ctx: Context<MintPtkn>, amount: u64) -> Result<()> {
+        require!(amount > 0, FactoryError::InvalidAmount);
+        let factory_state = &ctx.accounts.factory_state;
+        require!(!factory_state.paused, FactoryError::Paused);
+
+        let mapping = &ctx.accounts.mint_mapping;
+        require!(mapping.has_ptkn, FactoryError::PtknMintDisabled);
+        require_keys_eq!(
+            mapping.ptkn_mint,
+            ctx.accounts.ptkn_mint.key(),
+            FactoryError::PtknMintMismatch
+        );
+        require_keys_eq!(
+            ctx.accounts.destination_token_account.mint,
+            ctx.accounts.ptkn_mint.key(),
+            FactoryError::PtknMintMismatch
+        );
+
+        let (expected_pool, _) = Pubkey::find_program_address(
+            &[seeds::POOL, mapping.origin_mint.as_ref()],
+            &PTF_POOL_PROGRAM_ID,
+        );
+        require_keys_eq!(
+            expected_pool,
+            ctx.accounts.pool_authority.key(),
+            FactoryError::PoolAuthorityMismatch
+        );
+        require!(
+            ctx.accounts.pool_authority.is_signer,
+            FactoryError::PoolAuthorityMismatch
+        );
+        require_keys_eq!(
+            *ctx.accounts.pool_authority.owner,
+            PTF_POOL_PROGRAM_ID,
+            FactoryError::PoolAuthorityMismatch
+        );
+
+        let signer_seeds: [&[u8]; 3] =
+            [seeds::FACTORY, crate::ID.as_ref(), &[factory_state.bump]];
+        let cpi_accounts = MintTo {
+            mint: ctx.accounts.ptkn_mint.to_account_info(),
+            to: ctx.accounts
+                .destination_token_account
+                .to_account_info(),
+            authority: ctx.accounts.factory_state.to_account_info(),
+        };
+        let cpi_ctx = CpiContext::new_with_signer(
+            ctx.accounts.token_program.to_account_info(),
+            cpi_accounts,
+            &[&signer_seeds],
+        );
+        token_interface::mint_to(cpi_ctx, amount)?;
+        Ok(())
+    }
 }
 
 #[derive(Accounts)]
@@ -349,7 +439,9 @@ pub struct RegisterMint<'info> {
     #[account(mut)]
     pub payer: Signer<'info>,
     #[account(mut)]
-    pub ptkn_mint: Option<Account<'info, Mint>>,
+    pub ptkn_mint: Option<UncheckedAccount<'info>>,
+    pub token_program: Option<Interface<'info, TokenInterface>>,
+    pub rent: Sysvar<'info, Rent>,
     pub system_program: Program<'info, System>,
 }
 
@@ -361,7 +453,9 @@ pub struct UpdateMint<'info> {
     #[account(mut, seeds = [seeds::MINT_MAPPING, mint_mapping.origin_mint.as_ref()], bump = mint_mapping.bump)]
     pub mint_mapping: Account<'info, MintMapping>,
     #[account(mut)]
-    pub ptkn_mint: Option<Account<'info, Mint>>,
+    pub ptkn_mint: Option<UncheckedAccount<'info>>,
+    pub token_program: Option<Interface<'info, TokenInterface>>,
+    pub rent: Sysvar<'info, Rent>,
 }
 
 #[derive(Accounts)]
@@ -412,9 +506,33 @@ pub struct ExecuteTimelockAction<'info> {
     #[account(mut)]
     pub mint_mapping: Option<Account<'info, MintMapping>>,
     #[account(mut)]
-    pub ptkn_mint: Option<Account<'info, Mint>>,
+    pub ptkn_mint: Option<UncheckedAccount<'info>>,
+    pub token_program: Option<Interface<'info, TokenInterface>>,
     #[account(mut)]
     pub executor: Signer<'info>,
+    pub rent: Sysvar<'info, Rent>,
+}
+
+#[derive(Accounts)]
+pub struct MintPtkn<'info> {
+    #[account(
+        mut,
+        seeds = [seeds::FACTORY, crate::ID.as_ref()],
+        bump = factory_state.bump
+    )]
+    pub factory_state: Account<'info, FactoryState>,
+    #[account(
+        seeds = [seeds::MINT_MAPPING, mint_mapping.origin_mint.as_ref()],
+        bump = mint_mapping.bump
+    )]
+    pub mint_mapping: Account<'info, MintMapping>,
+    /// CHECK: Verified against the expected PDA derived from the pool program id.
+    pub pool_authority: AccountInfo<'info>,
+    #[account(mut)]
+    pub ptkn_mint: Account<'info, Mint>,
+    #[account(mut)]
+    pub destination_token_account: Account<'info, TokenAccount>,
+    pub token_program: Interface<'info, TokenInterface>,
 }
 
 #[derive(Accounts)]
@@ -493,9 +611,14 @@ fn ensure_direct_update_allowed(state: &FactoryState) -> Result<()> {
 }
 
 fn apply_mint_update<'info>(
+    factory_state: &Account<'info, FactoryState>,
     mapping: &mut MintMapping,
     params: &UpdateMintParams,
-    ptkn_mint: Option<&Account<'info, Mint>>,
+    ptkn_mint: Option<&UncheckedAccount<'info>>,
+    token_program: Option<&Interface<'info, TokenInterface>>,
+    rent: Option<&Sysvar<'info, Rent>>,
+    payer: Option<&Signer<'info>>,
+    authority: Option<&Signer<'info>>,
 ) -> Result<()> {
     if let Some(fee) = params.fee_bps_override {
         require!(fee <= MAX_BPS, FactoryError::InvalidFeeBps);
@@ -510,23 +633,25 @@ fn apply_mint_update<'info>(
     if let Some(enable_ptkn) = params.enable_ptkn {
         if enable_ptkn {
             if !mapping.has_ptkn {
-                let ptkn_mint = ptkn_mint.ok_or(FactoryError::PtknMintMissing)?;
-                require!(
-                    ptkn_mint.decimals == mapping.decimals,
-                    FactoryError::InvalidDecimals
-                );
+                let mint_key = prepare_ptkn_mint(
+                    factory_state,
+                    ptkn_mint,
+                    token_program,
+                    rent,
+                    payer,
+                    mapping.decimals,
+                    authority,
+                )?;
                 mapping.has_ptkn = true;
-                mapping.ptkn_mint = ptkn_mint.key();
+                mapping.ptkn_mint = mint_key;
             } else if let Some(ptkn_mint) = ptkn_mint {
                 require_keys_eq!(
                     ptkn_mint.key(),
                     mapping.ptkn_mint,
                     FactoryError::PtknMintMismatch
                 );
-                require!(
-                    ptkn_mint.decimals == mapping.decimals,
-                    FactoryError::InvalidDecimals
-                );
+                let mint_account: Account<Mint> = Account::try_from(&ptkn_mint.to_account_info())?;
+                require!(mint_account.decimals == mapping.decimals, FactoryError::InvalidDecimals);
             }
         } else {
             mapping.has_ptkn = false;
@@ -535,6 +660,76 @@ fn apply_mint_update<'info>(
     }
 
     Ok(())
+}
+
+fn prepare_ptkn_mint<'info>(
+    factory_state: &Account<'info, FactoryState>,
+    ptkn_mint: Option<&UncheckedAccount<'info>>,
+    token_program: Option<&Interface<'info, TokenInterface>>,
+    rent: Option<&Sysvar<'info, Rent>>,
+    payer: Option<&Signer<'info>>,
+    decimals: u8,
+    current_authority: Option<&Signer<'info>>,
+) -> Result<Pubkey> {
+    let ptkn_account = ptkn_mint.ok_or(FactoryError::PtknMintMissing)?;
+    let token_program = token_program.ok_or(FactoryError::TokenProgramMissing)?;
+    let mint_info = ptkn_account.to_account_info();
+
+    if mint_info.owner == &system_program::ID && mint_info.data_is_empty() {
+        let payer = payer.ok_or(FactoryError::PtknPayerMissing)?;
+        let rent = rent.ok_or(FactoryError::RentMissing)?;
+        let mint_space = spl_token_2022::state::Mint::LEN;
+        let lamports = rent.minimum_balance(mint_space);
+        let create_ix = system_instruction::create_account(
+            payer.key,
+            mint_info.key,
+            lamports,
+            mint_space as u64,
+            token_program.key,
+        );
+        invoke(
+            &create_ix,
+            &[payer.to_account_info(), mint_info.clone()],
+        )?;
+        let init_accounts = token_interface::InitializeMint2 {
+            mint: mint_info.clone(),
+        };
+        let init_ctx = CpiContext::new(token_program.to_account_info(), init_accounts);
+        token_interface::initialize_mint2(
+            init_ctx,
+            decimals,
+            &factory_state.key(),
+            None,
+        )?;
+    } else {
+        require_keys_eq!(
+            *mint_info.owner,
+            token_program.key(),
+            FactoryError::PtknMintMismatch
+        );
+        let mint_account: Account<Mint> = Account::try_from(&mint_info)?;
+        require!(mint_account.decimals == decimals, FactoryError::InvalidDecimals);
+        match mint_account.mint_authority {
+            COption::Some(current) => {
+                if current != factory_state.key() {
+                    let signer = current_authority.ok_or(FactoryError::Unauthorized)?;
+                    let cpi_accounts = SetAuthority {
+                        account_or_mint: mint_info.clone(),
+                        current_authority: signer.to_account_info(),
+                    };
+                    let cpi_ctx = CpiContext::new(token_program.to_account_info(), cpi_accounts);
+                    token_interface::set_authority(
+                        cpi_ctx,
+                        AuthorityType::MintTokens,
+                        Some(factory_state.key()),
+                    )?;
+                }
+            }
+            COption::None => return err!(FactoryError::PtknAuthorityMissing),
+        }
+    }
+
+    Ok(*mint_info.key)
 }
 
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Debug, PartialEq, Eq)]
@@ -641,36 +836,50 @@ pub enum MintStatus {
 
 #[error_code]
 pub enum FactoryError {
-    #[msg("mint mapping already exists")]
+    #[msg("E_ALREADY_REGISTERED")]
     AlreadyRegistered,
-    #[msg("factory is paused")]
+    #[msg("E_FACTORY_PAUSED")]
     Paused,
-    #[msg("privacy twin mint must be provided")]
+    #[msg("E_PTKN_MINT_MISSING")]
     PtknMintMissing,
-    #[msg("invalid fee basis points")]
+    #[msg("E_INVALID_FEE_BPS")]
     InvalidFeeBps,
-    #[msg("caller not authorized")]
+    #[msg("E_UNAUTHORIZED")]
     Unauthorized,
-    #[msg("invalid decimals for mint")]
+    #[msg("E_INVALID_DECIMALS")]
     InvalidDecimals,
-    #[msg("privacy twin mint mismatch")]
+    #[msg("E_PTKN_MINT_MISMATCH")]
     PtknMintMismatch,
-    #[msg("timelock window overflow")]
+    #[msg("E_PTKN_AUTHORITY_MISSING")]
+    PtknAuthorityMissing,
+    #[msg("E_TOKEN_PROGRAM_MISSING")]
+    TokenProgramMissing,
+    #[msg("E_RENT_MISSING")]
+    RentMissing,
+    #[msg("E_PTKN_PAYER_MISSING")]
+    PtknPayerMissing,
+    #[msg("E_PTKN_DISABLED")]
+    PtknMintDisabled,
+    #[msg("E_POOL_AUTHORITY_MISMATCH")]
+    PoolAuthorityMismatch,
+    #[msg("E_TIMELOCK_OVERFLOW")]
     TimelockOverflow,
-    #[msg("timelock action already processed")]
+    #[msg("E_TIMELOCK_CONSUMED")]
     TimelockConsumed,
-    #[msg("timelock action not ready for execution")]
+    #[msg("E_TIMELOCK_NOT_READY")]
     TimelockNotReady,
-    #[msg("timelock action requires mint mapping")]
+    #[msg("E_TIMELOCK_MINT_MAPPING_MISSING")]
     TimelockMissingMapping,
-    #[msg("timelock entry does not belong to this factory")]
+    #[msg("E_TIMELOCK_INVALID_FACTORY")]
     TimelockInvalidFactory,
-    #[msg("direct updates are disabled when timelock is configured")]
+    #[msg("E_TIMELOCK_ONLY_QUEUE")]
     TimelockOnlyQueue,
-    #[msg("failed to serialize timelock action")]
+    #[msg("E_SERIALIZATION_ERROR")]
     SerializationError,
-    #[msg("origin mint mismatch")]
+    #[msg("E_ORIGIN_MINT_MISMATCH")]
     OriginMintMismatch,
+    #[msg("E_INVALID_AMOUNT")]
+    InvalidAmount,
 }
 
 #[cfg(test)]
@@ -801,6 +1010,8 @@ mod tests {
                 mint_mapping: Some(mint_mapping),
                 ptkn_mint: None,
                 executor: authority.pubkey(),
+                token_program: None,
+                rent: solana_program::sysvar::rent::id(),
             }
             .to_account_metas(None),
             data: crate::instruction::ExecuteTimelockAction {}.data(),
@@ -872,7 +1083,9 @@ mod tests {
                 mint_mapping,
                 origin_mint: origin_mint.pubkey(),
                 ptkn_mint: None,
+                token_program: None,
                 payer: context.payer.pubkey(),
+                rent: solana_program::sysvar::rent::id(),
                 system_program: system_program::id(),
             }
             .to_account_metas(None),

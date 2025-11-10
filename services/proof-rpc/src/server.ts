@@ -5,7 +5,7 @@ import morgan from 'morgan';
 import path from 'path';
 import fs from 'fs/promises';
 import { fileURLToPath } from 'url';
-import { sha256 } from '@noble/hashes/sha256';
+import circomlibjs from 'circomlibjs';
 import { groth16 } from 'snarkjs';
 import pino from 'pino';
 import { z } from 'zod';
@@ -100,25 +100,42 @@ const NullifierResponseSchema = z.object({
 });
 
 type RootResponse = z.infer<typeof RootResponseSchema>;
-function hashString(data: string): string {
-  const digest = sha256(Buffer.from(data));
-  return `0x${Buffer.from(digest).toString('hex')}`;
+
+const poseidon = circomlibjs.poseidon;
+
+function bigIntify(value: string | number | bigint): bigint {
+  if (typeof value === 'bigint') {
+    return value;
+  }
+  if (typeof value === 'number') {
+    return BigInt(value);
+  }
+  return BigInt(value);
 }
 
-function hashMany(values: (string | bigint)[]): string {
-  const normalised = values.map((value) => BigInt(value).toString()).join(':');
-  return hashString(normalised);
+function fieldToHex(value: bigint): string {
+  const hex = value.toString(16);
+  return `0x${hex.padStart(64, '0')}`;
+}
+
+function poseidonValue(values: (string | number | bigint)[]): bigint {
+  return poseidon(values.map(bigIntify));
+}
+
+function poseidonHex(values: (string | number | bigint)[]): string {
+  return fieldToHex(poseidonValue(values));
 }
 
 function deriveShieldPublic(input: ShieldInput) {
-  const commitment = hashMany([
+  const commitmentValue = poseidonValue([
     input.amount,
     input.recipient,
     input.depositId,
     input.poolId,
     input.blinding
   ]);
-  const newRoot = hashMany([input.oldRoot, commitment]);
+  const commitment = fieldToHex(commitmentValue);
+  const newRoot = poseidonHex([input.oldRoot, commitmentValue]);
   return {
     publicInputs: [
       input.oldRoot,
@@ -135,11 +152,14 @@ function deriveShieldPublic(input: ShieldInput) {
 }
 
 function deriveTransferPublic(input: TransferInput) {
-  const nullifiers = input.inNotes.map((note) => hashMany([note.noteId, note.spendingKey]));
-  const outputs = input.outNotes.map((note, index) =>
-    hashMany([note.amount, note.recipient, input.mintId, input.poolId, note.blinding, index])
+  const nullifierValues = input.inNotes.map((note) =>
+    poseidonValue([note.noteId, note.spendingKey])
   );
-  const newRoot = hashMany([input.oldRoot, ...nullifiers]);
+  const nullifiers = nullifierValues.map(fieldToHex);
+  const outputs = input.outNotes.map((note) =>
+    poseidonHex([note.amount, note.recipient, input.mintId, input.poolId, note.blinding])
+  );
+  const newRoot = poseidonHex([input.oldRoot, ...nullifierValues]);
   return {
     publicInputs: [
       input.oldRoot,
@@ -156,8 +176,9 @@ function deriveTransferPublic(input: TransferInput) {
 }
 
 function deriveUnshieldPublic(input: UnshieldInput) {
-  const nullifier = hashMany([input.noteId, input.spendingKey]);
-  const newRoot = hashMany([input.oldRoot, nullifier]);
+  const nullifierValue = poseidonValue([input.noteId, input.spendingKey]);
+  const nullifier = fieldToHex(nullifierValue);
+  const newRoot = poseidonHex([input.oldRoot, nullifierValue]);
   return {
     publicInputs: [
       input.oldRoot,
