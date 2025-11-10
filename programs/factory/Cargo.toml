@@ -12,6 +12,7 @@ anchor-lang = { workspace = true }
 anchor-spl = { workspace = true }
 ptf-common = { path = "../common" }
 thiserror = { workspace = true }
+solana-program = { workspace = true }
 
 [features]
 default = []
