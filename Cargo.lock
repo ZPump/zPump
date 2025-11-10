@@ -1308,6 +1308,7 @@ dependencies = [
  "ptf-factory",
  "ptf-vault",
  "ptf-verifier-groth16",
+ "sha3",
  "thiserror 1.0.69",
 ]
 
@@ -1332,6 +1333,7 @@ dependencies = [
  "ark-groth16",
  "ark-relations",
  "ark-serialize",
+ "ark-snark",
  "ark-std",
  "ptf-common",
  "sha3",

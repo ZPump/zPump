@@ -1,13 +1,13 @@
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::instruction::{AccountMeta, Instruction};
-use anchor_lang::solana_program::keccak;
 use anchor_lang::solana_program::program::invoke_signed;
 use anchor_lang::solana_program::program_option::COption;
 use anchor_spl::token::spl_token::instruction::AuthorityType;
 use anchor_spl::token::{self, Mint, MintTo, SetAuthority, Token, TokenAccount};
 use ark_bn254::Fr;
-use ark_ff::{BigInteger256, Field, PrimeField};
+use ark_ff::{BigInteger, BigInteger256, Field, PrimeField};
 use core::convert::TryFrom;
+use sha3::{Digest, Keccak256};
 
 use ptf_common::hooks::{HookInstruction, PostShieldHook, PostUnshieldHook};
 use ptf_common::{
@@ -46,6 +46,7 @@ pub mod ptf_pool {
         pool_state.verifier_program = ctx.accounts.verifier_program.key();
         pool_state.verifying_key = ctx.accounts.verifying_key.key();
         pool_state.verifying_key_id = ctx.accounts.verifying_key.verifying_key_id;
+        pool_state.verifying_key_hash = ctx.accounts.verifying_key.hash;
         pool_state.authority = ctx.accounts.authority.key();
         pool_state.fee_bps = fee_bps;
         pool_state.features = FeatureFlags::from(features);
@@ -223,6 +224,10 @@ pub mod ptf_pool {
             require!(
                 ctx.accounts.verifying_key.verifying_key_id == pool_state.verifying_key_id,
                 PoolError::VerifierMismatch,
+            );
+            require!(
+                ctx.accounts.verifying_key.hash == pool_state.verifying_key_hash,
+                PoolError::VerifyingKeyHashMismatch,
             );
             require_keys_eq!(
                 ctx.accounts.vault_state.key(),
@@ -441,6 +446,24 @@ pub mod ptf_pool {
 
     pub fn private_transfer(ctx: Context<PrivateTransfer>, args: TransferArgs) -> Result<()> {
         let pool_state = &mut ctx.accounts.pool_state;
+        require_keys_eq!(
+            ctx.accounts.verifier_program.key(),
+            pool_state.verifier_program,
+            PoolError::VerifierMismatch,
+        );
+        require_keys_eq!(
+            ctx.accounts.verifying_key.key(),
+            pool_state.verifying_key,
+            PoolError::VerifierMismatch,
+        );
+        require!(
+            ctx.accounts.verifying_key.verifying_key_id == pool_state.verifying_key_id,
+            PoolError::VerifierMismatch,
+        );
+        require!(
+            ctx.accounts.verifying_key.hash == pool_state.verifying_key_hash,
+            PoolError::VerifyingKeyHashMismatch,
+        );
         require!(
             pool_state
                 .features
@@ -523,6 +546,10 @@ fn process_unshield<'info>(
         require!(
             ctx.accounts.verifying_key.verifying_key_id == pool_state.verifying_key_id,
             PoolError::VerifierMismatch,
+        );
+        require!(
+            ctx.accounts.verifying_key.hash == pool_state.verifying_key_hash,
+            PoolError::VerifyingKeyHashMismatch,
         );
         require_keys_eq!(
             ctx.accounts.vault_state.key(),
@@ -854,9 +881,10 @@ fn poseidon_hash(left: &[u8; 32], right: &[u8; 32]) -> [u8; 32] {
 
 fn fr_to_bytes(value: &Fr) -> [u8; 32] {
     let bigint: BigInteger256 = value.into_bigint();
-    let mut bytes = [0u8; 32];
-    bigint.to_bytes_le(&mut bytes);
-    bytes
+    let bytes = bigint.to_bytes_le();
+    let mut array = [0u8; 32];
+    array.copy_from_slice(&bytes);
+    array
 }
 #[derive(Accounts)]
 pub struct InitializePool<'info> {
@@ -943,7 +971,10 @@ pub struct Shield<'info> {
     #[account(mut)]
     pub twin_mint: Option<Account<'info, Mint>>,
     pub verifier_program: Program<'info, PtfVerifierGroth16>,
-    #[account(address = pool_state.verifying_key)]
+    #[account(
+        address = pool_state.verifying_key,
+        constraint = verifying_key.hash == pool_state.verifying_key_hash @ PoolError::VerifyingKeyHashMismatch,
+    )]
     pub verifying_key: Account<'info, VerifyingKeyAccount>,
     pub payer: Signer<'info>,
     pub origin_mint: Account<'info, Mint>,
@@ -966,7 +997,10 @@ pub struct Unshield<'info> {
     #[account(mut, seeds = [seeds::TREE, pool_state.origin_mint.as_ref()], bump = commitment_tree.bump, constraint = commitment_tree.pool == pool_state.key() @ PoolError::CommitmentTreeMismatch)]
     pub commitment_tree: Account<'info, CommitmentTree>,
     pub verifier_program: Program<'info, PtfVerifierGroth16>,
-    #[account(address = pool_state.verifying_key)]
+    #[account(
+        address = pool_state.verifying_key,
+        constraint = verifying_key.hash == pool_state.verifying_key_hash @ PoolError::VerifyingKeyHashMismatch,
+    )]
     pub verifying_key: Account<'info, VerifyingKeyAccount>,
     #[account(mut)]
     pub vault_state: Account<'info, ptf_vault::VaultState>,
@@ -1003,7 +1037,10 @@ pub struct PrivateTransfer<'info> {
     #[account(mut, seeds = [seeds::TREE, pool_state.origin_mint.as_ref()], bump = commitment_tree.bump, constraint = commitment_tree.pool == pool_state.key() @ PoolError::CommitmentTreeMismatch)]
     pub commitment_tree: Account<'info, CommitmentTree>,
     pub verifier_program: Program<'info, PtfVerifierGroth16>,
-    #[account(address = pool_state.verifying_key)]
+    #[account(
+        address = pool_state.verifying_key,
+        constraint = verifying_key.hash == pool_state.verifying_key_hash @ PoolError::VerifyingKeyHashMismatch,
+    )]
     pub verifying_key: Account<'info, VerifyingKeyAccount>,
 }
 
@@ -1197,154 +1234,6 @@ impl CommitmentTree {
 }
 
 #[account]
-pub struct CommitmentTree {
-    pub pool: Pubkey,
-    pub canopy_depth: u8,
-    pub next_index: u64,
-    pub current_root: [u8; 32],
-    pub frontier: [[u8; 32]; Self::DEPTH],
-    pub zeroes: [[u8; 32]; Self::DEPTH],
-    pub canopy: [[u8; 32]; Self::MAX_CANOPY],
-    pub recent_commitments: [[u8; 32]; Self::MAX_CANOPY],
-    pub recent_amount_commitments: [[u8; 32]; Self::MAX_CANOPY],
-    pub recent_len: u8,
-    pub bump: u8,
-}
-
-impl CommitmentTree {
-    pub const DEPTH: usize = ptf_common::MERKLE_DEPTH as usize;
-    pub const MAX_CANOPY: usize = 16;
-    pub const SPACE: usize = 8
-        + 32
-        + 1
-        + 8
-        + 32
-        + (Self::DEPTH * 32)
-        + (Self::DEPTH * 32)
-        + (Self::MAX_CANOPY * 32)
-        + (Self::MAX_CANOPY * 32)
-        + (Self::MAX_CANOPY * 32)
-        + 1
-        + 1
-        + 6;
-
-    pub fn init(&mut self, pool: Pubkey, canopy_depth: u8, bump: u8) -> Result<()> {
-        require!(
-            (canopy_depth as usize) <= Self::MAX_CANOPY,
-            PoolError::CanopyDepthInvalid,
-        );
-        self.pool = pool;
-        self.canopy_depth = canopy_depth;
-        self.bump = bump;
-        self.next_index = 0;
-        self.zeroes = Self::compute_zeroes();
-        self.frontier = [[0u8; 32]; Self::DEPTH];
-        self.current_root = self.zeroes[Self::DEPTH - 1];
-        self.canopy = [[0u8; 32]; Self::MAX_CANOPY];
-        self.recent_commitments = [[0u8; 32]; Self::MAX_CANOPY];
-        self.recent_amount_commitments = [[0u8; 32]; Self::MAX_CANOPY];
-        self.recent_len = 0;
-        Ok(())
-    }
-
-    pub fn append_note(
-        &mut self,
-        commitment: [u8; 32],
-        amount_commit: [u8; 32],
-    ) -> Result<[u8; 32]> {
-        self.insert_leaf(commitment, amount_commit)
-    }
-
-    pub fn append_many(
-        &mut self,
-        commitments: &[[u8; 32]],
-        amount_commitments: &[[u8; 32]],
-    ) -> Result<[u8; 32]> {
-        if commitments.is_empty() {
-            return Ok(self.current_root);
-        }
-        require!(
-            commitments.len() == amount_commitments.len(),
-            PoolError::OutputSetMismatch,
-        );
-        let mut root = self.current_root;
-        for (commitment, amount_commit) in commitments.iter().zip(amount_commitments.iter()) {
-            root = self.insert_leaf(*commitment, *amount_commit)?;
-        }
-        Ok(root)
-    }
-
-    fn insert_leaf(&mut self, commitment: [u8; 32], amount_commit: [u8; 32]) -> Result<[u8; 32]> {
-        require!(
-            self.next_index < (1u128 << Self::DEPTH) as u64,
-            PoolError::TreeFull,
-        );
-        let mut node = commitment;
-        let mut index = self.next_index;
-        let mut path_hashes = [[0u8; 32]; Self::DEPTH];
-        for level in 0..Self::DEPTH {
-            if index % 2 == 0 {
-                self.frontier[level] = node;
-                let left = node;
-                let right = self.zeroes[level];
-                node = poseidon_hash(&left, &right);
-            } else {
-                let left = self.frontier[level];
-                node = poseidon_hash(&left, &node);
-            }
-            path_hashes[level] = node;
-            index >>= 1;
-        }
-        self.next_index = self
-            .next_index
-            .checked_add(1)
-            .ok_or(PoolError::AmountOverflow)?;
-        self.current_root = node;
-        self.update_canopy(&path_hashes);
-        self.record_recent(commitment, amount_commit);
-        Ok(self.current_root)
-    }
-
-    fn update_canopy(&mut self, path_hashes: &[[u8; 32]; Self::DEPTH]) {
-        if self.canopy_depth == 0 {
-            return;
-        }
-        let canopy_len = core::cmp::min(self.canopy_depth as usize, Self::MAX_CANOPY);
-        for offset in 0..canopy_len {
-            let level = Self::DEPTH - 1 - offset;
-            self.canopy[offset] = path_hashes[level];
-        }
-    }
-
-    fn record_recent(&mut self, commitment: [u8; 32], amount_commit: [u8; 32]) {
-        if (self.recent_len as usize) < Self::MAX_CANOPY {
-            let idx = self.recent_len as usize;
-            self.recent_commitments[idx] = commitment;
-            self.recent_amount_commitments[idx] = amount_commit;
-            self.recent_len += 1;
-        } else {
-            for idx in 1..Self::MAX_CANOPY {
-                self.recent_commitments[idx - 1] = self.recent_commitments[idx];
-                self.recent_amount_commitments[idx - 1] = self.recent_amount_commitments[idx];
-            }
-            self.recent_commitments[Self::MAX_CANOPY - 1] = commitment;
-            self.recent_amount_commitments[Self::MAX_CANOPY - 1] = amount_commit;
-        }
-    }
-
-    fn compute_zeroes() -> [[u8; 32]; Self::DEPTH] {
-        let mut zeroes = [[0u8; 32]; Self::DEPTH];
-        let mut current = poseidon_hash(&[0u8; 32], &[0u8; 32]);
-        zeroes[0] = current;
-        for level in 1..Self::DEPTH {
-            current = poseidon_hash(&zeroes[level - 1], &zeroes[level - 1]);
-            zeroes[level] = current;
-        }
-        zeroes
-    }
-}
-
-#[account]
 pub struct PoolState {
     pub authority: Pubkey,
     pub origin_mint: Pubkey,
@@ -1353,6 +1242,7 @@ pub struct PoolState {
     pub verifying_key: Pubkey,
     pub commitment_tree: Pubkey,
     pub verifying_key_id: [u8; 32],
+    pub verifying_key_hash: [u8; 32],
     pub current_root: [u8; 32],
     pub recent_roots: [[u8; 32]; Self::MAX_ROOTS],
     pub roots_len: u8,
@@ -1378,6 +1268,7 @@ impl PoolState {
         + 32 // verifying key
         + 32 // commitment tree
         + 32 // verifying key id
+        + 32 // verifying key hash
         + 32 // current root
         + (Self::MAX_ROOTS * 32)
         + 1 // roots len
@@ -1488,8 +1379,9 @@ impl NullifierSet {
     }
 
     fn bloom_positions(value: &[u8; 32]) -> [usize; 3] {
-        let hash = keccak::hashv(&[value]);
-        let bytes = hash.0;
+        let mut hasher = Keccak256::new();
+        hasher.update(value);
+        let bytes: [u8; 32] = hasher.finalize().into();
         let mut positions = [0usize; 3];
         for (idx, chunk) in positions.iter_mut().enumerate() {
             let start = idx * 8;
@@ -1632,6 +1524,8 @@ pub enum PoolError {
     InvalidFeeBps,
     #[msg("verifier mismatch")]
     VerifierMismatch,
+    #[msg("verifying key hash mismatch")]
+    VerifyingKeyHashMismatch,
     #[msg("unknown root")]
     UnknownRoot,
     #[msg("nullifier already used")]
