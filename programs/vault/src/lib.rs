@@ -1,5 +1,7 @@
 use anchor_lang::prelude::*;
-use anchor_spl::token_interface::{self as token_interface, Mint, TokenAccount, TokenInterface, Transfer};
+use anchor_spl::token_interface::{
+    self as token_interface, Mint, TokenAccount, TokenInterface, Transfer,
+};
 
 use ptf_common::seeds;
 
@@ -117,12 +119,12 @@ pub struct Deposit<'info> {
     #[account(mut, seeds = [seeds::VAULT, vault_state.origin_mint.as_ref()], bump = vault_state.bump)]
     pub vault_state: Account<'info, VaultState>,
     #[account(mut)]
-    pub vault_token_account: Account<'info, TokenAccount>,
-    pub origin_mint: Account<'info, Mint>,
+    pub vault_token_account: InterfaceAccount<'info, TokenAccount>,
+    pub origin_mint: InterfaceAccount<'info, Mint>,
     #[account(mut)]
     pub depositor: Signer<'info>,
     #[account(mut)]
-    pub depositor_token_account: Account<'info, TokenAccount>,
+    pub depositor_token_account: InterfaceAccount<'info, TokenAccount>,
     pub token_program: Interface<'info, TokenInterface>,
 }
 
@@ -131,9 +133,9 @@ pub struct Release<'info> {
     #[account(mut, seeds = [seeds::VAULT, vault_state.origin_mint.as_ref()], bump = vault_state.bump)]
     pub vault_state: Account<'info, VaultState>,
     #[account(mut)]
-    pub vault_token_account: Account<'info, TokenAccount>,
+    pub vault_token_account: InterfaceAccount<'info, TokenAccount>,
     #[account(mut)]
-    pub destination_token_account: Account<'info, TokenAccount>,
+    pub destination_token_account: InterfaceAccount<'info, TokenAccount>,
     /// CHECK: Pool authority must be provided by the caller program.
     pub pool_authority: AccountInfo<'info>,
     pub token_program: Interface<'info, TokenInterface>,

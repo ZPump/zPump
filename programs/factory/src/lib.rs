@@ -1,19 +1,12 @@
 use anchor_lang::prelude::*;
-use anchor_lang::solana_program::{
-    hash::hashv,
-    program::invoke,
-    system_instruction,
-    system_program,
-};
 use anchor_lang::solana_program::program_option::COption;
+use anchor_lang::solana_program::{
+    hash::hashv, program::invoke, system_instruction, system_program,
+};
 use anchor_spl::token_interface::{
     self as token_interface,
     spl_token_2022::{self, instruction::AuthorityType},
-    Mint,
-    MintTo,
-    SetAuthority,
-    TokenAccount,
-    TokenInterface,
+    Mint, MintTo, SetAuthority, TokenAccount, TokenInterface,
 };
 
 use ptf_common::{seeds, FeatureFlags, MAX_BPS};
@@ -380,13 +373,10 @@ pub mod ptf_factory {
             FactoryError::PoolAuthorityMismatch
         );
 
-        let signer_seeds: [&[u8]; 3] =
-            [seeds::FACTORY, crate::ID.as_ref(), &[factory_state.bump]];
+        let signer_seeds: [&[u8]; 3] = [seeds::FACTORY, crate::ID.as_ref(), &[factory_state.bump]];
         let cpi_accounts = MintTo {
             mint: ctx.accounts.ptkn_mint.to_account_info(),
-            to: ctx.accounts
-                .destination_token_account
-                .to_account_info(),
+            to: ctx.accounts.destination_token_account.to_account_info(),
             authority: ctx.accounts.factory_state.to_account_info(),
         };
         let cpi_ctx = CpiContext::new_with_signer(
@@ -651,7 +641,10 @@ fn apply_mint_update<'info>(
                     FactoryError::PtknMintMismatch
                 );
                 let mint_account: Account<Mint> = Account::try_from(&ptkn_mint.to_account_info())?;
-                require!(mint_account.decimals == mapping.decimals, FactoryError::InvalidDecimals);
+                require!(
+                    mint_account.decimals == mapping.decimals,
+                    FactoryError::InvalidDecimals
+                );
             }
         } else {
             mapping.has_ptkn = false;
@@ -687,20 +680,12 @@ fn prepare_ptkn_mint<'info>(
             mint_space as u64,
             token_program.key,
         );
-        invoke(
-            &create_ix,
-            &[payer.to_account_info(), mint_info.clone()],
-        )?;
+        invoke(&create_ix, &[payer.to_account_info(), mint_info.clone()])?;
         let init_accounts = token_interface::InitializeMint2 {
             mint: mint_info.clone(),
         };
         let init_ctx = CpiContext::new(token_program.to_account_info(), init_accounts);
-        token_interface::initialize_mint2(
-            init_ctx,
-            decimals,
-            &factory_state.key(),
-            None,
-        )?;
+        token_interface::initialize_mint2(init_ctx, decimals, &factory_state.key(), None)?;
     } else {
         require_keys_eq!(
             *mint_info.owner,
@@ -708,7 +693,10 @@ fn prepare_ptkn_mint<'info>(
             FactoryError::PtknMintMismatch
         );
         let mint_account: Account<Mint> = Account::try_from(&mint_info)?;
-        require!(mint_account.decimals == decimals, FactoryError::InvalidDecimals);
+        require!(
+            mint_account.decimals == decimals,
+            FactoryError::InvalidDecimals
+        );
         match mint_account.mint_authority {
             COption::Some(current) => {
                 if current != factory_state.key() {
