@@ -9,6 +9,7 @@ import {
   SystemProgram,
   SYSVAR_RENT_PUBKEY,
   Transaction,
+  VersionedTransaction,
   TransactionInstruction,
   type AccountMeta
 } from '@solana/web3.js';
@@ -463,12 +464,23 @@ export async function bootstrapPrivateDevnet() {
 
   const wallet: Wallet = {
     publicKey: payer.publicKey,
+    payer,
     async signTransaction(tx) {
-      tx.partialSign(payer);
+      if ('partialSign' in tx) {
+        tx.partialSign(payer);
+      } else if ('sign' in tx) {
+        (tx as VersionedTransaction).sign([payer]);
+      }
       return tx;
     },
     async signAllTransactions(txs) {
-      txs.forEach((tx) => tx.partialSign(payer));
+      txs.forEach((tx) => {
+        if ('partialSign' in tx) {
+          (tx as Transaction).partialSign(payer);
+        } else if ('sign' in tx) {
+          (tx as VersionedTransaction).sign([payer]);
+        }
+      });
       return txs;
     }
   };

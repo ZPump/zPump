@@ -2,9 +2,14 @@ import '@testing-library/jest-dom';
 import { TextDecoder, TextEncoder } from 'util';
 import nodeCrypto from 'crypto';
 
-global.navigator.clipboard = {
-  writeText: jest.fn()
-} as unknown as Clipboard;
+if (typeof global.navigator !== 'undefined') {
+  Object.defineProperty(global.navigator, 'clipboard', {
+    value: {
+      writeText: jest.fn()
+    },
+    configurable: true
+  });
+}
 
 const globalWithPolyfill = globalThis as typeof globalThis & {
   TextEncoder: typeof TextEncoder;
