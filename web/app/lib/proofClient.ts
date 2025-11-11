@@ -8,7 +8,7 @@ interface ProofClientOptions {
   baseUrl?: string;
 }
 
-const DEFAULT_BASE_URL = process.env.NEXT_PUBLIC_PROOF_RPC_URL ?? 'http://localhost:8788';
+const DEFAULT_BASE_URL = process.env.NEXT_PUBLIC_PROOF_RPC_URL ?? 'https://proof.zpump.xyz';
 
 const CIRCUIT_ALIAS = {
   wrap: 'shield',
@@ -23,6 +23,10 @@ export class ProofClient {
 
   constructor(options?: ProofClientOptions) {
     this.baseUrl = options?.baseUrl ?? DEFAULT_BASE_URL;
+    if (process.env.NODE_ENV !== 'production') {
+      // eslint-disable-next-line no-console
+      console.info('[proof-client] using base URL', this.baseUrl);
+    }
   }
 
   async requestProof<TPayload extends Record<string, unknown>>(
