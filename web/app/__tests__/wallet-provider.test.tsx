@@ -21,6 +21,18 @@ jest.mock('@solana/wallet-adapter-react-ui', () => ({
   useWalletModal: () => ({ setVisible: jest.fn() })
 }));
 
+jest.mock('@solana/wallet-adapter-wallets', () => ({
+  PhantomWalletAdapter: class {},
+  SolflareWalletAdapter: class {},
+  BackpackWalletAdapter: class {},
+  LedgerWalletAdapter: class {},
+  UnsafeBurnerWalletAdapter: class {}
+}));
+
+jest.mock('@solana/wallet-adapter-backpack', () => ({
+  BackpackWalletAdapter: class {}
+}));
+
 jest.mock('@solana/web3.js', () => ({
   clusterApiUrl: () => 'https://devnet.solana.com'
 }));

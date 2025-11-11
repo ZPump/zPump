@@ -57,8 +57,13 @@ All components run directly on the host (no Docker):
    ```
    > Optionally preload test mints with `--account` flags.
 
-3. **Bootstrap programs**  
-   Run governance/initialization ixes (register mints, initialize pools, set fees). Automate via forthcoming `scripts/bootstrap-simnet.ts`.
+3. **Bootstrap programs + verifying keys**
+   ```bash
+   cd web/app
+   npm install
+   npm run bootstrap:devnet
+   ```
+   This script registers the factory, initializes vaults/pools, uploads Groth16 verifying keys for `shield`/`unshield`, and refreshes `config/mints.generated.json` with real mint + pool PDAs.
 
 4. **Proof RPC service**
    ```bash
@@ -100,8 +105,12 @@ To avoid public devnet faucet throttling, run a persistent validator that mirror
    - Exposes RPC on `http://127.0.0.1:8899`. Override with `RPC_PORT`.
    - Loads the four Anchor programs with fixed IDs so the dApp and scripts operate unchanged.
 
-3. **Bootstrap on-chain state** *(coming soon)*  
-   A dedicated script will initialize factory state, register mints, configure pools, and upload verifying keys automatically. Until then, run the necessary Anchor instructions manually or via the REPL.
+3. **Bootstrap on-chain state**
+   ```bash
+   cd web/app
+   npm run bootstrap:devnet
+   ```
+   The script is idempotent—rerun any time you reset the ledger to recreate mint metadata, verifying keys, and vault accounts.
 
 4. **Point services at the private cluster**
    - `NEXT_PUBLIC_RPC_URL=http://127.0.0.1:8899` for the dApp.
@@ -148,8 +157,9 @@ E2E tests against simnet planned once bootstrap scripts land.
 
 The dApp currently features:
 - **Simulation wallet** (local storage burner keys, history, token balances)
-- **Faucet** (airdrop SOL, mint origin/zTokens into simulation accounts)
-- **Convert** flow using placeholder SDK (wrap/unwrap stubs)
+- **Faucet** (airdrop SOL, mint origin/zTokens into simulation accounts using generated mint metadata)
+- **Convert** flow using placeholder SDK (wrap/unwrap stubs) with Proof RPC integration
+- **Vault dashboard** (`/vault`) showing on-chain mint supply and vault balances after bootstrap
 
 ### Immediate Next Steps
 1. Wire `web/app/lib/sdk.ts` to real Anchor instructions using wallet context.
