@@ -1,5 +1,5 @@
 import { SimTokenDefinition } from './types';
-import { MINTS } from '../config/mints';
+import { MINTS } from '../../config/mints';
 
 export const SOL_TOKEN_ID = 'sol-native';
 const STATE_VERSION = 1;
