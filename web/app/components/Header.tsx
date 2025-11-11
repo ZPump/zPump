@@ -3,7 +3,7 @@
 import { Box, Flex, HStack, IconButton, Link, Text, useDisclosure } from '@chakra-ui/react';
 import NextLink from 'next/link';
 import { Layers, MenuIcon } from 'lucide-react';
-import { ConnectWalletButton } from './ConnectWalletButton';
+import { WalletDrawerLauncher } from './wallet/WalletDrawer';
 
 export function Header() {
   const { isOpen, onToggle } = useDisclosure();
@@ -34,18 +34,18 @@ export function Header() {
           <Link as={NextLink} href="/convert" _hover={{ color: 'brand.200' }}>
             Convert
           </Link>
-          <Link as={NextLink} href="/wallet" _hover={{ color: 'brand.200' }}>
-            Wallet
-          </Link>
           <Link as={NextLink} href="/faucet" _hover={{ color: 'brand.200' }}>
             Faucet
           </Link>
           <Link as={NextLink} href="/vault" _hover={{ color: 'brand.200' }}>
             Vaults
           </Link>
+          <Link as={NextLink} href="/whitepaper" _hover={{ color: 'brand.200' }}>
+            Whitepaper
+          </Link>
         </HStack>
-        <HStack spacing={4}>
-          <ConnectWalletButton />
+        <HStack spacing={2}>
+          <WalletDrawerLauncher />
           <IconButton
             aria-label="Open navigation"
             icon={<MenuIcon size={20} />}
@@ -63,14 +63,14 @@ export function Header() {
           <Link as={NextLink} href="/convert" _hover={{ color: 'brand.200' }}>
             Convert
           </Link>
-          <Link as={NextLink} href="/wallet" _hover={{ color: 'brand.200' }}>
-            Wallet
-          </Link>
           <Link as={NextLink} href="/faucet" _hover={{ color: 'brand.200' }}>
             Faucet
           </Link>
           <Link as={NextLink} href="/vault" _hover={{ color: 'brand.200' }}>
             Vaults
+          </Link>
+          <Link as={NextLink} href="/whitepaper" _hover={{ color: 'brand.200' }}>
+            Whitepaper
           </Link>
         </Flex>
       )}

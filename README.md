@@ -61,11 +61,25 @@ All components run directly on the host (no Docker):
    ```bash
    cd web/app
    npm install
-   npm run bootstrap:devnet
+   npx tsx scripts/bootstrap-private-devnet.ts
    ```
-   This script registers the factory, initializes vaults/pools, uploads Groth16 verifying keys for `shield`/`unshield`, and refreshes `config/mints.generated.json` with real mint + pool PDAs.
+   This script registers the factory, initializes vaults/pools, uploads Groth16 verifying keys for `shield`/`unshield`, and refreshes `config/mints.generated.json` with real mint + pool PDAs. Re-run it any time the validator ledger is reset—otherwise the dApp cannot locate the commitment-tree PDAs and will refuse to shield.
 
-4. **Proof RPC service**
+4. **Rebuild the dApp after bootstrapping** (required so the static bundle picks up the new mint catalogue):
+   ```bash
+   npm run build
+   ```
+   For local `npm run dev` sessions you can skip the rebuild, but production/PM2 deployments must run this step after every bootstrap.
+
+5. **Restart the web process (if using PM2/systemd)**
+   ```bash
+   cd ..
+   pm2 restart ptf-web --update-env
+   pm2 save
+   ```
+   > Skipped when running `npm run dev`. For PM2 the restart is mandatory—otherwise the site keeps the old mint IDs and the Convert page shows “Commitment tree account missing on-chain”.
+
+6. **Proof RPC service**
    ```bash
    cd services/proof-rpc
    npm install
@@ -110,9 +124,13 @@ To avoid public devnet faucet throttling, run a persistent validator that mirror
 3. **Bootstrap on-chain state**
    ```bash
    cd web/app
-   npm run bootstrap:devnet
+   npx tsx scripts/bootstrap-private-devnet.ts
+   npm run build
+   cd ..
+   pm2 restart ptf-web --update-env
+   pm2 save
    ```
-   The script is idempotent—rerun any time you reset the ledger to recreate mint metadata, verifying keys, and vault accounts.
+   The script is idempotent—rerun it any time you reset the ledger to recreate mint metadata, verifying keys, and vault accounts. Always rebuild and restart after bootstrapping so the site serves the current PDAs (otherwise the Convert page shows “Commitment tree account missing on-chain”).
 
 4. **Point services at the private cluster**
    - `NEXT_PUBLIC_RPC_URL=http://127.0.0.1:8899` for the dApp.

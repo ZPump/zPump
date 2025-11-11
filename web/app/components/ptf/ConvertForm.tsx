@@ -721,8 +721,7 @@ export function ConvertForm() {
             Convert between public tokens and zTokens
           </Heading>
           <Text color="whiteAlpha.700">
-            Shield value into privacy-preserving zTokens or redeem back into the public mint. The form adapts to the
-            direction you choose, keeping the advanced cryptography behind the scenes.
+          Shield value into privacy-preserving zPump tokens or redeem back into the public mint.
           </Text>
         </Stack>
 
