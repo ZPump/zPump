@@ -146,12 +146,16 @@ Once flows are validated here, target the same binaries at public devnet/mainnet
   - `npm run lint`
   - `npm run test`
   - `npm run dev`
+- `tests/e2e`:
+  ```bash
+  cd tests/e2e
+  npm install
+  npx playwright test
+  ```
 - `services/proof-rpc`:
   - `npm run lint`
   - `npm run test` *(add once spec’d)*
   - `npm run dev`
-
-E2E tests against simnet planned once bootstrap scripts land.
 
 ---
 
@@ -164,14 +168,12 @@ E2E tests against simnet planned once bootstrap scripts land.
 - **Vault dashboard** (`/vault`) showing on-chain mint supply and vault balances after bootstrap
 
 ### Immediate Next Steps
-1. Wire `web/app/lib/sdk.ts` to real Anchor instructions using wallet context.
-2. Generate TypeScript clients from IDLs or handcraft instructions (Option 1: client-side Anchor).
-3. Connect Proof RPC in `ConvertForm` so wraps/unshields request Groth16 proofs.
-4. Feed simnet program IDs + verifying keys via `.env`.
+1. Harden the Proof RPC surface (metrics, rate limiting, operational alarms).
+2. Document governance playbooks for enabling PTkn redemption on shared devnets/mainnet.
+3. Build optional public-network faucet tooling once testnet/mainnet partners define funding sources.
 
 ### Planned Upgrades After Simnet Validation
 - Investigate optional backend transaction builder (Option 2) for caching & UX.
-- Harden Proof RPC (rate limiting, key management, metrics).
 - Bring Photon indexer online to surface roots/nullifiers in UI.
 - Automate program bootstrap via `scripts/bootstrap-simnet.ts`.
 - Extend Cypress/Jest suites for shield→unshield happy path.
@@ -187,9 +189,16 @@ These notes capture future enhancements; implement after the simnet path is prov
 |----------|----------|---------|---------|
 | web/app | `NEXT_PUBLIC_RPC_URL` | Solana RPC endpoint | `http://127.0.0.1:8899` |
 | web/app | `NEXT_PUBLIC_PROOF_RPC_URL` | Proof RPC endpoint | `http://127.0.0.1:8787` |
+| web/app | `NEXT_PUBLIC_INDEXER_URL` | Photon indexer endpoint | `http://127.0.0.1:8787` |
+| web/app | `NEXT_PUBLIC_FAUCET_MODE` | `local` to enable validator faucet, `simulation`/unset otherwise | `simulation` |
 | web/app | `NEXT_PUBLIC_CLUSTER` *(planned)* | `localnet` / `devnet` / `mainnet` | – |
+| backend | `RPC_URL` | Solana RPC endpoint for proof/indexer services | `http://127.0.0.1:8899` |
+| backend | `PHOTON_URL` | Upstream Photon/Helius endpoint (optional) | – |
 | services/proof-rpc | `RPC_PORT` | HTTP port | `8787` |
 | services/proof-rpc | `GROTH16_DIR` *(planned)* | Verifying key path | `config/verifying-keys.json` |
+| services/faucet | `FAUCET_MODE` | `local` to enable mint/airdrop helpers | `disabled` |
+| services/faucet | `FAUCET_KEYPAIR` | Authority keypair path (defaults to `~/.config/solana/id.json`) | – |
+| services/faucet | `FAUCET_RPC_URL` | Override RPC endpoint for faucet | Inherits `RPC_URL` |
 
 Add `.env.example` once values are finalized.
 
