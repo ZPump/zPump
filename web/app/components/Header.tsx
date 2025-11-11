@@ -1,6 +1,6 @@
 'use client';
 
-import { Box, Button, Flex, HStack, IconButton, Link, Text, useDisclosure } from '@chakra-ui/react';
+import { Box, Flex, HStack, IconButton, Link, Text, useDisclosure } from '@chakra-ui/react';
 import NextLink from 'next/link';
 import { Layers, MenuIcon } from 'lucide-react';
 import { ConnectWalletButton } from './ConnectWalletButton';
@@ -34,12 +34,12 @@ export function Header() {
           <Link as={NextLink} href="/convert" _hover={{ color: 'brand.200' }}>
             Convert
           </Link>
-          <Link as={NextLink} href="/exchange" _hover={{ color: 'brand.200' }}>
-            Preview
+          <Link as={NextLink} href="/wallet" _hover={{ color: 'brand.200' }}>
+            Wallet
           </Link>
-          <Button as={NextLink} href="#vision" variant="outline">
-            Vision
-          </Button>
+          <Link as={NextLink} href="/faucet" _hover={{ color: 'brand.200' }}>
+            Faucet
+          </Link>
         </HStack>
         <HStack spacing={4}>
           <ConnectWalletButton />
@@ -60,11 +60,11 @@ export function Header() {
           <Link as={NextLink} href="/convert" _hover={{ color: 'brand.200' }}>
             Convert
           </Link>
-          <Link as={NextLink} href="/exchange" _hover={{ color: 'brand.200' }}>
-            Preview
+          <Link as={NextLink} href="/wallet" _hover={{ color: 'brand.200' }}>
+            Wallet
           </Link>
-          <Link as={NextLink} href="#vision" _hover={{ color: 'brand.200' }}>
-            Vision
+          <Link as={NextLink} href="/faucet" _hover={{ color: 'brand.200' }}>
+            Faucet
           </Link>
         </Flex>
       )}
