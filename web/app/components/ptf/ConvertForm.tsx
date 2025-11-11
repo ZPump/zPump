@@ -82,15 +82,6 @@ export function ConvertForm() {
 
   const proofClient = useMemo(() => new ProofClient(), []);
 
-  const fallbackProof: ProofResponse = useMemo(
-    () => ({
-      proof: 'client-side',
-      publicInputs: [],
-      verifyingKeyHash: ''
-    }),
-    []
-  );
-
   const handleModeChange = (event: React.ChangeEvent<HTMLSelectElement>) => {
     setMode(event.target.value as ConvertMode);
     setResult(null);
@@ -179,6 +170,10 @@ export function ConvertForm() {
           setProofPreview(proofResponse);
         }
 
+        if (!proofResponse) {
+          throw new Error('Proof RPC must be enabled for unshield.');
+        }
+
         await unwrapSdk({
           connection,
           wallet,
@@ -187,7 +182,7 @@ export function ConvertForm() {
           poolId,
           destination: destinationKey.toBase58(),
           mode: 'origin',
-          proof: proofResponse ?? fallbackProof
+          proof: proofResponse
         });
 
         setResult(`Redeemed ${amount} ${mintConfig.symbol}.`);
