@@ -30,15 +30,21 @@ export interface IndexerNote {
   slot: number;
 }
 
-const DEFAULT_BASE_URL = process.env.NEXT_PUBLIC_INDEXER_URL ?? '/api/indexer';
-
 export class IndexerClient {
   private readonly baseUrl: string;
   private readonly apiKey?: string;
   private readonly fetchImpl: typeof fetch;
 
   constructor(options?: IndexerClientOptions) {
-    this.baseUrl = options?.baseUrl ?? DEFAULT_BASE_URL;
+    const defaultBase =
+      options?.baseUrl ??
+      (typeof window !== 'undefined'
+        ? '/api/indexer'
+        : process.env.NEXT_PUBLIC_INDEXER_URL ??
+          process.env.INDEXER_INTERNAL_URL ??
+          'http://127.0.0.1:8787');
+
+    this.baseUrl = defaultBase;
     this.apiKey = options?.apiKey ?? process.env.NEXT_PUBLIC_INDEXER_API_KEY;
     const fetchFn = options?.fetchImpl ?? (typeof fetch !== 'undefined' ? fetch : undefined);
     if (!fetchFn) {
@@ -97,7 +103,7 @@ export class IndexerClient {
   }
 
   private async request(path: string): Promise<unknown | null> {
-    const url = new URL(path, this.baseUrl);
+    const url = this.buildUrl(path);
     const headers: HeadersInit = {
       Accept: 'application/json'
     };
@@ -112,6 +118,15 @@ export class IndexerClient {
       throw new Error(`Indexer error: ${response.status} ${response.statusText}`);
     }
     return response.json();
+  }
+
+  private buildUrl(path: string): string {
+    if (this.baseUrl.startsWith('http://') || this.baseUrl.startsWith('https://')) {
+      return new URL(path, this.baseUrl).toString();
+    }
+    const normalizedBase = this.baseUrl.endsWith('/') ? this.baseUrl.slice(0, -1) : this.baseUrl;
+    const normalizedPath = path.startsWith('/') ? path : `/${path}`;
+    return `${normalizedBase}${normalizedPath}`;
   }
 
   private parseRoots(payload: unknown, fallbackMint: string): IndexerRootResult {
