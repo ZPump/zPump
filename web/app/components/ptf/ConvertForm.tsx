@@ -31,6 +31,7 @@ import { IndexerClient, IndexerNote } from '../../lib/indexerClient';
 import { getCachedRoots, setCachedRoots, getCachedNullifiers, setCachedNullifiers } from '../../lib/indexerCache';
 import { deriveCommitmentTree } from '../../lib/onchain/pdas';
 import { commitmentToHex, decodeCommitmentTree } from '../../lib/onchain/commitmentTree';
+import { poseidonHashMany } from '../../lib/onchain/poseidon';
 
 type ConvertMode = 'to-private' | 'to-public';
 
@@ -47,9 +48,41 @@ interface UnwrapAdvancedState {
   spendingKey: string;
   viewKey: string;
   useProofRpc: boolean;
+  noteAmount: string;
+  changeAmount: string;
+  changeRecipient: string;
+  changeBlinding: string;
+  changeAmountBlinding: string;
+  autoChange: boolean;
 }
 
 const createRandomSeed = () => Math.floor(Math.random() * 1_000_000).toString();
+
+interface StoredNoteEntry {
+  id: string;
+  label: string;
+  noteId: string;
+  spendingKey: string;
+  amount: string;
+  changeRecipient?: string;
+}
+
+const SAVED_NOTES_KEY = 'ptf.savedNotes';
+
+const bytesToHex = (bytes: Uint8Array): string =>
+  `0x${Array.from(bytes)
+    .map((value) => value.toString(16).padStart(2, '0'))
+    .join('')}`;
+
+const generateRandomFieldHex = () => {
+  if (typeof window !== 'undefined' && window.crypto?.getRandomValues) {
+    const bytes = new Uint8Array(32);
+    window.crypto.getRandomValues(bytes);
+    return bytesToHex(bytes);
+  }
+  const fallback = Math.floor(Math.random() * Number.MAX_SAFE_INTEGER).toString(16);
+  return `0x${fallback}`;
+};
 
 export function ConvertForm() {
   const { connection } = useConnection();
@@ -72,8 +105,14 @@ export function ConvertForm() {
     exitFee: '0',
     noteId: createRandomSeed(),
     spendingKey: createRandomSeed(),
-  viewKey: '',
-    useProofRpc: true
+    viewKey: '',
+    useProofRpc: true,
+    noteAmount: '',
+    changeAmount: '',
+    changeRecipient: '',
+    changeBlinding: '',
+    changeAmountBlinding: '',
+    autoChange: true
   });
 
   const [result, setResult] = useState<string | null>(null);
@@ -90,6 +129,11 @@ export function ConvertForm() {
   );
   const [notesError, setNotesError] = useState<string | null>(null);
   const [isLoadingNotes, setLoadingNotes] = useState<boolean>(false);
+  const [storedNotes, setStoredNotes] = useState<StoredNoteEntry[]>([]);
+  const [selectedStoredNoteId, setSelectedStoredNoteId] = useState<string | null>(null);
+  const [noteLabelDraft, setNoteLabelDraft] = useState<string>('');
+  const [nullifierPreview, setNullifierPreview] = useState<string | null>(null);
+  const [nullifierPreviewError, setNullifierPreviewError] = useState<string | null>(null);
 
   const mintConfig = useMemo<MintConfig | undefined>(
     () => MINTS.find((mint) => mint.originMint === originMint),
@@ -107,6 +151,34 @@ export function ConvertForm() {
       mountedRef.current = false;
     };
   }, []);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return;
+    }
+    try {
+      const raw = window.localStorage.getItem(SAVED_NOTES_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw) as StoredNoteEntry[];
+        if (Array.isArray(parsed)) {
+          setStoredNotes(parsed);
+        }
+      }
+    } catch (error) {
+      console.warn('Failed to load saved notes', error);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return;
+    }
+    try {
+      window.localStorage.setItem(SAVED_NOTES_KEY, JSON.stringify(storedNotes));
+    } catch (error) {
+      console.warn('Failed to persist saved notes', error);
+    }
+  }, [storedNotes]);
 
   const normaliseField = (value: string) => {
     if (!value) {
@@ -246,12 +318,30 @@ export function ConvertForm() {
   }, [originMint, refreshNullifiers]);
 
   const nullifierList = nullifierState?.values ?? [];
+  const computedChangeAmount = useMemo(() => {
+    try {
+      const baseAmount = amount ? BigInt(amount) : 0n;
+      const feeAmount = unwrapAdvanced.exitFee ? BigInt(unwrapAdvanced.exitFee) : 0n;
+      const totalOut = baseAmount + feeAmount;
+      if (unwrapAdvanced.autoChange) {
+        const noteTotal = unwrapAdvanced.noteAmount ? BigInt(unwrapAdvanced.noteAmount) : totalOut;
+        return noteTotal - totalOut;
+      }
+      return unwrapAdvanced.changeAmount ? BigInt(unwrapAdvanced.changeAmount) : 0n;
+    } catch {
+      return null;
+    }
+  }, [amount, unwrapAdvanced.autoChange, unwrapAdvanced.changeAmount, unwrapAdvanced.exitFee, unwrapAdvanced.noteAmount]);
 
   const handleModeChange = (event: React.ChangeEvent<HTMLSelectElement>) => {
     setMode(event.target.value as ConvertMode);
     setResult(null);
     setProofPreview(null);
     setError(null);
+    setSelectedStoredNoteId(null);
+    setNoteLabelDraft('');
+    setNullifierPreview(null);
+    setNullifierPreviewError(null);
   };
 
   const handleWrapAdvancedChange =
@@ -265,6 +355,77 @@ export function ConvertForm() {
       const value = event.target.type === 'checkbox' ? (event.target as HTMLInputElement).checked : event.target.value;
       setUnwrapAdvanced((prev) => ({ ...prev, [field]: value as never }));
     };
+
+  const handleSelectStoredNote = (noteId: string) => {
+    setSelectedStoredNoteId(noteId || null);
+    const entry = storedNotes.find((note) => note.id === noteId);
+    if (!entry) {
+      return;
+    }
+    setUnwrapAdvanced((prev) => ({
+      ...prev,
+      noteId: entry.noteId,
+      spendingKey: entry.spendingKey,
+      noteAmount: entry.amount,
+      changeRecipient: entry.changeRecipient ?? prev.changeRecipient
+    }));
+    setNoteLabelDraft(entry.label);
+  };
+
+  const handleSaveStoredNote = () => {
+    const noteId = unwrapAdvanced.noteId.trim();
+    const spendingKey = unwrapAdvanced.spendingKey.trim();
+    if (!noteId || !spendingKey) {
+      setError('Provide a note identifier and spending key before saving.');
+      return;
+    }
+    const id = typeof crypto !== 'undefined' && 'randomUUID' in crypto ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`;
+    const label = noteLabelDraft.trim() || `Note ${storedNotes.length + 1}`;
+    const entry: StoredNoteEntry = {
+      id,
+      label,
+      noteId,
+      spendingKey,
+      amount: unwrapAdvanced.noteAmount.trim() || amount || '0',
+      changeRecipient: unwrapAdvanced.changeRecipient.trim() || undefined
+    };
+    setStoredNotes((prev) => {
+      const filtered = prev.filter((item) => item.noteId !== entry.noteId || item.spendingKey !== entry.spendingKey);
+      return [...filtered, entry];
+    });
+    setSelectedStoredNoteId(entry.id);
+  };
+
+  const handleRemoveStoredNote = (id: string) => {
+    setStoredNotes((prev) => prev.filter((note) => note.id !== id));
+    if (selectedStoredNoteId === id) {
+      setSelectedStoredNoteId(null);
+      setNoteLabelDraft('');
+    }
+  };
+
+  const handleGenerateBlindings = () => {
+    const newBlinding = generateRandomFieldHex();
+    const newAmountBlinding = generateRandomFieldHex();
+    setUnwrapAdvanced((prev) => ({
+      ...prev,
+      changeBlinding: newBlinding,
+      changeAmountBlinding: newAmountBlinding
+    }));
+  };
+
+  const handlePreviewNullifier = async () => {
+    setNullifierPreviewError(null);
+    try {
+      const noteIdValue = BigInt(unwrapAdvanced.noteId);
+      const spendingKeyValue = BigInt(unwrapAdvanced.spendingKey);
+      const hash = await poseidonHashMany([noteIdValue, spendingKeyValue]);
+      setNullifierPreview(bytesToHex(hash));
+    } catch {
+      setNullifierPreview(null);
+      setNullifierPreviewError('Unable to derive nullifier. Ensure note id and spending key are valid field values.');
+    }
+  };
 
   const handleFetchNotes = async () => {
     const viewKey = unwrapAdvanced.viewKey.trim();
@@ -361,16 +522,93 @@ export function ConvertForm() {
         setResult(`Shielded ${amount} into ${zTokenSymbol}.`);
       } else {
         const destinationKey = await resolvePublicKey(unwrapAdvanced.destination, wallet.publicKey);
+
+        const parseUnsigned = (value: string, label: string): bigint => {
+          try {
+            const parsed = BigInt(value);
+            if (parsed < 0n) {
+              throw new Error();
+            }
+            return parsed;
+          } catch {
+            throw new Error(`Invalid ${label}. Enter a non-negative integer.`);
+          }
+        };
+
+        const amountValue = parseUnsigned(amount, 'amount');
+        const feeValue = unwrapAdvanced.exitFee ? parseUnsigned(unwrapAdvanced.exitFee, 'exit fee') : 0n;
+        let noteAmountValue = unwrapAdvanced.noteAmount
+          ? parseUnsigned(unwrapAdvanced.noteAmount, 'note amount')
+          : amountValue + feeValue;
+
+        const totalOutflow = amountValue + feeValue;
+        if (noteAmountValue < totalOutflow) {
+          throw new Error('Note amount must cover the requested amount plus exit fee.');
+        }
+
+        let changeAmountValue: bigint;
+        if (unwrapAdvanced.autoChange) {
+          changeAmountValue = noteAmountValue - totalOutflow;
+        } else if (unwrapAdvanced.changeAmount) {
+          changeAmountValue = parseUnsigned(unwrapAdvanced.changeAmount, 'change amount');
+        } else {
+          changeAmountValue = 0n;
+        }
+
+        if (changeAmountValue < 0n) {
+          throw new Error('Change amount cannot be negative.');
+        }
+
+        let changeRecipientField = unwrapAdvanced.changeRecipient.trim();
+        let changeBlindingField = unwrapAdvanced.changeBlinding.trim();
+        let changeAmountBlindingField = unwrapAdvanced.changeAmountBlinding.trim();
+
+        if (changeAmountValue > 0n) {
+          if (!changeRecipientField) {
+            throw new Error('Provide a change recipient field element when change is positive.');
+          }
+          if (!changeBlindingField) {
+            const generated = generateRandomFieldHex();
+            changeBlindingField = generated;
+            if (mountedRef.current) {
+              setUnwrapAdvanced((prev) => ({ ...prev, changeBlinding: generated }));
+            }
+          }
+          if (!changeAmountBlindingField) {
+            const generated = generateRandomFieldHex();
+            changeAmountBlindingField = generated;
+            if (mountedRef.current) {
+              setUnwrapAdvanced((prev) => ({ ...prev, changeAmountBlinding: generated }));
+            }
+          }
+        } else {
+          changeRecipientField = '';
+          changeBlindingField = changeBlindingField || '0x0';
+          changeAmountBlindingField = changeAmountBlindingField || '0x0';
+        }
+
+        const changePayload = changeAmountValue > 0n
+          ? {
+              amount: changeAmountValue.toString(),
+              recipient: changeRecipientField,
+              blinding: changeBlindingField,
+              amountBlinding: changeAmountBlindingField
+            }
+          : undefined;
+
         const payload = {
           oldRoot: rootValue,
-          amount,
-          fee: unwrapAdvanced.exitFee,
+          amount: amountValue.toString(),
+          fee: feeValue.toString(),
           destPubkey: destinationKey.toBase58(),
-          mode: 'origin',
+          mode: 'origin' as const,
           mintId,
           poolId,
           noteId: unwrapAdvanced.noteId,
-          spendingKey: unwrapAdvanced.spendingKey
+          spendingKey: unwrapAdvanced.spendingKey,
+          noteAmount: noteAmountValue.toString(),
+          change: changePayload,
+          nullifier: nullifierPreview ?? undefined
         };
 
         let proofResponse: ProofResponse | null = null;
@@ -398,7 +636,7 @@ export function ConvertForm() {
           connection,
           wallet,
           originMint,
-          amount: BigInt(amount),
+          amount: amountValue,
           poolId,
           destination: destinationKey.toBase58(),
           mode: 'origin',
@@ -602,11 +840,96 @@ export function ConvertForm() {
                   </FormControl>
                   <FormControl>
                     <FormLabel color="whiteAlpha.700">Note identifier</FormLabel>
-                    <Input value={unwrapAdvanced.noteId} onChange={handleUnwrapAdvancedChange('noteId')} />
+                    <HStack spacing={3} align="center">
+                      <Input value={unwrapAdvanced.noteId} onChange={handleUnwrapAdvancedChange('noteId')} />
+                      <Button size="sm" variant="outline" onClick={() => void handlePreviewNullifier()}>
+                        Derive nullifier
+                      </Button>
+                    </HStack>
+                    {nullifierPreview && (
+                      <FormHelperText color="whiteAlpha.500">Derived nullifier: {nullifierPreview}</FormHelperText>
+                    )}
+                    {nullifierPreviewError && <FormHelperText color="red.300">{nullifierPreviewError}</FormHelperText>}
                   </FormControl>
                   <FormControl>
                     <FormLabel color="whiteAlpha.700">Spending key</FormLabel>
                     <Input value={unwrapAdvanced.spendingKey} onChange={handleUnwrapAdvancedChange('spendingKey')} />
+                  </FormControl>
+                  <FormControl>
+                    <FormLabel color="whiteAlpha.700">Note amount</FormLabel>
+                    <HStack spacing={3} align="center">
+                      <Input
+                        value={unwrapAdvanced.noteAmount}
+                        onChange={handleUnwrapAdvancedChange('noteAmount')}
+                        placeholder="Defaults to amount + fee"
+                      />
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() =>
+                          setUnwrapAdvanced((prev) => ({
+                            ...prev,
+                            noteAmount: (() => {
+                              try {
+                                const baseAmount = amount ? BigInt(amount) : 0n;
+                                const feeAmount = prev.exitFee ? BigInt(prev.exitFee) : 0n;
+                                return (baseAmount + feeAmount).toString();
+                              } catch {
+                                return prev.noteAmount;
+                              }
+                            })()
+                          }))
+                        }
+                      >
+                        Use amount + fee
+                      </Button>
+                    </HStack>
+                    <FormHelperText color="whiteAlpha.500">
+                      Provide the total note value in base units. Leave blank to assume the exact exit amount.
+                    </FormHelperText>
+                  </FormControl>
+                  <FormControl>
+                    <FormLabel color="whiteAlpha.700">Saved notes</FormLabel>
+                    <HStack spacing={3} align="start">
+                      <Select
+                        value={selectedStoredNoteId ?? ''}
+                        onChange={(event) => handleSelectStoredNote(event.target.value)}
+                        placeholder={storedNotes.length ? 'Select a saved note' : 'No notes saved yet'}
+                      >
+                        {storedNotes.map((note) => (
+                          <option key={note.id} value={note.id}>
+                            {note.label}
+                          </option>
+                        ))}
+                      </Select>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        isDisabled={!selectedStoredNoteId}
+                        onClick={() => selectedStoredNoteId && handleRemoveStoredNote(selectedStoredNoteId)}
+                      >
+                        Remove
+                      </Button>
+                    </HStack>
+                    <FormHelperText color="whiteAlpha.500">
+                      Notes are stored locally in your browser for quick selection.
+                    </FormHelperText>
+                  </FormControl>
+                  <FormControl>
+                    <FormLabel color="whiteAlpha.700">Label &amp; save current note</FormLabel>
+                    <HStack spacing={3} align="center">
+                      <Input
+                        value={noteLabelDraft}
+                        onChange={(event) => setNoteLabelDraft(event.target.value)}
+                        placeholder="Alias for this note"
+                      />
+                      <Button size="sm" variant="outline" onClick={handleSaveStoredNote}>
+                        Save note
+                      </Button>
+                    </HStack>
+                    <FormHelperText color="whiteAlpha.500">
+                      Saves the note id, spending key, amount, and optional change recipient to local storage.
+                    </FormHelperText>
                   </FormControl>
                   <FormControl>
                     <FormLabel color="whiteAlpha.700">Viewing key (optional)</FormLabel>
@@ -647,6 +970,62 @@ export function ConvertForm() {
                         </Stack>
                       </Box>
                     )}
+                  </FormControl>
+                  <FormControl display="flex" alignItems="center">
+                    <FormLabel htmlFor="autoChange" mb="0" color="whiteAlpha.700">
+                      Auto-compute change output
+                    </FormLabel>
+                    <Switch
+                      id="autoChange"
+                      colorScheme="teal"
+                      isChecked={unwrapAdvanced.autoChange}
+                      onChange={handleUnwrapAdvancedChange('autoChange')}
+                    />
+                  </FormControl>
+                  <FormControl isDisabled={unwrapAdvanced.autoChange}>
+                    <FormLabel color="whiteAlpha.700">Change amount</FormLabel>
+                    <Input
+                      value={unwrapAdvanced.autoChange ? computedChangeAmount?.toString() ?? '' : unwrapAdvanced.changeAmount}
+                      onChange={handleUnwrapAdvancedChange('changeAmount')}
+                      placeholder="Defaults to note amount - amount - fee"
+                    />
+                    <FormHelperText color={computedChangeAmount !== null && computedChangeAmount < 0n ? 'red.300' : 'whiteAlpha.500'}>
+                      {computedChangeAmount === null
+                        ? 'Enter numeric values to preview change.'
+                        : `Current change preview: ${computedChangeAmount.toString()}`}
+                    </FormHelperText>
+                  </FormControl>
+                  <FormControl>
+                    <FormLabel color="whiteAlpha.700">Change recipient (field element)</FormLabel>
+                    <Input
+                      value={unwrapAdvanced.changeRecipient}
+                      onChange={handleUnwrapAdvancedChange('changeRecipient')}
+                      placeholder="Required when change > 0"
+                    />
+                    <FormHelperText color="whiteAlpha.500">
+                      Provide the field representation of the private recipient for leftover funds.
+                    </FormHelperText>
+                  </FormControl>
+                  <FormControl>
+                    <FormLabel color="whiteAlpha.700">Change blindings</FormLabel>
+                    <HStack spacing={3} align="center">
+                      <Input
+                        value={unwrapAdvanced.changeBlinding}
+                        onChange={handleUnwrapAdvancedChange('changeBlinding')}
+                        placeholder="Commitment blinding"
+                      />
+                      <Input
+                        value={unwrapAdvanced.changeAmountBlinding}
+                        onChange={handleUnwrapAdvancedChange('changeAmountBlinding')}
+                        placeholder="Amount blinding"
+                      />
+                      <Button size="sm" variant="outline" onClick={handleGenerateBlindings}>
+                        Generate
+                      </Button>
+                    </HStack>
+                    <FormHelperText color="whiteAlpha.500">
+                      Leave blank to auto-generate secure blindings when submitting.
+                    </FormHelperText>
                   </FormControl>
                   <FormControl display="flex" alignItems="center">
                     <FormLabel htmlFor="unwrapRpc" mb="0" color="whiteAlpha.700">

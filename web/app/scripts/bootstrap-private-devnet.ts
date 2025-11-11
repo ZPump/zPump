@@ -35,10 +35,20 @@ const CIRCUIT_TAGS: Record<string, Buffer> = {
     const buffer = Buffer.alloc(32);
     buffer.write('shield');
     return buffer;
+  })(),
+  unshield: (() => {
+    const buffer = Buffer.alloc(32);
+    buffer.write('unshield');
+    return buffer;
   })()
 };
 
 const DEFAULT_MINTS_PATH = path.resolve(__dirname, '..', 'config', 'mints.generated.json');
+const VERIFYING_KEY_DIR = path.resolve(__dirname, '..', '..', '..', 'circuits', 'keys');
+const VERIFYING_KEY_CONFIG: Record<string, string> = {
+  shield: 'shield.json',
+  unshield: 'unshield.json'
+};
 const TARGET_IDL_DIR = path.resolve(__dirname, '..', '..', '..', 'target', 'idl');
 
 async function loadIdl(name: string): Promise<Idl> {
@@ -490,15 +500,24 @@ async function main() {
 
   await ensureFactory(ctx);
 
-  const verifyingKeyPath = path.resolve(__dirname, '..', '..', '..', 'circuits', 'keys', 'shield.json');
-  const verifyingKey = await ensureVerifyingKey(ctx, 'shield', 1, verifyingKeyPath);
+  const verifyingKeyMap = new Map<string, Awaited<ReturnType<typeof ensureVerifyingKey>>>();
+  for (const [circuit, filename] of Object.entries(VERIFYING_KEY_CONFIG)) {
+    const verifyingKeyPath = path.resolve(VERIFYING_KEY_DIR, filename);
+    const result = await ensureVerifyingKey(ctx, circuit, 1, verifyingKeyPath);
+    verifyingKeyMap.set(circuit, result);
+  }
+
+  const shieldVerifyingKey = verifyingKeyMap.get('shield');
+  if (!shieldVerifyingKey) {
+    throw new Error('Shield verifying key must be available before mint bootstrap.');
+  }
 
   const raw = await fs.readFile(DEFAULT_MINTS_PATH, 'utf8');
   const mintCatalog = JSON.parse(raw) as GeneratedMint[];
   const updated: GeneratedMint[] = [];
 
   for (const entry of mintCatalog) {
-    const refreshed = await ensureMint(ctx, entry, verifyingKey);
+    const refreshed = await ensureMint(ctx, entry, shieldVerifyingKey);
     updated.push(refreshed);
   }
 

@@ -9,6 +9,7 @@ import circomlibjs from 'circomlibjs';
 import { groth16 } from 'snarkjs';
 import pino from 'pino';
 import { z } from 'zod';
+import { PublicKey } from '@solana/web3.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -74,6 +75,13 @@ const TransferInputSchema = z.object({
     .min(1)
 });
 
+const ChangeSchema = z.object({
+  amount: z.string().optional(),
+  recipient: z.string().optional(),
+  blinding: z.string().optional(),
+  amountBlinding: z.string().optional()
+});
+
 const UnshieldInputSchema = z.object({
   oldRoot: z.string(),
   amount: z.string(),
@@ -83,7 +91,10 @@ const UnshieldInputSchema = z.object({
   mintId: z.string(),
   poolId: z.string(),
   noteId: z.string(),
-  spendingKey: z.string()
+  noteAmount: z.string().optional(),
+  spendingKey: z.string(),
+  nullifier: z.string().optional(),
+  change: ChangeSchema.optional()
 });
 
 type ShieldInput = z.infer<typeof ShieldInputSchema>;
@@ -116,6 +127,16 @@ function bigIntify(value: string | number | bigint): bigint {
 function fieldToHex(value: bigint): string {
   const hex = value.toString(16);
   return `0x${hex.padStart(64, '0')}`;
+}
+
+function parsePubkeyField(value: string): bigint {
+  try {
+    const key = new PublicKey(value);
+    const hex = Buffer.from(key.toBytes()).toString('hex');
+    return BigInt(`0x${hex}`);
+  } catch {
+    return bigIntify(value);
+  }
 }
 
 function poseidonValue(values: (string | number | bigint)[]): bigint {
@@ -176,23 +197,90 @@ function deriveTransferPublic(input: TransferInput) {
 }
 
 function deriveUnshieldPublic(input: UnshieldInput) {
-  const nullifierValue = poseidonValue([input.noteId, input.spendingKey]);
+  const nullifierValue = input.nullifier ? bigIntify(input.nullifier) : poseidonValue([input.noteId, input.spendingKey]);
   const nullifier = fieldToHex(nullifierValue);
-  const newRoot = poseidonHex([input.oldRoot, nullifierValue]);
+
+  const amount = bigIntify(input.amount);
+  const fee = bigIntify(input.fee);
+  const noteAmount = input.noteAmount ? bigIntify(input.noteAmount) : amount + fee;
+  let changeAmount = input.change?.amount ? bigIntify(input.change.amount) : noteAmount - (amount + fee);
+
+  if (changeAmount < 0n) {
+    throw new Error('change_amount_negative');
+  }
+
+  const hasChange = changeAmount > 0n;
+  const changeRecipient = input.change?.recipient;
+  const changeBlinding = input.change?.blinding;
+  const changeAmountBlinding = input.change?.amountBlinding;
+
+  if (hasChange) {
+    if (!changeRecipient) {
+      throw new Error('change_recipient_required');
+    }
+    if (!changeBlinding) {
+      throw new Error('change_blinding_required');
+    }
+    if (!changeAmountBlinding) {
+      throw new Error('change_amount_blinding_required');
+    }
+  }
+
+  const changeCommitmentValue = hasChange
+    ? poseidonValue([changeAmount, changeRecipient, input.mintId, input.poolId, changeBlinding])
+    : 0n;
+
+  const changeAmountCommitmentValue = hasChange
+    ? poseidonValue([changeAmount, changeAmountBlinding])
+    : 0n;
+
+  const newRoot = poseidonHex([input.oldRoot, nullifierValue, changeCommitmentValue, changeAmountCommitmentValue]);
+
+  const changeCommitment = fieldToHex(changeCommitmentValue);
+  const changeAmountCommitment = fieldToHex(changeAmountCommitmentValue);
+
+  const amountField = fieldToHex(amount);
+  const feeField = fieldToHex(fee);
+  const destField = fieldToHex(parsePubkeyField(input.destPubkey));
+  const modeField = fieldToHex(input.mode === 'origin' ? 0n : 1n);
+  const mintField = fieldToHex(parsePubkeyField(input.mintId));
+  const poolField = fieldToHex(parsePubkeyField(input.poolId));
+
   return {
     publicInputs: [
       input.oldRoot,
       newRoot,
       nullifier,
-      input.amount,
-      input.fee,
-      input.destPubkey,
-      input.mode === 'origin' ? '0' : '1',
-      input.mintId,
-      input.poolId
+      changeCommitment,
+      changeAmountCommitment,
+      amountField,
+      feeField,
+      destField,
+      modeField,
+      mintField,
+      poolField
     ],
     newRoot,
-    nullifiers: [nullifier]
+    nullifiers: [nullifier],
+    outputs: {
+      changeCommitment,
+      changeAmountCommitment,
+      changeAmount: fieldToHex(changeAmount),
+      noteAmount: fieldToHex(noteAmount)
+    },
+    payload: {
+      ...input,
+      noteAmount: noteAmount.toString(),
+      change: hasChange
+        ? {
+            ...(input.change ?? {}),
+            amount: changeAmount.toString(),
+            recipient: changeRecipient,
+            blinding: changeBlinding,
+            amountBlinding: changeAmountBlinding
+          }
+        : { amount: '0', recipient: '0', blinding: '0', amountBlinding: '0' }
+    }
   };
 }
 
@@ -414,7 +502,7 @@ async function generateProof(
       const payload = UnshieldInputSchema.parse(request.payload);
       const derived = deriveUnshieldPublic(payload);
       await validateAgainstIndexer(indexer, payload.mintId, payload.oldRoot, derived.nullifiers);
-      return produceProof(entry, request.circuit, payload, derived.publicInputs);
+      return produceProof(entry, request.circuit, derived.payload, derived.publicInputs);
     }
   }
 }

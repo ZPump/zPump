@@ -1,5 +1,6 @@
-import { render, screen } from '@testing-library/react';
+import { fireEvent, screen } from '@testing-library/react';
 import HomePage from '../app/page';
+import { renderWithProviders } from '../test-utils/renderWithProviders';
 
 jest.mock('@solana/wallet-adapter-react', () => ({
   useWallet: () => ({ connected: false, disconnect: jest.fn(), publicKey: { toBase58: () => '1111' } })
@@ -11,10 +12,11 @@ jest.mock('@solana/wallet-adapter-react-ui', () => ({
 
 describe('HomePage', () => {
   it('renders key landing content', () => {
-    render(<HomePage />);
+    renderWithProviders(<HomePage />);
 
-    expect(screen.getByText(/Wrap any SPL asset into zTokens/i)).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /Try the Wrapper/i })).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: /Exchange/i })).toBeInTheDocument();
+    expect(screen.getByText(/Convert any SPL asset into zTokens/i)).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: /Launch the Converter/i })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /Open navigation/i }));
+    expect(screen.getByRole('link', { name: /Vaults/i })).toBeInTheDocument();
   });
 });
