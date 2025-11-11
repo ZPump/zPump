@@ -21,7 +21,7 @@ import {
   useToast
 } from '@chakra-ui/react';
 import { Droplet } from 'lucide-react';
-import { FormEvent, useCallback, useEffect, useMemo, useState } from 'react';
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { LAMPORTS_PER_SOL, PublicKey } from '@solana/web3.js';
 import { useConnection, useWallet } from '@solana/wallet-adapter-react';
 import { MINTS } from '../../config/mints';
@@ -31,6 +31,7 @@ const SOL_FORMATTER = new Intl.NumberFormat(undefined, {
   maximumFractionDigits: 6
 });
 const EVENT_REFRESH_INTERVAL = 5_000;
+const FAUCET_STORAGE_KEY = 'zpump:faucet-events';
 
 interface SharedFaucetEvent {
   type: 'sol' | 'token';
@@ -66,6 +67,7 @@ function LocalFaucetDashboard() {
   const [isMinting, setMinting] = useBoolean(false);
   const [walletBalance, setWalletBalance] = useState<number | null>(null);
   const [sharedEvents, setSharedEvents] = useState<SharedFaucetEvent[]>([]);
+  const hasLoadedStoredEventsRef = useRef(false);
 
   useEffect(() => {
     if (!tokenMint && MINTS.length > 0) {
@@ -91,8 +93,74 @@ function LocalFaucetDashboard() {
   }, [refreshWalletBalance]);
 
   useEffect(() => {
-    refreshWalletBalance();
-  }, [sharedEvents, refreshWalletBalance]);
+    if (!wallet.publicKey) {
+      return;
+    }
+    const publicKey = wallet.publicKey;
+    let subscriptionId: number | null = null;
+
+    try {
+      subscriptionId = connection.onAccountChange(publicKey, () => {
+        void refreshWalletBalance();
+      });
+    } catch (error) {
+      console.error('Unable to subscribe to wallet balance updates', error);
+    }
+
+    return () => {
+      if (subscriptionId !== null) {
+        void connection.removeAccountChangeListener(subscriptionId);
+      }
+    };
+  }, [connection, wallet.publicKey, refreshWalletBalance]);
+
+  useEffect(() => {
+    if (hasLoadedStoredEventsRef.current) {
+      return;
+    }
+    if (typeof window === 'undefined') {
+      return;
+    }
+    try {
+      const raw = window.localStorage.getItem(FAUCET_STORAGE_KEY);
+      if (raw) {
+        const stored = JSON.parse(raw) as SharedFaucetEvent[];
+        setSharedEvents(stored);
+      }
+    } catch (error) {
+      console.warn('Unable to read cached faucet events', error);
+    } finally {
+      hasLoadedStoredEventsRef.current = true;
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!hasLoadedStoredEventsRef.current || typeof window === 'undefined') {
+      return;
+    }
+    try {
+      window.localStorage.setItem(FAUCET_STORAGE_KEY, JSON.stringify(sharedEvents));
+    } catch (error) {
+      console.warn('Unable to cache faucet events', error);
+    }
+  }, [sharedEvents]);
+
+  const eventsAreEqual = useCallback((a: SharedFaucetEvent[], b: SharedFaucetEvent[]) => {
+    if (a.length !== b.length) {
+      return false;
+    }
+    return a.every((event, index) => {
+      const other = b[index];
+      return (
+        event.signature === other.signature &&
+        event.timestamp === other.timestamp &&
+        event.recipient === other.recipient &&
+        event.amount === other.amount &&
+        event.mint === other.mint &&
+        event.type === other.type
+      );
+    });
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -104,12 +172,12 @@ function LocalFaucetDashboard() {
         }
         const payload = (await response.json()) as { events: SharedFaucetEvent[] };
         if (!cancelled) {
-          setSharedEvents(payload.events);
+          setSharedEvents((previous) =>
+            eventsAreEqual(previous, payload.events) ? previous : payload.events
+          );
         }
-      } catch {
-        if (!cancelled) {
-          setSharedEvents([]);
-        }
+      } catch (error) {
+        console.warn('Unable to fetch faucet events', error);
       }
     };
     fetchEvents();
@@ -118,7 +186,7 @@ function LocalFaucetDashboard() {
       cancelled = true;
       clearInterval(interval);
     };
-  }, []);
+  }, [eventsAreEqual]);
 
   const selectedMint = useMemo(
     () => MINTS.find((mint) => mint.originMint === tokenMint),
