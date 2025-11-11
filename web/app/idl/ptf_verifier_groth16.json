@@ -1,0 +1,319 @@
+{
+  "address": "Gm2KXvGhWrEeYERh3sxs1gwffMXeajVQXqY7CcBpm7Ua",
+  "metadata": {
+    "name": "ptf_verifier_groth16",
+    "version": "0.1.0",
+    "spec": "0.1.0"
+  },
+  "instructions": [
+    {
+      "name": "initialize_verifying_key",
+      "discriminator": [
+        201,
+        78,
+        71,
+        55,
+        112,
+        169,
+        95,
+        20
+      ],
+      "accounts": [
+        {
+          "name": "verifier_state",
+          "writable": true
+        },
+        {
+          "name": "authority",
+          "docs": [
+            "Governance or authority that owns this verifying key."
+          ],
+          "signer": true
+        },
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "circuit_tag",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        },
+        {
+          "name": "verifying_key_id",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        },
+        {
+          "name": "hash",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        },
+        {
+          "name": "version",
+          "type": "u8"
+        },
+        {
+          "name": "verifying_key_data",
+          "type": "bytes"
+        }
+      ]
+    },
+    {
+      "name": "verify_groth16",
+      "discriminator": [
+        228,
+        26,
+        135,
+        7,
+        19,
+        253,
+        172,
+        97
+      ],
+      "accounts": [
+        {
+          "name": "verifier_state"
+        }
+      ],
+      "args": [
+        {
+          "name": "verifying_key_id",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        },
+        {
+          "name": "proof",
+          "type": "bytes"
+        },
+        {
+          "name": "public_inputs",
+          "type": "bytes"
+        }
+      ]
+    }
+  ],
+  "accounts": [
+    {
+      "name": "VerifyingKeyAccount",
+      "discriminator": [
+        5,
+        54,
+        231,
+        84,
+        81,
+        70,
+        17,
+        168
+      ]
+    }
+  ],
+  "events": [
+    {
+      "name": "ProofVerified",
+      "discriminator": [
+        181,
+        54,
+        148,
+        211,
+        237,
+        73,
+        131,
+        232
+      ]
+    },
+    {
+      "name": "VerifyingKeyRegistered",
+      "discriminator": [
+        242,
+        151,
+        119,
+        138,
+        68,
+        46,
+        164,
+        205
+      ]
+    }
+  ],
+  "errors": [
+    {
+      "code": 6000,
+      "name": "InvalidProof",
+      "msg": "invalid proof"
+    },
+    {
+      "code": 6001,
+      "name": "HashMismatch",
+      "msg": "verifying key hash mismatch"
+    },
+    {
+      "code": 6002,
+      "name": "EmptyVerifyingKey",
+      "msg": "verifying key data must not be empty"
+    },
+    {
+      "code": 6003,
+      "name": "InvalidVerifyingKeyId",
+      "msg": "verifying key id must be provided"
+    }
+  ],
+  "types": [
+    {
+      "name": "ProofVerified",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "circuit_tag",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "verifying_key_id",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "version",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "VerifyingKeyAccount",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "authority",
+            "type": "pubkey"
+          },
+          {
+            "name": "circuit_tag",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "verifying_key_id",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          },
+          {
+            "name": "version",
+            "type": "u8"
+          },
+          {
+            "name": "verifying_key",
+            "type": "bytes"
+          }
+        ]
+      }
+    },
+    {
+      "name": "VerifyingKeyRegistered",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "authority",
+            "type": "pubkey"
+          },
+          {
+            "name": "circuit_tag",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "verifying_key_id",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "version",
+            "type": "u8"
+          }
+        ]
+      }
+    }
+  ]
+}

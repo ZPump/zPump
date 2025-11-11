@@ -1,0 +1,362 @@
+{
+  "address": "9g6ZodQwxK8MN6MX3dbvFC3E7vGVqFtKZEHY7PByRAuh",
+  "metadata": {
+    "name": "ptf_vault",
+    "version": "0.1.0",
+    "spec": "0.1.0"
+  },
+  "instructions": [
+    {
+      "name": "deposit",
+      "discriminator": [
+        242,
+        35,
+        198,
+        137,
+        82,
+        225,
+        242,
+        182
+      ],
+      "accounts": [
+        {
+          "name": "vault_state",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "vault_state.origin_mint",
+                "account": "VaultState"
+              }
+            ]
+          }
+        },
+        {
+          "name": "vault_token_account",
+          "writable": true
+        },
+        {
+          "name": "origin_mint"
+        },
+        {
+          "name": "depositor",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "depositor_token_account",
+          "writable": true
+        },
+        {
+          "name": "token_program"
+        }
+      ],
+      "args": [
+        {
+          "name": "amount",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "initialize_vault",
+      "discriminator": [
+        48,
+        191,
+        163,
+        44,
+        71,
+        129,
+        63,
+        164
+      ],
+      "accounts": [
+        {
+          "name": "vault_state",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "origin_mint"
+              }
+            ]
+          }
+        },
+        {
+          "name": "origin_mint"
+        },
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "pool_authority",
+          "type": "pubkey"
+        }
+      ]
+    },
+    {
+      "name": "release",
+      "discriminator": [
+        253,
+        249,
+        15,
+        206,
+        28,
+        127,
+        193,
+        241
+      ],
+      "accounts": [
+        {
+          "name": "vault_state",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "vault_state.origin_mint",
+                "account": "VaultState"
+              }
+            ]
+          }
+        },
+        {
+          "name": "vault_token_account",
+          "writable": true
+        },
+        {
+          "name": "destination_token_account",
+          "writable": true
+        },
+        {
+          "name": "pool_authority"
+        },
+        {
+          "name": "token_program"
+        }
+      ],
+      "args": [
+        {
+          "name": "amount",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "set_pool_authority",
+      "discriminator": [
+        34,
+        30,
+        182,
+        81,
+        149,
+        198,
+        62,
+        181
+      ],
+      "accounts": [
+        {
+          "name": "authority",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "vault_state",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "vault_state.origin_mint",
+                "account": "VaultState"
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "new_pool_authority",
+          "type": "pubkey"
+        }
+      ]
+    }
+  ],
+  "accounts": [
+    {
+      "name": "VaultState",
+      "discriminator": [
+        228,
+        196,
+        82,
+        165,
+        98,
+        210,
+        235,
+        152
+      ]
+    }
+  ],
+  "events": [
+    {
+      "name": "VaultDeposit",
+      "discriminator": [
+        4,
+        248,
+        234,
+        163,
+        99,
+        238,
+        140,
+        45
+      ]
+    },
+    {
+      "name": "VaultRelease",
+      "discriminator": [
+        69,
+        225,
+        105,
+        11,
+        123,
+        142,
+        69,
+        28
+      ]
+    }
+  ],
+  "errors": [
+    {
+      "code": 6000,
+      "name": "UnauthorizedCaller",
+      "msg": "E_UNAUTHORIZED_CALLER"
+    },
+    {
+      "code": 6001,
+      "name": "InvalidMint",
+      "msg": "E_INVALID_MINT"
+    },
+    {
+      "code": 6002,
+      "name": "InvalidDepositAmount",
+      "msg": "E_INVALID_DEPOSIT_AMOUNT"
+    },
+    {
+      "code": 6003,
+      "name": "InvalidReleaseAmount",
+      "msg": "E_INVALID_RELEASE_AMOUNT"
+    }
+  ],
+  "types": [
+    {
+      "name": "VaultDeposit",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "origin_mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "depositor",
+            "type": "pubkey"
+          },
+          {
+            "name": "amount",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "VaultRelease",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "origin_mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "destination",
+            "type": "pubkey"
+          },
+          {
+            "name": "amount",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "VaultState",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "origin_mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "pool_authority",
+            "type": "pubkey"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    }
+  ]
+}
