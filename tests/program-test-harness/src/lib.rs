@@ -280,9 +280,7 @@ mod tests {
             so_path.display()
         );
         if let Some(dir) = so_path.parent() {
-            let canonical = dir
-                .canonicalize()
-                .unwrap_or_else(|_| dir.to_path_buf());
+            let canonical = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
             env::set_var("BPF_OUT_DIR", &canonical);
             env::set_var("SBF_OUT_DIR", &canonical);
         }

@@ -1829,21 +1829,26 @@
     },
     {
       "code": 6028,
+      "name": "InvalidChangeNoteCount",
+      "msg": "E_INVALID_CHANGE_NOTE_COUNT"
+    },
+    {
+      "code": 6029,
       "name": "OutputSetMismatch",
       "msg": "E_OUTPUT_SET_MISMATCH"
     },
     {
-      "code": 6029,
+      "code": 6030,
       "name": "CanopyDepthInvalid",
       "msg": "E_CANOPY_DEPTH_INVALID"
     },
     {
-      "code": 6030,
+      "code": 6031,
       "name": "TreeFull",
       "msg": "E_TREE_FULL"
     },
     {
-      "code": 6031,
+      "code": 6032,
       "name": "RootMismatch",
       "msg": "E_ROOT_MISMATCH"
     }
