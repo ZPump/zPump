@@ -36,7 +36,7 @@ import { useConnection } from '@solana/wallet-adapter-react';
 import { LAMPORTS_PER_SOL, PublicKey } from '@solana/web3.js';
 import { TOKEN_PROGRAM_ID } from '@solana/spl-token';
 import { Coins, Copy, Plus, Trash2, Wallet } from 'lucide-react';
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useLocalWallet } from './LocalWalletContext';
 import { MINTS } from '../../config/mints';
 
@@ -69,6 +69,8 @@ export function WalletDrawerLauncher() {
   );
 }
 
+const BALANCE_REFRESH_INTERVAL = 10_000;
+
 function WalletDrawerContent({ disclosure }: { disclosure: ReturnType<typeof useDisclosure> }) {
   const toast = useToast();
   const { connection } = useConnection();
@@ -82,6 +84,7 @@ function WalletDrawerContent({ disclosure }: { disclosure: ReturnType<typeof use
   const [newLabel, setNewLabel] = useState('');
   const [importSecret, setImportSecret] = useState('');
   const [importLabel, setImportLabel] = useState('');
+  const refreshingRef = useRef(false);
 
   const mintMap = useMemo(() => {
     const map = new Map<string, { symbol: string; decimals: number }>();
@@ -89,14 +92,28 @@ function WalletDrawerContent({ disclosure }: { disclosure: ReturnType<typeof use
     return map;
   }, []);
 
-  useEffect(() => {
-    if (!disclosure.isOpen || !activeAccount) {
-      return;
-    }
-    const publicKey = new PublicKey(activeAccount.publicKey);
-    setLoadingBalances.on();
+  const refreshBalances = useCallback(
+    async (showSpinner: boolean) => {
+      if (refreshingRef.current) {
+        return;
+      }
+      refreshingRef.current = true;
 
-    (async () => {
+      if (!activeAccount) {
+        setBalances([]);
+        setSolBalance(0);
+        if (showSpinner) {
+          setLoadingBalances.off();
+        }
+        refreshingRef.current = false;
+        return;
+      }
+
+      const publicKey = new PublicKey(activeAccount.publicKey);
+      if (showSpinner) {
+        setLoadingBalances.on();
+      }
+
       try {
         const [lamports, tokenAccounts] = await Promise.all([
           connection.getBalance(publicKey),
@@ -125,16 +142,61 @@ function WalletDrawerContent({ disclosure }: { disclosure: ReturnType<typeof use
         setBalances(rows);
       } catch (error) {
         console.error(error);
-        toast({
-          title: 'Unable to load balances',
-          description: (error as Error).message,
-          status: 'error'
-        });
+        if (showSpinner) {
+          toast({
+            title: 'Unable to load balances',
+            description: (error as Error).message,
+            status: 'error'
+          });
+        }
       } finally {
-        setLoadingBalances.off();
+        if (showSpinner) {
+          setLoadingBalances.off();
+        }
+        refreshingRef.current = false;
       }
-    })();
-  }, [disclosure.isOpen, activeAccount, connection, mintMap, toast, setLoadingBalances]);
+    },
+    [activeAccount, connection, mintMap, setLoadingBalances, toast]
+  );
+
+  useEffect(() => {
+    if (!disclosure.isOpen) {
+      return;
+    }
+
+    let cancelled = false;
+    let subscriptionId: number | null = null;
+
+    const runRefresh = (showSpinner: boolean) => {
+      if (cancelled) {
+        return;
+      }
+      void refreshBalances(showSpinner);
+    };
+
+    runRefresh(true);
+
+    if (activeAccount) {
+      const publicKey = new PublicKey(activeAccount.publicKey);
+      try {
+        subscriptionId = connection.onAccountChange(publicKey, () => {
+          runRefresh(false);
+        });
+      } catch (error) {
+        console.error('Failed to subscribe to account changes', error);
+      }
+    }
+
+    const interval = setInterval(() => runRefresh(false), BALANCE_REFRESH_INTERVAL);
+
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+      if (subscriptionId !== null) {
+        void connection.removeAccountChangeListener(subscriptionId);
+      }
+    };
+  }, [disclosure.isOpen, activeAccount, connection, refreshBalances]);
 
   const handleCreateAccount = () => {
     createAccount(newLabel.trim() || undefined);
