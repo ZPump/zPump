@@ -1,10 +1,10 @@
-'use client';
-
 import { Metadata } from 'next';
+import { ReactNode } from 'react';
 import {
   Box,
   Code,
   Divider,
+  Flex,
   Heading,
   ListItem,
   OrderedList,
@@ -12,6 +12,7 @@ import {
   Text,
   UnorderedList
 } from '@chakra-ui/react';
+import { ArrowRight, ArrowDown } from 'lucide-react';
 import { PageContainer } from '../../components/PageContainer';
 
 export const metadata: Metadata = {
@@ -19,18 +20,41 @@ export const metadata: Metadata = {
   description: 'A practical walkthrough of how the zPump protocol works on Solana.'
 };
 
-function Section({
-  title,
-  children
-}: {
-  title: string;
-  children: React.ReactNode;
-}) {
+function Section({ title, children }: { title: string; children: ReactNode }) {
   return (
     <Stack spacing={4}>
       <Heading size="lg">{title}</Heading>
       {children}
     </Stack>
+  );
+}
+
+function DiagramNode({ title, body }: { title: string; body: string }) {
+  return (
+    <Box
+      minW={{ base: '200px', md: '220px' }}
+      bg="rgba(12,18,38,0.9)"
+      border="1px solid rgba(59,205,255,0.25)"
+      rounded="2xl"
+      p={4}
+      textAlign="center"
+      boxShadow="0 0 20px rgba(59,205,255,0.18)"
+    >
+      <Heading size="sm" mb={2}>
+        {title}
+      </Heading>
+      <Text fontSize="sm" color="whiteAlpha.700">
+        {body}
+      </Text>
+    </Box>
+  );
+}
+
+function DiagramArrow({ vertical = false }: { vertical?: boolean }) {
+  return (
+    <Flex align="center" justify="center">
+      {vertical ? <ArrowDown size={24} /> : <ArrowRight size={24} />}
+    </Flex>
   );
 }
 
@@ -44,30 +68,31 @@ export default function WhitepaperPage() {
           </Text>
           <Heading size="2xl">zPump on Solana</Heading>
           <Heading size="md" fontWeight="medium" color="whiteAlpha.700">
-            What this is: a clear, practical guide to how the protocol works and why it matters—simple enough for a first-year
-            CS student, detailed enough to build from.
+            A practical guide to what zPump does, why it exists, and how you can build with it—no cryptography PhD required.
           </Heading>
         </Stack>
 
-        <Section title="1) One-Paragraph Summary">
+        <Section title="At a Glance">
           <Text>
-            zPump adds a private mode to any existing Solana token. You deposit the public token into a program-controlled Vault
-            and receive a private balance inside a Shielded Pool. Inside the pool, value moves with zero-knowledge proofs so
-            outsiders cannot see who sent what or how much. When you are ready to go public, you unshield back to the origin
-            mint—or, if enabled, to a public twin token that stays backed 1:1 by the Vault. The MVP ships without a relayer,
-            but clean hooks make it easy to plug one in later without breaking anything.
+            zPump lets any Solana token slip into a private mode without inventing a new coin. You deposit the public token into
+            a program-controlled vault and receive a private note in the shielded pool. Inside the pool, movements are proven
+            with zero-knowledge proofs so observers can’t learn who sent what. When you want to go public again, you unshield
+            back to the original mint—or, if governance enables it, to a public twin that always stays 1:1 backed by the vault.
+            The first release ships without a relayer, but the hooks are wired in so one can be enabled later without rewiring
+            the protocol.
           </Text>
         </Section>
 
-        <Section title="2) Why It Matters">
+        <Section title="Why It Matters">
           <Text>
-            Public blockchains are fantastic for auditability but terrible for privacy: salaries, supplier prices, donations,
-            and strategy leaks are trivial to trace. zPump gives users and businesses a choice—move privately when needed, go
-            public when convenient. No new chain, no new coin: it is a privacy room tacked onto the tokens you already use.
+            Solana is fantastic for openness and auditability—but that also exposes salaries, supplier deals, and strategic
+            moves to the world. zPump gives people the choice to move privately when they need to, and to step back into public
+            markets when they are ready. It is not a new chain or a wrapped token ecosystem; it is a privacy room connected to
+            the assets you already use.
           </Text>
         </Section>
 
-        <Section title="3) High-Level Architecture">
+        <Section title="How zPump Is Put Together">
           <Text fontWeight="semibold">On-chain programs:</Text>
           <UnorderedList spacing={2}>
             <ListItem>
@@ -116,27 +141,38 @@ export default function WhitepaperPage() {
               Disabled in MVP, but hook targets are reserved.
             </ListItem>
           </UnorderedList>
-          <Box
-            as="pre"
-            fontSize="sm"
-            border="1px solid rgba(255,255,255,0.1)"
-            rounded="lg"
-            p={4}
-            bg="rgba(10,14,30,0.85)"
-            whiteSpace="pre-wrap"
-          >
-            {`flowchart LR
-U[User Wallet] -->|Shield (deposit origin token M)| V[Vault(M)]
-V -->|Create private note| S[Shielded Pool S(M)]
-S -->|Private transfers (optional)| S
-S -->|Unshield -> Origin (M)| U
-S -->|Unshield -> P(M) (optional)| U
-S -. post_shield_hook .-> H1[[Hook Target (future relayer)]]
-S -. post_unshield_hook .-> H2[[Hook Target (future relayer)]]`}
-          </Box>
+          <Stack spacing={6} mt={6}>
+            <Heading size="md">Flow at a glance</Heading>
+            <Stack spacing={8} align="center">
+              <Stack
+                direction={{ base: 'column', md: 'row' }}
+                spacing={4}
+                align="center"
+                justify="center"
+                w="100%"
+              >
+                <DiagramNode title="User Wallet" body="Holds the public token and triggers shield/unshield actions." />
+                <DiagramArrow />
+                <DiagramNode
+                  title="Vault"
+                  body="Program-owned account that escrows origin tokens while they are private."
+                />
+                <DiagramArrow />
+                <DiagramNode
+                  title="Shielded Pool"
+                  body="Maintains commitments, nullifiers, and Merkle roots; verifies zero-knowledge proofs."
+                />
+                <DiagramArrow />
+                <DiagramNode
+                  title="Wallet (public again)"
+                  body="Receives the original token or—if enabled—a public version that stays 1:1 backed in the vault."
+                />
+              </Stack>
+            </Stack>
+          </Stack>
         </Section>
 
-        <Section title="4) Core Ideas">
+        <Section title="Core Concepts">
           <UnorderedList spacing={2}>
             <ListItem>
               <Text as="span" fontWeight="semibold">
@@ -165,7 +201,7 @@ S -. post_unshield_hook .-> H2[[Hook Target (future relayer)]]`}
           </UnorderedList>
         </Section>
 
-        <Section title="5) Privacy Model">
+        <Section title="What Stays Private (and What Doesn’t)">
           <UnorderedList spacing={2}>
             <ListItem>Inside the pool: sender, receiver, and amount are hidden.</ListItem>
             <ListItem>Edges remain public by design: shield and unshield events show token, amount, and wallet.</ListItem>
@@ -174,36 +210,36 @@ S -. post_unshield_hook .-> H2[[Hook Target (future relayer)]]`}
           </UnorderedList>
         </Section>
 
-        <Section title="6) Minimum Math">
+        <Section title="The Lightest Possible Math">
           <Text>
             zPump relies on Poseidon hashing, Groth16 proofs over BN254, and a depth-32 Merkle tree. A nullifier guarantees
             each note spends once; a commitment is the cryptographic envelope for value plus recipient key plus randomness.
           </Text>
         </Section>
 
-        <Section title="7) User Flows">
-          <Heading size="md">7.1 Shield (Public → Private)</Heading>
+        <Section title="User Flows">
+          <Heading size="md">Shield (public → private)</Heading>
           <OrderedList spacing={2} pl={4}>
             <ListItem>Pick origin mint M and an amount.</ListItem>
             <ListItem>Wallet sends M to Vault(M).</ListItem>
             <ListItem>App builds a shield proof; the pool verifies it and records the private note.</ListItem>
           </OrderedList>
 
-          <Heading size="md">7.2 Private Transfer (optional in MVP)</Heading>
+          <Heading size="md">Private transfer (optional in MVP)</Heading>
           <OrderedList spacing={2} pl={4}>
             <ListItem>Select notes to spend and recipients for new notes.</ListItem>
             <ListItem>Generate a transfer proof showing inputs exist, are unspent, and totals balance.</ListItem>
             <ListItem>Pool verifies, records new notes, and marks old ones spent via nullifiers.</ListItem>
           </OrderedList>
 
-          <Heading size="md">7.3 Unshield (Private → Public)</Heading>
+          <Heading size="md">Unshield (private → public)</Heading>
           <UnorderedList spacing={2}>
             <ListItem>To Origin: prove ownership of notes; pool instructs Vault to release M (minus fees).</ListItem>
             <ListItem>To Twin: receive P(M) 1:1 in the public wallet for open trading.</ListItem>
           </UnorderedList>
         </Section>
 
-        <Section title="8) Decisions Already Made">
+        <Section title="Design Choices Already Locked In">
           <UnorderedList spacing={2}>
             <ListItem>Proof system: Groth16 on BN254.</ListItem>
             <ListItem>Hashing: Poseidon; Merkle depth 32.</ListItem>
@@ -214,7 +250,7 @@ S -. post_unshield_hook .-> H2[[Hook Target (future relayer)]]`}
           </UnorderedList>
         </Section>
 
-        <Section title="9) Build Map for Developers">
+        <Section title="Build Map for Developers">
           <UnorderedList spacing={2}>
             <ListItem>Factory program: map origin mints, hold twin mint authority, manage config.</ListItem>
             <ListItem>Vault program: custody and controlled release of origin tokens.</ListItem>
@@ -236,7 +272,7 @@ scanNotes(connection, viewKey, originMint?)`}
           </Box>
         </Section>
 
-        <Section title="10) Safety & Governance">
+        <Section title="Safety Rails & Governance">
           <UnorderedList spacing={2}>
             <ListItem>Invariant must hold every exit; otherwise the transaction aborts.</ListItem>
             <ListItem>Nullifiers prevent double spends.</ListItem>
@@ -246,7 +282,7 @@ scanNotes(connection, viewKey, originMint?)`}
           </UnorderedList>
         </Section>
 
-        <Section title="11) What It Does Not Do">
+        <Section title="What zPump Doesn’t Solve (Yet)">
           <UnorderedList spacing={2}>
             <ListItem>No invisibility outside the pool—public activity stays public.</ListItem>
             <ListItem>No supply magic—every private unit is backed by Vault tokens.</ListItem>
@@ -254,7 +290,7 @@ scanNotes(connection, viewKey, originMint?)`}
           </UnorderedList>
         </Section>
 
-        <Section title="12) Roadmap">
+        <Section title="Roadmap">
           <OrderedList spacing={2} pl={4}>
             <ListItem>MVP: shield/unshield (origin and optional twin); private transfers gated by feature flag.</ListItem>
             <ListItem>Post-MVP: enable private transfers by default, faster proving, better wallet UX.</ListItem>
@@ -265,7 +301,7 @@ scanNotes(connection, viewKey, originMint?)`}
           </OrderedList>
         </Section>
 
-        <Section title="13) Glossary">
+        <Section title="Glossary">
           <UnorderedList spacing={2}>
             <ListItem>ATA (Associated Token Account): standard SPL token account per wallet.</ListItem>
             <ListItem>Commitment: sealed value of a note.</ListItem>
@@ -276,7 +312,7 @@ scanNotes(connection, viewKey, originMint?)`}
           </UnorderedList>
         </Section>
 
-        <Section title="14) Reference Details">
+        <Section title="Reference Details">
           <Text fontWeight="semibold">Key PDA seeds:</Text>
           <Box as="pre" fontSize="sm" bg="rgba(10,14,30,0.85)" p={4} rounded="lg" border="1px solid rgba(255,255,255,0.1)">
             {`FactoryState: ["factory", <factory_program_id>]
@@ -298,10 +334,10 @@ NullifierSet: ["nulls", <origin_mint>]`}
           </UnorderedList>
           <Text fontWeight="semibold">Events emitted:</Text>
           <UnorderedList spacing={2}>
-            <ListItem>Shielded {{'{'}}mint,depositor,commitment,root,amount_commit{{'}'}}</ListItem>
-            <ListItem>Transferred {{'{'}}mint,nullifiers:[...],commitments:[...],root{{'}'}}</ListItem>
-            <ListItem>UnshieldOrigin {{'{'}}mint,dest,amount,fee{{'}'}}</ListItem>
-            <ListItem>UnshieldTwin {{'{'}}mint,dest,amount,fee{{'}'}}</ListItem>
+            <ListItem>{'Shielded {mint,depositor,commitment,root,amount_commit}'}</ListItem>
+            <ListItem>{'Transferred {mint,nullifiers:[...],commitments:[...],root}'}</ListItem>
+            <ListItem>{'UnshieldOrigin {mint,dest,amount,fee}'}</ListItem>
+            <ListItem>{'UnshieldTwin {mint,dest,amount,fee}'}</ListItem>
           </UnorderedList>
           <Text fontWeight="semibold">Default parameters:</Text>
           <UnorderedList spacing={2}>
@@ -313,11 +349,12 @@ NullifierSet: ["nulls", <origin_mint>]`}
           </UnorderedList>
         </Section>
 
-        <Section title="15) Closing Thought">
+        <Section title="Closing Thought">
           <Text>
-            Think of zPump as a privacy add-on for the tokens you already hold. The public chain stays public, but you get a
-            private room when you need one—without inventing a new currency or trusting a middleman. The first release stays
-            conservative, yet the design is future-proofed to grow with Solana.
+            Think of zPump as a privacy side room connected to the tokens you already own. The public chain stays public, but
+            you can step into a quieter space when you need it—without creating a new currency or trusting a middleman. The
+            launch version keeps things conservative, yet the architecture is ready for faster proofs, relayers, and deeper
+            integrations as the ecosystem matures.
           </Text>
         </Section>
 

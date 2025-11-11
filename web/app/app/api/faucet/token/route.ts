@@ -1,10 +1,7 @@
 import { NextResponse } from 'next/server';
 import { PublicKey } from '@solana/web3.js';
-import {
-  assertFaucetEnabled,
-  createFaucetConnection,
-  mintTokensToOwner
-} from '../../../../lib/server/faucet';
+import { assertFaucetEnabled, createFaucetConnection, mintTokensToOwner } from '../../../../lib/server/faucet';
+import { appendFaucetEvent } from '../../../../lib/server/faucetLog';
 
 interface TokenRequestPayload {
   recipient?: string;
@@ -51,6 +48,14 @@ export async function POST(request: Request) {
       new PublicKey(payload.mint),
       amount
     );
+    await appendFaucetEvent({
+      type: 'token',
+      signature,
+      amount: amount.toString(),
+      mint: payload.mint,
+      recipient: payload.recipient,
+      timestamp: Date.now()
+    });
     return NextResponse.json({ signature });
   } catch (error) {
     return NextResponse.json(
