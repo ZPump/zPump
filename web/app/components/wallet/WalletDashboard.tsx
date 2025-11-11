@@ -39,6 +39,7 @@ import {
   useClipboard,
   useToast
 } from '@chakra-ui/react';
+import { chakra } from '@chakra-ui/react';
 import { Plus, Copy, Download, Wallet, MoreHorizontal, Send } from 'lucide-react';
 import { FormEvent, useMemo, useState } from 'react';
 import { useSimulation } from '../../hooks/useSimulation';
@@ -403,16 +404,15 @@ function SendForm() {
   };
 
   return (
-    <Stack
-      as="form"
-      spacing={4}
-      onSubmit={handleSubmit}
-      bg="rgba(10, 14, 30, 0.85)"
-      border="1px solid rgba(59,205,255,0.25)"
-      rounded="3xl"
-      p={{ base: 6, md: 8 }}
-      boxShadow="0 0 35px rgba(59,205,255,0.2)"
-    >
+    <chakra.form onSubmit={handleSubmit}>
+      <Stack
+        spacing={4}
+        bg="rgba(10, 14, 30, 0.85)"
+        border="1px solid rgba(59,205,255,0.25)"
+        rounded="3xl"
+        p={{ base: 6, md: 8 }}
+        boxShadow="0 0 35px rgba(59,205,255,0.2)"
+      >
       <Heading size="md">Send tokens (simulation)</Heading>
       <FormControl>
         <FormLabel color="whiteAlpha.700">Token</FormLabel>
@@ -440,10 +440,11 @@ function SendForm() {
         <FormLabel color="whiteAlpha.700">Memo (optional)</FormLabel>
         <Input value={memo} onChange={(event) => setMemo(event.target.value)} />
       </FormControl>
-      <Button type="submit" isLoading={isSubmitting} leftIcon={<Send size={16} />}>
-        Simulate transfer
-      </Button>
-    </Stack>
+        <Button type="submit" isLoading={isSubmitting} leftIcon={<Send size={16} />}>
+          Simulate transfer
+        </Button>
+      </Stack>
+    </chakra.form>
   );
 }
 
