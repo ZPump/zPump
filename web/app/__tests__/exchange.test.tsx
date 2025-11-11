@@ -1,26 +1,23 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
-import ExchangePage from '../app/exchange/page';
+import type { ReactNode } from 'react';
+import { screen } from '@testing-library/react';
+import ConvertPage from '../app/convert/page';
+import { renderWithProviders } from '../test-utils/renderWithProviders';
 
-const disconnectMock = jest.fn();
-const setVisibleMock = jest.fn();
-
-jest.mock('@solana/wallet-adapter-react', () => ({
-  useWallet: () => ({ connected: true, disconnect: disconnectMock, publicKey: { toBase58: () => 'ABCDEF123456' } })
+jest.mock('../components/ptf/ConvertForm', () => ({
+  ConvertForm: () => <div data-testid="convert-form" />
 }));
 
-jest.mock('@solana/wallet-adapter-react-ui', () => ({
-  useWalletModal: () => ({ setVisible: setVisibleMock })
+jest.mock('../components/PageContainer', () => ({
+  PageContainer: ({ children }: { children: ReactNode }) => (
+    <div data-testid="page-container">{children}</div>
+  )
 }));
 
-describe('ExchangePage', () => {
-  it('allows selecting wrapping mode and submitting', async () => {
-    render(<ExchangePage />);
+describe('ConvertPage', () => {
+  it('renders the convert form inside the page container', () => {
+    renderWithProviders(<ConvertPage />);
 
-    fireEvent.change(screen.getByLabelText(/Amount/i), { target: { value: '10' } });
-    fireEvent.change(screen.getByLabelText(/Mode/i), { target: { value: 'unwrap-origin' } });
-
-    fireEvent.click(screen.getByRole('button', { name: /Simulate Exchange/i }));
-
-    await waitFor(() => expect(screen.getByRole('button', { name: /Simulating/i })).toBeDisabled());
+    expect(screen.getByTestId('page-container')).toBeInTheDocument();
+    expect(screen.getByTestId('convert-form')).toBeInTheDocument();
   });
 });

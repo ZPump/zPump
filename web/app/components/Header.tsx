@@ -40,6 +40,9 @@ export function Header() {
           <Link as={NextLink} href="/faucet" _hover={{ color: 'brand.200' }}>
             Faucet
           </Link>
+          <Link as={NextLink} href="/vault" _hover={{ color: 'brand.200' }}>
+            Vaults
+          </Link>
         </HStack>
         <HStack spacing={4}>
           <ConnectWalletButton />
@@ -65,6 +68,9 @@ export function Header() {
           </Link>
           <Link as={NextLink} href="/faucet" _hover={{ color: 'brand.200' }}>
             Faucet
+          </Link>
+          <Link as={NextLink} href="/vault" _hover={{ color: 'brand.200' }}>
+            Vaults
           </Link>
         </Flex>
       )}
