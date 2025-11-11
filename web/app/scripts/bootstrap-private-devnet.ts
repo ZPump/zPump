@@ -4,6 +4,7 @@ import path from 'path';
 import { keccak_256 } from 'js-sha3';
 import {
   Connection,
+  ComputeBudgetProgram,
   Keypair,
   PublicKey,
   SystemProgram,
@@ -20,6 +21,7 @@ import {
   createInitializeMintInstruction,
   createMintToInstruction,
   getAssociatedTokenAddress,
+  TOKEN_2022_PROGRAM_ID,
   TOKEN_PROGRAM_ID
 } from '@solana/spl-token';
 import { AnchorProvider, BN, BorshCoder, Idl, Wallet } from '@coral-xyz/anchor';
@@ -136,7 +138,9 @@ async function sendInstruction(
   programId: PublicKey,
   name: string,
   accounts: Record<string, PublicKey>,
-  args: Record<string, unknown> = {}
+  args: Record<string, unknown> = {},
+  extraSigners: Keypair[] = [],
+  preInstructions: TransactionInstruction[] = []
 ) {
   const ixDef = idl.instructions?.find((item) => item.name === name);
   if (!ixDef) {
@@ -144,7 +148,11 @@ async function sendInstruction(
   }
   const data = coder.instruction.encode(name, args);
   const keys = buildAccountMetas(ixDef, accounts);
-  await sendAndConfirm(ctx, [new TransactionInstruction({ programId, keys, data })]);
+  const instructions = [
+    ...preInstructions,
+    new TransactionInstruction({ programId, keys, data })
+  ];
+  return sendAndConfirm(ctx, instructions, extraSigners);
 }
 
 async function sendAndConfirm(
@@ -202,11 +210,32 @@ async function ensureAta(
   return address;
 }
 
+async function waitForAccount(
+  connection: Connection,
+  pubkey: PublicKey,
+  label: string,
+  retries = 12,
+  delayMs = 500
+): Promise<void> {
+  for (let attempt = 0; attempt < retries; attempt++) {
+    const info = await connection.getAccountInfo(pubkey);
+    if (info) {
+      if (attempt > 0) {
+        console.log(`${label} available after ${attempt + 1} attempts (${pubkey.toBase58()})`);
+      }
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, delayMs));
+  }
+  throw new Error(`${label} (${pubkey.toBase58()}) missing after initialization attempts`);
+}
+
 async function createMintAccount(
   ctx: BootstrapContext,
   decimals: number,
   mintAuthority: PublicKey,
-  freezeAuthority: PublicKey
+  freezeAuthority: PublicKey,
+  programId: PublicKey = TOKEN_PROGRAM_ID
 ): Promise<Keypair> {
   const mint = Keypair.generate();
   const lamports = await ctx.provider.connection.getMinimumBalanceForRentExemption(MINT_SIZE);
@@ -215,14 +244,14 @@ async function createMintAccount(
     newAccountPubkey: mint.publicKey,
     space: MINT_SIZE,
     lamports,
-    programId: TOKEN_PROGRAM_ID
+    programId
   });
   const initMintIx = createInitializeMintInstruction(
     mint.publicKey,
     decimals,
     mintAuthority,
     freezeAuthority,
-    TOKEN_PROGRAM_ID
+    programId
   );
   await sendAndConfirm(ctx, [createAccountIx, initMintIx], [mint]);
   return mint;
@@ -369,61 +398,84 @@ async function ensureMint(
     PROGRAM_IDS.pool
   )[0];
 
+  let ptknMintForConfig: PublicKey | null = null;
+
   if (!(await connection.getAccountInfo(mintMapping))) {
-    await sendInstruction(
-      ctx,
-      ctx.idls.factory,
-      ctx.coders.factory,
-      PROGRAM_IDS.factory,
-    'register_mint',
-    {
+    const enablePtkn = true;
+    const ptknMintKeypair = enablePtkn ? Keypair.generate() : null;
+
+    const registerAccounts: Record<string, PublicKey> = {
       factory_state: factoryState,
       authority: ctx.payer.publicKey,
       mint_mapping: mintMapping,
       origin_mint: originMintKey,
       payer: ctx.payer.publicKey,
-      token_program: TOKEN_PROGRAM_ID,
       rent: SYSVAR_RENT_PUBKEY,
-      system_program: SystemProgram.programId
-    },
+      system_program: SystemProgram.programId,
+      token_program: TOKEN_2022_PROGRAM_ID
+    };
+
+    if (enablePtkn && ptknMintKeypair) {
+      registerAccounts.ptkn_mint = ptknMintKeypair.publicKey;
+    }
+
+    const signature = await sendInstruction(
+      ctx,
+      ctx.idls.factory,
+      ctx.coders.factory,
+      PROGRAM_IDS.factory,
+      'register_mint',
+      registerAccounts,
       {
         decimals: mintConfig.decimals,
-      enable_ptkn: false,
-      feature_flags: null,
-      fee_bps_override: null
-      }
+        enable_ptkn: enablePtkn,
+        feature_flags: null,
+        fee_bps_override: null
+      },
+      ptknMintKeypair ? [ptknMintKeypair] : []
     );
-    console.log(`Registered mint mapping for ${mintConfig.symbol}`);
+    console.log(`Registered mint mapping for ${mintConfig.symbol} (tx ${signature})`);
+    await waitForAccount(connection, mintMapping, `Mint mapping for ${mintConfig.symbol}`);
+    if (ptknMintKeypair) {
+      ptknMintForConfig = ptknMintKeypair.publicKey;
+    }
   }
 
   if (!(await connection.getAccountInfo(vaultState))) {
-    await sendInstruction(
+    const signature = await sendInstruction(
       ctx,
       ctx.idls.vault,
       ctx.coders.vault,
       PROGRAM_IDS.vault,
-    'initialize_vault',
+      'initialize_vault',
       {
-      vault_state: vaultState,
-      origin_mint: originMintKey,
+        vault_state: vaultState,
+        origin_mint: originMintKey,
         payer: ctx.payer.publicKey,
-      system_program: SystemProgram.programId
+        system_program: SystemProgram.programId
       },
-      { poolAuthority: poolState }
+      { pool_authority: poolState }
     );
-    console.log(`Initialised vault state ${vaultState.toBase58()}`);
+    console.log(`Initialised vault state ${vaultState.toBase58()} (tx ${signature})`);
+    await waitForAccount(connection, vaultState, `Vault state for ${mintConfig.symbol}`);
   }
 
   await ensureAta(ctx, originMintKey, vaultState, true);
 
+  const mintMappingInfo = await connection.getAccountInfo(mintMapping);
+  if (!mintMappingInfo) {
+    throw new Error(`Mint mapping account missing after registration for ${mintConfig.symbol}`);
+  }
+  const decodedMintMapping = ctx.coders.factory.accounts.decode('MintMapping', mintMappingInfo.data) as {
+    ptkn_mint: Uint8Array;
+    has_ptkn: boolean;
+    features: { bits?: number } | number;
+  };
+
+  const twinMintKey = decodedMintMapping.has_ptkn ? new PublicKey(decodedMintMapping.ptkn_mint) : null;
+
   if (!(await connection.getAccountInfo(poolState))) {
-    await sendInstruction(
-      ctx,
-      ctx.idls.pool,
-      ctx.coders.pool,
-      PROGRAM_IDS.pool,
-    'initialize_pool',
-    {
+    const poolAccounts: Record<string, PublicKey> = {
       authority: ctx.payer.publicKey,
       pool_state: poolState,
       nullifier_set: nullifierSet,
@@ -438,23 +490,51 @@ async function ensureMint(
       verifying_key: verifyingKey.verifierState,
       payer: ctx.payer.publicKey,
       system_program: SystemProgram.programId,
-      token_program: TOKEN_PROGRAM_ID
-    },
+      token_program: TOKEN_2022_PROGRAM_ID
+    };
+    if (twinMintKey) {
+      poolAccounts.twin_mint = twinMintKey;
+    }
+
+    const computeBudgetIxs = [
+      ComputeBudgetProgram.setComputeUnitLimit({ units: 1_400_000 }),
+      ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 1 })
+    ];
+
+    const signature = await sendInstruction(
+      ctx,
+      ctx.idls.pool,
+      ctx.coders.pool,
+      PROGRAM_IDS.pool,
+      'initialize_pool',
+      poolAccounts,
       {
-      fee_bps: new BN(5),
+        fee_bps: new BN(5),
         features: 0
-      }
+      },
+      [],
+      computeBudgetIxs
     );
-    console.log(`Initialised pool state ${poolState.toBase58()}`);
+    console.log(`Initialised pool state ${poolState.toBase58()} (tx ${signature})`);
+    await waitForAccount(connection, poolState, `Pool state for ${mintConfig.symbol}`);
+    await waitForAccount(connection, nullifierSet, `Nullifier set for ${mintConfig.symbol}`);
+    await waitForAccount(connection, noteLedger, `Note ledger for ${mintConfig.symbol}`);
+    await waitForAccount(connection, commitmentTree, `Commitment tree for ${mintConfig.symbol}`);
+    await waitForAccount(connection, hookConfig, `Hook config for ${mintConfig.symbol}`);
   }
+
+  const resolvedPtknMint = ptknMintForConfig ?? twinMintKey;
 
   return {
     symbol: mintConfig.symbol,
     decimals: mintConfig.decimals,
     originMint: originMintKey.toBase58(),
     poolId: poolState.toBase58(),
-    zTokenMint: null,
-    features: mintConfig.features
+    zTokenMint: resolvedPtknMint ? resolvedPtknMint.toBase58() : null,
+    features: {
+      ...mintConfig.features,
+      zTokenEnabled: decodedMintMapping.has_ptkn
+    }
   };
 }
 
