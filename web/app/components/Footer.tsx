@@ -18,7 +18,7 @@ export function Footer() {
         </Link>
       </HStack>
       <Text fontSize="xs" color="whiteAlpha.500">
-        © {new Date().getFullYear()} zPump. Built so wrapped liquidity moves with zero-knowledge confidence.
+        © {new Date().getFullYear()} zPump. Built so converted liquidity moves with zero-knowledge confidence.
       </Text>
     </Stack>
   );

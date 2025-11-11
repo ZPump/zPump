@@ -5,9 +5,9 @@ import { LinkIcon, LockIcon, RadarIcon } from 'lucide-react';
 
 const featureList = [
   {
-    title: 'Wrap with certainty',
+    title: 'Convert with certainty',
     description:
-      'zPump vault custody and zero-knowledge commitments enforce the wrap invariant. Every conversion is provable and auditable.',
+      'zPump vault custody and zero-knowledge commitments enforce the invariant. Every conversion is provable and auditable.',
     icon: LockIcon
   },
   {
@@ -19,7 +19,7 @@ const featureList = [
   {
     title: 'Frictionless UX',
     description:
-      'Client-side proving, WebGPU acceleration, and a calming interface make zero-knowledge wrapping feel invisible to the user.',
+      'Client-side proving, WebGPU acceleration, and a calming interface make zero-knowledge conversions feel invisible to the user.',
     icon: RadarIcon
   }
 ];
@@ -28,7 +28,7 @@ export function Features() {
   return (
     <Stack id="vision" spacing={16} px={{ base: 4, md: 10 }} py={{ base: 12, md: 20 }}>
       <Stack spacing={4} maxW="xl">
-        <Heading size="2xl">Zero-knowledge wrapping that feels native.</Heading>
+        <Heading size="2xl">Zero-knowledge conversions that feel native.</Heading>
         <Text fontSize="lg" color="whiteAlpha.700">
           zPump transforms any SPL mint into a wrapped zToken flow. Vaults, pools, and future relayers are already aligned.
         </Text>

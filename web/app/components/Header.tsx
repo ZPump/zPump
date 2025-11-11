@@ -31,14 +31,11 @@ export function Header() {
           <Link as={NextLink} href="/" _hover={{ color: 'brand.200' }}>
             Home
           </Link>
+          <Link as={NextLink} href="/convert" _hover={{ color: 'brand.200' }}>
+            Convert
+          </Link>
           <Link as={NextLink} href="/exchange" _hover={{ color: 'brand.200' }}>
-            Exchange
-          </Link>
-          <Link as={NextLink} href="/wrap" _hover={{ color: 'brand.200' }}>
-            Wrap
-          </Link>
-          <Link as={NextLink} href="/unwrap" _hover={{ color: 'brand.200' }}>
-            Unwrap
+            Preview
           </Link>
           <Button as={NextLink} href="#vision" variant="outline">
             Vision
@@ -60,14 +57,11 @@ export function Header() {
           <Link as={NextLink} href="/" _hover={{ color: 'brand.200' }}>
             Home
           </Link>
+          <Link as={NextLink} href="/convert" _hover={{ color: 'brand.200' }}>
+            Convert
+          </Link>
           <Link as={NextLink} href="/exchange" _hover={{ color: 'brand.200' }}>
-            Exchange
-          </Link>
-          <Link as={NextLink} href="/wrap" _hover={{ color: 'brand.200' }}>
-            Wrap
-          </Link>
-          <Link as={NextLink} href="/unwrap" _hover={{ color: 'brand.200' }}>
-            Unwrap
+            Preview
           </Link>
           <Link as={NextLink} href="#vision" _hover={{ color: 'brand.200' }}>
             Vision

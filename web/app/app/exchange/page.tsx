@@ -14,9 +14,9 @@ export default function ExchangePage() {
       <Header />
       <Stack spacing={12} px={{ base: 4, md: 10 }} py={{ base: 12, md: 20 }}>
         <Stack spacing={3} maxW="2xl">
-          <Heading size="3xl">Preview the zPump wrapping flow.</Heading>
+          <Heading size="3xl">Preview the zPump conversion flow.</Heading>
           <Text fontSize="lg" color="whiteAlpha.700">
-            Simulate how wrapping and unwrapping will feel when the on-chain programs go live. Plug in program IDs later
+            Simulate how shielding and redeeming will feel when the on-chain programs go live. Plug in program IDs later
             without touching the interface.
           </Text>
         </Stack>
