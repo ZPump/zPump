@@ -195,6 +195,7 @@ These notes capture future enhancements; implement after the simnet path is prov
 | web/app | `NEXT_PUBLIC_CLUSTER` *(planned)* | `localnet` / `devnet` / `mainnet` | – |
 | backend | `RPC_URL` | Solana RPC endpoint for proof/indexer services | `http://127.0.0.1:8899` |
 | backend | `PHOTON_URL` | Upstream Photon/Helius endpoint (optional) | – |
+| backend | `INDEXER_INTERNAL_URL` | Base URL the Next.js server uses to reach the indexer | `http://127.0.0.1:8787` |
 | services/proof-rpc | `RPC_PORT` | HTTP port | `8787` |
 | services/proof-rpc | `GROTH16_DIR` *(planned)* | Verifying key path | `config/verifying-keys.json` |
 | services/faucet | `FAUCET_MODE` | `local` to enable mint/airdrop helpers | `disabled` |

@@ -30,7 +30,7 @@ export interface IndexerNote {
   slot: number;
 }
 
-const DEFAULT_BASE_URL = process.env.NEXT_PUBLIC_INDEXER_URL ?? 'http://localhost:8787';
+const DEFAULT_BASE_URL = process.env.NEXT_PUBLIC_INDEXER_URL ?? '/api/indexer';
 
 export class IndexerClient {
   private readonly baseUrl: string;
