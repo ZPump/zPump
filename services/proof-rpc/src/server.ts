@@ -87,7 +87,7 @@ const UnshieldInputSchema = z.object({
   amount: z.string(),
   fee: z.string(),
   destPubkey: z.string(),
-  mode: z.enum(['origin', 'ptkn']),
+  mode: z.enum(['origin', 'ptkn', 'ztkn']),
   mintId: z.string(),
   poolId: z.string(),
   noteId: z.string(),
@@ -203,7 +203,7 @@ function deriveUnshieldPublic(input: UnshieldInput) {
   const amount = bigIntify(input.amount);
   const fee = bigIntify(input.fee);
   const noteAmount = input.noteAmount ? bigIntify(input.noteAmount) : amount + fee;
-  let changeAmount = input.change?.amount ? bigIntify(input.change.amount) : noteAmount - (amount + fee);
+  const changeAmount = input.change?.amount ? bigIntify(input.change.amount) : noteAmount - (amount + fee);
 
   if (changeAmount < 0n) {
     throw new Error('change_amount_negative');
