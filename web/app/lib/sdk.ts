@@ -248,11 +248,17 @@ export async function unwrap(params: UnwrapParams): Promise<string> {
   const decodedTree = decodeCommitmentTree(new Uint8Array(commitmentTreeAccount.data));
 
   const decodedProof = decodeProofPayload(params.proof);
-  if (decodedProof.fields.length < 8) {
+  const ROOT_FIELD_COUNT = 2;
+  const TRAILING_FIELD_COUNT = 6;
+  const CHANGE_FIELD_COUNT = 2;
+  const STATIC_FIELD_COUNT = ROOT_FIELD_COUNT + TRAILING_FIELD_COUNT;
+  const MIN_FIELDS = ROOT_FIELD_COUNT + 1 + CHANGE_FIELD_COUNT + TRAILING_FIELD_COUNT;
+
+  if (decodedProof.fields.length < MIN_FIELDS) {
     throw new Error('Proof payload missing unshield public inputs');
   }
 
-  const nullifierCount = decodedProof.fields.length - 8;
+  const nullifierCount = decodedProof.fields.length - (STATIC_FIELD_COUNT + CHANGE_FIELD_COUNT);
   if (nullifierCount <= 0) {
     throw new Error('Unshield proof must contain at least one nullifier');
   }
@@ -260,6 +266,8 @@ export async function unwrap(params: UnwrapParams): Promise<string> {
   const oldRootBytes = decodedProof.fields[0];
   const newRootBytes = decodedProof.fields[1];
   const nullifierBytes = decodedProof.fields.slice(2, 2 + nullifierCount);
+  const changeCommitmentBytes = decodedProof.fields[2 + nullifierCount];
+  const changeAmountCommitmentBytes = decodedProof.fields[3 + nullifierCount];
 
   const oldRootHex = Buffer.from(oldRootBytes).toString('hex');
   const currentRootHex = Buffer.from(decodedTree.currentRoot).toString('hex');
@@ -305,8 +313,8 @@ export async function unwrap(params: UnwrapParams): Promise<string> {
     oldRoot: Array.from(oldRootBytes),
     newRoot: Array.from(newRootBytes),
     nullifiers: nullifierBytes.map((entry) => Array.from(entry)),
-    outputCommitments: [] as number[][],
-    outputAmountCommitments: [] as number[][],
+    outputCommitments: [Array.from(changeCommitmentBytes)],
+    outputAmountCommitments: [Array.from(changeAmountCommitmentBytes)],
     amount: new BN(params.amount.toString()),
     proof: decodedProof.proof,
     publicInputs: decodedProof.publicInputs

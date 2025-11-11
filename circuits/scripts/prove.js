@@ -43,9 +43,27 @@ function deriveUnshieldPublic(input) {
     bigIntify(input.note_id),
     bigIntify(input.spending_key)
   ]);
-  const accumulator = poseidon([bigIntify(input.old_root), nullifier]);
+  const changeCommitment = poseidon([
+    bigIntify(input.change_amount),
+    bigIntify(input.change_recipient),
+    bigIntify(input.mint_id),
+    bigIntify(input.pool_id),
+    bigIntify(input.change_blinding)
+  ]);
+  const changeAmountCommitment = poseidon([
+    bigIntify(input.change_amount),
+    bigIntify(input.change_amount_blinding)
+  ]);
+  const accumulator = poseidon([
+    bigIntify(input.old_root),
+    nullifier,
+    changeCommitment,
+    changeAmountCommitment
+  ]);
   return {
     nullifier: nullifier.toString(),
+    change_commitment: changeCommitment.toString(),
+    change_amount_commitment: changeAmountCommitment.toString(),
     new_root: accumulator.toString()
   };
 }
