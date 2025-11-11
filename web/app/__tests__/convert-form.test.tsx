@@ -1,5 +1,6 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, screen, waitFor } from '@testing-library/react';
 import { ConvertForm } from '../components/ptf/ConvertForm';
+import { renderWithProviders } from '../test-utils/renderWithProviders';
 
 const requestProofMock = jest.fn();
 const wrapMock = jest.fn();
@@ -8,23 +9,56 @@ const resolvePublicKeyMock = jest.fn();
 const getRootsMock = jest.fn();
 const getNullifiersMock = jest.fn();
 const getNotesMock = jest.fn();
+const getAccountInfoMock = jest.fn();
+
+const mockConnection = {
+  getAccountInfo: getAccountInfoMock
+};
+
+const mockWallet = {
+  publicKey: { toBase58: () => 'WALLET111' },
+  sendTransaction: jest.fn().mockResolvedValue('sig111')
+};
 
 jest.mock('@solana/wallet-adapter-react', () => ({
   useConnection: () => ({
-    connection: {
-      getAccountInfo: jest.fn()
-    }
+    connection: mockConnection
   }),
-  useWallet: () => ({
-    publicKey: { toBase58: () => 'WALLET111' },
-    sendTransaction: jest.fn().mockResolvedValue('sig111')
-  })
+  useWallet: () => mockWallet
 }));
+
+jest.mock('@solana/web3.js', () => {
+  class MockPublicKey {
+    private readonly value: string;
+
+    constructor(value: string) {
+      this.value = value || '11111111111111111111111111111111';
+    }
+
+    toBase58(): string {
+      return this.value;
+    }
+
+    toBuffer(): Buffer {
+      return Buffer.alloc(32);
+    }
+
+    equals(other: MockPublicKey): boolean {
+      return other?.toBase58?.() === this.value;
+    }
+  }
+
+  return { PublicKey: MockPublicKey };
+});
 
 jest.mock('../lib/proofClient', () => ({
   ProofClient: jest.fn().mockImplementation(() => ({
     requestProof: requestProofMock
   }))
+}));
+
+jest.mock('../lib/onchain/poseidon', () => ({
+  poseidonHashMany: jest.fn().mockResolvedValue(new Uint8Array(32))
 }));
 
 jest.mock('../lib/sdk', () => ({
@@ -44,6 +78,9 @@ jest.mock('../lib/indexerClient', () => ({
 describe('ConvertForm', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    getAccountInfoMock.mockReset();
+    getAccountInfoMock.mockResolvedValue(null);
+    mockWallet.sendTransaction.mockResolvedValue('sig111');
     window.localStorage.clear();
     wrapMock.mockResolvedValue('wrap-sig');
     unwrapMock.mockResolvedValue('unwrap-sig');
@@ -74,12 +111,12 @@ describe('ConvertForm', () => {
   });
 
   it('submits a wrap flow when converting to private', async () => {
-    render(<ConvertForm />);
+    renderWithProviders(<ConvertForm />);
 
     await waitFor(() => expect(getRootsMock).toHaveBeenCalled());
     await waitFor(() => expect(getNullifiersMock).toHaveBeenCalled());
 
-    fireEvent.change(screen.getByLabelText(/Amount/i), { target: { value: '5' } });
+    fireEvent.change(screen.getByLabelText(/Amount \(in base units\)/i), { target: { value: '5' } });
     fireEvent.click(screen.getByRole('button', { name: /Submit conversion/i }));
 
     await waitFor(() => expect(wrapMock).toHaveBeenCalledTimes(1));
@@ -91,19 +128,22 @@ describe('ConvertForm', () => {
   });
 
   it('submits an unwrap flow when converting to public', async () => {
-    render(<ConvertForm />);
+    renderWithProviders(<ConvertForm />);
 
     await waitFor(() => expect(getRootsMock).toHaveBeenCalled());
     await waitFor(() => expect(getNullifiersMock).toHaveBeenCalled());
 
     fireEvent.change(screen.getByLabelText(/Mode/i), { target: { value: 'to-public' } });
-    fireEvent.change(screen.getByLabelText(/Amount/i), { target: { value: '7' } });
+    fireEvent.change(screen.getByLabelText(/Amount \(in base units\)/i), { target: { value: '7' } });
     fireEvent.click(screen.getByRole('button', { name: /Submit conversion/i }));
 
     await waitFor(() => expect(unwrapMock).toHaveBeenCalledTimes(1));
     expect(requestProofMock).toHaveBeenCalledWith(
       'unwrap',
-      expect.objectContaining({ amount: '7', noteId: expect.any(String), oldRoot: '0xabc' })
+      expect.objectContaining({ amount: '7', noteAmount: '7', fee: '0', noteId: expect.any(String), oldRoot: '0xabc' })
+    );
+    expect(unwrapMock).toHaveBeenCalledWith(
+      expect.objectContaining({ amount: 7n })
     );
     expect(screen.getByText(/Redeemed 7/)).toBeInTheDocument();
   });
