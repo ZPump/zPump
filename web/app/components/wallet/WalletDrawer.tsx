@@ -30,7 +30,8 @@ import {
   Tooltip,
   useBoolean,
   useDisclosure,
-  useToast
+  useToast,
+  Code
 } from '@chakra-ui/react';
 import { useConnection } from '@solana/wallet-adapter-react';
 import { LAMPORTS_PER_SOL, PublicKey } from '@solana/web3.js';
@@ -45,6 +46,15 @@ interface TokenBalance {
   symbol: string;
   amount: number;
   decimals: number;
+}
+
+interface TransactionEntry {
+  signature: string;
+  slot: number;
+  blockTime: number | null;
+  changeSol: number;
+  description: string;
+  status: 'success' | 'failed';
 }
 
 function formatAddress(address: string) {
@@ -70,6 +80,7 @@ export function WalletDrawerLauncher() {
 }
 
 const BALANCE_REFRESH_INTERVAL = 10_000;
+const TRANSACTION_LIMIT = 10;
 
 function WalletDrawerContent({ disclosure }: { disclosure: ReturnType<typeof useDisclosure> }) {
   const toast = useToast();
@@ -77,8 +88,10 @@ function WalletDrawerContent({ disclosure }: { disclosure: ReturnType<typeof use
   const { accounts, activeAccount, selectAccount, createAccount, importAccount, renameAccount, deleteAccount } =
     useLocalWallet();
   const [balances, setBalances] = useState<TokenBalance[]>([]);
+  const [transactions, setTransactions] = useState<TransactionEntry[]>([]);
   const [solBalance, setSolBalance] = useState<number>(0);
   const [loadingBalances, setLoadingBalances] = useBoolean(false);
+  const [loadingTransactions, setLoadingTransactions] = useBoolean(false);
   const [createOpen, setCreateOpen] = useBoolean(false);
   const [importOpen, setImportOpen] = useBoolean(false);
   const [newLabel, setNewLabel] = useState('');
@@ -91,6 +104,89 @@ function WalletDrawerContent({ disclosure }: { disclosure: ReturnType<typeof use
     MINTS.forEach((mint) => map.set(mint.originMint, { symbol: mint.symbol, decimals: mint.decimals }));
     return map;
   }, []);
+
+  const refreshTransactions = useCallback(
+    async (showSpinner: boolean) => {
+      if (!activeAccount) {
+        setTransactions([]);
+        if (showSpinner) {
+          setLoadingTransactions.off();
+        }
+        return;
+      }
+
+      if (showSpinner) {
+        setLoadingTransactions.on();
+      }
+
+      try {
+        const publicKey = new PublicKey(activeAccount.publicKey);
+        const signatureInfos = await connection.getSignaturesForAddress(publicKey, {
+          limit: TRANSACTION_LIMIT
+        });
+        let entries: TransactionEntry[] = [];
+
+        if (signatureInfos.length > 0) {
+          const signatures = signatureInfos.map((info) => info.signature);
+          const parsedTransactions = await connection.getParsedTransactions(signatures, {
+            commitment: 'confirmed'
+          });
+
+          entries = signatureInfos.map((info, index) => {
+            const parsed = parsedTransactions[index];
+            let changeLamports = 0;
+            let description = info.err ? 'Failed transaction' : 'No SOL change';
+
+            if (parsed?.meta && parsed.transaction) {
+              const accountIndex = parsed.transaction.message.accountKeys.findIndex((key) =>
+                key.pubkey.equals(publicKey)
+              );
+              if (accountIndex !== -1) {
+                const pre = parsed.meta.preBalances?.[accountIndex] ?? 0;
+                const post = parsed.meta.postBalances?.[accountIndex] ?? 0;
+                changeLamports = post - pre;
+                if (changeLamports > 0) {
+                  description = 'Received SOL';
+                } else if (changeLamports < 0) {
+                  description = 'Sent SOL';
+                }
+              }
+            }
+
+            return {
+              signature: info.signature,
+              slot: info.slot,
+              blockTime: info.blockTime ?? null,
+              changeSol: changeLamports / LAMPORTS_PER_SOL,
+              description,
+              status: info.err ? 'failed' : 'success'
+            };
+          });
+        }
+
+        setTransactions(entries);
+        console.info('[wallet drawer] refreshed transactions', {
+          account: activeAccount.publicKey,
+          count: entries.length,
+          endpoint: connection.rpcEndpoint
+        });
+      } catch (error) {
+        console.warn('[wallet drawer] Unable to load transactions', error);
+        if (showSpinner) {
+          toast({
+            title: 'Unable to load transactions',
+            description: (error as Error).message,
+            status: 'error'
+          });
+        }
+      } finally {
+        if (showSpinner) {
+          setLoadingTransactions.off();
+        }
+      }
+    },
+    [activeAccount, connection, setLoadingTransactions, toast]
+  );
 
   const refreshBalances = useCallback(
     async (showSpinner: boolean) => {
@@ -120,6 +216,11 @@ function WalletDrawerContent({ disclosure }: { disclosure: ReturnType<typeof use
           connection.getParsedTokenAccountsByOwner(publicKey, { programId: TOKEN_PROGRAM_ID })
         ]);
 
+        console.info('[wallet drawer] refreshed SOL balance', {
+          account: activeAccount.publicKey,
+          lamports,
+          endpoint: connection.rpcEndpoint
+        });
         setSolBalance(lamports / LAMPORTS_PER_SOL);
 
         const rows: TokenBalance[] = tokenAccounts.value
@@ -140,6 +241,7 @@ function WalletDrawerContent({ disclosure }: { disclosure: ReturnType<typeof use
           .filter((entry) => entry.amount > 0);
 
         setBalances(rows);
+        await refreshTransactions(showSpinner);
       } catch (error) {
         console.error(error);
         if (showSpinner) {
@@ -156,7 +258,7 @@ function WalletDrawerContent({ disclosure }: { disclosure: ReturnType<typeof use
         refreshingRef.current = false;
       }
     },
-    [activeAccount, connection, mintMap, setLoadingBalances, toast]
+    [activeAccount, connection, mintMap, refreshTransactions, setLoadingBalances, toast]
   );
 
   useEffect(() => {
@@ -180,6 +282,10 @@ function WalletDrawerContent({ disclosure }: { disclosure: ReturnType<typeof use
       const publicKey = new PublicKey(activeAccount.publicKey);
       try {
         subscriptionId = connection.onAccountChange(publicKey, () => {
+          console.info('[wallet drawer] account change detected', {
+            account: activeAccount.publicKey,
+            endpoint: connection.rpcEndpoint
+          });
           runRefresh(false);
         });
       } catch (error) {
@@ -408,6 +514,89 @@ function WalletDrawerContent({ disclosure }: { disclosure: ReturnType<typeof use
                         </Text>
                       )}
                     </SimpleGrid>
+                  </Stack>
+                )}
+              </Box>
+
+              <Text fontSize="sm" color="whiteAlpha.600" textTransform="uppercase" letterSpacing="0.08em">
+                Recent activity
+              </Text>
+              <Box
+                border="1px solid rgba(59,205,255,0.25)"
+                rounded="2xl"
+                p={5}
+                bg="rgba(9,12,24,0.75)"
+                boxShadow="0 0 25px rgba(59,205,255,0.15)"
+              >
+                {loadingTransactions ? (
+                  <Flex align="center" justify="center" py={8}>
+                    <Spinner />
+                  </Flex>
+                ) : transactions.length === 0 ? (
+                  <Text fontSize="sm" color="whiteAlpha.500">
+                    No recent transactions.
+                  </Text>
+                ) : (
+                  <Stack spacing={3}>
+                    {transactions.map((entry) => {
+                      const solChange = Math.abs(entry.changeSol) < 1e-9 ? null : `${
+                        entry.changeSol > 0 ? '+' : ''
+                      }${entry.changeSol.toFixed(6)} SOL`;
+
+                      return (
+                        <Box
+                          key={entry.signature}
+                          bg="rgba(12,18,38,0.9)"
+                          border="1px solid rgba(59,205,255,0.18)"
+                          rounded="lg"
+                          p={3}
+                        >
+                          <Flex justify="space-between" align="center" mb={1}>
+                            <Text fontWeight="semibold" color="whiteAlpha.800">
+                              {entry.description}
+                            </Text>
+                            <Text
+                              fontSize="xs"
+                              color={entry.status === 'success' ? 'green.300' : 'red.300'}
+                            >
+                              {entry.status === 'success' ? 'Success' : 'Failed'}
+                            </Text>
+                          </Flex>
+                          {solChange && (
+                            <Text fontSize="sm" color="whiteAlpha.700">
+                              {solChange}
+                            </Text>
+                          )}
+                          <Text fontSize="xs" color="whiteAlpha.500">
+                            {entry.blockTime
+                              ? new Date(entry.blockTime * 1000).toLocaleString()
+                              : `Slot ${entry.slot}`}
+                          </Text>
+                          <HStack spacing={2} mt={1} align="center">
+                            <Code fontSize="xs" wordBreak="break-all">
+                              {entry.signature}
+                            </Code>
+                            <Tooltip label="Copy signature">
+                              <IconButton
+                                aria-label="Copy signature"
+                                icon={<Copy size={14} />}
+                                size="xs"
+                                variant="ghost"
+                                onClick={() => {
+                                  void navigator.clipboard.writeText(entry.signature);
+                                  toast({
+                                    title: 'Signature copied',
+                                    status: 'success',
+                                    duration: 1500,
+                                    isClosable: true
+                                  });
+                                }}
+                              />
+                            </Tooltip>
+                          </HStack>
+                        </Box>
+                      );
+                    })}
                   </Stack>
                 )}
               </Box>
