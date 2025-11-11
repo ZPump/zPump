@@ -151,8 +151,11 @@ export function ConvertForm() {
           originMint,
           amount: BigInt(amount),
           poolId,
-          commitment: proofResponse?.publicInputs?.[2] ?? '0x0',
-          proof: proofResponse ?? fallbackProof
+          depositId: wrapAdvanced.depositId,
+          blinding: wrapAdvanced.blinding,
+          proof: wrapAdvanced.useProofRpc ? proofResponse : null,
+          commitmentHint: proofResponse?.publicInputs?.[2] ?? null,
+          recipient: wallet.publicKey.toBase58()
         });
 
         setResult(`Shielded ${amount} into ${zTokenSymbol}.`);

@@ -1,0 +1,24 @@
+[
+  {
+    "symbol": "USDC",
+    "decimals": 6,
+    "originMint": "FFfGt6j4QAaqK9iDELTiedafQWqMcT68soSBHYFpH1dJ",
+    "poolId": "6dQ2QGbbaJZwd1VnvhMac5MRWmm6k7YM5vF7jEp6wW82",
+    "zTokenMint": null,
+    "features": {
+      "zTokenEnabled": false,
+      "wrappedTransfers": false
+    }
+  },
+  {
+    "symbol": "SOLx",
+    "decimals": 9,
+    "originMint": "P9aGeLn3HyUY3S9ZsfxbSYW5Q5vAQwtPFHaYZBbmGp2",
+    "poolId": "5vjD6CqUnVMq5PfLFkuqAW6naXwYS7CpZ7EpE6L4SbWT",
+    "zTokenMint": null,
+    "features": {
+      "zTokenEnabled": false,
+      "wrappedTransfers": false
+    }
+  }
+]

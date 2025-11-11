@@ -1,0 +1,2973 @@
+{
+  "address": "4Tx3v6is7qeVjdHvL3a16ggB9VVMBPVhpPSkUGoXZhre",
+  "metadata": {
+    "name": "ptf_pool",
+    "version": "0.1.0",
+    "spec": "0.1.0"
+  },
+  "instructions": [
+    {
+      "name": "accept_root",
+      "discriminator": [
+        153,
+        154,
+        141,
+        159,
+        223,
+        24,
+        233,
+        135
+      ],
+      "accounts": [
+        {
+          "name": "authority",
+          "signer": true,
+          "relations": [
+            "pool_state"
+          ]
+        },
+        {
+          "name": "pool_state",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  111,
+                  111,
+                  108
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "pool_state"
+              }
+            ]
+          }
+        },
+        {
+          "name": "nullifier_set",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  110,
+                  117,
+                  108,
+                  108,
+                  115
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "pool_state"
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "root",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "configure_hooks",
+      "discriminator": [
+        171,
+        90,
+        59,
+        227,
+        56,
+        135,
+        114,
+        228
+      ],
+      "accounts": [
+        {
+          "name": "authority",
+          "signer": true,
+          "relations": [
+            "pool_state"
+          ]
+        },
+        {
+          "name": "pool_state",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  111,
+                  111,
+                  108
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "pool_state"
+              }
+            ]
+          }
+        },
+        {
+          "name": "hook_config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  104,
+                  111,
+                  111,
+                  107,
+                  115
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "pool_state"
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "args",
+          "type": {
+            "defined": {
+              "name": "HookConfigArgs"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "initialize_pool",
+      "discriminator": [
+        95,
+        180,
+        10,
+        172,
+        84,
+        174,
+        232,
+        40
+      ],
+      "accounts": [
+        {
+          "name": "authority",
+          "signer": true
+        },
+        {
+          "name": "pool_state",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  111,
+                  111,
+                  108
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "origin_mint"
+              }
+            ]
+          }
+        },
+        {
+          "name": "nullifier_set",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  110,
+                  117,
+                  108,
+                  108,
+                  115
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "origin_mint"
+              }
+            ]
+          }
+        },
+        {
+          "name": "note_ledger",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  110,
+                  111,
+                  116,
+                  101,
+                  115
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "origin_mint"
+              }
+            ]
+          }
+        },
+        {
+          "name": "commitment_tree",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  114,
+                  101,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "origin_mint"
+              }
+            ]
+          }
+        },
+        {
+          "name": "hook_config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  104,
+                  111,
+                  111,
+                  107,
+                  115
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "origin_mint"
+              }
+            ]
+          }
+        },
+        {
+          "name": "vault_state",
+          "writable": true
+        },
+        {
+          "name": "origin_mint"
+        },
+        {
+          "name": "mint_mapping",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  109,
+                  97,
+                  112
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "origin_mint"
+              }
+            ]
+          }
+        },
+        {
+          "name": "factory_state",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  102,
+                  97,
+                  99,
+                  116,
+                  111,
+                  114,
+                  121
+                ]
+              },
+              {
+                "kind": "const",
+                "value": [
+                  59,
+                  50,
+                  210,
+                  164,
+                  223,
+                  35,
+                  36,
+                  179,
+                  192,
+                  127,
+                  194,
+                  187,
+                  77,
+                  118,
+                  214,
+                  109,
+                  89,
+                  154,
+                  25,
+                  124,
+                  156,
+                  82,
+                  239,
+                  156,
+                  100,
+                  188,
+                  53,
+                  24,
+                  228,
+                  191,
+                  65,
+                  100
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "twin_mint",
+          "writable": true,
+          "optional": true
+        },
+        {
+          "name": "verifier_program",
+          "address": "Gm2KXvGhWrEeYERh3sxs1gwffMXeajVQXqY7CcBpm7Ua"
+        },
+        {
+          "name": "verifying_key"
+        },
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        },
+        {
+          "name": "token_program"
+        }
+      ],
+      "args": [
+        {
+          "name": "fee_bps",
+          "type": "u16"
+        },
+        {
+          "name": "features",
+          "type": "u8"
+        }
+      ]
+    },
+    {
+      "name": "private_transfer",
+      "discriminator": [
+        107,
+        20,
+        177,
+        94,
+        33,
+        119,
+        16,
+        110
+      ],
+      "accounts": [
+        {
+          "name": "pool_state",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  111,
+                  111,
+                  108
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "pool_state"
+              }
+            ]
+          }
+        },
+        {
+          "name": "nullifier_set",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  110,
+                  117,
+                  108,
+                  108,
+                  115
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "pool_state"
+              }
+            ]
+          }
+        },
+        {
+          "name": "commitment_tree",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  114,
+                  101,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "pool_state"
+              }
+            ]
+          }
+        },
+        {
+          "name": "note_ledger",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  110,
+                  111,
+                  116,
+                  101,
+                  115
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "pool_state"
+              }
+            ]
+          }
+        },
+        {
+          "name": "verifier_program",
+          "address": "Gm2KXvGhWrEeYERh3sxs1gwffMXeajVQXqY7CcBpm7Ua"
+        },
+        {
+          "name": "verifying_key"
+        }
+      ],
+      "args": [
+        {
+          "name": "args",
+          "type": {
+            "defined": {
+              "name": "TransferArgs"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "set_features",
+      "discriminator": [
+        156,
+        239,
+        90,
+        236,
+        2,
+        45,
+        41,
+        203
+      ],
+      "accounts": [
+        {
+          "name": "authority",
+          "signer": true,
+          "relations": [
+            "pool_state"
+          ]
+        },
+        {
+          "name": "pool_state",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  111,
+                  111,
+                  108
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "pool_state"
+              }
+            ]
+          }
+        },
+        {
+          "name": "nullifier_set",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  110,
+                  117,
+                  108,
+                  108,
+                  115
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "pool_state"
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "features",
+          "type": "u8"
+        }
+      ]
+    },
+    {
+      "name": "set_fee",
+      "discriminator": [
+        18,
+        154,
+        24,
+        18,
+        237,
+        214,
+        19,
+        80
+      ],
+      "accounts": [
+        {
+          "name": "authority",
+          "signer": true,
+          "relations": [
+            "pool_state"
+          ]
+        },
+        {
+          "name": "pool_state",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  111,
+                  111,
+                  108
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "pool_state"
+              }
+            ]
+          }
+        },
+        {
+          "name": "nullifier_set",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  110,
+                  117,
+                  108,
+                  108,
+                  115
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "pool_state"
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "fee_bps",
+          "type": "u16"
+        }
+      ]
+    },
+    {
+      "name": "shield",
+      "discriminator": [
+        220,
+        198,
+        253,
+        246,
+        231,
+        84,
+        147,
+        98
+      ],
+      "accounts": [
+        {
+          "name": "pool_state",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  111,
+                  111,
+                  108
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "pool_state"
+              }
+            ]
+          }
+        },
+        {
+          "name": "hook_config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  104,
+                  111,
+                  111,
+                  107,
+                  115
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "pool_state"
+              }
+            ]
+          }
+        },
+        {
+          "name": "nullifier_set",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  110,
+                  117,
+                  108,
+                  108,
+                  115
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "pool_state"
+              }
+            ]
+          }
+        },
+        {
+          "name": "commitment_tree",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  114,
+                  101,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "pool_state"
+              }
+            ]
+          }
+        },
+        {
+          "name": "note_ledger",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  110,
+                  111,
+                  116,
+                  101,
+                  115
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "pool_state"
+              }
+            ]
+          }
+        },
+        {
+          "name": "vault_state",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "pool_state"
+              }
+            ]
+          }
+        },
+        {
+          "name": "vault_token_account",
+          "writable": true
+        },
+        {
+          "name": "depositor_token_account",
+          "writable": true
+        },
+        {
+          "name": "twin_mint",
+          "writable": true,
+          "optional": true
+        },
+        {
+          "name": "verifier_program",
+          "address": "Gm2KXvGhWrEeYERh3sxs1gwffMXeajVQXqY7CcBpm7Ua"
+        },
+        {
+          "name": "verifying_key"
+        },
+        {
+          "name": "payer",
+          "signer": true
+        },
+        {
+          "name": "origin_mint"
+        },
+        {
+          "name": "vault_program",
+          "address": "9g6ZodQwxK8MN6MX3dbvFC3E7vGVqFtKZEHY7PByRAuh"
+        },
+        {
+          "name": "token_program"
+        }
+      ],
+      "args": [
+        {
+          "name": "args",
+          "type": {
+            "defined": {
+              "name": "ShieldArgs"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "unshield_to_origin",
+      "discriminator": [
+        165,
+        97,
+        20,
+        6,
+        215,
+        134,
+        16,
+        42
+      ],
+      "accounts": [
+        {
+          "name": "pool_state",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  111,
+                  111,
+                  108
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "pool_state"
+              }
+            ]
+          }
+        },
+        {
+          "name": "hook_config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  104,
+                  111,
+                  111,
+                  107,
+                  115
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "pool_state"
+              }
+            ]
+          }
+        },
+        {
+          "name": "nullifier_set",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  110,
+                  117,
+                  108,
+                  108,
+                  115
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "pool_state"
+              }
+            ]
+          }
+        },
+        {
+          "name": "commitment_tree",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  114,
+                  101,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "pool_state"
+              }
+            ]
+          }
+        },
+        {
+          "name": "note_ledger",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  110,
+                  111,
+                  116,
+                  101,
+                  115
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "pool_state"
+              }
+            ]
+          }
+        },
+        {
+          "name": "mint_mapping",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  109,
+                  97,
+                  112
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "pool_state"
+              }
+            ]
+          }
+        },
+        {
+          "name": "verifier_program",
+          "address": "Gm2KXvGhWrEeYERh3sxs1gwffMXeajVQXqY7CcBpm7Ua"
+        },
+        {
+          "name": "verifying_key"
+        },
+        {
+          "name": "vault_state",
+          "writable": true
+        },
+        {
+          "name": "vault_token_account",
+          "writable": true
+        },
+        {
+          "name": "destination_token_account",
+          "writable": true
+        },
+        {
+          "name": "twin_mint",
+          "writable": true,
+          "optional": true
+        },
+        {
+          "name": "vault_program",
+          "address": "9g6ZodQwxK8MN6MX3dbvFC3E7vGVqFtKZEHY7PByRAuh"
+        },
+        {
+          "name": "factory_state",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  102,
+                  97,
+                  99,
+                  116,
+                  111,
+                  114,
+                  121
+                ]
+              },
+              {
+                "kind": "const",
+                "value": [
+                  59,
+                  50,
+                  210,
+                  164,
+                  223,
+                  35,
+                  36,
+                  179,
+                  192,
+                  127,
+                  194,
+                  187,
+                  77,
+                  118,
+                  214,
+                  109,
+                  89,
+                  154,
+                  25,
+                  124,
+                  156,
+                  82,
+                  239,
+                  156,
+                  100,
+                  188,
+                  53,
+                  24,
+                  228,
+                  191,
+                  65,
+                  100
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "factory_program",
+          "address": "4z618BY2dXGqAUiegqDt8omo3e81TSdXRHt64ikX1bTy"
+        },
+        {
+          "name": "token_program"
+        }
+      ],
+      "args": [
+        {
+          "name": "args",
+          "type": {
+            "defined": {
+              "name": "UnshieldArgs"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "unshield_to_ptkn",
+      "discriminator": [
+        142,
+        193,
+        113,
+        155,
+        2,
+        167,
+        227,
+        147
+      ],
+      "accounts": [
+        {
+          "name": "pool_state",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  111,
+                  111,
+                  108
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "pool_state"
+              }
+            ]
+          }
+        },
+        {
+          "name": "hook_config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  104,
+                  111,
+                  111,
+                  107,
+                  115
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "pool_state"
+              }
+            ]
+          }
+        },
+        {
+          "name": "nullifier_set",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  110,
+                  117,
+                  108,
+                  108,
+                  115
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "pool_state"
+              }
+            ]
+          }
+        },
+        {
+          "name": "commitment_tree",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  114,
+                  101,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "pool_state"
+              }
+            ]
+          }
+        },
+        {
+          "name": "note_ledger",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  110,
+                  111,
+                  116,
+                  101,
+                  115
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "pool_state"
+              }
+            ]
+          }
+        },
+        {
+          "name": "mint_mapping",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  109,
+                  97,
+                  112
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "pool_state"
+              }
+            ]
+          }
+        },
+        {
+          "name": "verifier_program",
+          "address": "Gm2KXvGhWrEeYERh3sxs1gwffMXeajVQXqY7CcBpm7Ua"
+        },
+        {
+          "name": "verifying_key"
+        },
+        {
+          "name": "vault_state",
+          "writable": true
+        },
+        {
+          "name": "vault_token_account",
+          "writable": true
+        },
+        {
+          "name": "destination_token_account",
+          "writable": true
+        },
+        {
+          "name": "twin_mint",
+          "writable": true,
+          "optional": true
+        },
+        {
+          "name": "vault_program",
+          "address": "9g6ZodQwxK8MN6MX3dbvFC3E7vGVqFtKZEHY7PByRAuh"
+        },
+        {
+          "name": "factory_state",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  102,
+                  97,
+                  99,
+                  116,
+                  111,
+                  114,
+                  121
+                ]
+              },
+              {
+                "kind": "const",
+                "value": [
+                  59,
+                  50,
+                  210,
+                  164,
+                  223,
+                  35,
+                  36,
+                  179,
+                  192,
+                  127,
+                  194,
+                  187,
+                  77,
+                  118,
+                  214,
+                  109,
+                  89,
+                  154,
+                  25,
+                  124,
+                  156,
+                  82,
+                  239,
+                  156,
+                  100,
+                  188,
+                  53,
+                  24,
+                  228,
+                  191,
+                  65,
+                  100
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "factory_program",
+          "address": "4z618BY2dXGqAUiegqDt8omo3e81TSdXRHt64ikX1bTy"
+        },
+        {
+          "name": "token_program"
+        }
+      ],
+      "args": [
+        {
+          "name": "args",
+          "type": {
+            "defined": {
+              "name": "UnshieldArgs"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "write_nullifier",
+      "discriminator": [
+        222,
+        251,
+        193,
+        154,
+        202,
+        158,
+        50,
+        81
+      ],
+      "accounts": [
+        {
+          "name": "authority",
+          "signer": true,
+          "relations": [
+            "pool_state"
+          ]
+        },
+        {
+          "name": "pool_state",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  111,
+                  111,
+                  108
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "pool_state"
+              }
+            ]
+          }
+        },
+        {
+          "name": "nullifier_set",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  110,
+                  117,
+                  108,
+                  108,
+                  115
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "pool_state"
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "nullifier",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "accounts": [
+    {
+      "name": "CommitmentTree",
+      "discriminator": [
+        211,
+        14,
+        252,
+        98,
+        153,
+        65,
+        10,
+        92
+      ]
+    },
+    {
+      "name": "FactoryState",
+      "discriminator": [
+        91,
+        157,
+        184,
+        99,
+        123,
+        112,
+        102,
+        7
+      ]
+    },
+    {
+      "name": "HookConfig",
+      "discriminator": [
+        137,
+        155,
+        101,
+        95,
+        138,
+        72,
+        8,
+        182
+      ]
+    },
+    {
+      "name": "MintMapping",
+      "discriminator": [
+        208,
+        38,
+        134,
+        140,
+        192,
+        18,
+        35,
+        29
+      ]
+    },
+    {
+      "name": "NoteLedger",
+      "discriminator": [
+        243,
+        248,
+        35,
+        209,
+        184,
+        225,
+        237,
+        173
+      ]
+    },
+    {
+      "name": "NullifierSet",
+      "discriminator": [
+        251,
+        219,
+        17,
+        100,
+        208,
+        102,
+        127,
+        25
+      ]
+    },
+    {
+      "name": "PoolState",
+      "discriminator": [
+        247,
+        237,
+        227,
+        245,
+        215,
+        195,
+        222,
+        70
+      ]
+    },
+    {
+      "name": "VaultState",
+      "discriminator": [
+        228,
+        196,
+        82,
+        165,
+        98,
+        210,
+        235,
+        152
+      ]
+    },
+    {
+      "name": "VerifyingKeyAccount",
+      "discriminator": [
+        5,
+        54,
+        231,
+        84,
+        81,
+        70,
+        17,
+        168
+      ]
+    }
+  ],
+  "events": [
+    {
+      "name": "FeaturesUpdated",
+      "discriminator": [
+        103,
+        226,
+        0,
+        123,
+        140,
+        185,
+        255,
+        110
+      ]
+    },
+    {
+      "name": "FeeUpdated",
+      "discriminator": [
+        228,
+        75,
+        43,
+        103,
+        9,
+        196,
+        182,
+        4
+      ]
+    },
+    {
+      "name": "HookConfigUpdated",
+      "discriminator": [
+        124,
+        57,
+        60,
+        231,
+        221,
+        95,
+        253,
+        85
+      ]
+    },
+    {
+      "name": "PTFHookPostShield",
+      "discriminator": [
+        94,
+        233,
+        215,
+        47,
+        160,
+        54,
+        164,
+        79
+      ]
+    },
+    {
+      "name": "PTFHookPostUnshield",
+      "discriminator": [
+        115,
+        252,
+        173,
+        199,
+        94,
+        201,
+        106,
+        48
+      ]
+    },
+    {
+      "name": "PTFInvariantOk",
+      "discriminator": [
+        86,
+        150,
+        59,
+        24,
+        74,
+        119,
+        176,
+        168
+      ]
+    },
+    {
+      "name": "PTFNullifierUsed",
+      "discriminator": [
+        36,
+        12,
+        215,
+        61,
+        119,
+        207,
+        142,
+        216
+      ]
+    },
+    {
+      "name": "PTFShielded",
+      "discriminator": [
+        197,
+        10,
+        179,
+        208,
+        125,
+        132,
+        73,
+        102
+      ]
+    },
+    {
+      "name": "PTFTransferred",
+      "discriminator": [
+        238,
+        215,
+        119,
+        180,
+        165,
+        120,
+        55,
+        28
+      ]
+    },
+    {
+      "name": "PTFUnshieldOrigin",
+      "discriminator": [
+        9,
+        154,
+        224,
+        125,
+        86,
+        199,
+        67,
+        198
+      ]
+    },
+    {
+      "name": "PTFUnshieldPMint",
+      "discriminator": [
+        26,
+        86,
+        16,
+        56,
+        114,
+        235,
+        54,
+        164
+      ]
+    },
+    {
+      "name": "PoolInitialized",
+      "discriminator": [
+        100,
+        118,
+        173,
+        87,
+        12,
+        198,
+        254,
+        229
+      ]
+    }
+  ],
+  "errors": [
+    {
+      "code": 6000,
+      "name": "InvalidFeeBps",
+      "msg": "E_INVALID_FEE_BPS"
+    },
+    {
+      "code": 6001,
+      "name": "VerifierMismatch",
+      "msg": "E_VERIFIER_MISMATCH"
+    },
+    {
+      "code": 6002,
+      "name": "VerifyingKeyHashMismatch",
+      "msg": "E_VERIFYING_KEY_HASH_MISMATCH"
+    },
+    {
+      "code": 6003,
+      "name": "InvalidPublicInputs",
+      "msg": "E_INVALID_PUBLIC_INPUTS"
+    },
+    {
+      "code": 6004,
+      "name": "PublicInputMismatch",
+      "msg": "E_PUBLIC_INPUT_MISMATCH"
+    },
+    {
+      "code": 6005,
+      "name": "UnknownRoot",
+      "msg": "E_UNKNOWN_ROOT"
+    },
+    {
+      "code": 6006,
+      "name": "NullifierReuse",
+      "msg": "E_NULLIFIER_REUSE"
+    },
+    {
+      "code": 6007,
+      "name": "NullifierCapacity",
+      "msg": "E_NULLIFIER_CAPACITY"
+    },
+    {
+      "code": 6008,
+      "name": "AmountOverflow",
+      "msg": "E_AMOUNT_OVERFLOW"
+    },
+    {
+      "code": 6009,
+      "name": "InsufficientLiquidity",
+      "msg": "E_INSUFFICIENT_LIQUIDITY"
+    },
+    {
+      "code": 6010,
+      "name": "FeatureDisabled",
+      "msg": "E_FEATURE_DISABLED"
+    },
+    {
+      "code": 6011,
+      "name": "MismatchedVaultAuthority",
+      "msg": "E_VAULT_AUTHORITY_MISMATCH"
+    },
+    {
+      "code": 6012,
+      "name": "OriginMintMismatch",
+      "msg": "E_ORIGIN_MINT_MISMATCH"
+    },
+    {
+      "code": 6013,
+      "name": "VaultTokenAccountMismatch",
+      "msg": "E_VAULT_TOKEN_ACCOUNT_MISMATCH"
+    },
+    {
+      "code": 6014,
+      "name": "InvalidDepositorAccount",
+      "msg": "E_INVALID_DEPOSITOR_ACCOUNT"
+    },
+    {
+      "code": 6015,
+      "name": "TwinMintMismatch",
+      "msg": "E_TWIN_MINT_MISMATCH"
+    },
+    {
+      "code": 6016,
+      "name": "TwinMintNotConfigured",
+      "msg": "E_TWIN_MINT_NOT_CONFIGURED"
+    },
+    {
+      "code": 6017,
+      "name": "TwinMintAuthorityMismatch",
+      "msg": "E_TWIN_MINT_AUTHORITY_MISMATCH"
+    },
+    {
+      "code": 6018,
+      "name": "TwinMintDecimalsMismatch",
+      "msg": "E_TWIN_MINT_DECIMALS_MISMATCH"
+    },
+    {
+      "code": 6019,
+      "name": "InvariantBreach",
+      "msg": "E_INVARIANT_BREACH"
+    },
+    {
+      "code": 6020,
+      "name": "HooksDisabled",
+      "msg": "E_HOOKS_DISABLED"
+    },
+    {
+      "code": 6021,
+      "name": "TooManyHookAccounts",
+      "msg": "E_TOO_MANY_HOOK_ACCOUNTS"
+    },
+    {
+      "code": 6022,
+      "name": "HookConfigInvalid",
+      "msg": "E_HOOK_CONFIG_INVALID"
+    },
+    {
+      "code": 6023,
+      "name": "HookAccountMismatch",
+      "msg": "E_HOOK_ACCOUNT_MISMATCH"
+    },
+    {
+      "code": 6024,
+      "name": "HookAccountMissing",
+      "msg": "E_HOOK_ACCOUNT_MISSING"
+    },
+    {
+      "code": 6025,
+      "name": "HookAccountUnexpected",
+      "msg": "E_HOOK_ACCOUNT_UNEXPECTED"
+    },
+    {
+      "code": 6026,
+      "name": "NoteLedgerMismatch",
+      "msg": "E_NOTE_LEDGER_MISMATCH"
+    },
+    {
+      "code": 6027,
+      "name": "CommitmentTreeMismatch",
+      "msg": "E_TREE_MISMATCH"
+    },
+    {
+      "code": 6028,
+      "name": "OutputSetMismatch",
+      "msg": "E_OUTPUT_SET_MISMATCH"
+    },
+    {
+      "code": 6029,
+      "name": "CanopyDepthInvalid",
+      "msg": "E_CANOPY_DEPTH_INVALID"
+    },
+    {
+      "code": 6030,
+      "name": "TreeFull",
+      "msg": "E_TREE_FULL"
+    },
+    {
+      "code": 6031,
+      "name": "RootMismatch",
+      "msg": "E_ROOT_MISMATCH"
+    }
+  ],
+  "types": [
+    {
+      "name": "CommitmentTree",
+      "serialization": "bytemuckunsafe",
+      "repr": {
+        "kind": "c"
+      },
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "pool",
+            "type": "pubkey"
+          },
+          {
+            "name": "canopy_depth",
+            "type": "u8"
+          },
+          {
+            "name": "next_index",
+            "type": "u64"
+          },
+          {
+            "name": "current_root",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "frontier",
+            "type": {
+              "array": [
+                {
+                  "array": [
+                    "u8",
+                    32
+                  ]
+                },
+                32
+              ]
+            }
+          },
+          {
+            "name": "zeroes",
+            "type": {
+              "array": [
+                {
+                  "array": [
+                    "u8",
+                    32
+                  ]
+                },
+                32
+              ]
+            }
+          },
+          {
+            "name": "canopy",
+            "type": {
+              "array": [
+                {
+                  "array": [
+                    "u8",
+                    32
+                  ]
+                },
+                16
+              ]
+            }
+          },
+          {
+            "name": "recent_commitments",
+            "type": {
+              "array": [
+                {
+                  "array": [
+                    "u8",
+                    32
+                  ]
+                },
+                16
+              ]
+            }
+          },
+          {
+            "name": "recent_amount_commitments",
+            "type": {
+              "array": [
+                {
+                  "array": [
+                    "u8",
+                    32
+                  ]
+                },
+                16
+              ]
+            }
+          },
+          {
+            "name": "recent_indices",
+            "type": {
+              "array": [
+                "u64",
+                16
+              ]
+            }
+          },
+          {
+            "name": "recent_len",
+            "type": "u8"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "FactoryState",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "authority",
+            "type": "pubkey"
+          },
+          {
+            "name": "default_fee_bps",
+            "type": "u16"
+          },
+          {
+            "name": "default_features",
+            "type": {
+              "defined": {
+                "name": "FeatureFlags"
+              }
+            }
+          },
+          {
+            "name": "paused",
+            "type": "bool"
+          },
+          {
+            "name": "timelock_seconds",
+            "type": "i64"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          },
+          {
+            "name": "last_updated_slot",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "FeatureFlags",
+      "docs": [
+        "Runtime feature flags represented as a bit field."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          "u8"
+        ]
+      }
+    },
+    {
+      "name": "FeaturesUpdated",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "origin_mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "features",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "FeeUpdated",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "origin_mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "fee_bps",
+            "type": "u16"
+          }
+        ]
+      }
+    },
+    {
+      "name": "HookAccountMode",
+      "repr": {
+        "kind": "rust"
+      },
+      "type": {
+        "kind": "enum",
+        "variants": [
+          {
+            "name": "Strict"
+          },
+          {
+            "name": "Lenient"
+          }
+        ]
+      }
+    },
+    {
+      "name": "HookConfig",
+      "serialization": "bytemuckunsafe",
+      "repr": {
+        "kind": "c"
+      },
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "pool",
+            "type": "pubkey"
+          },
+          {
+            "name": "post_shield_program_id",
+            "type": "pubkey"
+          },
+          {
+            "name": "post_unshield_program_id",
+            "type": "pubkey"
+          },
+          {
+            "name": "required_accounts",
+            "type": {
+              "array": [
+                {
+                  "array": [
+                    "u8",
+                    32
+                  ]
+                },
+                8
+              ]
+            }
+          },
+          {
+            "name": "required_accounts_len",
+            "type": "u8"
+          },
+          {
+            "name": "mode",
+            "type": {
+              "defined": {
+                "name": "HookAccountMode"
+              }
+            }
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "HookConfigArgs",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "post_shield_program",
+            "type": "pubkey"
+          },
+          {
+            "name": "post_unshield_program",
+            "type": "pubkey"
+          },
+          {
+            "name": "required_accounts",
+            "type": {
+              "vec": "pubkey"
+            }
+          },
+          {
+            "name": "mode",
+            "type": {
+              "defined": {
+                "name": "HookAccountMode"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "HookConfigUpdated",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "origin_mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "post_shield_program",
+            "type": "pubkey"
+          },
+          {
+            "name": "post_unshield_program",
+            "type": "pubkey"
+          },
+          {
+            "name": "mode",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "MintMapping",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "origin_mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "ptkn_mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "has_ptkn",
+            "type": "bool"
+          },
+          {
+            "name": "status",
+            "type": "u8"
+          },
+          {
+            "name": "decimals",
+            "type": "u8"
+          },
+          {
+            "name": "features",
+            "type": {
+              "defined": {
+                "name": "FeatureFlags"
+              }
+            }
+          },
+          {
+            "name": "fee_bps_override",
+            "type": "u16"
+          },
+          {
+            "name": "has_fee_override",
+            "type": "bool"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "NoteLedger",
+      "serialization": "bytemuckunsafe",
+      "repr": {
+        "kind": "c"
+      },
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "pool",
+            "type": "pubkey"
+          },
+          {
+            "name": "total_minted",
+            "type": "u128"
+          },
+          {
+            "name": "total_spent",
+            "type": "u128"
+          },
+          {
+            "name": "live_value",
+            "type": "u128"
+          },
+          {
+            "name": "notes_created",
+            "type": "u64"
+          },
+          {
+            "name": "notes_consumed",
+            "type": "u64"
+          },
+          {
+            "name": "amount_commitment_digest",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "nullifier_digest",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "NullifierSet",
+      "serialization": "bytemuckunsafe",
+      "repr": {
+        "kind": "c"
+      },
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "pool",
+            "type": "pubkey"
+          },
+          {
+            "name": "count",
+            "type": "u32"
+          },
+          {
+            "name": "entries",
+            "type": {
+              "array": [
+                {
+                  "array": [
+                    "u8",
+                    32
+                  ]
+                },
+                256
+              ]
+            }
+          },
+          {
+            "name": "bloom",
+            "type": {
+              "array": [
+                "u8",
+                512
+              ]
+            }
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "PTFHookPostShield",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "deposit_id",
+            "type": "u64"
+          },
+          {
+            "name": "commitment",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "PTFHookPostUnshield",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "mode",
+            "type": "u8"
+          },
+          {
+            "name": "destination",
+            "type": "pubkey"
+          }
+        ]
+      }
+    },
+    {
+      "name": "PTFInvariantOk",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "vault",
+            "type": "pubkey"
+          },
+          {
+            "name": "supply_pm",
+            "type": "u64"
+          },
+          {
+            "name": "live_notes_commit",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "fees",
+            "type": "u128"
+          }
+        ]
+      }
+    },
+    {
+      "name": "PTFNullifierUsed",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "nullifier",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "PTFShielded",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "depositor",
+            "type": "pubkey"
+          },
+          {
+            "name": "commitment",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "root",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "amount_commit",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "PTFTransferred",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "inputs",
+            "type": {
+              "vec": {
+                "array": [
+                  "u8",
+                  32
+                ]
+              }
+            }
+          },
+          {
+            "name": "outputs",
+            "type": {
+              "vec": {
+                "array": [
+                  "u8",
+                  32
+                ]
+              }
+            }
+          },
+          {
+            "name": "root",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "PTFUnshieldOrigin",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "destination",
+            "type": "pubkey"
+          },
+          {
+            "name": "amount",
+            "type": "u64"
+          },
+          {
+            "name": "fee",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "PTFUnshieldPMint",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "destination",
+            "type": "pubkey"
+          },
+          {
+            "name": "amount",
+            "type": "u64"
+          },
+          {
+            "name": "fee",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "PoolInitialized",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "origin_mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "fee_bps",
+            "type": "u16"
+          },
+          {
+            "name": "features",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "PoolState",
+      "serialization": "bytemuckunsafe",
+      "repr": {
+        "kind": "c"
+      },
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "authority",
+            "type": "pubkey"
+          },
+          {
+            "name": "origin_mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "vault",
+            "type": "pubkey"
+          },
+          {
+            "name": "verifier_program",
+            "type": "pubkey"
+          },
+          {
+            "name": "verifying_key",
+            "type": "pubkey"
+          },
+          {
+            "name": "commitment_tree",
+            "type": "pubkey"
+          },
+          {
+            "name": "verifying_key_id",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "verifying_key_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "current_root",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "recent_roots",
+            "type": {
+              "array": [
+                {
+                  "array": [
+                    "u8",
+                    32
+                  ]
+                },
+                16
+              ]
+            }
+          },
+          {
+            "name": "roots_len",
+            "type": "u8"
+          },
+          {
+            "name": "fee_bps",
+            "type": "u16"
+          },
+          {
+            "name": "features",
+            "type": {
+              "defined": {
+                "name": "FeatureFlags"
+              }
+            }
+          },
+          {
+            "name": "note_ledger",
+            "type": "pubkey"
+          },
+          {
+            "name": "note_ledger_bump",
+            "type": "u8"
+          },
+          {
+            "name": "protocol_fees",
+            "type": "u128"
+          },
+          {
+            "name": "hook_config",
+            "type": "pubkey"
+          },
+          {
+            "name": "hook_config_present",
+            "type": "bool"
+          },
+          {
+            "name": "hook_config_bump",
+            "type": "u8"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          },
+          {
+            "name": "twin_mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "twin_mint_enabled",
+            "type": "bool"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ShieldArgs",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "new_root",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "commitment",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "amount_commit",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "amount",
+            "type": "u64"
+          },
+          {
+            "name": "proof",
+            "type": "bytes"
+          },
+          {
+            "name": "public_inputs",
+            "type": "bytes"
+          }
+        ]
+      }
+    },
+    {
+      "name": "TransferArgs",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "old_root",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "new_root",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "nullifiers",
+            "type": {
+              "vec": {
+                "array": [
+                  "u8",
+                  32
+                ]
+              }
+            }
+          },
+          {
+            "name": "output_commitments",
+            "type": {
+              "vec": {
+                "array": [
+                  "u8",
+                  32
+                ]
+              }
+            }
+          },
+          {
+            "name": "output_amount_commitments",
+            "type": {
+              "vec": {
+                "array": [
+                  "u8",
+                  32
+                ]
+              }
+            }
+          },
+          {
+            "name": "proof",
+            "type": "bytes"
+          },
+          {
+            "name": "public_inputs",
+            "type": "bytes"
+          }
+        ]
+      }
+    },
+    {
+      "name": "UnshieldArgs",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "old_root",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "new_root",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "nullifiers",
+            "type": {
+              "vec": {
+                "array": [
+                  "u8",
+                  32
+                ]
+              }
+            }
+          },
+          {
+            "name": "output_commitments",
+            "type": {
+              "vec": {
+                "array": [
+                  "u8",
+                  32
+                ]
+              }
+            }
+          },
+          {
+            "name": "output_amount_commitments",
+            "type": {
+              "vec": {
+                "array": [
+                  "u8",
+                  32
+                ]
+              }
+            }
+          },
+          {
+            "name": "amount",
+            "type": "u64"
+          },
+          {
+            "name": "proof",
+            "type": "bytes"
+          },
+          {
+            "name": "public_inputs",
+            "type": "bytes"
+          }
+        ]
+      }
+    },
+    {
+      "name": "VaultState",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "origin_mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "pool_authority",
+            "type": "pubkey"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "VerifyingKeyAccount",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "authority",
+            "type": "pubkey"
+          },
+          {
+            "name": "circuit_tag",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "verifying_key_id",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          },
+          {
+            "name": "version",
+            "type": "u8"
+          },
+          {
+            "name": "verifying_key",
+            "type": "bytes"
+          }
+        ]
+      }
+    }
+  ]
+}

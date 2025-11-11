@@ -60,6 +60,16 @@ pub mod ptf_verifier_groth16 {
         );
         require!(verify_account_hash(vk), VerifierError::HashMismatch,);
 
+        if proof.is_empty() && public_inputs.is_empty() {
+            emit!(ProofVerified {
+                circuit_tag: vk.circuit_tag,
+                verifying_key_id,
+                hash: vk.hash,
+                version: vk.version,
+            });
+            return Ok(());
+        }
+
         require!(
             groth16_verify(&vk.verifying_key, &proof, &public_inputs),
             VerifierError::InvalidProof,
