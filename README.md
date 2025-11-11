@@ -82,9 +82,11 @@ All components run directly on the host (no Docker):
    npm install
    NEXT_PUBLIC_RPC_URL=http://127.0.0.1:8899 \
    NEXT_PUBLIC_PROOF_RPC_URL=http://127.0.0.1:8787 \
+   NEXT_PUBLIC_FAUCET_MODE=local \
    npm run dev
    ```
-   Simulation wallet + faucet operate purely client-side, but production mode will use the RPC endpoints above.
+   - Set `FAUCET_MODE=local` (and optionally `FAUCET_KEYPAIR=/path/to/id.json`) in your server environment so the `/api/faucet/*` routes can mint against the local validator.
+   - When targeting public devnet/testnet/mainnet, omit these variables so the faucet hides itself and relies on existing tokens.
 
 ---
 
@@ -155,10 +157,10 @@ E2E tests against simnet planned once bootstrap scripts land.
 
 ## 5. Front-end to On-chain Integration
 
-The dApp currently features:
-- **Simulation wallet** (local storage burner keys, history, token balances)
-- **Faucet** (airdrop SOL, mint origin/zTokens into simulation accounts using generated mint metadata)
-- **Convert** flow using placeholder SDK (wrap/unwrap stubs) with Proof RPC integration
+- The dApp currently features:
+- **Simulation wallet** for power users that want burner accounts entirely in-browser.
+- **Local validator faucet** (when `FAUCET_MODE=local`) that airdrops SOL and mints origin tokens against the bootstrap mint authority. In other environments the faucet hides itself and expects existing tokens.
+- **Convert** flow hooked to the live SDK with Proof RPC integration (shield, unshield to origin/twin, change notes).
 - **Vault dashboard** (`/vault`) showing on-chain mint supply and vault balances after bootstrap
 
 ### Immediate Next Steps
