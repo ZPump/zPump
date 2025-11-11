@@ -22,10 +22,15 @@ import {
   useBoolean
 } from '@chakra-ui/react';
 import { useConnection, useWallet } from '@solana/wallet-adapter-react';
-import { useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { PublicKey } from '@solana/web3.js';
 import { MINTS, MintConfig } from '../../config/mints';
 import { ProofClient, ProofResponse } from '../../lib/proofClient';
 import { wrap as wrapSdk, unwrap as unwrapSdk, resolvePublicKey } from '../../lib/sdk';
+import { IndexerClient, IndexerNote } from '../../lib/indexerClient';
+import { getCachedRoots, setCachedRoots, getCachedNullifiers, setCachedNullifiers } from '../../lib/indexerCache';
+import { deriveCommitmentTree } from '../../lib/onchain/pdas';
+import { commitmentToHex, decodeCommitmentTree } from '../../lib/onchain/commitmentTree';
 
 type ConvertMode = 'to-private' | 'to-public';
 
@@ -40,6 +45,7 @@ interface UnwrapAdvancedState {
   exitFee: string;
   noteId: string;
   spendingKey: string;
+  viewKey: string;
   useProofRpc: boolean;
 }
 
@@ -66,12 +72,24 @@ export function ConvertForm() {
     exitFee: '0',
     noteId: createRandomSeed(),
     spendingKey: createRandomSeed(),
+  viewKey: '',
     useProofRpc: true
   });
 
   const [result, setResult] = useState<string | null>(null);
   const [proofPreview, setProofPreview] = useState<ProofResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [roots, setRoots] = useState<{ current: string; recent: string[]; source: string } | null>(null);
+  const [rootsError, setRootsError] = useState<string | null>(null);
+  const [isLoadingRoots, setLoadingRoots] = useState<boolean>(false);
+  const [nullifierState, setNullifierState] = useState<{ values: string[]; source?: string } | null>(null);
+  const [nullifierError, setNullifierError] = useState<string | null>(null);
+  const [isLoadingNullifiers, setLoadingNullifiers] = useState<boolean>(false);
+  const [notesSnapshot, setNotesSnapshot] = useState<{ viewKey: string; notes: IndexerNote[]; source?: string } | null>(
+    null
+  );
+  const [notesError, setNotesError] = useState<string | null>(null);
+  const [isLoadingNotes, setLoadingNotes] = useState<boolean>(false);
 
   const mintConfig = useMemo<MintConfig | undefined>(
     () => MINTS.find((mint) => mint.originMint === originMint),
@@ -81,6 +99,153 @@ export function ConvertForm() {
   const zTokenSymbol = useMemo(() => `z${mintConfig?.symbol ?? 'TOKEN'}`, [mintConfig?.symbol]);
 
   const proofClient = useMemo(() => new ProofClient(), []);
+  const indexerClient = useMemo(() => new IndexerClient(), []);
+  const mountedRef = useRef(true);
+
+  useEffect(() => {
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
+  const normaliseField = (value: string) => {
+    if (!value) {
+      return value;
+    }
+    if (value.startsWith('0x') || value.startsWith('0X')) {
+      const trimmed = value.slice(2).toLowerCase() || '0';
+      return `0x${trimmed}`;
+    }
+    if (/^\d+$/.test(value)) {
+      try {
+        return `0x${BigInt(value).toString(16)}`;
+      } catch {
+        return value;
+      }
+    }
+    return value;
+  };
+
+  const fetchRootsFromChain = useCallback(
+    async (mint: string) => {
+      const mintKey = new PublicKey(mint);
+      const treeKey = deriveCommitmentTree(mintKey);
+      const accountInfo = await connection.getAccountInfo(treeKey);
+      if (!accountInfo) {
+        throw new Error('Commitment tree account missing on-chain');
+      }
+      const state = decodeCommitmentTree(new Uint8Array(accountInfo.data));
+      return {
+        current: commitmentToHex(state.currentRoot),
+        recent: [],
+        source: 'chain'
+      };
+    },
+    [connection]
+  );
+
+  const refreshRoots = useCallback(async () => {
+    if (!originMint) {
+      return null;
+    }
+    setLoadingRoots(true);
+    setRootsError(null);
+    try {
+      const result = await indexerClient.getRoots(originMint);
+      if (result) {
+        const parsed = {
+          current: normaliseField(result.current),
+          recent: result.recent.map(normaliseField),
+          source: result.source ?? 'indexer'
+        };
+        if (mountedRef.current) {
+          setRoots(parsed);
+          setCachedRoots({ mint: originMint, current: parsed.current, recent: parsed.recent, source: parsed.source });
+        }
+        return parsed;
+      }
+      const fallback = await fetchRootsFromChain(originMint);
+      if (mountedRef.current) {
+        setRoots(fallback);
+        setCachedRoots({ mint: originMint, current: fallback.current, recent: fallback.recent, source: fallback.source });
+      }
+      return fallback;
+    } catch (caught) {
+      try {
+        const fallback = await fetchRootsFromChain(originMint);
+        if (mountedRef.current) {
+          setRoots(fallback);
+          setCachedRoots({ mint: originMint, current: fallback.current, recent: fallback.recent, source: fallback.source });
+        }
+        return fallback;
+      } catch (chainError) {
+        if (mountedRef.current) {
+          setRoots(null);
+          setRootsError((caught as Error).message ?? 'Failed to fetch roots');
+        }
+        throw chainError;
+      }
+    } finally {
+      if (mountedRef.current) {
+        setLoadingRoots(false);
+      }
+    }
+  }, [fetchRootsFromChain, indexerClient, originMint]);
+
+  useEffect(() => {
+    const cached = originMint ? getCachedRoots(originMint) : null;
+    if (cached) {
+      setRoots({
+        current: cached.current,
+        recent: cached.recent,
+        source: cached.source ?? 'cache'
+      });
+    }
+    void refreshRoots();
+  }, [originMint, refreshRoots]);
+
+  const resolvedOldRoot = roots?.current ?? null;
+
+  const refreshNullifiers = useCallback(
+    async () => {
+      if (!originMint) {
+        return [] as string[];
+      }
+      setLoadingNullifiers(true);
+      setNullifierError(null);
+    try {
+      const result = await indexerClient.getNullifiers(originMint);
+      const values = result ? result.nullifiers.map(normaliseField) : [];
+      if (mountedRef.current) {
+        const nextState = { values, source: result?.source };
+        setNullifierState(nextState);
+        setCachedNullifiers({ mint: originMint, values, source: nextState.source });
+      }
+      return values;
+      } catch (caught) {
+        if (mountedRef.current) {
+          setNullifierState(null);
+          setNullifierError((caught as Error).message ?? 'Failed to fetch nullifiers');
+        }
+        return [] as string[];
+      } finally {
+        if (mountedRef.current) {
+          setLoadingNullifiers(false);
+        }
+      }
+    },
+    [indexerClient, originMint]
+  );
+
+  useEffect(() => {
+    const cached = originMint ? getCachedNullifiers(originMint) : null;
+    if (cached) {
+      setNullifierState({ values: cached.values, source: cached.source });
+    }
+    void refreshNullifiers();
+  }, [originMint, refreshNullifiers]);
+
+  const nullifierList = nullifierState?.values ?? [];
 
   const handleModeChange = (event: React.ChangeEvent<HTMLSelectElement>) => {
     setMode(event.target.value as ConvertMode);
@@ -101,6 +266,40 @@ export function ConvertForm() {
       setUnwrapAdvanced((prev) => ({ ...prev, [field]: value as never }));
     };
 
+  const handleFetchNotes = async () => {
+    const viewKey = unwrapAdvanced.viewKey.trim();
+    if (!viewKey) {
+      setNotesSnapshot(null);
+      setNotesError('Enter a viewing key to scan notes.');
+      return;
+    }
+    setNotesError(null);
+    setLoadingNotes(true);
+    try {
+      const result = await indexerClient.getNotes(viewKey);
+      if (mountedRef.current) {
+        if (result) {
+          const notes = result.notes.map((note) => ({
+            ...note,
+            commitment: normaliseField(note.commitment)
+          }));
+          setNotesSnapshot({ viewKey: result.viewKey, notes, source: result.source });
+        } else {
+          setNotesSnapshot({ viewKey, notes: [], source: undefined });
+        }
+      }
+    } catch (caught) {
+      if (mountedRef.current) {
+        setNotesSnapshot(null);
+        setNotesError((caught as Error).message ?? 'Failed to fetch notes');
+      }
+    } finally {
+      if (mountedRef.current) {
+        setLoadingNotes(false);
+      }
+    }
+  };
+
   const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setSubmitting.on();
@@ -119,9 +318,19 @@ export function ConvertForm() {
       const poolId = mintConfig.poolId;
       const mintId = mintConfig.originMint;
 
+      let rootValue = resolvedOldRoot;
+      if (!rootValue) {
+        const latest = await refreshRoots();
+        rootValue = latest?.current ?? null;
+      }
+
+      if (!rootValue) {
+        throw new Error('Unable to resolve the current commitment tree root. Refresh and try again.');
+      }
+
       if (mode === 'to-private') {
         const payload = {
-          oldRoot: '0',
+          oldRoot: rootValue,
           amount,
           recipient: wallet.publicKey.toBase58(),
           depositId: wrapAdvanced.depositId,
@@ -153,7 +362,7 @@ export function ConvertForm() {
       } else {
         const destinationKey = await resolvePublicKey(unwrapAdvanced.destination, wallet.publicKey);
         const payload = {
-          oldRoot: '0',
+          oldRoot: rootValue,
           amount,
           fee: unwrapAdvanced.exitFee,
           destPubkey: destinationKey.toBase58(),
@@ -174,6 +383,17 @@ export function ConvertForm() {
           throw new Error('Proof RPC must be enabled for unshield.');
         }
 
+        const proofNullifier = proofResponse.publicInputs?.[2];
+        const normalisedNullifier = proofNullifier ? normaliseField(proofNullifier) : null;
+        if (!normalisedNullifier) {
+          throw new Error('Proof payload missing nullifier public input.');
+        }
+
+        const latestNullifiers = await refreshNullifiers();
+        if (latestNullifiers.includes(normalisedNullifier)) {
+          throw new Error('This note appears to be already spent. Refresh and pick a different note.');
+        }
+
         await unwrapSdk({
           connection,
           wallet,
@@ -186,6 +406,11 @@ export function ConvertForm() {
         });
 
         setResult(`Redeemed ${amount} ${mintConfig.symbol}.`);
+      }
+      void refreshRoots();
+      void refreshNullifiers();
+      if (notesSnapshot) {
+        void handleFetchNotes();
       }
     } catch (caught) {
       setError((caught as Error).message);
@@ -236,6 +461,68 @@ export function ConvertForm() {
             Private balance will appear as {zTokenSymbol}.
           </FormHelperText>
         </FormControl>
+
+        <FormControl>
+          <FormLabel color="whiteAlpha.700">Commitment tree root</FormLabel>
+          <HStack spacing={3} align="center">
+            <Text fontFamily="mono" fontSize="sm" color="whiteAlpha.700">
+              {roots?.current ?? '…'}
+            </Text>
+            <Button size="xs" variant="outline" onClick={() => void refreshRoots()} isLoading={isLoadingRoots}>
+              Refresh
+            </Button>
+          </HStack>
+          {roots?.source && (
+            <FormHelperText color="whiteAlpha.500">Source: {roots.source}</FormHelperText>
+          )}
+          {roots?.recent.length ? (
+            <FormHelperText color="whiteAlpha.500">
+              Recent: {roots.recent.slice(0, 3).join(', ')}
+              {roots.recent.length > 3 ? '…' : ''}
+            </FormHelperText>
+          ) : null}
+          {rootsError && <FormHelperText color="red.300">{rootsError}</FormHelperText>}
+        </FormControl>
+
+        {mode === 'to-public' && (
+          <FormControl>
+            <FormLabel color="whiteAlpha.700">Known nullifiers</FormLabel>
+            <Stack spacing={1} fontFamily="mono" bg="rgba(4, 8, 20, 0.75)" p={3} rounded="md">
+              {nullifierList.length ? (
+                nullifierList.slice(0, 5).map((entry) => (
+                  <Text key={entry} color="whiteAlpha.700" fontSize="sm">
+                    {entry}
+                  </Text>
+                ))
+              ) : (
+                <Text color="whiteAlpha.500" fontSize="sm">
+                  No spent notes recorded for this mint yet.
+                </Text>
+              )}
+              {nullifierList.length > 5 && (
+                <Text color="whiteAlpha.500" fontSize="xs">
+                  + {nullifierList.length - 5} additional nullifiers
+                </Text>
+              )}
+            </Stack>
+            <HStack spacing={3} mt={2}>
+              <Button
+                size="xs"
+                variant="outline"
+                onClick={() => void refreshNullifiers()}
+                isLoading={isLoadingNullifiers}
+              >
+                Refresh nullifiers
+              </Button>
+              {nullifierState?.source && (
+                <Text fontSize="xs" color="whiteAlpha.500">
+                  Source: {nullifierState.source}
+                </Text>
+              )}
+            </HStack>
+            {nullifierError && <FormHelperText color="red.300">{nullifierError}</FormHelperText>}
+          </FormControl>
+        )}
 
         <FormControl isRequired>
           <FormLabel color="whiteAlpha.700">Amount (in base units)</FormLabel>
@@ -320,6 +607,46 @@ export function ConvertForm() {
                   <FormControl>
                     <FormLabel color="whiteAlpha.700">Spending key</FormLabel>
                     <Input value={unwrapAdvanced.spendingKey} onChange={handleUnwrapAdvancedChange('spendingKey')} />
+                  </FormControl>
+                  <FormControl>
+                    <FormLabel color="whiteAlpha.700">Viewing key (optional)</FormLabel>
+                    <HStack spacing={3}>
+                      <Input
+                        value={unwrapAdvanced.viewKey}
+                        onChange={handleUnwrapAdvancedChange('viewKey')}
+                        placeholder="Fetch indexed notes with your view key"
+                      />
+                      <Button size="sm" variant="outline" onClick={() => void handleFetchNotes()} isLoading={isLoadingNotes}>
+                        Scan
+                      </Button>
+                    </HStack>
+                    <FormHelperText color="whiteAlpha.500">
+                      We&apos;ll query the configured indexer for note commitments linked to this key.
+                    </FormHelperText>
+                    {notesError && <FormHelperText color="red.300">{notesError}</FormHelperText>}
+                    {notesSnapshot && (
+                      <Box mt={3} bg="rgba(3, 6, 16, 0.85)" p={3} rounded="md" border="1px solid rgba(59,205,255,0.1)">
+                        <Text fontSize="sm" color="whiteAlpha.600">
+                          Found {notesSnapshot.notes.length} notes
+                          {notesSnapshot.source ? ` (source: ${notesSnapshot.source})` : ''}
+                        </Text>
+                        <Stack spacing={2} mt={2} fontFamily="mono" fontSize="xs">
+                          {notesSnapshot.notes.length === 0 && (
+                            <Text color="whiteAlpha.500">No notes visible for this viewing key.</Text>
+                          )}
+                          {notesSnapshot.notes.slice(0, 3).map((note) => (
+                            <Box key={`${note.commitment}-${note.slot}`} p={2} bg="rgba(0,0,0,0.2)" rounded="md">
+                              <Text color="whiteAlpha.700">Commitment: {note.commitment}</Text>
+                              <Text color="whiteAlpha.500">Mint: {note.mint}</Text>
+                              <Text color="whiteAlpha.500">Slot: {note.slot}</Text>
+                            </Box>
+                          ))}
+                          {notesSnapshot.notes.length > 3 && (
+                            <Text color="whiteAlpha.500">+ {notesSnapshot.notes.length - 3} additional notes…</Text>
+                          )}
+                        </Stack>
+                      </Box>
+                    )}
                   </FormControl>
                   <FormControl display="flex" alignItems="center">
                     <FormLabel htmlFor="unwrapRpc" mb="0" color="whiteAlpha.700">
