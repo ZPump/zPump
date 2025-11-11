@@ -2,22 +2,22 @@
   {
     "symbol": "USDC",
     "decimals": 6,
-    "originMint": "CRJ8j4nhUzkHdVRnzVRh7z5f97UHfh8hQkDLSbeB5cHL",
-    "poolId": "4owqXzb6AFj8KCkQmLJCU9UYrh3RBsNJ3qzZNkBaizvF",
-    "zTokenMint": null,
+    "originMint": "6pmLaDL3Evfq7GfboVDzfTkmjaCGYVaC1BvmzZnjfRS6",
+    "poolId": "FUBxHFUChjigKD526AQWZuzpwHQndQuHtiw7MX6PWZkK",
+    "zTokenMint": "AJZLwFMzd5WXD4GPh8v69iizebxrxUnr4Nrb8aJyUkH7",
     "features": {
-      "zTokenEnabled": false,
+      "zTokenEnabled": true,
       "wrappedTransfers": false
     }
   },
   {
     "symbol": "SOLx",
     "decimals": 9,
-    "originMint": "D8tUtNmsZM5w3bWWqE7qW1vBA52z2zMcts7HwJ26kZ8E",
-    "poolId": "EZqBNQXbRLx2pWewoHBwxFnf6x7ByCQBEFF5pZ4eJPTh",
-    "zTokenMint": null,
+    "originMint": "2d8xge1hjta29mHo9W1XpuYU9S1NFoKaumCg8evz5f9T",
+    "poolId": "AJrTZm1eWquNHuvQbPJ1aKuJqTt5fFbcNzFL1qL3Z8rQ",
+    "zTokenMint": "3vyJWSsT987dJSNv9GFQLCEUPKbLLe91uirrNLdCUn9i",
     "features": {
-      "zTokenEnabled": false,
+      "zTokenEnabled": true,
       "wrappedTransfers": false
     }
   }

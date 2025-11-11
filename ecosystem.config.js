@@ -6,7 +6,9 @@ module.exports = {
       script: 'npm',
       args: 'run start',
       env: {
-        NODE_ENV: 'production'
+        NODE_ENV: 'production',
+        INDEXER_INTERNAL_URL: 'http://127.0.0.1:8787',
+        NEXT_PUBLIC_INDEXER_URL: '/api/indexer'
       },
       env_local: {
         NEXT_PUBLIC_FAUCET_MODE: 'local'
