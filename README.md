@@ -191,6 +191,7 @@ These notes capture future enhancements; implement after the simnet path is prov
 | web/app | `NEXT_PUBLIC_PROOF_RPC_URL` | Proof RPC endpoint | `http://127.0.0.1:8787` |
 | web/app | `NEXT_PUBLIC_INDEXER_URL` | Photon indexer endpoint | `http://127.0.0.1:8787` |
 | web/app | `NEXT_PUBLIC_FAUCET_MODE` | `local` to enable validator faucet, `simulation`/unset otherwise | `simulation` |
+| web/app | `NEXT_PUBLIC_ENABLE_BURNER` | `true` to expose UnsafeBurner wallet (local only) | `false` |
 | web/app | `NEXT_PUBLIC_CLUSTER` *(planned)* | `localnet` / `devnet` / `mainnet` | – |
 | backend | `RPC_URL` | Solana RPC endpoint for proof/indexer services | `http://127.0.0.1:8899` |
 | backend | `PHOTON_URL` | Upstream Photon/Helius endpoint (optional) | – |

@@ -22,7 +22,6 @@ jest.mock('@solana/wallet-adapter-react-ui', () => ({
 }));
 
 jest.mock('@solana/wallet-adapter-wallets', () => ({
-  PhantomWalletAdapter: class {},
   SolflareWalletAdapter: class {},
   BackpackWalletAdapter: class {},
   LedgerWalletAdapter: class {},
@@ -45,6 +44,7 @@ describe('WalletProvider', () => {
 
   it('uses provided RPC endpoint when env is set', () => {
     process.env.NEXT_PUBLIC_RPC_URL = 'https://example-rpc.solana.com';
+    process.env.NEXT_PUBLIC_ENABLE_BURNER = 'true';
 
     render(
       <WalletProvider>
@@ -58,6 +58,7 @@ describe('WalletProvider', () => {
 
   it('falls back to devnet RPC when env unset', () => {
     delete process.env.NEXT_PUBLIC_RPC_URL;
+    delete process.env.NEXT_PUBLIC_ENABLE_BURNER;
 
     render(
       <WalletProvider>
