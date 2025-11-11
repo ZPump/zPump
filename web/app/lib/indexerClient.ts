@@ -59,6 +59,30 @@ export class IndexerClient {
     return this.parseNullifiers(payload, mint);
   }
 
+  async appendNullifiers(mint: string, nullifiers: string[]): Promise<void> {
+    if (!nullifiers.length) {
+      return;
+    }
+    const normalised = nullifiers.map((entry) => this.asHex(entry) ?? entry);
+    const url = new URL(`/nullifiers/${mint}`, this.baseUrl);
+    const headers: HeadersInit = {
+      Accept: 'application/json',
+      'Content-Type': 'application/json'
+    };
+    if (this.apiKey) {
+      headers['x-ptf-api-key'] = this.apiKey;
+    }
+    const response = await this.fetchImpl(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ nullifiers: normalised })
+    });
+    if (!response.ok) {
+      throw new Error(`Indexer error: ${response.status} ${response.statusText}`);
+    }
+    await response.json().catch(() => null);
+  }
+
   async getNotes(viewKey: string): Promise<IndexerNoteResult | null> {
     const payload = await this.request(`/notes/${viewKey}`);
     if (!payload) {

@@ -457,7 +457,7 @@ async function ensureMint(
   };
 }
 
-async function main() {
+export async function bootstrapPrivateDevnet() {
   const connection = new Connection(process.env.RPC_URL ?? 'http://127.0.0.1:8899', 'confirmed');
   const payer = await loadKeypair(path.join(process.env.HOME ?? '.', '.config', 'solana', 'id.json'));
 
@@ -512,7 +512,8 @@ async function main() {
     throw new Error('Shield verifying key must be available before mint bootstrap.');
   }
 
-  const raw = await fs.readFile(DEFAULT_MINTS_PATH, 'utf8');
+  const mintsPath = process.env.MINTS_PATH ? path.resolve(process.env.MINTS_PATH) : DEFAULT_MINTS_PATH;
+  const raw = await fs.readFile(mintsPath, 'utf8');
   const mintCatalog = JSON.parse(raw) as GeneratedMint[];
   const updated: GeneratedMint[] = [];
 
@@ -521,13 +522,13 @@ async function main() {
     updated.push(refreshed);
   }
 
-  await fs.writeFile(DEFAULT_MINTS_PATH, JSON.stringify(updated, null, 2));
-  console.log(`\nUpdated mint catalogue written to ${DEFAULT_MINTS_PATH}`);
+  await fs.writeFile(mintsPath, JSON.stringify(updated, null, 2));
+  console.log(`\nUpdated mint catalogue written to ${mintsPath}`);
 }
 
 if (require.main === module) {
   // eslint-disable-next-line @typescript-eslint/no-floating-promises
-  main().catch((error) => {
+  bootstrapPrivateDevnet().catch((error) => {
     console.error('Bootstrap failed', error);
     process.exit(1);
   });
