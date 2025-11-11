@@ -272,7 +272,6 @@ mod tests {
     }
 
     fn program_test() -> ProgramTest {
-        let mut test = ProgramTest::default();
         let so_path = artifact_path(FACTORY_SO);
         assert!(
             so_path.exists(),
@@ -281,8 +280,13 @@ mod tests {
             so_path.display()
         );
         if let Some(dir) = so_path.parent() {
-            env::set_var("BPF_OUT_DIR", dir);
+            let canonical = dir
+                .canonicalize()
+                .unwrap_or_else(|_| dir.to_path_buf());
+            env::set_var("BPF_OUT_DIR", &canonical);
+            env::set_var("SBF_OUT_DIR", &canonical);
         }
+        let mut test = ProgramTest::default();
         test.add_program("ptf_factory", FACTORY_PROGRAM_ID, None);
         test
     }
