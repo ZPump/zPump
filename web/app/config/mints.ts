@@ -1,6 +1,7 @@
 export interface MintConfig {
   symbol: string;
   originMint: string;
+  zTokenMint?: string;
   poolId: string;
   decimals: number;
   features: {
@@ -23,6 +24,7 @@ export const MINTS: MintConfig[] = [
   {
     symbol: 'SOLx',
     originMint: 'Mint222222222222222222222222222222222222222',
+    zTokenMint: 'zMint22222222222222222222222222222222222222',
     poolId: 'Pool222222222222222222222222222222222222222',
     decimals: 9,
     features: {
