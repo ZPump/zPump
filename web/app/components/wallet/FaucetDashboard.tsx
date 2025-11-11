@@ -82,8 +82,14 @@ function LocalFaucetDashboard() {
     }
     try {
       const lamports = await connection.getBalance(wallet.publicKey, { commitment: 'finalized' });
+      console.info('[faucet] balance refresh', {
+        wallet: wallet.publicKey.toBase58(),
+        lamports,
+        endpoint: connection.rpcEndpoint
+      });
       setWalletBalance(lamports / LAMPORTS_PER_SOL);
-    } catch {
+    } catch (error) {
+      console.error('[faucet] failed to refresh balance', error);
       setWalletBalance(null);
     }
   }, [connection, wallet.publicKey]);
@@ -101,10 +107,11 @@ function LocalFaucetDashboard() {
 
     try {
       subscriptionId = connection.onAccountChange(publicKey, () => {
+        console.debug('[faucet] account change detected', { wallet: publicKey.toBase58() });
         void refreshWalletBalance();
       });
     } catch (error) {
-      console.error('Unable to subscribe to wallet balance updates', error);
+      console.error('[faucet] Unable to subscribe to wallet balance updates', error);
     }
 
     return () => {
@@ -175,9 +182,10 @@ function LocalFaucetDashboard() {
           setSharedEvents((previous) =>
             eventsAreEqual(previous, payload.events) ? previous : payload.events
           );
+          console.info('[faucet] fetched shared events', { count: payload.events.length });
         }
       } catch (error) {
-        console.warn('Unable to fetch faucet events', error);
+        console.warn('[faucet] Unable to fetch faucet events', error);
       }
     };
     fetchEvents();
@@ -224,6 +232,11 @@ function LocalFaucetDashboard() {
         throw new Error(payload.error ?? 'Failed to request SOL airdrop');
       }
       await refreshWalletBalance();
+      console.info('[faucet] SOL airdrop success', {
+        signature,
+        lamports: lamports.toString(),
+        recipient: wallet.publicKey.toBase58()
+      });
       toast({
         title: 'SOL airdrop submitted',
         description: `Signature: ${signature}`,
@@ -278,6 +291,12 @@ function LocalFaucetDashboard() {
         throw new Error(payload.error ?? 'Failed to mint tokens');
       }
       await refreshWalletBalance();
+      console.info('[faucet] token mint success', {
+        signature,
+        amount: amount.toString(),
+        mint: selectedMint.originMint,
+        recipient: wallet.publicKey.toBase58()
+      });
       toast({
         title: `${selectedMint.symbol} minted`,
         description: `Signature: ${signature}`,
@@ -393,7 +412,8 @@ function LocalFaucetDashboard() {
         </Box>
       </Stack>
 
-      {sharedEvents.length > 0 && (
+      <Stack spacing={4}>
+        {sharedEvents.length > 0 && (
         <Box
           bg="rgba(6, 10, 24, 0.8)"
           border="1px solid rgba(59,205,255,0.18)"
@@ -435,7 +455,8 @@ function LocalFaucetDashboard() {
             </Flex>
           </Stack>
         </Box>
-      )}
+        )}
+      </Stack>
     </Stack>
   );
 }

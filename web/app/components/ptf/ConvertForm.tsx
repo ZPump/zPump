@@ -483,7 +483,7 @@ export function ConvertForm() {
         setLoadingNotes(false);
       }
     }
-  };
+    };
 
   const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -690,7 +690,7 @@ export function ConvertForm() {
         if (selectedRedemptionMode === 'ztkn') {
           setResult(`Minted ${amount} ${mintConfig.symbol} privacy twin tokens.`);
         } else {
-          setResult(`Redeemed ${amount} ${mintConfig.symbol}.`);
+        setResult(`Redeemed ${amount} ${mintConfig.symbol}.`);
         }
       }
       void refreshRoots();
@@ -905,7 +905,7 @@ export function ConvertForm() {
                   <FormControl>
                     <FormLabel color="whiteAlpha.700">Note identifier</FormLabel>
                     <HStack spacing={3} align="center">
-                      <Input value={unwrapAdvanced.noteId} onChange={handleUnwrapAdvancedChange('noteId')} />
+                    <Input value={unwrapAdvanced.noteId} onChange={handleUnwrapAdvancedChange('noteId')} />
                       <Button size="sm" variant="outline" onClick={() => void handlePreviewNullifier()}>
                         Derive nullifier
                       </Button>

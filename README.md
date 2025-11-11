@@ -94,8 +94,8 @@ All components run directly on the host (no Docker):
    ```bash
    cd web/app
    npm install
-   NEXT_PUBLIC_RPC_URL=http://127.0.0.1:8899 \
-   NEXT_PUBLIC_PROOF_RPC_URL=http://127.0.0.1:8787 \
+   NEXT_PUBLIC_RPC_URL=https://devnet-rpc.zpump.xyz \
+   NEXT_PUBLIC_PROOF_RPC_URL=https://proof.zpump.xyz \
    NEXT_PUBLIC_FAUCET_MODE=local \
    npm run dev
    ```
@@ -133,7 +133,7 @@ To avoid public devnet faucet throttling, run a persistent validator that mirror
    The script is idempotent—rerun it any time you reset the ledger to recreate mint metadata, verifying keys, and vault accounts. Always rebuild and restart after bootstrapping so the site serves the current PDAs (otherwise the Convert page shows “Commitment tree account missing on-chain”).
 
 4. **Point services at the private cluster**
-   - `NEXT_PUBLIC_RPC_URL=http://127.0.0.1:8899` for the dApp.
+   - `NEXT_PUBLIC_RPC_URL` pointing at your tunnel (e.g. `https://devnet-rpc.zpump.xyz`) so browsers can reach the validator from outside the box.
    - Proof RPC: `RPC_URL=http://127.0.0.1:8899`.
    - Update `.env` files accordingly.
 
@@ -205,7 +205,7 @@ These notes capture future enhancements; implement after the simnet path is prov
 
 | Location | Variable | Purpose | Default |
 |----------|----------|---------|---------|
-| web/app | `NEXT_PUBLIC_RPC_URL` | Solana RPC endpoint | `http://127.0.0.1:8899` |
+| web/app | `NEXT_PUBLIC_RPC_URL` | Solana RPC endpoint (defaults to `https://devnet-rpc.zpump.xyz`) | `https://devnet-rpc.zpump.xyz` |
 | web/app | `NEXT_PUBLIC_PROOF_RPC_URL` | Proof RPC endpoint | `http://127.0.0.1:8787` |
 | web/app | `NEXT_PUBLIC_INDEXER_URL` | Photon indexer endpoint | `http://127.0.0.1:8787` |
 | web/app | `NEXT_PUBLIC_FAUCET_MODE` | `local` to enable validator faucet, `simulation`/unset otherwise | `simulation` |
