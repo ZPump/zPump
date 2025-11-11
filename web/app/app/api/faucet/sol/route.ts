@@ -5,6 +5,7 @@ import {
   createFaucetConnection,
   requestAirDrop
 } from '../../../../lib/server/faucet';
+import { appendFaucetEvent } from '../../../../lib/server/faucetLog';
 
 export async function POST(request: Request) {
   try {
@@ -45,6 +46,14 @@ export async function POST(request: Request) {
     const connection = createFaucetConnection();
     const recipient = new PublicKey(payload.recipient);
     const signature = await requestAirDrop(connection, recipient, lamports);
+    await appendFaucetEvent({
+      type: 'sol',
+      signature,
+      amount: lamports.toString(),
+      mint: null,
+      recipient: recipient.toBase58(),
+      timestamp: Date.now()
+    });
     return NextResponse.json({ signature });
   } catch (error) {
     return NextResponse.json(

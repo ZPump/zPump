@@ -6,6 +6,8 @@ import {
   AlertIcon,
   Box,
   Button,
+  Flex,
+  Code,
   FormControl,
   FormHelperText,
   FormLabel,
@@ -19,12 +21,25 @@ import {
   useToast
 } from '@chakra-ui/react';
 import { Droplet } from 'lucide-react';
-import { FormEvent, useEffect, useMemo, useState } from 'react';
-import { LAMPORTS_PER_SOL } from '@solana/web3.js';
-import { useWallet } from '@solana/wallet-adapter-react';
+import { FormEvent, useCallback, useEffect, useMemo, useState } from 'react';
+import { LAMPORTS_PER_SOL, PublicKey } from '@solana/web3.js';
+import { useConnection, useWallet } from '@solana/wallet-adapter-react';
 import { MINTS } from '../../config/mints';
 
 const FAUCET_MODE = process.env.NEXT_PUBLIC_FAUCET_MODE ?? 'local';
+const SOL_FORMATTER = new Intl.NumberFormat(undefined, {
+  maximumFractionDigits: 6
+});
+const EVENT_REFRESH_INTERVAL = 5_000;
+
+interface SharedFaucetEvent {
+  type: 'sol' | 'token';
+  signature: string;
+  recipient: string;
+  amount: string;
+  mint: string | null;
+  timestamp: number;
+}
 
 export function FaucetDashboard() {
   if (FAUCET_MODE !== 'local') {
@@ -43,17 +58,67 @@ export function FaucetDashboard() {
 function LocalFaucetDashboard() {
   const toast = useToast();
   const wallet = useWallet();
+  const { connection } = useConnection();
   const [solAmount, setSolAmount] = useState('1');
   const [tokenMint, setTokenMint] = useState<string>(MINTS[0]?.originMint ?? '');
   const [tokenAmount, setTokenAmount] = useState('100');
   const [isAirdropping, setAirdropping] = useBoolean(false);
   const [isMinting, setMinting] = useBoolean(false);
+  const [walletBalance, setWalletBalance] = useState<number | null>(null);
+  const [sharedEvents, setSharedEvents] = useState<SharedFaucetEvent[]>([]);
 
   useEffect(() => {
     if (!tokenMint && MINTS.length > 0) {
       setTokenMint(MINTS[0].originMint);
     }
   }, [tokenMint]);
+
+  const refreshWalletBalance = useCallback(async () => {
+    if (!wallet.publicKey) {
+      setWalletBalance(null);
+      return;
+    }
+    try {
+      const lamports = await connection.getBalance(wallet.publicKey, { commitment: 'finalized' });
+      setWalletBalance(lamports / LAMPORTS_PER_SOL);
+    } catch {
+      setWalletBalance(null);
+    }
+  }, [connection, wallet.publicKey]);
+
+  useEffect(() => {
+    refreshWalletBalance();
+  }, [refreshWalletBalance]);
+
+  useEffect(() => {
+    refreshWalletBalance();
+  }, [sharedEvents, refreshWalletBalance]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const fetchEvents = async () => {
+      try {
+        const response = await fetch('/api/faucet/events', { cache: 'no-store' });
+        if (!response.ok) {
+          throw new Error('failed_to_fetch_events');
+        }
+        const payload = (await response.json()) as { events: SharedFaucetEvent[] };
+        if (!cancelled) {
+          setSharedEvents(payload.events);
+        }
+      } catch {
+        if (!cancelled) {
+          setSharedEvents([]);
+        }
+      }
+    };
+    fetchEvents();
+    const interval = setInterval(fetchEvents, EVENT_REFRESH_INTERVAL);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, []);
 
   const selectedMint = useMemo(
     () => MINTS.find((mint) => mint.originMint === tokenMint),
@@ -86,12 +151,14 @@ function LocalFaucetDashboard() {
         })
       });
       const payload = (await response.json().catch(() => ({}))) as { signature?: string; error?: string };
+      const signature = payload.signature ?? 'unknown';
       if (!response.ok) {
         throw new Error(payload.error ?? 'Failed to request SOL airdrop');
       }
+      await refreshWalletBalance();
       toast({
         title: 'SOL airdrop submitted',
-        description: `Signature: ${payload.signature}`,
+        description: `Signature: ${signature}`,
         status: 'success',
         duration: 4000,
         isClosable: true
@@ -138,12 +205,14 @@ function LocalFaucetDashboard() {
         })
       });
       const payload = (await response.json().catch(() => ({}))) as { signature?: string; error?: string };
+      const signature = payload.signature ?? 'unknown';
       if (!response.ok) {
         throw new Error(payload.error ?? 'Failed to mint tokens');
       }
+      await refreshWalletBalance();
       toast({
         title: `${selectedMint.symbol} minted`,
-        description: `Signature: ${payload.signature}`,
+        description: `Signature: ${signature}`,
         status: 'success',
         duration: 4000,
         isClosable: true
@@ -255,6 +324,50 @@ function LocalFaucetDashboard() {
           </Stack>
         </Box>
       </Stack>
+
+      {sharedEvents.length > 0 && (
+        <Box
+          bg="rgba(6, 10, 24, 0.8)"
+          border="1px solid rgba(59,205,255,0.18)"
+          rounded="2xl"
+          p={{ base: 5, md: 6 }}
+        >
+          <Stack spacing={3}>
+            <Heading size="sm">Latest faucet activity</Heading>
+            <Flex direction="column" gap={2} maxH="220px" overflowY="auto">
+              {sharedEvents.map((event) => (
+                <Flex
+                  key={`${event.signature}-${event.timestamp}`}
+                  direction="column"
+                  gap={1}
+                  bg="rgba(12,18,38,0.9)"
+                  border="1px solid rgba(59,205,255,0.18)"
+                  rounded="lg"
+                  px={4}
+                  py={3}
+                >
+                  <Flex justify="space-between" align="center">
+                    <Text fontSize="sm" fontWeight="semibold" color="whiteAlpha.800">
+                      {event.type === 'sol'
+                        ? `${SOL_FORMATTER.format(Number(event.amount) / LAMPORTS_PER_SOL)} SOL`
+                        : `${event.amount} ${event.mint ?? ''}`}
+                    </Text>
+                    <Text fontSize="xs" color="whiteAlpha.500">
+                      {new Date(event.timestamp).toLocaleTimeString()}
+                    </Text>
+                  </Flex>
+                  <Text fontSize="xs" color="whiteAlpha.600">
+                    Recipient {event.recipient}
+                  </Text>
+                  <Code fontSize="xs" wordBreak="break-all">
+                    {event.signature}
+                  </Code>
+                </Flex>
+              ))}
+            </Flex>
+          </Stack>
+        </Box>
+      )}
     </Stack>
   );
 }
@@ -295,5 +408,6 @@ function parseTokenAmount(amount: string, decimals: number): bigint {
   }
   return baseUnits;
 }
+
 
 

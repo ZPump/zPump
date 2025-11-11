@@ -48,7 +48,27 @@ export function readWalletState(): WalletStorageState {
     if (!parsed.accounts || parsed.accounts.length === 0 || !parsed.activeId) {
       throw new Error('invalid');
     }
-    return parsed;
+    const normalizedAccounts = parsed.accounts.map((account) => {
+      if (!account.publicKey) {
+        try {
+          const keypair = Keypair.fromSecretKey(bs58.decode(account.secretKey));
+          return { ...account, publicKey: keypair.publicKey.toBase58() };
+        } catch {
+          return account;
+        }
+      }
+      return account;
+    });
+    const normalized: WalletStorageState = {
+      accounts: normalizedAccounts,
+      activeId: normalizedAccounts.some((account) => account.id === parsed.activeId)
+        ? parsed.activeId
+        : normalizedAccounts[0].id
+    };
+    if (typeof window !== 'undefined') {
+      writeWalletState(normalized);
+    }
+    return normalized;
   } catch {
     const fallback = createDefaultAccount();
     const state = { accounts: [fallback], activeId: fallback.id };
