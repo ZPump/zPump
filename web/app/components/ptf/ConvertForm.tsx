@@ -270,12 +270,15 @@ export function ConvertForm() {
           setCachedRoots({ mint: originMint, current: fallback.current, recent: fallback.recent, source: fallback.source });
         }
         return fallback;
-      } catch (chainError) {
+      } catch {
         if (mountedRef.current) {
           setRoots(null);
-          setRootsError((caught as Error).message ?? 'Failed to fetch roots');
+          setRootsError(
+            (caught as Error).message ??
+              'Commitment tree account not found. Run bootstrap-private-devnet or select a registered mint.'
+          );
         }
-        throw chainError;
+        return null;
       }
     } finally {
       if (mountedRef.current) {
