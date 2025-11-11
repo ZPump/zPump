@@ -8,5 +8,9 @@
   "pool_id": "2",
   "note_amount": "505",
   "note_id": "101",
-  "spending_key": "202"
+  "spending_key": "202",
+  "change_amount": "0",
+  "change_recipient": "555",
+  "change_blinding": "303",
+  "change_amount_blinding": "404"
 }

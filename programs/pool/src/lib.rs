@@ -642,6 +642,10 @@ fn process_unshield<'info>(
         args.output_commitments.len() == args.output_amount_commitments.len(),
         PoolError::OutputSetMismatch,
     );
+    require!(
+        args.output_commitments.len() == 1,
+        PoolError::InvalidChangeNoteCount,
+    );
     require_keys_eq!(
         ctx.accounts.mint_mapping.origin_mint,
         origin_mint,
@@ -1720,7 +1724,8 @@ fn validate_unshield_public_inputs(
     fee: u64,
 ) -> Result<()> {
     let fields = parse_field_elements(&args.public_inputs)?;
-    let expected_len = 2 + args.nullifiers.len() + 6;
+    let change_outputs = args.output_commitments.len();
+    let expected_len = 2 + args.nullifiers.len() + (2 * change_outputs) + 6;
     require!(fields.len() == expected_len, PoolError::InvalidPublicInputs);
 
     if fields[0] != args.old_root {
@@ -1741,6 +1746,28 @@ fn validate_unshield_public_inputs(
     }
 
     let mut index = 2 + args.nullifiers.len();
+    for (expected, actual) in args
+        .output_commitments
+        .iter()
+        .zip(&fields[index..index + change_outputs])
+    {
+        if actual != expected {
+            return err!(PoolError::PublicInputMismatch);
+        }
+    }
+    index += change_outputs;
+
+    for (expected, actual) in args
+        .output_amount_commitments
+        .iter()
+        .zip(&fields[index..index + change_outputs])
+    {
+        if actual != expected {
+            return err!(PoolError::PublicInputMismatch);
+        }
+    }
+    index += change_outputs;
+
     if fields[index] != u64_to_field_bytes(args.amount) {
         return err!(PoolError::PublicInputMismatch);
     }
@@ -1952,6 +1979,8 @@ pub enum PoolError {
     NoteLedgerMismatch,
     #[msg("E_TREE_MISMATCH")]
     CommitmentTreeMismatch,
+    #[msg("E_INVALID_CHANGE_NOTE_COUNT")]
+    InvalidChangeNoteCount,
     #[msg("E_OUTPUT_SET_MISMATCH")]
     OutputSetMismatch,
     #[msg("E_CANOPY_DEPTH_INVALID")]
@@ -2007,12 +2036,12 @@ mod tests {
     use super::*;
     use anchor_lang::prelude::InterfaceAccount;
     use anchor_lang::solana_program::{
-        account_info::AccountInfo,
-        entrypoint::ProgramResult,
-        program_pack::Pack,
+        account_info::AccountInfo, entrypoint::ProgramResult, program_pack::Pack,
     };
     use anchor_spl::token::spl_token;
-    use anchor_spl::token::spl_token::state::{Account as SplAccountState, AccountState, Mint as SplMintState};
+    use anchor_spl::token::spl_token::state::{
+        Account as SplAccountState, AccountState, Mint as SplMintState,
+    };
     use anchor_spl::token_interface::{Mint as InterfaceMint, TokenAccount};
 
     #[test]
@@ -2038,8 +2067,7 @@ mod tests {
         let pool_key = Pubkey::new_unique();
         let mut pool_state = dummy_pool_state(false);
         let mut ledger = dummy_note_ledger(pool_key);
-        let mut vault_harness =
-            TokenAccountHarness::new(pool_state.vault, pool_state.origin_mint);
+        let mut vault_harness = TokenAccountHarness::new(pool_state.vault, pool_state.origin_mint);
 
         ledger
             .record_shield(400, random_bytes(1))
@@ -2084,8 +2112,7 @@ mod tests {
         let pool_key = Pubkey::new_unique();
         let mut pool_state = dummy_pool_state(true);
         let mut ledger = dummy_note_ledger(pool_key);
-        let mut vault_harness =
-            TokenAccountHarness::new(pool_state.vault, pool_state.origin_mint);
+        let mut vault_harness = TokenAccountHarness::new(pool_state.vault, pool_state.origin_mint);
 
         ledger
             .record_shield(720, random_bytes(7))
@@ -2093,15 +2120,10 @@ mod tests {
         vault_harness.set_amount(720);
 
         let mut twin_supply = 0u128;
-        validate_supply_components(
-            &pool_state,
-            &ledger,
-            twin_supply,
-            {
-                let vault_account = vault_harness.interface_account();
-                u128::from(vault_account.amount)
-            },
-        )
+        validate_supply_components(&pool_state, &ledger, twin_supply, {
+            let vault_account = vault_harness.interface_account();
+            u128::from(vault_account.amount)
+        })
         .expect("initial twin shield should balance");
 
         ledger
@@ -2117,26 +2139,16 @@ mod tests {
         let mut mint_harness = MintHarness::new(pool_state.twin_mint, twin_supply as u64, 6);
         mint_harness.set_supply(twin_supply as u64);
 
-        validate_supply_components(
-            &pool_state,
-            &ledger,
-            twin_supply,
-            {
-                let vault_account = vault_harness.interface_account();
-                u128::from(vault_account.amount)
-            },
-        )
+        validate_supply_components(&pool_state, &ledger, twin_supply, {
+            let vault_account = vault_harness.interface_account();
+            u128::from(vault_account.amount)
+        })
         .expect("twin invariant must hold");
         {
             let vault_account = vault_harness.interface_account();
             let mint_account = mint_harness.interface_account();
-            enforce_supply_invariant(
-                &pool_state,
-                &ledger,
-                &vault_account,
-                Some(&mint_account),
-            )
-            .expect("twin invariant should pass");
+            enforce_supply_invariant(&pool_state, &ledger, &vault_account, Some(&mint_account))
+                .expect("twin invariant should pass");
         }
     }
 
@@ -2241,8 +2253,7 @@ mod tests {
 
         fn interface_account(&mut self) -> InterfaceAccount<'static, InterfaceMint> {
             unsafe {
-                let data_slice =
-                    std::slice::from_raw_parts_mut(self.data_ptr, self.data_len);
+                let data_slice = std::slice::from_raw_parts_mut(self.data_ptr, self.data_len);
                 SplMintState::pack(self.state.clone(), data_slice).expect("pack mint");
             }
             InterfaceAccount::try_from(self.account_info).expect("mint account should deserialize")
@@ -2297,13 +2308,10 @@ mod tests {
 
         fn interface_account(&mut self) -> InterfaceAccount<'static, TokenAccount> {
             unsafe {
-                let data_slice =
-                    std::slice::from_raw_parts_mut(self.data_ptr, self.data_len);
-                SplAccountState::pack(self.state.clone(), data_slice)
-                    .expect("pack token account");
+                let data_slice = std::slice::from_raw_parts_mut(self.data_ptr, self.data_len);
+                SplAccountState::pack(self.state.clone(), data_slice).expect("pack token account");
             }
-            InterfaceAccount::try_from(self.account_info)
-                .expect("token account should deserialize")
+            InterfaceAccount::try_from(self.account_info).expect("token account should deserialize")
         }
     }
 
@@ -2314,7 +2322,6 @@ mod tests {
         use anchor_lang::{
             prelude::AccountInfo, AccountDeserialize, InstructionData, ToAccountMetas,
         };
-        use std::result::Result as StdResult;
         use ark_bn254::{Bn254, Fr};
         use ark_groth16::{Groth16, Parameters};
         use ark_relations::r1cs::{
@@ -2338,6 +2345,7 @@ mod tests {
             get_associated_token_address, instruction as ata_instruction,
         };
         use spl_token::state::{Account as SplAccount, Mint as SplMint};
+        use std::result::Result as StdResult;
 
         const IDENTITY_PUBLIC_INPUTS: usize = 16;
 
@@ -2599,6 +2607,8 @@ mod tests {
                 transfer_root,
                 unshield_root,
                 &[nullifier],
+                &unshield_outputs,
+                &unshield_amount_commits,
                 amount,
                 fee,
                 context.payer.pubkey(),
@@ -3114,6 +3124,8 @@ mod tests {
             old_root: [u8; 32],
             new_root: [u8; 32],
             nullifiers: &[[u8; 32]],
+            output_commitments: &[[u8; 32]],
+            output_amount_commitments: &[[u8; 32]],
             amount: u64,
             fee: u64,
             destination: Pubkey,
@@ -3124,6 +3136,12 @@ mod tests {
             fields.push(Fr::from_le_bytes_mod_order(&new_root));
             for nullifier in nullifiers {
                 fields.push(Fr::from_le_bytes_mod_order(nullifier));
+            }
+            for commitment in output_commitments {
+                fields.push(Fr::from_le_bytes_mod_order(commitment));
+            }
+            for amount_commitment in output_amount_commitments {
+                fields.push(Fr::from_le_bytes_mod_order(amount_commitment));
             }
             fields.push(Fr::from_le_bytes_mod_order(&u64_to_field_bytes(amount)));
             fields.push(Fr::from_le_bytes_mod_order(&u64_to_field_bytes(fee)));
@@ -3150,4 +3168,3 @@ mod tests {
         }
     }
 }
-

@@ -14,11 +14,7 @@ fn main() {
         .expect("build idl");
     let json = serde_json::to_string_pretty(&idl).expect("serialize idl");
 
-    let out_dir = program_dir
-        .join("..")
-        .join("..")
-        .join("target")
-        .join("idl");
+    let out_dir = program_dir.join("..").join("..").join("target").join("idl");
     fs::create_dir_all(&out_dir).expect("create idl directory");
     let path = out_dir.join("ptf_verifier_groth16.json");
     fs::write(&path, json).expect("write idl file");
