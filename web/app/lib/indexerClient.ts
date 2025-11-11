@@ -40,7 +40,12 @@ export class IndexerClient {
   constructor(options?: IndexerClientOptions) {
     this.baseUrl = options?.baseUrl ?? DEFAULT_BASE_URL;
     this.apiKey = options?.apiKey ?? process.env.NEXT_PUBLIC_INDEXER_API_KEY;
-    this.fetchImpl = options?.fetchImpl ?? fetch;
+    const fetchFn = options?.fetchImpl ?? (typeof fetch !== 'undefined' ? fetch : undefined);
+    if (!fetchFn) {
+      throw new Error('Global fetch is not available. Provide a fetchImpl when constructing IndexerClient.');
+    }
+    this.fetchImpl = ((input: RequestInfo | URL, init?: RequestInit) =>
+      fetchFn.call(globalThis, input, init)) as typeof fetch;
   }
 
   async getRoots(mint: string): Promise<IndexerRootResult | null> {
