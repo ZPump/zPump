@@ -93,6 +93,7 @@ export function ConvertForm() {
   const [amount, setAmount] = useState<string>('1');
   const [isSubmitting, setSubmitting] = useBoolean(false);
   const [showAdvanced, setShowAdvanced] = useBoolean(false);
+  const [redeemMode, setRedeemMode] = useState<'origin' | 'ztkn'>('origin');
 
   const [wrapAdvanced, setWrapAdvanced] = useState<WrapAdvancedState>({
     depositId: createRandomSeed(),
@@ -141,6 +142,19 @@ export function ConvertForm() {
   );
 
   const zTokenSymbol = useMemo(() => `z${mintConfig?.symbol ?? 'TOKEN'}`, [mintConfig?.symbol]);
+  const twinRedemptionAvailable = useMemo(
+    () => Boolean(mintConfig?.features?.zTokenEnabled && mintConfig?.zTokenMint),
+    [mintConfig?.features?.zTokenEnabled, mintConfig?.zTokenMint]
+  );
+  const redeemDisplaySymbol = useMemo(() => {
+    if (mode === 'to-private') {
+      return zTokenSymbol;
+    }
+    if (redeemMode === 'ztkn' && twinRedemptionAvailable) {
+      return `${mintConfig?.symbol ?? 'TOKEN'} twin`;
+    }
+    return mintConfig?.symbol ?? 'TOKEN';
+  }, [mintConfig?.symbol, mode, redeemMode, twinRedemptionAvailable, zTokenSymbol]);
 
   const proofClient = useMemo(() => new ProofClient(), []);
   const indexerClient = useMemo(() => new IndexerClient(), []);
@@ -151,6 +165,12 @@ export function ConvertForm() {
       mountedRef.current = false;
     };
   }, []);
+
+  useEffect(() => {
+    if (mode !== 'to-public' || !twinRedemptionAvailable) {
+      setRedeemMode('origin');
+    }
+  }, [mode, twinRedemptionAvailable]);
 
   useEffect(() => {
     if (typeof window === 'undefined') {
@@ -342,6 +362,7 @@ export function ConvertForm() {
     setNoteLabelDraft('');
     setNullifierPreview(null);
     setNullifierPreviewError(null);
+    setRedeemMode('origin');
   };
 
   const handleWrapAdvancedChange =
@@ -522,6 +543,8 @@ export function ConvertForm() {
         setResult(`Shielded ${amount} into ${zTokenSymbol}.`);
       } else {
         const destinationKey = await resolvePublicKey(unwrapAdvanced.destination, wallet.publicKey);
+        const selectedRedemptionMode = twinRedemptionAvailable ? redeemMode : 'origin';
+        const proofMode = selectedRedemptionMode === 'ztkn' ? 'ztkn' : 'origin';
 
         const parseUnsigned = (value: string, label: string): bigint => {
           try {
@@ -601,7 +624,7 @@ export function ConvertForm() {
           amount: amountValue.toString(),
           fee: feeValue.toString(),
           destPubkey: destinationKey.toBase58(),
-          mode: 'origin' as const,
+          mode: proofMode,
           mintId,
           poolId,
           noteId: unwrapAdvanced.noteId,
@@ -639,11 +662,15 @@ export function ConvertForm() {
           amount: amountValue,
           poolId,
           destination: destinationKey.toBase58(),
-          mode: 'origin',
+          mode: selectedRedemptionMode,
           proof: proofResponse
         });
 
-        setResult(`Redeemed ${amount} ${mintConfig.symbol}.`);
+        if (selectedRedemptionMode === 'ztkn') {
+          setResult(`Minted ${amount} ${mintConfig.symbol} privacy twin tokens.`);
+        } else {
+          setResult(`Redeemed ${amount} ${mintConfig.symbol}.`);
+        }
       }
       void refreshRoots();
       void refreshNullifiers();
@@ -722,6 +749,23 @@ export function ConvertForm() {
           {rootsError && <FormHelperText color="red.300">{rootsError}</FormHelperText>}
         </FormControl>
 
+        {mode === 'to-public' && twinRedemptionAvailable && (
+          <FormControl>
+            <FormLabel color="whiteAlpha.700">Redeem to</FormLabel>
+            <Select
+              value={redeemMode}
+              onChange={(event) => setRedeemMode(event.target.value as 'origin' | 'ztkn')}
+              bg="rgba(6, 10, 26, 0.85)"
+            >
+              <option value="origin">Original mint ({mintConfig?.symbol ?? 'TOKEN'})</option>
+              <option value="ztkn">Privacy twin ({mintConfig?.symbol ?? 'TOKEN'})</option>
+            </Select>
+            <FormHelperText color="whiteAlpha.500">
+              Choose whether to receive the original token or its privacy twin on exit.
+            </FormHelperText>
+          </FormControl>
+        )}
+
         {mode === 'to-public' && (
           <FormControl>
             <FormLabel color="whiteAlpha.700">Known nullifiers</FormLabel>
@@ -775,7 +819,7 @@ export function ConvertForm() {
           </Text>
           <HStack justify="space-between" mt={2}>
             <Text fontSize="lg" color="brand.200" fontWeight="semibold">
-              {mode === 'to-private' ? zTokenSymbol : mintConfig?.symbol ?? 'TOKEN'}
+              {redeemDisplaySymbol}
             </Text>
             <Text fontSize="sm" color="whiteAlpha.600">
               Direction: {mode === 'to-private' ? 'Shielding (wrap)' : 'Redeeming (unwrap)'}

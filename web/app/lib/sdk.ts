@@ -29,6 +29,7 @@ import { bytesToBigIntLE, hexToBytes } from './onchain/utils';
 import { poseidonHashMany } from './onchain/poseidon';
 import { ProofResponse } from './proofClient';
 import poolIdl from '../idl/ptf_pool.json';
+import factoryIdl from '../idl/ptf_factory.json';
 import { getAssociatedTokenAddress, createAssociatedTokenAccountInstruction } from '@solana/spl-token';
 
 interface BaseParams {
@@ -49,7 +50,7 @@ interface WrapParams extends BaseParams {
 
 interface UnwrapParams extends BaseParams {
   destination: string;
-  mode: 'origin' | 'ztkn';
+  mode: 'origin' | 'ztkn' | 'ptkn';
   proof: ProofResponse;
 }
 
@@ -222,9 +223,7 @@ export async function wrap(params: WrapParams): Promise<string> {
 export async function unwrap(params: UnwrapParams): Promise<string> {
   assertWallet(params.wallet);
 
-  if (params.mode !== 'origin') {
-    throw new Error('Twin mint redemption is not yet supported.');
-  }
+  const mode = params.mode === 'ztkn' ? 'ptkn' : params.mode;
 
   const { wallet, connection } = params;
   const originMintKey = new PublicKey(params.originMint);
@@ -283,8 +282,28 @@ export async function unwrap(params: UnwrapParams): Promise<string> {
     ASSOCIATED_TOKEN_PROGRAM_ID
   );
 
+  const factoryCoder = new BorshCoder(factoryIdl as Idl);
+
+  let twinMintKey: PublicKey | null = null;
+  if (mode === 'ptkn') {
+    const mintMappingAccount = await connection.getAccountInfo(mintMappingKey);
+    if (!mintMappingAccount) {
+      throw new Error('Mint mapping account missing on devnet');
+    }
+    const decodedMintMapping = factoryCoder.accounts.decode('MintMapping', mintMappingAccount.data);
+    if (!decodedMintMapping.hasPtkn) {
+      throw new Error('Twin mint is not enabled for this origin mint.');
+    }
+    const candidate = new PublicKey(decodedMintMapping.ptknMint);
+    if (candidate.equals(PublicKey.default)) {
+      throw new Error('Twin mint address missing from mint mapping.');
+    }
+    twinMintKey = candidate;
+  }
+
+  const destinationMint = twinMintKey ?? originMintKey;
   const destinationTokenAccount = await getAssociatedTokenAddress(
-    originMintKey,
+    destinationMint,
     destinationKey,
     false,
     TOKEN_PROGRAM_ID,
@@ -300,7 +319,7 @@ export async function unwrap(params: UnwrapParams): Promise<string> {
         wallet.publicKey,
         destinationTokenAccount,
         destinationKey,
-        originMintKey,
+        destinationMint,
         TOKEN_PROGRAM_ID,
         ASSOCIATED_TOKEN_PROGRAM_ID
       )
@@ -320,7 +339,8 @@ export async function unwrap(params: UnwrapParams): Promise<string> {
     publicInputs: decodedProof.publicInputs
   };
 
-  const unshieldData = poolCoder.instruction.encode('unshieldToOrigin', { args: unshieldArgs });
+  const instructionName = mode === 'ptkn' ? 'unshieldToPtkn' : 'unshieldToOrigin';
+  const unshieldData = poolCoder.instruction.encode(instructionName, { args: unshieldArgs });
 
   const keys = [
     { pubkey: poolStateKey, isSigner: false, isWritable: true },
@@ -334,7 +354,11 @@ export async function unwrap(params: UnwrapParams): Promise<string> {
     { pubkey: vaultStateKey, isSigner: false, isWritable: true },
     { pubkey: vaultTokenAccount, isSigner: false, isWritable: true },
     { pubkey: destinationTokenAccount, isSigner: false, isWritable: true },
-    { pubkey: PublicKey.default, isSigner: false, isWritable: false },
+    {
+      pubkey: twinMintKey ?? PublicKey.default,
+      isSigner: false,
+      isWritable: mode === 'ptkn'
+    },
     { pubkey: VAULT_PROGRAM_ID, isSigner: false, isWritable: false },
     { pubkey: factoryStateKey, isSigner: false, isWritable: false },
     { pubkey: FACTORY_PROGRAM_ID, isSigner: false, isWritable: false },
