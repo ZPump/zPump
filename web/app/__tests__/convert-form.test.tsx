@@ -10,6 +10,7 @@ const getRootsMock = jest.fn();
 const getNullifiersMock = jest.fn();
 const getNotesMock = jest.fn();
 const getAccountInfoMock = jest.fn();
+const appendNullifiersMock = jest.fn();
 
 const mockConnection = {
   getAccountInfo: getAccountInfoMock
@@ -71,7 +72,8 @@ jest.mock('../lib/indexerClient', () => ({
   IndexerClient: jest.fn().mockImplementation(() => ({
     getRoots: getRootsMock,
     getNullifiers: getNullifiersMock,
-    getNotes: getNotesMock
+    getNotes: getNotesMock,
+    appendNullifiers: appendNullifiersMock
   }))
 }));
 
@@ -84,6 +86,7 @@ describe('ConvertForm', () => {
     window.localStorage.clear();
     wrapMock.mockResolvedValue('wrap-sig');
     unwrapMock.mockResolvedValue('unwrap-sig');
+    appendNullifiersMock.mockResolvedValue(undefined);
     resolvePublicKeyMock.mockResolvedValue({
       toBase58: () => 'DEST111'
     });
@@ -145,6 +148,7 @@ describe('ConvertForm', () => {
     expect(unwrapMock).toHaveBeenCalledWith(
       expect.objectContaining({ amount: 7n })
     );
+    await waitFor(() => expect(appendNullifiersMock).toHaveBeenCalledTimes(1));
     expect(screen.getByText(/Redeemed 7/)).toBeInTheDocument();
   });
 });

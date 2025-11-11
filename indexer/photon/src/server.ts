@@ -31,6 +31,10 @@ const NullifierResponseSchema = z.object({
   nullifiers: z.array(z.string())
 });
 
+const NullifierWriteSchema = z.object({
+  nullifiers: z.array(z.string()).min(1)
+});
+
 const NotesResponseSchema = z.object({
   viewKey: z.string().optional(),
   notes: z.array(NoteSchema)
@@ -299,6 +303,26 @@ async function bootstrap() {
     } catch (error) {
       logger.error({ err: error, mint }, 'failed to resolve nullifiers');
       res.status(502).json({ error: 'upstream_failed' });
+    }
+  });
+
+  app.post('/nullifiers/:mint', async (req, res) => {
+    const mint = req.params.mint;
+    const parsed = NullifierWriteSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: 'invalid_payload' });
+      return;
+    }
+    const normalised = parsed.data.nullifiers.map((value) =>
+      value.startsWith('0x') ? value : `0x${value}`
+    );
+    try {
+      store.addNullifiers(mint, normalised);
+      const current = store.getNullifiers(mint);
+      res.json({ mint, nullifiers: current, source: 'local' });
+    } catch (error) {
+      logger.error({ err: error, mint }, 'failed to append nullifiers');
+      res.status(500).json({ error: 'internal_error' });
     }
   });
 

@@ -666,6 +666,24 @@ export function ConvertForm() {
           proof: proofResponse
         });
 
+        try {
+          await indexerClient.appendNullifiers(originMint, [normalisedNullifier]);
+          if (mountedRef.current) {
+            setNullifierState((prev) => {
+              const existing = prev?.values ?? [];
+              const nextValues = [
+                normalisedNullifier,
+                ...existing.filter((value) => value !== normalisedNullifier)
+              ];
+              const source = prev?.source ?? 'local';
+              setCachedNullifiers({ mint: originMint, values: nextValues, source });
+              return { values: nextValues, source };
+            });
+          }
+        } catch (caught) {
+          console.warn('Failed to persist nullifier to indexer', caught);
+        }
+
         if (selectedRedemptionMode === 'ztkn') {
           setResult(`Minted ${amount} ${mintConfig.symbol} privacy twin tokens.`);
         } else {
