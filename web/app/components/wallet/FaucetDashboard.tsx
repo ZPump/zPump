@@ -102,24 +102,15 @@ function LocalFaucetDashboard() {
     if (!wallet.publicKey) {
       return;
     }
-    const publicKey = wallet.publicKey;
-    let subscriptionId: number | null = null;
 
-    try {
-      subscriptionId = connection.onAccountChange(publicKey, () => {
-        console.debug('[faucet] account change detected', { wallet: publicKey.toBase58() });
-        void refreshWalletBalance();
-      });
-    } catch (error) {
-      console.error('[faucet] Unable to subscribe to wallet balance updates', error);
-    }
+    const interval = setInterval(() => {
+      void refreshWalletBalance();
+    }, 8_000);
 
     return () => {
-      if (subscriptionId !== null) {
-        void connection.removeAccountChangeListener(subscriptionId);
-      }
+      clearInterval(interval);
     };
-  }, [connection, wallet.publicKey, refreshWalletBalance]);
+  }, [wallet.publicKey, refreshWalletBalance]);
 
   useEffect(() => {
     if (hasLoadedStoredEventsRef.current) {
