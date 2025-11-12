@@ -10,6 +10,7 @@ import { groth16 } from 'snarkjs';
 import pino from 'pino';
 import { z } from 'zod';
 import { PublicKey } from '@solana/web3.js';
+import { createHash } from 'crypto';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -227,11 +228,11 @@ function deriveUnshieldPublic(input: UnshieldInput) {
   }
 
   const changeCommitmentValue = hasChange
-    ? poseidonValue([changeAmount, changeRecipient, input.mintId, input.poolId, changeBlinding])
+    ? poseidonValue([changeAmount, changeRecipient!, input.mintId, input.poolId, changeBlinding!])
     : 0n;
 
   const changeAmountCommitmentValue = hasChange
-    ? poseidonValue([changeAmount, changeAmountBlinding])
+    ? poseidonValue([changeAmount, changeAmountBlinding!])
     : 0n;
 
   const newRoot = poseidonHex([input.oldRoot, nullifierValue, changeCommitmentValue, changeAmountCommitmentValue]);
@@ -275,9 +276,9 @@ function deriveUnshieldPublic(input: UnshieldInput) {
         ? {
             ...(input.change ?? {}),
             amount: changeAmount.toString(),
-            recipient: changeRecipient,
-            blinding: changeBlinding,
-            amountBlinding: changeAmountBlinding
+            recipient: changeRecipient!,
+            blinding: changeBlinding!,
+            amountBlinding: changeAmountBlinding!
           }
         : { amount: '0', recipient: '0', blinding: '0', amountBlinding: '0' }
     }
@@ -507,9 +508,13 @@ async function generateProof(
   }
 }
 
+function hashString(input: string): string {
+  return createHash('sha256').update(input).digest('hex');
+}
+
 function mockProof(circuit: string, payload: unknown, verifyingKeyHash: string): string {
   const blob = JSON.stringify({ circuit, payload, verifyingKeyHash });
-  const digest = sha256(Buffer.from(blob));
+  const digest = createHash('sha256').update(blob).digest();
   return Buffer.from(digest).toString('base64');
 }
 
