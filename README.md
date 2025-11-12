@@ -95,7 +95,7 @@ All components run directly on the host (no Docker):
    cd web/app
    npm install
    NEXT_PUBLIC_RPC_URL=https://devnet-rpc.zpump.xyz \
-   NEXT_PUBLIC_PROOF_RPC_URL=https://proof.zpump.xyz \
+   NEXT_PUBLIC_PROOF_RPC_URL=/api/proof \
    NEXT_PUBLIC_FAUCET_MODE=local \
    npm run dev
    ```
@@ -134,7 +134,7 @@ To avoid public devnet faucet throttling, run a persistent validator that mirror
 
 4. **Point services at the private cluster**
    - `NEXT_PUBLIC_RPC_URL` pointing at your tunnel (e.g. `https://devnet-rpc.zpump.xyz`) so browsers can reach the validator from outside the box.
-   - Proof RPC: `RPC_URL=http://127.0.0.1:8899`.
+   - Proof RPC: expose it via the Next.js proxy (`NEXT_PUBLIC_PROOF_RPC_URL=/api/proof`) and set `PROOF_RPC_INTERNAL_URL=http://127.0.0.1:8788/prove` so the server can forward requests internally.
    - Update `.env` files accordingly.
 
 Once flows are validated here, target the same binaries at public devnet/mainnet.
@@ -206,12 +206,13 @@ These notes capture future enhancements; implement after the simnet path is prov
 | Location | Variable | Purpose | Default |
 |----------|----------|---------|---------|
 | web/app | `NEXT_PUBLIC_RPC_URL` | Solana RPC endpoint (defaults to `https://devnet-rpc.zpump.xyz`) | `https://devnet-rpc.zpump.xyz` |
-| web/app | `NEXT_PUBLIC_PROOF_RPC_URL` | Proof RPC endpoint | `http://127.0.0.1:8787` |
+| web/app | `NEXT_PUBLIC_PROOF_RPC_URL` | Proof RPC endpoint (defaults to `/api/proof`) | `/api/proof` |
 | web/app | `NEXT_PUBLIC_INDEXER_URL` | Photon indexer endpoint | `http://127.0.0.1:8787` |
 | web/app | `NEXT_PUBLIC_FAUCET_MODE` | `local` to enable validator faucet, `simulation`/unset otherwise | `simulation` |
 | web/app | `NEXT_PUBLIC_ENABLE_BURNER` | `true` to expose UnsafeBurner wallet (local only) | `false` |
 | web/app | `NEXT_PUBLIC_CLUSTER` *(planned)* | `localnet` / `devnet` / `mainnet` | – |
 | backend | `RPC_URL` | Solana RPC endpoint for proof/indexer services | `http://127.0.0.1:8899` |
+| backend | `PROOF_RPC_INTERNAL_URL` | Internal proof RPC base (used by proxy) | `http://127.0.0.1:8788/prove` |
 | backend | `PHOTON_URL` | Upstream Photon/Helius endpoint (optional) | – |
 | backend | `INDEXER_INTERNAL_URL` | Base URL the Next.js server uses to reach the indexer | `http://127.0.0.1:8787` |
 | services/proof-rpc | `RPC_PORT` | HTTP port | `8787` |
