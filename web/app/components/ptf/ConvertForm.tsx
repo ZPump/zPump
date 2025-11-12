@@ -709,11 +709,11 @@ export function ConvertForm() {
     <Box
       as="form"
       onSubmit={handleSubmit}
-      bg="rgba(10, 14, 30, 0.85)"
+      bg="rgba(18, 16, 14, 0.88)"
       p={{ base: 6, md: 10 }}
       rounded="3xl"
-      border="1px solid rgba(59,205,255,0.25)"
-      boxShadow="0 0 45px rgba(59,205,255,0.25)"
+      border="1px solid rgba(245,178,27,0.24)"
+      boxShadow="0 0 45px rgba(245, 178, 27, 0.22)"
     >
       <Stack spacing={6}>
         <Stack spacing={2}>
@@ -727,7 +727,7 @@ export function ConvertForm() {
 
         <FormControl>
           <FormLabel color="whiteAlpha.700">Mode</FormLabel>
-          <Select value={mode} onChange={handleModeChange} bg="rgba(6, 10, 26, 0.85)">
+          <Select value={mode} onChange={handleModeChange} bg="rgba(18, 16, 14, 0.78)">
             <option value="to-private">Public → Private (mint zTokens)</option>
             <option value="to-public">Private → Public (redeem zTokens)</option>
           </Select>
@@ -735,7 +735,7 @@ export function ConvertForm() {
 
         <FormControl>
           <FormLabel color="whiteAlpha.700">Token</FormLabel>
-          <Select value={originMint} onChange={(event) => setOriginMint(event.target.value)} bg="rgba(6, 10, 26, 0.85)">
+          <Select value={originMint} onChange={(event) => setOriginMint(event.target.value)} bg="rgba(18, 16, 14, 0.78)">
             {MINTS.map((mint) => (
               <option key={mint.originMint} value={mint.originMint}>
                 {mint.symbol}
@@ -775,7 +775,7 @@ export function ConvertForm() {
             <Select
               value={redeemMode}
               onChange={(event) => setRedeemMode(event.target.value as 'origin' | 'ztkn')}
-              bg="rgba(6, 10, 26, 0.85)"
+              bg="rgba(18, 16, 14, 0.78)"
             >
               <option value="origin">Original mint ({mintConfig?.symbol ?? 'TOKEN'})</option>
               <option value="ztkn">Privacy twin ({mintConfig?.symbol ?? 'TOKEN'})</option>
@@ -789,7 +789,7 @@ export function ConvertForm() {
         {mode === 'to-public' && (
           <FormControl>
             <FormLabel color="whiteAlpha.700">Known nullifiers</FormLabel>
-            <Stack spacing={1} fontFamily="mono" bg="rgba(4, 8, 20, 0.75)" p={3} rounded="md">
+            <Stack spacing={1} fontFamily="mono" bg="rgba(18, 16, 14, 0.74)" p={3} rounded="md">
               {nullifierList.length ? (
                 nullifierList.slice(0, 5).map((entry) => (
                   <Text key={entry} color="whiteAlpha.700" fontSize="sm">
@@ -833,7 +833,7 @@ export function ConvertForm() {
           </NumberInput>
         </FormControl>
 
-        <Box bg="rgba(4, 8, 20, 0.95)" rounded="xl" p={4} border="1px solid rgba(59,205,255,0.15)">
+        <Box bg="rgba(20, 18, 14, 0.9)" rounded="xl" p={4} border="1px solid rgba(245,178,27,0.18)">
           <Text fontSize="sm" color="whiteAlpha.600">
             You&apos;ll receive:
           </Text>
@@ -852,7 +852,7 @@ export function ConvertForm() {
         </Button>
 
         <Collapse in={showAdvanced} animateOpacity>
-          <Box bg="rgba(4, 8, 20, 0.95)" rounded="xl" p={5} border="1px solid rgba(59,205,255,0.15)">
+          <Box bg="rgba(20, 18, 14, 0.9)" rounded="xl" p={5} border="1px solid rgba(245,178,27,0.18)">
             <Stack spacing={4}>
               {mode === 'to-private' ? (
                 <>
@@ -879,7 +879,7 @@ export function ConvertForm() {
                     </FormLabel>
                     <Switch
                       id="wrapRpc"
-                      colorScheme="teal"
+                      colorScheme="brand"
                       isChecked={wrapAdvanced.useProofRpc}
                       onChange={handleWrapAdvancedChange('useProofRpc')}
                     />
@@ -1012,7 +1012,7 @@ export function ConvertForm() {
                     </FormHelperText>
                     {notesError && <FormHelperText color="red.300">{notesError}</FormHelperText>}
                     {notesSnapshot && (
-                      <Box mt={3} bg="rgba(3, 6, 16, 0.85)" p={3} rounded="md" border="1px solid rgba(59,205,255,0.1)">
+                      <Box mt={3} bg="rgba(20, 18, 14, 0.82)" p={3} rounded="md" border="1px solid rgba(245,178,27,0.12)">
                         <Text fontSize="sm" color="whiteAlpha.600">
                           Found {notesSnapshot.notes.length} notes
                           {notesSnapshot.source ? ` (source: ${notesSnapshot.source})` : ''}
@@ -1127,7 +1127,7 @@ export function ConvertForm() {
         )}
 
         {proofPreview && (
-          <Box bg="rgba(4, 8, 20, 0.95)" rounded="xl" p={4} border="1px solid rgba(59,205,255,0.15)" fontFamily="mono">
+        <Box bg="rgba(20, 18, 14, 0.9)" rounded="xl" p={4} border="1px solid rgba(245,178,27,0.18)" fontFamily="mono">
             <Text fontWeight="semibold" color="brand.100">
               Proof preview
             </Text>

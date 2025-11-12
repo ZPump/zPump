@@ -2,6 +2,7 @@ import bs58 from 'bs58';
 import { Keypair } from '@solana/web3.js';
 import { getSimulationTokens, getStateVersion, SOL_TOKEN_ID } from './constants';
 import { SimAccount, SimulationState, SimTransaction } from './types';
+import { safeRandomUUID } from '../utils/safeRandomUUID';
 
 const STORAGE_KEY = 'zpump-simulation-state';
 
@@ -20,7 +21,7 @@ function normalizeBalances(balances: Record<string, string> | undefined): Record
 export function createSimulationAccount(label: string, seedSol = false): SimAccount {
   const keypair = Keypair.generate();
   const account: SimAccount = {
-    id: crypto.randomUUID(),
+    id: safeRandomUUID(),
     label,
     publicKey: keypair.publicKey.toBase58(),
     secretKey: bs58.encode(Array.from(keypair.secretKey)),
@@ -101,7 +102,7 @@ export function restoreAccountFromSecret(secretKey: string, label?: string): Sim
   const secretBytes = bs58.decode(secretKey);
   const keypair = Keypair.fromSecretKey(secretBytes);
   return {
-    id: crypto.randomUUID(),
+    id: safeRandomUUID(),
     label: label ?? `Imported ${keypair.publicKey.toBase58().slice(0, 4)}`,
     publicKey: keypair.publicKey.toBase58(),
     secretKey: bs58.encode(Array.from(keypair.secretKey)),

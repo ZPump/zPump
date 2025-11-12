@@ -328,7 +328,7 @@ function WalletDrawerContent({ disclosure }: { disclosure: ReturnType<typeof use
   return (
     <Drawer isOpen placement="right" size="sm" onClose={disclosure.onClose}>
       <DrawerOverlay />
-      <DrawerContent bg="rgba(10, 14, 30, 0.96)" borderLeft="1px solid rgba(59,205,255,0.25)">
+      <DrawerContent bg="rgba(18, 16, 14, 0.96)" borderLeft="1px solid rgba(245,178,27,0.24)">
         <DrawerCloseButton />
         <DrawerHeader borderBottomWidth="1px" borderColor="whiteAlpha.200">
           <Stack spacing={2}>
@@ -336,7 +336,7 @@ function WalletDrawerContent({ disclosure }: { disclosure: ReturnType<typeof use
               Connected wallet
             </Text>
             <HStack spacing={3}>
-              <Badge colorScheme="cyan" variant="subtle">
+              <Badge colorScheme="brand" variant="subtle">
                 Devnet
               </Badge>
               {activeAccount && (
@@ -376,12 +376,12 @@ function WalletDrawerContent({ disclosure }: { disclosure: ReturnType<typeof use
                     py={3}
                     rounded="xl"
                     border="1px solid"
-                    borderColor={account.id === activeAccount?.id ? 'cyan.400' : 'whiteAlpha.200'}
+                    borderColor={account.id === activeAccount?.id ? 'brand.300' : 'whiteAlpha.200'}
                     align="center"
                     justify="space-between"
                     bg={account.id === activeAccount?.id ? 'whiteAlpha.100' : 'transparent'}
                     transition="all 0.2s"
-                    _hover={{ borderColor: 'cyan.300', cursor: 'pointer' }}
+                    _hover={{ borderColor: 'brand.200', cursor: 'pointer' }}
                     onClick={() => selectAccount(account.id)}
                   >
                     <Stack spacing={1}>
@@ -427,7 +427,7 @@ function WalletDrawerContent({ disclosure }: { disclosure: ReturnType<typeof use
               </Stack>
 
               {createOpen && (
-                <Box border="1px dashed" borderColor="cyan.500" rounded="lg" p={4}>
+                <Box border="1px dashed" borderColor="brand.400" rounded="lg" p={4}>
                   <Stack spacing={2}>
                     <Text fontSize="sm" color="whiteAlpha.700">
                       New account label
@@ -441,7 +441,7 @@ function WalletDrawerContent({ disclosure }: { disclosure: ReturnType<typeof use
               )}
 
               {importOpen && (
-                <Box border="1px dashed" borderColor="cyan.500" rounded="lg" p={4}>
+                <Box border="1px dashed" borderColor="brand.400" rounded="lg" p={4}>
                   <Stack spacing={2}>
                     <Text fontSize="sm" color="whiteAlpha.700">
                       Paste a base58-encoded secret key to import an existing account.
@@ -469,11 +469,11 @@ function WalletDrawerContent({ disclosure }: { disclosure: ReturnType<typeof use
                 Balances
               </Text>
               <Box
-                border="1px solid rgba(59,205,255,0.25)"
+                border="1px solid rgba(245,178,27,0.2)"
                 rounded="2xl"
                 p={5}
-                bg="rgba(9,12,24,0.75)"
-                boxShadow="0 0 25px rgba(59,205,255,0.15)"
+                bg="rgba(20, 18, 14, 0.82)"
+                boxShadow="0 0 25px rgba(245, 178, 27, 0.18)"
               >
                 {loadingBalances ? (
                   <Flex align="center" justify="center" py={8}>
@@ -522,11 +522,11 @@ function WalletDrawerContent({ disclosure }: { disclosure: ReturnType<typeof use
                 Recent activity
               </Text>
               <Box
-                border="1px solid rgba(59,205,255,0.25)"
+                border="1px solid rgba(245,178,27,0.2)"
                 rounded="2xl"
                 p={5}
-                bg="rgba(9,12,24,0.75)"
-                boxShadow="0 0 25px rgba(59,205,255,0.15)"
+                bg="rgba(20, 18, 14, 0.82)"
+                boxShadow="0 0 25px rgba(245, 178, 27, 0.18)"
               >
                 {loadingTransactions ? (
                   <Flex align="center" justify="center" py={8}>
@@ -546,8 +546,8 @@ function WalletDrawerContent({ disclosure }: { disclosure: ReturnType<typeof use
                       return (
                         <Box
                           key={entry.signature}
-                          bg="rgba(12,18,38,0.9)"
-                          border="1px solid rgba(59,205,255,0.18)"
+                          bg="rgba(24, 20, 16, 0.9)"
+                          border="1px solid rgba(245,178,27,0.2)"
                           rounded="lg"
                           p={3}
                         >
