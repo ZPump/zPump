@@ -37,12 +37,17 @@ export function Features() {
         {featureList.map((feature) => (
           <GridItem
             key={feature.title}
-            bg="rgba(10, 14, 30, 0.8)"
-            border="1px solid rgba(59,205,255,0.2)"
+            bg="rgba(18, 16, 14, 0.82)"
+            border="1px solid rgba(245,178,27,0.18)"
             rounded="2xl"
             p={8}
-            boxShadow="0 0 30px rgba(2, 62, 96, 0.25)"
-            _hover={{ borderColor: 'brand.300', transform: 'translateY(-4px)', transition: 'all 0.3s ease' }}
+            boxShadow="0 0 30px rgba(12, 10, 6, 0.35)"
+            _hover={{
+              borderColor: 'brand.300',
+              transform: 'translateY(-4px)',
+              transition: 'all 0.3s ease',
+              boxShadow: '0 12px 36px rgba(245, 178, 27, 0.28)'
+            }}
           >
             <Icon as={feature.icon} boxSize={8} color="brand.300" mb={6} />
             <Heading size="md" mb={3}>

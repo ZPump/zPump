@@ -14,8 +14,8 @@ export function PageContainer({ children, maxW = '5xl' }: PageContainerProps) {
   return (
     <Box
       minH="100vh"
-      bg="radial-gradient(circle at top, rgba(59,205,255,0.12), rgba(5,5,16,0.92))"
-      color="white"
+      bg="radial-gradient(circle at 20% 0%, rgba(245,178,27,0.12), rgba(7,7,9,0.96))"
+      color="ink.50"
       display="flex"
       flexDirection="column"
     >

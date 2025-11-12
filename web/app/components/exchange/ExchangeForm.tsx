@@ -45,16 +45,16 @@ export function ExchangeForm() {
     <Box
       as="form"
       onSubmit={handleSubmit}
-      bg="rgba(10, 14, 30, 0.8)"
+      bg="rgba(18, 16, 14, 0.88)"
       p={{ base: 6, md: 10 }}
       rounded="3xl"
-      border="1px solid rgba(59,205,255,0.25)"
-      boxShadow="0 0 45px rgba(59,205,255,0.25)"
+      border="1px solid rgba(245,178,27,0.24)"
+      boxShadow="0 0 45px rgba(245, 178, 27, 0.22)"
     >
       <Stack spacing={6}>
         <FormControl>
           <FormLabel color="whiteAlpha.700">Mode</FormLabel>
-          <Select value={mode} onChange={(event) => setMode(event.target.value as ExchangeMode)} bg="rgba(6, 10, 26, 0.85)">
+          <Select value={mode} onChange={(event) => setMode(event.target.value as ExchangeMode)} bg="rgba(18, 16, 14, 0.78)">
             <option value="wrap">Wrap into zTokens</option>
             <option value="unwrap-origin">Unwrap to Origin Mint</option>
             <option value="unwrap-ztoken">Unwrap into fresh zTokens</option>
@@ -62,7 +62,7 @@ export function ExchangeForm() {
         </FormControl>
         <FormControl>
           <FormLabel color="whiteAlpha.700">Token</FormLabel>
-          <Select value={tokenMint} onChange={(event) => setTokenMint(event.target.value)} bg="rgba(6, 10, 26, 0.85)">
+          <Select value={tokenMint} onChange={(event) => setTokenMint(event.target.value)} bg="rgba(18, 16, 14, 0.78)">
             {MOCK_TOKENS.map((token) => (
               <option key={token.mint} value={token.mint}>
                 {token.label}
@@ -76,7 +76,7 @@ export function ExchangeForm() {
             <NumberInputField placeholder="0.00" />
           </NumberInput>
         </FormControl>
-        <Box bg="rgba(4, 8, 20, 0.95)" rounded="xl" p={4} border="1px solid rgba(59,205,255,0.15)">
+        <Box bg="rgba(20, 18, 14, 0.9)" rounded="xl" p={4} border="1px solid rgba(245,178,27,0.18)">
           <Text fontSize="sm" color="whiteAlpha.600">
             Wrapped counterpart:
           </Text>

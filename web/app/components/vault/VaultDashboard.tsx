@@ -6,7 +6,6 @@ import {
   AlertIcon,
   Box,
   Button,
-  FormHelperText,
   Heading,
   HStack,
   IconButton,
@@ -163,11 +162,11 @@ export function VaultDashboard() {
         {snapshots.map((snapshot) => (
           <Box
             key={snapshot.config.originMint}
-            bg="rgba(4, 8, 20, 0.9)"
-            border="1px solid rgba(59,205,255,0.18)"
+            bg="rgba(20, 18, 14, 0.88)"
+            border="1px solid rgba(245,178,27,0.2)"
             rounded="2xl"
             p={{ base: 6, md: 8 }}
-            boxShadow="0 0 35px rgba(59,205,255,0.18)"
+            boxShadow="0 0 35px rgba(245, 178, 27, 0.2)"
           >
             <Stack spacing={4}>
               <HStack justify="space-between" align={{ base: 'flex-start', md: 'center' }} flexDir={{ base: 'column', md: 'row' }}>
@@ -180,26 +179,26 @@ export function VaultDashboard() {
                 <CopyField label="Vault token account" value={snapshot.vaultTokenAccount} />
               </Stack>
               <Stack direction={{ base: 'column', md: 'row' }} spacing={4} align="stretch">
-                <Stat bg="rgba(6, 10, 26, 0.9)" p={4} rounded="xl" flex="1">
+                <Stat bg="rgba(24, 20, 16, 0.9)" p={4} rounded="xl" flex="1">
                   <StatLabel>Decimals</StatLabel>
                   <StatNumber>{snapshot.decimals}</StatNumber>
                   <StatHelpText color="whiteAlpha.600">On-chain mint metadata</StatHelpText>
                 </Stat>
-                <Stat bg="rgba(6, 10, 26, 0.9)" p={4} rounded="xl" flex="1">
+                <Stat bg="rgba(24, 20, 16, 0.9)" p={4} rounded="xl" flex="1">
                   <StatLabel>Total supply</StatLabel>
                   <StatNumber>{formatLamports(snapshot.supply, snapshot.decimals)}</StatNumber>
                   <StatHelpText color="whiteAlpha.600">Mint supply (base units)</StatHelpText>
                 </Stat>
-                <Stat bg="rgba(6, 10, 26, 0.9)" p={4} rounded="xl" flex="1">
+                <Stat bg="rgba(24, 20, 16, 0.9)" p={4} rounded="xl" flex="1">
                   <StatLabel>Vault balance</StatLabel>
                   <StatNumber>{formatLamports(snapshot.vaultBalance, snapshot.decimals)}</StatNumber>
                   <StatHelpText color="whiteAlpha.600">Origin tokens held in custody</StatHelpText>
                 </Stat>
               </Stack>
-              <FormHelperText color="whiteAlpha.500">
+              <Text fontSize="sm" color="whiteAlpha.500">
                 Vault balances should equal circulating privacy supply minus protocol fees. Use this dashboard after running the
                 devnet bootstrap to confirm invariants.
-              </FormHelperText>
+              </Text>
             </Stack>
           </Box>
         ))}

@@ -2,6 +2,7 @@
 
 import bs58 from 'bs58';
 import { Keypair } from '@solana/web3.js';
+import { safeRandomUUID } from '../utils/safeRandomUUID';
 
 export interface StoredAccount {
   id: string;
@@ -21,7 +22,7 @@ const STORAGE_KEY = 'zpump.localWallet.v1';
 function createDefaultAccount(): StoredAccount {
   const keypair = Keypair.generate();
   return {
-    id: crypto.randomUUID(),
+    id: safeRandomUUID(),
     label: 'Account 1',
     secretKey: bs58.encode(keypair.secretKey),
     publicKey: keypair.publicKey.toBase58(),
@@ -85,7 +86,7 @@ export function writeWalletState(state: WalletStorageState) {
 export function addAccount(state: WalletStorageState, label?: string): WalletStorageState {
   const keypair = Keypair.generate();
   const account: StoredAccount = {
-    id: crypto.randomUUID(),
+    id: safeRandomUUID(),
     label: label?.trim() || `Account ${state.accounts.length + 1}`,
     secretKey: bs58.encode(keypair.secretKey),
     publicKey: keypair.publicKey.toBase58(),
@@ -111,7 +112,7 @@ export function importAccount(state: WalletStorageState, secretKey: string, labe
   }
 
   const account: StoredAccount = {
-    id: crypto.randomUUID(),
+    id: safeRandomUUID(),
     label: label?.trim() || `Imported ${state.accounts.length + 1}`,
     secretKey,
     publicKey: keypair.publicKey.toBase58(),

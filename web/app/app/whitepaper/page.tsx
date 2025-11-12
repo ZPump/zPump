@@ -33,12 +33,12 @@ function DiagramNode({ title, body }: { title: string; body: string }) {
   return (
     <Box
       minW={{ base: '200px', md: '220px' }}
-      bg="rgba(12,18,38,0.9)"
-      border="1px solid rgba(59,205,255,0.25)"
+      bg="rgba(24, 20, 16, 0.9)"
+      border="1px solid rgba(245,178,27,0.22)"
       rounded="2xl"
       p={4}
       textAlign="center"
-      boxShadow="0 0 20px rgba(59,205,255,0.18)"
+      boxShadow="0 0 20px rgba(245, 178, 27, 0.18)"
     >
       <Heading size="sm" mb={2}>
         {title}

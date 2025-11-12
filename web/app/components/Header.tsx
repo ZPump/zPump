@@ -2,7 +2,8 @@
 
 import { Box, Flex, HStack, IconButton, Link, Text, useDisclosure } from '@chakra-ui/react';
 import NextLink from 'next/link';
-import { Layers, MenuIcon } from 'lucide-react';
+import Image from 'next/image';
+import { MenuIcon } from 'lucide-react';
 import { WalletDrawerLauncher } from './wallet/WalletDrawer';
 
 export function Header() {
@@ -11,22 +12,23 @@ export function Header() {
   return (
     <Box as="header" py={6} px={{ base: 4, md: 10 }} position="sticky" top={0} zIndex={100} backdropFilter="blur(18px)">
       <Flex align="center" justify="space-between">
-        <HStack spacing={3}>
+        <Link as={NextLink} href="/" display="flex" alignItems="center" gap={3} _hover={{ textDecoration: 'none' }}>
           <Box
-            bgGradient="linear(to-r, brand.400, brand.600)"
+            bg="rgba(14,14,18,0.92)"
+            border="1px solid rgba(255,205,96,0.25)"
             rounded="full"
-            p={2}
+            p="6px"
             display="flex"
             alignItems="center"
             justifyContent="center"
-            boxShadow="0 0 20px rgba(59,205,255,0.5)"
+            boxShadow="0 12px 32px rgba(12,12,16,0.45)"
           >
-            <Layers size={20} color="#050510" />
+            <Image src="/logo.svg" alt="zPump logo" width={34} height={34} priority />
           </Box>
-          <Text fontSize="lg" fontWeight="semibold" letterSpacing="0.08em">
-            ZPUMP
+          <Text fontSize="lg" fontWeight="semibold" letterSpacing="0.08em" color="brand.50">
+            zPump
           </Text>
-        </HStack>
+        </Link>
         <HStack spacing={6} display={{ base: 'none', md: 'flex' }}>
           <Link as={NextLink} href="/" _hover={{ color: 'brand.200' }}>
             Home

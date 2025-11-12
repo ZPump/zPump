@@ -335,11 +335,11 @@ function LocalFaucetDashboard() {
         <Box
           as="form"
           onSubmit={handleSolAirdrop}
-          bg="rgba(10, 14, 30, 0.85)"
-          border="1px solid rgba(59,205,255,0.25)"
+          bg="rgba(18, 16, 14, 0.9)"
+          border="1px solid rgba(245,178,27,0.24)"
           rounded="3xl"
           p={{ base: 6, md: 8 }}
-          boxShadow="0 0 35px rgba(59,205,255,0.2)"
+          boxShadow="0 0 35px rgba(245, 178, 27, 0.2)"
         >
           <Stack spacing={4}>
             <Heading size="md">Request SOL</Heading>
@@ -361,11 +361,11 @@ function LocalFaucetDashboard() {
         <Box
           as="form"
           onSubmit={handleTokenMint}
-          bg="rgba(10, 14, 30, 0.85)"
-          border="1px solid rgba(59,205,255,0.25)"
+          bg="rgba(18, 16, 14, 0.9)"
+          border="1px solid rgba(245,178,27,0.24)"
           rounded="3xl"
           p={{ base: 6, md: 8 }}
-          boxShadow="0 0 35px rgba(59,205,255,0.2)"
+          boxShadow="0 0 35px rgba(245, 178, 27, 0.2)"
         >
           <Stack spacing={4}>
             <Heading size="md">Mint origin tokens</Heading>
@@ -415,8 +415,8 @@ function LocalFaucetDashboard() {
       <Stack spacing={4}>
         {sharedEvents.length > 0 && (
         <Box
-          bg="rgba(6, 10, 24, 0.8)"
-          border="1px solid rgba(59,205,255,0.18)"
+          bg="rgba(20, 18, 14, 0.82)"
+          border="1px solid rgba(245,178,27,0.18)"
           rounded="2xl"
           p={{ base: 5, md: 6 }}
         >
@@ -428,8 +428,8 @@ function LocalFaucetDashboard() {
                   key={`${event.signature}-${event.timestamp}`}
                   direction="column"
                   gap={1}
-                  bg="rgba(12,18,38,0.9)"
-                  border="1px solid rgba(59,205,255,0.18)"
+                  bg="rgba(24, 20, 16, 0.9)"
+                  border="1px solid rgba(245,178,27,0.2)"
                   rounded="lg"
                   px={4}
                   py={3}

@@ -8,8 +8,8 @@ const config: ThemeConfig = {
 const styles = {
   global: {
     'html, body': {
-      background: 'radial-gradient(circle at top, rgba(53, 202, 255, 0.12), rgba(10, 10, 26, 1) 55%)',
-      color: 'white',
+      background: 'radial-gradient(circle at 20% 10%, rgba(245, 178, 27, 0.12), rgba(5, 5, 7, 1) 58%)',
+      color: '#F6F3EA',
       minHeight: '100%',
       fontFamily: 'var(--font-space-grotesk), sans-serif',
       letterSpacing: '0.02em'
@@ -22,16 +22,28 @@ const styles = {
 
 const colors = {
   brand: {
-    50: '#E8F9FF',
-    100: '#BDEEFF',
-    200: '#92E3FF',
-    300: '#66D8FF',
-    400: '#3BCDFF',
-    500: '#12B4F6',
-    600: '#0C8DC3',
-    700: '#066591',
-    800: '#023E60',
-    900: '#00172F'
+    50: '#FFF6E1',
+    100: '#FFE3A4',
+    200: '#FFD066',
+    300: '#FDBC31',
+    400: '#F5B21B',
+    500: '#D99208',
+    600: '#AC7005',
+    700: '#7F5204',
+    800: '#513303',
+    900: '#221501'
+  },
+  ink: {
+    50: '#F6F3EA',
+    100: '#DEDACE',
+    200: '#AFACA2',
+    300: '#807E77',
+    400: '#5B5A55',
+    500: '#3E3D39',
+    600: '#292824',
+    700: '#181816',
+    800: '#0F0F0D',
+    900: '#070707'
   }
 };
 
@@ -48,11 +60,11 @@ const components = {
     },
     variants: {
       glow: {
-        bgGradient: 'linear(to-r, brand.400, brand.600)',
-        color: 'black',
-        boxShadow: '0 0 20px rgba(59, 205, 255, 0.45)',
+        bgGradient: 'linear(to-r, brand.300, brand.500)',
+        color: 'ink.900',
+        boxShadow: '0 12px 28px rgba(245, 178, 27, 0.35)',
         _hover: {
-          boxShadow: '0 0 30px rgba(59, 205, 255, 0.65)',
+          boxShadow: '0 18px 36px rgba(245, 178, 27, 0.45)',
           transform: 'translateY(-1px)'
         }
       },
@@ -68,10 +80,10 @@ const components = {
   },
   Card: {
     baseStyle: {
-      bg: 'rgba(13, 18, 34, 0.75)',
+      bg: 'rgba(18, 16, 14, 0.78)',
       backdropFilter: 'blur(18px)',
-      border: '1px solid rgba(59,205,255,0.15)',
-      boxShadow: '0 0 30px rgba(2, 62, 96, 0.45)',
+      border: '1px solid rgba(245, 178, 27, 0.12)',
+      boxShadow: '0 0 30px rgba(12, 10, 6, 0.55)',
       rounded: '2xl'
     }
   }

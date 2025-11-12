@@ -14,12 +14,12 @@ export function WalletDashboard() {
         </Text>
       </Stack>
       <Box
-        border="1px solid rgba(59,205,255,0.3)"
-        bg="rgba(10, 14, 30, 0.85)"
+        border="1px solid rgba(245,178,27,0.24)"
+        bg="rgba(18, 16, 14, 0.9)"
         rounded="3xl"
         px={{ base: 6, md: 12 }}
         py={{ base: 8, md: 14 }}
-        boxShadow="0 0 45px rgba(59,205,255,0.25)"
+        boxShadow="0 0 45px rgba(245, 178, 27, 0.22)"
       >
         <Stack spacing={6} align="center">
           <Text fontSize="lg" color="whiteAlpha.800">
