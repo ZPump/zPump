@@ -267,8 +267,6 @@ function WalletDrawerContent({ disclosure }: { disclosure: ReturnType<typeof use
     }
 
     let cancelled = false;
-    let subscriptionId: number | null = null;
-
     const runRefresh = (showSpinner: boolean) => {
       if (cancelled) {
         return;
@@ -278,31 +276,13 @@ function WalletDrawerContent({ disclosure }: { disclosure: ReturnType<typeof use
 
     runRefresh(true);
 
-    if (activeAccount) {
-      const publicKey = new PublicKey(activeAccount.publicKey);
-      try {
-        subscriptionId = connection.onAccountChange(publicKey, () => {
-          console.info('[wallet drawer] account change detected', {
-            account: activeAccount.publicKey,
-            endpoint: connection.rpcEndpoint
-          });
-          runRefresh(false);
-        });
-      } catch (error) {
-        console.error('Failed to subscribe to account changes', error);
-      }
-    }
-
     const interval = setInterval(() => runRefresh(false), BALANCE_REFRESH_INTERVAL);
 
     return () => {
       cancelled = true;
       clearInterval(interval);
-      if (subscriptionId !== null) {
-        void connection.removeAccountChangeListener(subscriptionId);
-      }
     };
-  }, [disclosure.isOpen, activeAccount, connection, refreshBalances]);
+  }, [disclosure.isOpen, activeAccount, refreshBalances]);
 
   const handleCreateAccount = () => {
     createAccount(newLabel.trim() || undefined);
