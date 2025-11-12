@@ -8,7 +8,7 @@ interface ProofClientOptions {
   baseUrl?: string;
 }
 
-const DEFAULT_BASE_URL = process.env.NEXT_PUBLIC_PROOF_RPC_URL ?? 'https://proof.zpump.xyz';
+const DEFAULT_BASE_URL = process.env.NEXT_PUBLIC_PROOF_RPC_URL ?? '/api/proof';
 
 const CIRCUIT_ALIAS = {
   wrap: 'shield',
@@ -34,6 +34,10 @@ export class ProofClient {
     payload: TPayload
   ): Promise<ProofResponse> {
     const resolvedCircuit = CIRCUIT_ALIAS[circuit];
+    const url = `${this.baseUrl}/prove/${resolvedCircuit}`;
+    if (typeof console !== 'undefined') {
+      console.info('[proof-client] request', { url, circuit, payload });
+    }
     const response = await fetch(`${this.baseUrl}/prove/${resolvedCircuit}`, {
       method: 'POST',
       headers: {
@@ -43,9 +47,22 @@ export class ProofClient {
     });
 
     if (!response.ok) {
-      const error = await response.json().catch(() => ({ message: 'unknown error' }));
-      throw new Error(`Proof RPC error: ${error.message ?? response.statusText}`);
+      let message = response.statusText;
+      try {
+        const json = await response.json();
+        message = (json as { error?: string; message?: string }).message ?? message;
+        console.warn('[proof-client] error response json', json);
+      } catch {
+        const text = await response.text().catch(() => '');
+        if (text) {
+          message = text;
+          console.warn('[proof-client] error response text', text);
+        }
+      }
+      throw new Error(`Proof RPC error: ${message}`);
     }
-    return (await response.json()) as ProofResponse;
+    const result = (await response.json()) as ProofResponse;
+    console.info('[proof-client] success', { circuit, verifyingKeyHash: result.verifyingKeyHash });
+    return result;
   }
 }
