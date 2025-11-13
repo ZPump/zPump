@@ -14,6 +14,7 @@
     "@noble/hashes": "^1.4.0",
     "@solana/web3.js": "^1.95.6",
     "big-integer": "^1.6.52",
+    "bs58": "^6.0.0",
     "circomlibjs": "^0.0.8",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",

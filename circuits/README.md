@@ -18,6 +18,7 @@ circuits/
   shield/             # Shield circuit sources
   transfer/           # Private transfer circuit sources (v1.1 feature flag)
   unshield/           # Unshield circuit sources
+  wasm/               # Copy of compiled wasm runners (fed to proof RPC)
 ```
 
 Every circuit exports a single entry point that matches the v0.5 specification.  The circuits in
@@ -31,11 +32,17 @@ The circuits pipeline is a standalone NPM workspace.  From the `circuits/` direc
 
 ```bash
 npm install
-npm run setup:ptau         # downloads the 28th ceremony powers of tau if missing
+npm run setup:ptau         # downloads the 28th ceremony transcript (≈1.1 GB) if missing
 ```
 
-Both commands are idempotent.  They cache the ceremony file under `pot/` and will skip downloads
-when the expected hash already exists.
+Both commands are idempotent.  The Powers of Tau transcript is cached under
+`pot/powersOfTau28_hez_final_20.ptau` and skipped on subsequent runs once the SHA-256 digest matches
+`159d3f938d941e06767d99f30b9fe59a245400a4aae138cf8e411732d7a2f6cd`.  You can re-verify manually:
+
+```bash
+sha256sum pot/powersOfTau28_hez_final_20.ptau
+b2sum pot/powersOfTau28_hez_final_20.ptau   # optional: 89a66e… blake2 hash published by Hermez
+```
 
 ## Compiling circuits
 
@@ -49,11 +56,14 @@ npm run compile:transfer    # builds only the private transfer circuit
 Each compile step performs the following deterministically:
 
 1. `circom` compilation → `build/<name>/<name>.r1cs` + `.wasm` + `.sym`
-2. Groth16 setup with `snarkjs groth16 setup`
-3. Finalises the proving key via `snarkjs zkey beacon` using the fixed beacon from the spec
+2. Groth16 setup with `snarkjs groth16 setup` using the downloaded Powers of Tau transcript
+3. Finalises the proving key via `snarkjs zkey beacon` – the script hashes the circuit name into a
+   deterministic beacon so the resulting `.zkey` is reproducible
 4. Exports a verifying key JSON and writes its SHA-256 hash to
    `build/<name>/verification_key.hash`
-5. Copies the verifying key into `keys/<name>.json` so services can pin against it
+5. Copies the verifying key into `keys/<name>.json`
+6. Copies the proving key into `keys/<name>.zkey`
+7. Copies the `.wasm` runner into `wasm/<name>.wasm` for off-chain provers
 
 All temporary files live under `build/` and can be removed with `npm run clean`.
 
@@ -73,7 +83,8 @@ without additional formatting.
 
 ## Deterministic beacons & hashing
 
-- **Beacon**: `ptf-mvp-no-relayer` with round `1` and an all-zero entropy string.
+- **Beacon**: each circuit name is hashed to derive the beacon entropy, keeping the contribution
+  deterministic without hard-coding a single value.
 - **Verification key hashing**: SHA-256 over the canonical JSON string emitted by `snarkjs`.
   The helper script `scripts/hash-verifying-key.js` performs this step and is reused by the
   Proof RPC service to assert that client-submitted hashes match the committed verifying keys.

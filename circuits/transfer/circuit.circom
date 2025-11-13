@@ -1,7 +1,7 @@
 pragma circom 2.1.9;
 
-include "../../node_modules/circomlib/circuits/poseidon.circom";
-include "../../node_modules/circomlib/circuits/bitify/iszero.circom";
+include "../node_modules/circomlib/circuits/poseidon.circom";
+include "../node_modules/circomlib/circuits/comparators.circom";
 
 // Reference private transfer circuit supporting two-in/two-out notes.
 template TransferCircuit() {
@@ -14,19 +14,19 @@ template TransferCircuit() {
     signal input mint_id;
     signal input pool_id;
 
-    signal private input in_note_amount_0;
-    signal private input in_note_amount_1;
-    signal private input in_note_id_0;
-    signal private input in_note_id_1;
-    signal private input in_spending_key_0;
-    signal private input in_spending_key_1;
+    signal input in_note_amount_0;
+    signal input in_note_amount_1;
+    signal input in_note_id_0;
+    signal input in_note_id_1;
+    signal input in_spending_key_0;
+    signal input in_spending_key_1;
 
-    signal private input out_amount_0;
-    signal private input out_amount_1;
-    signal private input out_recipient_0;
-    signal private input out_recipient_1;
-    signal private input out_blinding_0;
-    signal private input out_blinding_1;
+    signal input out_amount_0;
+    signal input out_amount_1;
+    signal input out_recipient_0;
+    signal input out_recipient_1;
+    signal input out_blinding_0;
+    signal input out_blinding_1;
 
     // Nullifiers
     component nullifier0 = Poseidon(2);

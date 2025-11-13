@@ -1,7 +1,7 @@
 pragma circom 2.1.9;
 
-include "../../node_modules/circomlib/circuits/poseidon.circom";
-include "../../node_modules/circomlib/circuits/bitify/iszero.circom";
+include "../node_modules/circomlib/circuits/poseidon.circom";
+include "../node_modules/circomlib/circuits/comparators.circom";
 
 // Reference implementation of the PTF shield circuit.
 // This circuit deliberately keeps the arithmetic minimal so it can be audited easily.
@@ -15,9 +15,9 @@ template ShieldCircuit() {
     signal input deposit_id;
 
     // Private witness
-    signal private input amount;
-    signal private input recipient_pk;
-    signal private input blinding;
+    signal input amount;
+    signal input recipient_pk;
+    signal input blinding;
 
     // Amount must be non-zero
     component amountNotZero = IsZero();

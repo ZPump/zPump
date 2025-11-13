@@ -10,7 +10,11 @@ import { groth16 } from 'snarkjs';
 import pino from 'pino';
 import { z } from 'zod';
 import { PublicKey } from '@solana/web3.js';
+import bs58 from 'bs58';
 import { createHash } from 'crypto';
+import { execFile } from 'child_process';
+import { promisify } from 'util';
+import { keccak_256 } from '@noble/hashes/sha3';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -18,18 +22,23 @@ const __dirname = path.dirname(__filename);
 const logger = pino({ level: process.env.LOG_LEVEL ?? 'info' });
 const API_KEY_HEADER = 'x-ptf-api-key';
 
+const execFileAsync = promisify(execFile);
+
 interface VerifyingKeyConfig {
   circuit: string;
   version: string;
   path: string;
+  binary?: string;
   wasm?: string;
   zkey?: string;
 }
 
-interface LoadedVerifyingKey extends VerifyingKeyConfig {
+interface LoadedVerifyingKey extends Omit<VerifyingKeyConfig, 'binary'> {
   hash: string;
-  contents: string;
+  json: string;
+  binary: Buffer;
   verifyingKeyPath: string;
+  binaryPath?: string | null;
   wasmPath?: string | null;
   zkeyPath?: string | null;
   mode: 'mock' | 'groth16';
@@ -49,7 +58,9 @@ const ShieldInputSchema = z.object({
   depositId: z.string(),
   poolId: z.string(),
   blinding: z.string(),
-  mintId: z.string().optional().default('0')
+  mintId: z.string().optional().default('0'),
+  noteId: z.string().optional(),
+  spendingKey: z.string().optional()
 });
 
 const TransferInputSchema = z.object({
@@ -130,13 +141,80 @@ function fieldToHex(value: bigint): string {
   return `0x${hex.padStart(64, '0')}`;
 }
 
+function fieldToString(value: bigint): string {
+  return value.toString(10);
+}
+
+function normalizeBigInt(value: string | number | bigint): bigint {
+  if (typeof value === 'bigint') {
+    return value;
+  }
+  if (typeof value === 'number') {
+    return BigInt(value);
+  }
+  const trimmed = value.trim();
+  if (trimmed.startsWith('0x') || trimmed.startsWith('0X')) {
+    return BigInt(trimmed);
+  }
+  return BigInt(trimmed);
+}
+
+function bigIntToBeBuffer(value: string | number | bigint, length = 32): Buffer {
+  let remaining = normalizeBigInt(value);
+  const result = Buffer.alloc(length);
+  for (let i = length - 1; i >= 0; i -= 1) {
+    result[i] = Number(remaining & 0xffn);
+    remaining >>= 8n;
+  }
+  return result;
+}
+
+function serializeG1(point: string[]): Buffer {
+  if (point.length < 2) {
+    throw new Error('G1 point must contain at least two coordinates');
+  }
+  const x = bigIntToBeBuffer(point[0]);
+  const y = bigIntToBeBuffer(point[1]);
+  return Buffer.concat([x, y]);
+}
+
+function serializeG2(point: string[][]): Buffer {
+  if (point.length < 2 || point[0].length < 2 || point[1].length < 2) {
+    throw new Error('G2 point must contain two Fq2 coordinates');
+  }
+  const x0 = bigIntToBeBuffer(point[0][0]);
+  const x1 = bigIntToBeBuffer(point[0][1]);
+  const y0 = bigIntToBeBuffer(point[1][0]);
+  const y1 = bigIntToBeBuffer(point[1][1]);
+  return Buffer.concat([x0, x1, y0, y1]);
+}
+
+function serializeGroth16Proof(proof: { pi_a: string[]; pi_b: string[][]; pi_c: string[] }): Buffer {
+  const a = serializeG1(proof.pi_a);
+  const b = serializeG2(proof.pi_b);
+  const c = serializeG1(proof.pi_c);
+  return Buffer.concat([a, b, c]);
+}
+
+function serializePublicInputs(values: string[]): Buffer {
+  const parts = values.map((value) => bigIntToBeBuffer(value));
+  return Buffer.concat(parts);
+}
+
 function parsePubkeyField(value: string): bigint {
   try {
     const key = new PublicKey(value);
     const hex = Buffer.from(key.toBytes()).toString('hex');
     return BigInt(`0x${hex}`);
   } catch {
-    return bigIntify(value);
+    try {
+      const decoded = bs58.decode(value);
+      const hex = Buffer.from(decoded).toString('hex');
+      return BigInt(`0x${hex}`);
+    } catch {
+      logger.warn({ value }, 'Failed to parse pubkey via bs58; falling back to raw BigInt');
+      return bigIntify(value);
+    }
   }
 }
 
@@ -149,27 +227,52 @@ function poseidonHex(values: (string | number | bigint)[]): string {
 }
 
 function deriveShieldPublic(input: ShieldInput) {
+  const amountField = bigIntify(input.amount);
+  const recipientField = parsePubkeyField(input.recipient);
+  const depositField = bigIntify(input.depositId);
+  const poolField = parsePubkeyField(input.poolId);
+  const blindingField = bigIntify(input.blinding);
+  const mintField = parsePubkeyField(input.mintId);
+
   const commitmentValue = poseidonValue([
-    input.amount,
-    input.recipient,
-    input.depositId,
-    input.poolId,
-    input.blinding
+    amountField,
+    recipientField,
+    depositField,
+    poolField,
+    blindingField
   ]);
-  const commitment = fieldToHex(commitmentValue);
-  const newRoot = poseidonHex([input.oldRoot, commitmentValue]);
+  const commitmentHex = fieldToHex(commitmentValue);
+  const oldRootField = bigIntify(input.oldRoot);
+  const oldRootHex = fieldToHex(oldRootField);
+  const newRootValue = poseidonValue([oldRootField, commitmentValue]);
+  const newRootHex = fieldToHex(newRootValue);
+  const mintHex = fieldToHex(mintField);
+  const poolHex = fieldToHex(poolField);
+  const depositHex = fieldToHex(depositField);
+
   return {
     publicInputs: [
-      input.oldRoot,
-      newRoot,
-      commitment,
-      input.mintId,
-      input.poolId,
-      input.depositId
+      oldRootHex,
+      newRootHex,
+      commitmentHex,
+      mintHex,
+      poolHex,
+      depositHex
     ],
-    newRoot,
-    commitment,
-    nullifiers: [] as string[]
+    newRoot: newRootHex,
+    commitment: commitmentHex,
+    nullifiers: [] as string[],
+    payload: {
+      old_root: fieldToString(oldRootField),
+      new_root: fieldToString(newRootValue),
+      commitment_hash: fieldToString(commitmentValue),
+      mint_id: fieldToString(mintField),
+      pool_id: fieldToString(poolField),
+      deposit_id: fieldToString(depositField),
+      amount: fieldToString(amountField),
+      recipient_pk: fieldToString(recipientField),
+      blinding: fieldToString(blindingField)
+    }
   };
 }
 
@@ -297,6 +400,33 @@ async function fileExists(target: string | undefined | null): Promise<boolean> {
   }
 }
 
+async function resolveVerifyingKeyBinary(jsonPath: string, binaryPath?: string | null): Promise<{ binary: Buffer; path: string }> {
+  const absoluteJson = path.resolve(jsonPath);
+  const derivedBinaryPath = binaryPath
+    ? path.resolve(binaryPath)
+    : absoluteJson.endsWith('.json')
+      ? absoluteJson.replace(/\.json$/i, '.vk.bin')
+      : `${absoluteJson}.vk.bin`;
+  try {
+    const binary = await fs.readFile(derivedBinaryPath);
+    return { binary, path: derivedBinaryPath };
+  } catch (error) {
+    await execFileAsync('cargo', [
+      'run',
+      '--quiet',
+      '-p',
+      'ptf-verifier-groth16',
+      '--bin',
+      'export_vk',
+      '--',
+      absoluteJson,
+      derivedBinaryPath
+    ]);
+    const binary = await fs.readFile(derivedBinaryPath);
+    return { binary, path: derivedBinaryPath };
+  }
+}
+
 async function loadVerifyingKeys(): Promise<LoadedVerifyingKey[]> {
   const configPath = path.join(__dirname, '..', 'config', 'verifying-keys.json');
   const raw = await fs.readFile(configPath, 'utf8');
@@ -313,7 +443,9 @@ async function loadVerifyingKeys(): Promise<LoadedVerifyingKey[]> {
 
   const loadPromises = entries.map(async (entry) => {
     const verifyingKeyPath = path.resolve(base, path.basename(entry.path));
-    const contents = await fs.readFile(verifyingKeyPath, 'utf8');
+    const jsonContents = await fs.readFile(verifyingKeyPath, 'utf8');
+    const binaryHint = entry.binary ? path.resolve(base, path.basename(entry.binary)) : null;
+    const { binary, path: binaryPath } = await resolveVerifyingKeyBinary(verifyingKeyPath, binaryHint);
     const wasmPath = entry.wasm ? path.resolve(wasmBase, path.basename(entry.wasm)) : null;
     const zkeyPath = entry.zkey ? path.resolve(zkeyBase, path.basename(entry.zkey)) : null;
     const hasProver = (await fileExists(wasmPath)) && (await fileExists(zkeyPath));
@@ -322,10 +454,12 @@ async function loadVerifyingKeys(): Promise<LoadedVerifyingKey[]> {
       ...entry,
       path: entry.path,
       verifyingKeyPath,
+      binaryPath,
       wasmPath,
       zkeyPath,
-      contents,
-      hash: hashString(contents),
+      json: jsonContents,
+      binary,
+      hash: Buffer.from(keccak_256(binary)).toString('hex'),
       mode: hasProver ? 'groth16' : 'mock'
     };
 
@@ -426,7 +560,8 @@ async function validateAgainstIndexer(
   }
   const roots = await client.getRoots(mint);
   if (!roots) {
-    throw new Error('unknown_mint');
+    logger.warn({ mint }, 'Indexer returned no roots, skipping validation');
+    return;
   }
   const known = new Set([roots.current, ...roots.recent]);
   if (!known.has(oldRoot)) {
@@ -451,17 +586,27 @@ async function produceProof(
 ): Promise<{ proof: string; publicInputs: string[]; verifyingKeyHash: string }> {
   if (entry.mode === 'groth16' && entry.wasmPath && entry.zkeyPath) {
     try {
+      logger.info({ circuit, payload }, 'Invoking groth16.fullProve');
       const { proof, publicSignals } = await groth16.fullProve(payload, entry.wasmPath, entry.zkeyPath);
-      const normalisedSignals = Array.isArray(publicSignals)
+      const proofBytes = serializeGroth16Proof(proof);
+      const publicSignalsArray = Array.isArray(publicSignals)
         ? publicSignals.map((value) => value.toString())
         : [];
-      const finalInputs = normalisedSignals.length === derivedInputs.length ? normalisedSignals : derivedInputs;
-      if (normalisedSignals.length !== derivedInputs.length) {
-        logger.warn({ circuit }, 'Groth16 public signal length mismatch, using derived inputs');
+      if (publicSignalsArray.length !== derivedInputs.length) {
+        logger.warn(
+          { circuit, expected: derivedInputs.length, actual: publicSignalsArray.length },
+          'Groth16 public signal length mismatch'
+        );
       }
+      const publicInputBytes = serializePublicInputs(publicSignalsArray);
+      logger.debug({
+        circuit,
+        proofBytes: proofBytes.length,
+        publicInputBytes: publicInputBytes.length
+      }, 'Serialized Groth16 artifacts');
       return {
-        proof: Buffer.from(JSON.stringify(proof)).toString('base64'),
-        publicInputs: finalInputs,
+        proof: proofBytes.toString('base64'),
+        publicInputs: derivedInputs,
         verifyingKeyHash: entry.hash
       };
     } catch (error) {
@@ -491,7 +636,7 @@ async function generateProof(
       const payload = ShieldInputSchema.parse(request.payload);
       const derived = deriveShieldPublic(payload);
       await validateAgainstIndexer(indexer, payload.mintId, payload.oldRoot, derived.nullifiers);
-      return produceProof(entry, request.circuit, payload, derived.publicInputs);
+      return produceProof(entry, request.circuit, derived.payload, derived.publicInputs);
     }
     case 'transfer': {
       const payload = TransferInputSchema.parse(request.payload);
@@ -506,10 +651,6 @@ async function generateProof(
       return produceProof(entry, request.circuit, derived.payload, derived.publicInputs);
     }
   }
-}
-
-function hashString(input: string): string {
-  return createHash('sha256').update(input).digest('hex');
 }
 
 function mockProof(circuit: string, payload: unknown, verifyingKeyHash: string): string {

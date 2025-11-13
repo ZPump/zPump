@@ -48,23 +48,45 @@ for (const circuit of selected) {
   fs.mkdirSync(outDir, { recursive: true });
 
   console.log(`\n=== Compiling ${circuit.name} ===`);
-  run('npx', ['circom', entryPath, '--wasm', '--r1cs', '--sym', '--output', outDir], circuitDir);
+  run(
+    'npx',
+    ['circom', entryPath, '--wasm', '--r1cs', '--sym', '--output', outDir],
+    circuitDir
+  );
+
+  const defaultR1cs = path.join(outDir, 'circuit.r1cs');
+  const targetR1cs = path.join(outDir, circuit.r1cs);
+  if (fs.existsSync(defaultR1cs)) {
+    fs.renameSync(defaultR1cs, targetR1cs);
+  }
+
+  const defaultSym = path.join(outDir, 'circuit.sym');
+  if (fs.existsSync(defaultSym)) {
+    fs.renameSync(defaultSym, path.join(outDir, `${circuit.name}.sym`));
+  }
+
+  const wasmDir = path.join(outDir, 'circuit_js');
+  const defaultWasm = path.join(wasmDir, 'circuit.wasm');
+  const targetWasm = path.join(outDir, circuit.wasm);
+  if (fs.existsSync(defaultWasm)) {
+    fs.copyFileSync(defaultWasm, targetWasm);
+  }
 
   console.log('Running Groth16 setup...');
-  const r1csPath = path.join(outDir, circuit.r1cs);
+  const r1csPath = targetR1cs;
   const zkeyInitial = path.join(outDir, `${circuit.name}_0000.zkey`);
   run('npx', ['snarkjs', 'groth16', 'setup', r1csPath, PTAU, zkeyInitial], circuitDir);
 
   const zkeyFinal = path.join(outDir, circuit.zkey);
+  const beaconHash = crypto.createHash('sha256').update(circuit.beacon).digest('hex');
   run('npx', [
     'snarkjs',
     'zkey',
     'beacon',
     zkeyInitial,
     zkeyFinal,
-    circuit.beacon,
-    '1',
-    '0000000000000000000000000000000000000000000000000000000000000000'
+    beaconHash,
+    '10'
   ], circuitDir);
 
   const vkPath = path.join(outDir, 'verification_key.json');
@@ -75,5 +97,16 @@ for (const circuit of selected) {
 
   const targetVkPath = path.join(KEYS_DIR, `${circuit.name}.json`);
   fs.copyFileSync(vkPath, targetVkPath);
-  console.log(`Verification key exported (${hash}) → ${path.relative(circuitDir, targetVkPath)}`);
+  console.log(
+    `Verification key exported (${hash}) → ${path.relative(circuitDir, targetVkPath)}`
+  );
+
+  const targetZkeyPath = path.join(KEYS_DIR, `${circuit.name}.zkey`);
+  fs.copyFileSync(zkeyFinal, targetZkeyPath);
+
+  const wasmOutputDir = path.join(__dirname, '..', 'wasm');
+  fs.mkdirSync(wasmOutputDir, { recursive: true });
+  if (fs.existsSync(targetWasm)) {
+    fs.copyFileSync(targetWasm, path.join(wasmOutputDir, circuit.wasm));
+  }
 }

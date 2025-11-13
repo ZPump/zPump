@@ -1,7 +1,7 @@
 pragma circom 2.1.9;
 
-include "../../node_modules/circomlib/circuits/poseidon.circom";
-include "../../node_modules/circomlib/circuits/bitify/iszero.circom";
+include "../node_modules/circomlib/circuits/poseidon.circom";
+include "../node_modules/circomlib/circuits/comparators.circom";
 
 // Reference unshield circuit enforcing single-note exit semantics for the MVP.
 template UnshieldCircuit() {
@@ -17,13 +17,13 @@ template UnshieldCircuit() {
     signal input mint_id;
     signal input pool_id;
 
-    signal private input note_amount;
-    signal private input note_id;
-    signal private input spending_key;
-    signal private input change_amount;
-    signal private input change_recipient;
-    signal private input change_blinding;
-    signal private input change_amount_blinding;
+    signal input note_amount;
+    signal input note_id;
+    signal input spending_key;
+    signal input change_amount;
+    signal input change_recipient;
+    signal input change_blinding;
+    signal input change_amount_blinding;
 
     component amountNotZero = IsZero();
     amountNotZero.in <== amount;

@@ -12,7 +12,7 @@ use spl_token_2022::state::Mint as Token2022Mint;
 use ptf_common::{seeds, FeatureFlags, MAX_BPS};
 use solana_program::pubkey;
 
-const PTF_POOL_PROGRAM_ID: Pubkey = pubkey!("4Tx3v6is7qeVjdHvL3a16ggB9VVMBPVhpPSkUGoXZhre");
+const PTF_POOL_PROGRAM_ID: Pubkey = pubkey!("7kbUWzeTPY6qb1mFJC1ZMRmTZAdaHC27yukc3Czj7fKh");
 
 declare_id!("4z618BY2dXGqAUiegqDt8omo3e81TSdXRHt64ikX1bTy");
 

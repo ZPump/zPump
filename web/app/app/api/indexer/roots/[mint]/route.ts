@@ -1,7 +1,6 @@
 import { NextResponse } from 'next/server';
 import { Connection, PublicKey } from '@solana/web3.js';
-import { commitmentToHex, decodeCommitmentTree } from '../../../../../lib/onchain/commitmentTree';
-import { deriveCommitmentTree } from '../../../../../lib/onchain/pdas';
+import { derivePoolState } from '../../../../../lib/onchain/pdas';
 
 const INDEXER_INTERNAL_URL = process.env.INDEXER_INTERNAL_URL ?? 'http://127.0.0.1:8787';
 const RPC_INTERNAL_URL = process.env.RPC_URL ?? 'http://127.0.0.1:8899';
@@ -33,15 +32,35 @@ async function fetchRootFromChain(mint: string) {
   try {
     const connection = new Connection(RPC_INTERNAL_URL, 'confirmed');
     const mintKey = new PublicKey(mint);
-    const treeKey = deriveCommitmentTree(mintKey);
-    const accountInfo = await connection.getAccountInfo(treeKey);
+    const poolKey = derivePoolState(mintKey);
+    const accountInfo = await connection.getAccountInfo(poolKey);
     if (!accountInfo) {
       return null;
     }
-    const state = decodeCommitmentTree(new Uint8Array(accountInfo.data));
+    const data = new Uint8Array(accountInfo.data);
+    const base = 8;
+    const currentRootOffset = base + 32 * 8;
+    const currentRootRaw = data.slice(currentRootOffset, currentRootOffset + 32);
+    const current = `0x${Array.from(currentRootRaw)
+      .map((value) => value.toString(16).padStart(2, '0'))
+      .join('')}`;
+    const maxRoots = 16;
+    const recentOffset = currentRootOffset + 32;
+    const rootsLenOffset = recentOffset + 32 * maxRoots;
+    const rootsLen = data[rootsLenOffset] ?? 0;
+    const recent: string[] = [];
+    for (let idx = 0; idx < Math.min(rootsLen, maxRoots); idx += 1) {
+      const start = recentOffset + idx * 32;
+      const rootRaw = data.slice(start, start + 32);
+      recent.push(
+        `0x${Array.from(rootRaw)
+          .map((value) => value.toString(16).padStart(2, '0'))
+          .join('')}`
+      );
+    }
     return {
-      current: commitmentToHex(state.currentRoot),
-      recent: []
+      current,
+      recent
     };
   } catch {
     return null;

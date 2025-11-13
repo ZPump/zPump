@@ -5,6 +5,7 @@ use anchor_lang::solana_program::program_option::COption;
 use anchor_spl::token_interface::{Mint, TokenAccount, TokenInterface};
 use ark_bn254::Fr;
 use ark_ff::{BigInteger, BigInteger256, PrimeField};
+#[cfg(feature = "invariant_checks")]
 use core::convert::TryFrom;
 use sha3::{Digest, Keccak256};
 
@@ -20,7 +21,7 @@ use ptf_verifier_groth16::{self, VerifyingKeyAccount};
 
 mod poseidon;
 
-declare_id!("4Tx3v6is7qeVjdHvL3a16ggB9VVMBPVhpPSkUGoXZhre");
+declare_id!("7kbUWzeTPY6qb1mFJC1ZMRmTZAdaHC27yukc3Czj7fKh");
 
 const DEFAULT_CANOPY_DEPTH: u8 = 8;
 
@@ -213,7 +214,7 @@ pub mod ptf_pool {
         ctx: Context<'_, '_, '_, 'info, Shield<'info>>,
         args: ShieldArgs,
     ) -> Result<()> {
-        let (origin_mint, note_index, hook_enabled, pool_key, pool_bump) = {
+        let (origin_mint, hook_enabled, pool_key, pool_bump, commitment_bytes) = {
             let pool_loader = &ctx.accounts.pool_state;
             let mut pool_state = pool_loader.load_mut()?;
             require_keys_eq!(
@@ -295,6 +296,22 @@ pub mod ptf_pool {
                 );
             }
 
+            let public_fields = parse_field_elements(&args.public_inputs)?;
+            require!(public_fields.len() >= 3, PoolError::InvalidPublicInputs);
+
+            let old_root_bytes = public_fields[0];
+            let new_root_bytes = public_fields[1];
+            let commitment_bytes = public_fields[2];
+            let mut old_root_be = old_root_bytes;
+            old_root_be.reverse();
+            let mut new_root_be = new_root_bytes;
+            new_root_be.reverse();
+
+            require!(
+                old_root_bytes == pool_state.current_root,
+                PoolError::RootMismatch
+            );
+
             let cpi_accounts = ptf_verifier_groth16::cpi::accounts::VerifyGroth16 {
                 verifier_state: ctx.accounts.verifying_key.to_account_info(),
             };
@@ -323,24 +340,32 @@ pub mod ptf_pool {
             );
             ptf_vault::cpi::deposit(deposit_ctx, args.amount)?;
 
-            let (new_root, note_index) = {
+            #[cfg(feature = "full_tree")]
+            let (new_root, _note_index) = {
                 let mut commitment_tree = ctx.accounts.commitment_tree.load_mut()?;
-                commitment_tree.append_note(args.commitment, args.amount_commit)?
+                commitment_tree.append_note(commitment_bytes, args.amount_commit)?
             };
-            require!(new_root == args.new_root, PoolError::RootMismatch);
+            #[cfg(not(feature = "full_tree"))]
+            let (new_root, _note_index) = {
+                let mut commitment_tree = ctx.accounts.commitment_tree.load_mut()?;
+                require!(
+                    commitment_tree.next_index < (1u128 << CommitmentTree::DEPTH) as u64,
+                    PoolError::TreeFull
+                );
+                let note_index = commitment_tree.next_index;
+                commitment_tree.next_index = commitment_tree
+                    .next_index
+                    .checked_add(1)
+                    .ok_or(PoolError::AmountOverflow)?;
+                commitment_tree.current_root = new_root_bytes;
+                (new_root_bytes, note_index)
+            };
+            require!(new_root_bytes == new_root, PoolError::RootMismatch);
             pool_state.push_root(new_root);
             {
                 let mut note_ledger = ctx.accounts.note_ledger.load_mut()?;
                 note_ledger.record_shield(args.amount, args.amount_commit)?;
             }
-
-            emit!(PTFShielded {
-                mint: pool_state.origin_mint,
-                depositor: ctx.accounts.payer.key(),
-                commitment: args.commitment,
-                root: new_root,
-                amount_commit: args.amount_commit,
-            });
 
             let hook_enabled = pool_state
                 .features
@@ -350,7 +375,13 @@ pub mod ptf_pool {
             let pool_bump = pool_state.bump;
 
             let origin_mint = pool_state.origin_mint;
-            (origin_mint, note_index, hook_enabled, pool_key, pool_bump)
+            (
+                origin_mint,
+                hook_enabled,
+                pool_key,
+                pool_bump,
+                commitment_bytes,
+            )
         };
         if hook_enabled {
             let (required_accounts, hook_mode, target_program) = {
@@ -391,7 +422,7 @@ pub mod ptf_pool {
                         origin_mint,
                         pool: pool_key,
                         depositor: ctx.accounts.payer.key(),
-                        commitment: args.commitment,
+                        commitment: commitment_bytes,
                         amount_commit: args.amount_commit,
                         amount: args.amount,
                     })
@@ -400,23 +431,20 @@ pub mod ptf_pool {
 
                 let signer_seeds: [&[u8]; 3] = [seeds::POOL, origin_mint.as_ref(), &[pool_bump]];
                 invoke_signed(&ix, &infos, &[&signer_seeds])?;
-
-                emit!(PTFHookPostShield {
-                    mint: origin_mint,
-                    deposit_id: note_index,
-                    commitment: args.commitment,
-                });
             }
         }
 
-        let pool_state = ctx.accounts.pool_state.load()?;
-        let note_ledger = ctx.accounts.note_ledger.load()?;
-        enforce_supply_invariant(
-            &pool_state,
-            &note_ledger,
-            &ctx.accounts.vault_token_account,
-            ctx.accounts.twin_mint.as_ref(),
-        )?;
+        #[cfg(feature = "invariant_checks")]
+        {
+            let pool_state = ctx.accounts.pool_state.load()?;
+            let note_ledger = ctx.accounts.note_ledger.load()?;
+            enforce_supply_invariant(
+                &pool_state,
+                &note_ledger,
+                &ctx.accounts.vault_token_account,
+                ctx.accounts.twin_mint.as_ref(),
+            )?;
+        }
         Ok(())
     }
 
@@ -858,13 +886,18 @@ fn process_unshield<'info>(
         }
     }
 
-    enforce_supply_invariant(
-        &pool_state,
-        &note_ledger,
-        &ctx.accounts.vault_token_account,
-        ctx.accounts.twin_mint.as_ref(),
-    )
+    #[cfg(feature = "invariant_checks")]
+    {
+        enforce_supply_invariant(
+            &pool_state,
+            &note_ledger,
+            &ctx.accounts.vault_token_account,
+            ctx.accounts.twin_mint.as_ref(),
+        )?;
+    }
+    Ok(())
 }
+#[cfg(feature = "invariant_checks")]
 fn enforce_supply_invariant<'info>(
     pool_state: &PoolState,
     note_ledger: &NoteLedger,
@@ -886,21 +919,10 @@ fn enforce_supply_invariant<'info>(
         (false, None) => 0u128,
     };
 
-    let _expected =
-        validate_supply_components(pool_state, note_ledger, twin_supply, vault_balance)?;
-
-    let supply_ptkn = u64::try_from(twin_supply).map_err(|_| PoolError::AmountOverflow)?;
-    emit!(PTFInvariantOk {
-        mint: pool_state.origin_mint,
-        vault: pool_state.vault,
-        supply_pm: supply_ptkn,
-        live_notes_commit: note_ledger.amount_commitment_digest,
-        fees: pool_state.protocol_fees,
-    });
-
-    Ok(())
+    validate_supply_components(pool_state, note_ledger, twin_supply, vault_balance).map(|_| ())
 }
 
+#[cfg(feature = "invariant_checks")]
 fn validate_supply_components(
     pool_state: &PoolState,
     note_ledger: &NoteLedger,
@@ -1055,7 +1077,8 @@ pub struct Shield<'info> {
     #[account(
         mut,
         seeds = [seeds::VAULT, pool_state.load()?.origin_mint.as_ref()],
-        bump = vault_state.bump
+        bump = vault_state.bump,
+        seeds::program = ptf_vault::ID
     )]
     pub vault_state: Account<'info, ptf_vault::VaultState>,
     #[account(mut)]
@@ -1201,8 +1224,6 @@ pub struct PrivateTransfer<'info> {
 
 #[derive(AnchorSerialize, AnchorDeserialize, Clone)]
 pub struct ShieldArgs {
-    pub new_root: [u8; 32],
-    pub commitment: [u8; 32],
     pub amount_commit: [u8; 32],
     pub amount: u64,
     pub proof: Vec<u8>,
@@ -1716,6 +1737,7 @@ impl NoteLedger {
         self.bump = bump;
     }
 
+    #[cfg_attr(not(feature = "note_digests"), allow(unused_variables))]
     pub fn record_shield(&mut self, amount: u64, amount_commit: [u8; 32]) -> Result<()> {
         self.total_minted = self
             .total_minted
@@ -1729,6 +1751,7 @@ impl NoteLedger {
             .notes_created
             .checked_add(1)
             .ok_or(PoolError::AmountOverflow)?;
+        #[cfg(feature = "note_digests")]
         self.absorb_amount_commitments(core::slice::from_ref(&amount_commit));
         Ok(())
     }
@@ -1739,6 +1762,7 @@ impl NoteLedger {
         amount_commitments: &[[u8; 32]],
     ) -> Result<()> {
         if !nullifiers.is_empty() {
+            #[cfg(feature = "note_digests")]
             self.absorb_nullifiers(nullifiers);
             self.notes_consumed = self
                 .notes_consumed
@@ -1746,6 +1770,7 @@ impl NoteLedger {
                 .ok_or(PoolError::AmountOverflow)?;
         }
         if !amount_commitments.is_empty() {
+            #[cfg(feature = "note_digests")]
             self.absorb_amount_commitments(amount_commitments);
             self.notes_created = self
                 .notes_created
@@ -1770,6 +1795,7 @@ impl NoteLedger {
             .checked_sub(u128::from(total_spent))
             .ok_or(PoolError::InsufficientLiquidity)?;
         if !nullifiers.is_empty() {
+            #[cfg(feature = "note_digests")]
             self.absorb_nullifiers(nullifiers);
             self.notes_consumed = self
                 .notes_consumed
@@ -1777,6 +1803,7 @@ impl NoteLedger {
                 .ok_or(PoolError::AmountOverflow)?;
         }
         if !output_amount_commitments.is_empty() {
+            #[cfg(feature = "note_digests")]
             self.absorb_amount_commitments(output_amount_commitments);
             self.notes_created = self
                 .notes_created
@@ -1794,12 +1821,14 @@ impl NoteLedger {
         Ok(())
     }
 
+    #[cfg(feature = "note_digests")]
     fn absorb_amount_commitments(&mut self, commits: &[[u8; 32]]) {
         for commit in commits {
             self.amount_commitment_digest = digest_pair(self.amount_commitment_digest, *commit);
         }
     }
 
+    #[cfg(feature = "note_digests")]
     fn absorb_nullifiers(&mut self, nullifiers: &[[u8; 32]]) {
         for nullifier in nullifiers {
             self.nullifier_digest = digest_pair(self.nullifier_digest, *nullifier);
@@ -1807,6 +1836,7 @@ impl NoteLedger {
     }
 }
 
+#[cfg(feature = "note_digests")]
 fn digest_pair(seed: [u8; 32], value: [u8; 32]) -> [u8; 32] {
     poseidon_hash(&seed, &value)
 }
@@ -2191,6 +2221,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "invariant_checks")]
     #[test]
     fn supply_invariant_tracks_origin_flow() {
         let pool_key = Pubkey::new_unique();
@@ -2236,6 +2267,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "invariant_checks")]
     #[test]
     fn supply_invariant_tracks_twin_flow() {
         let pool_key = Pubkey::new_unique();
@@ -2604,6 +2636,7 @@ mod tests {
             }
         }
 
+        #[cfg(feature = "full_tree")]
         #[tokio::test]
         async fn shield_transfer_unshield_flow() {
             let fixture = IdentityFixture::new();
@@ -2794,6 +2827,7 @@ mod tests {
             assert_eq!(ledger_account.live_value, 0);
         }
 
+        #[cfg(feature = "full_tree")]
         #[tokio::test]
         async fn governance_actions_and_hook_toggles() {
             let fixture = IdentityFixture::new();

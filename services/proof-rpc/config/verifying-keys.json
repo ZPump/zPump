@@ -3,6 +3,7 @@
     "circuit": "shield",
     "version": "v1",
     "path": "../../circuits/keys/shield.json",
+    "binary": "../../circuits/keys/shield.vk.bin",
     "wasm": "../../circuits/wasm/shield.wasm",
     "zkey": "../../circuits/keys/shield.zkey"
   },
@@ -10,6 +11,7 @@
     "circuit": "unshield",
     "version": "v1",
     "path": "../../circuits/keys/unshield.json",
+    "binary": "../../circuits/keys/unshield.vk.bin",
     "wasm": "../../circuits/wasm/unshield.wasm",
     "zkey": "../../circuits/keys/unshield.zkey"
   },
@@ -17,6 +19,7 @@
     "circuit": "transfer",
     "version": "v1",
     "path": "../../circuits/keys/transfer.json",
+    "binary": "../../circuits/keys/transfer.vk.bin",
     "wasm": "../../circuits/wasm/transfer.wasm",
     "zkey": "../../circuits/keys/transfer.zkey"
   }

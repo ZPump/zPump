@@ -9,8 +9,8 @@ members = [
 [programs.localnet]
 ptf_factory = "4z618BY2dXGqAUiegqDt8omo3e81TSdXRHt64ikX1bTy"
 ptf_vault = "9g6ZodQwxK8MN6MX3dbvFC3E7vGVqFtKZEHY7PByRAuh"
-ptf_pool = "4Tx3v6is7qeVjdHvL3a16ggB9VVMBPVhpPSkUGoXZhre"
-ptf_verifier_groth16 = "Gm2KXvGhWrEeYERh3sxs1gwffMXeajVQXqY7CcBpm7Ua"
+ptf_pool = "7kbUWzeTPY6qb1mFJC1ZMRmTZAdaHC27yukc3Czj7fKh"
+ptf_verifier_groth16 = "3aCv39mCRFH9BGJskfXqwQoWzW1ULq2yXEbEwGgKtLgg"
 
 [registry]
 url = "https://anchor.projectserum.com"

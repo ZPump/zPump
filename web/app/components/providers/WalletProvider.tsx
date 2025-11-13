@@ -16,7 +16,7 @@ interface WalletProviderProps {
 
 export function WalletProvider({ children }: WalletProviderProps) {
   const endpoint = useMemo(() => {
-    const fallback = 'https://devnet-rpc.zpump.xyz';
+    const fallback = 'http://127.0.0.1:8899';
     const raw = process.env.NEXT_PUBLIC_RPC_URL ?? fallback;
     try {
       const url = new URL(raw);
@@ -25,13 +25,17 @@ export function WalletProvider({ children }: WalletProviderProps) {
         typeof window !== 'undefined'
       ) {
         url.hostname = window.location.hostname;
-        return url.toString();
       }
       return url.toString();
     } catch {
-      return raw || clusterApiUrl('devnet');
+      return raw || fallback || clusterApiUrl('devnet');
     }
   }, []);
+
+  if (typeof window !== 'undefined') {
+    // eslint-disable-next-line no-console
+    console.info('[wallet-provider] using RPC endpoint', endpoint);
+  }
 
   const managedAdapter = useMemo(() => new ManagedKeypairWalletAdapter(), []);
 

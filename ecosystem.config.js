@@ -7,7 +7,7 @@ module.exports = {
       args: 'run start',
       env: {
         NODE_ENV: 'production',
-        NEXT_PUBLIC_RPC_URL: 'https://devnet-rpc.zpump.xyz',
+        NEXT_PUBLIC_RPC_URL: 'http://127.0.0.1:8899',
         NEXT_PUBLIC_PROOF_RPC_URL: '/api/proof',
         PROOF_RPC_INTERNAL_URL: 'http://127.0.0.1:8788/prove',
         INDEXER_INTERNAL_URL: 'http://127.0.0.1:8787',
@@ -18,7 +18,7 @@ module.exports = {
       env_local: {
         NEXT_PUBLIC_FAUCET_MODE: 'local',
         FAUCET_MODE: 'local',
-        NEXT_PUBLIC_RPC_URL: 'https://devnet-rpc.zpump.xyz',
+        NEXT_PUBLIC_RPC_URL: 'http://127.0.0.1:8899',
         NEXT_PUBLIC_PROOF_RPC_URL: '/api/proof',
         PROOF_RPC_INTERNAL_URL: 'http://127.0.0.1:8788/prove'
       },
