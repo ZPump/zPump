@@ -662,7 +662,11 @@ export function ConvertForm() {
         });
 
         try {
-          await indexerClient.adjustBalance(wallet.publicKey.toBase58(), originMint, baseAmount);
+          await indexerClient.adjustBalance(
+            wallet.publicKey.toBase58(),
+            mintConfig.zTokenMint ?? originMint,
+            baseAmount
+          );
         } catch (error) {
           console.warn('Failed to adjust private balance', error);
         }
@@ -784,14 +788,19 @@ export function ConvertForm() {
           proof: proofResponse
         });
 
+        const privateMint = mintConfig.zTokenMint ?? originMint;
         try {
-          await indexerClient.adjustBalance(wallet.publicKey.toBase58(), originMint, -amountValue);
+          await indexerClient.adjustBalance(wallet.publicKey.toBase58(), privateMint, -amountValue);
         } catch (error) {
           console.warn('Failed to decrement private balance', error);
         }
         if (changeAmountValue > 0n) {
           try {
-            await indexerClient.adjustBalance(wallet.publicKey.toBase58(), originMint, changeAmountValue);
+            await indexerClient.adjustBalance(
+              wallet.publicKey.toBase58(),
+              privateMint,
+              changeAmountValue
+            );
           } catch (error) {
             console.warn('Failed to increment change balance', error);
           }
