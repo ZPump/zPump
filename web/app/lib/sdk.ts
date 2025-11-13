@@ -485,7 +485,13 @@ export async function unwrap(params: UnwrapParams): Promise<string> {
     { pubkey: noteLedgerKey, isSigner: false, isWritable: true },
     { pubkey: vaultStateKey, isSigner: false, isWritable: true },
     { pubkey: vaultTokenAccount, isSigner: false, isWritable: true },
-    { pubkey: destinationTokenAccount, isSigner: false, isWritable: true }
+    { pubkey: destinationTokenAccount, isSigner: false, isWritable: true },
+    { pubkey: VERIFIER_PROGRAM_ID, isSigner: false, isWritable: false },
+    { pubkey: verifyingKey, isSigner: false, isWritable: false },
+    { pubkey: wallet.publicKey, isSigner: true, isWritable: true },
+    { pubkey: originMintKey, isSigner: false, isWritable: false },
+    { pubkey: VAULT_PROGRAM_ID, isSigner: false, isWritable: false },
+    { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false }
   ];
 
   if (mode === 'ptkn') {
@@ -493,21 +499,11 @@ export async function unwrap(params: UnwrapParams): Promise<string> {
       throw new Error('Twin mint key missing for ptkn unwrap mode.');
     }
     keys.push(
-      { pubkey: twinMintKey, isSigner: false, isWritable: true },
       { pubkey: mintMappingKey, isSigner: false, isWritable: false },
-      { pubkey: factoryStateKey, isSigner: false, isWritable: false },
-      { pubkey: FACTORY_PROGRAM_ID, isSigner: false, isWritable: false }
+      { pubkey: FACTORY_PROGRAM_ID, isSigner: false, isWritable: false },
+      { pubkey: twinMintKey, isSigner: false, isWritable: true }
     );
   }
-
-  keys.push(
-    { pubkey: VERIFIER_PROGRAM_ID, isSigner: false, isWritable: false },
-    { pubkey: verifyingKey, isSigner: false, isWritable: false },
-    { pubkey: wallet.publicKey, isSigner: true, isWritable: true },
-    { pubkey: originMintKey, isSigner: false, isWritable: false },
-    { pubkey: VAULT_PROGRAM_ID, isSigner: false, isWritable: false },
-    { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false }
-  );
 
   instructions.push(
     new TransactionInstruction({
