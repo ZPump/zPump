@@ -5,6 +5,7 @@ import path from 'path';
 import { promisify } from 'util';
 import { keccak_256 } from '@noble/hashes/sha3';
 import {
+  AddressLookupTableProgram,
   Connection,
   ComputeBudgetProgram,
   Keypair,
@@ -80,6 +81,7 @@ interface GeneratedMint {
     zTokenEnabled: boolean;
     wrappedTransfers: boolean;
   };
+  lookupTable?: string | null;
 }
 
 interface BootstrapContext {
@@ -222,6 +224,56 @@ async function sendAndConfirm(
     await new Promise((resolve) => setTimeout(resolve, 1000));
   }
   throw new Error(`Transaction ${signature} timed out awaiting confirmation`);
+}
+
+async function ensureLookupTable(
+  ctx: BootstrapContext,
+  existingKey: string | null | undefined,
+  addresses: PublicKey[]
+): Promise<PublicKey> {
+  const uniqueAddresses = Array.from(
+    new Map(addresses.map((address) => [address.toBase58(), address])).values()
+  );
+
+  const { connection } = ctx.provider;
+  if (existingKey) {
+    const existingPubkey = new PublicKey(existingKey);
+    const lookup = await connection.getAddressLookupTable(existingPubkey);
+    if (lookup.value) {
+      const existingAddresses = lookup.value.state.addresses;
+      const missing = uniqueAddresses.filter(
+        (address) => !existingAddresses.some((entry) => entry.equals(address))
+      );
+      if (missing.length > 0) {
+        const extendIx = AddressLookupTableProgram.extendLookupTable({
+          authority: ctx.payer.publicKey,
+          payer: ctx.payer.publicKey,
+          lookupTable: existingPubkey,
+          addresses: missing
+        });
+        await sendAndConfirm(ctx, [extendIx]);
+      }
+      return existingPubkey;
+    }
+  }
+
+  const recentSlot = await connection.getSlot('confirmed');
+  const [createIx, lookupTableAddress] = AddressLookupTableProgram.createLookupTable({
+    authority: ctx.payer.publicKey,
+    payer: ctx.payer.publicKey,
+    recentSlot
+  });
+  await sendAndConfirm(ctx, [createIx]);
+
+  const extendIx = AddressLookupTableProgram.extendLookupTable({
+    authority: ctx.payer.publicKey,
+    payer: ctx.payer.publicKey,
+    lookupTable: lookupTableAddress,
+    addresses: uniqueAddresses
+  });
+  await sendAndConfirm(ctx, [extendIx]);
+
+  return lookupTableAddress;
 }
 
 async function ensureVerifyingKeyBinary(jsonPath: string): Promise<Buffer> {
@@ -519,7 +571,7 @@ async function ensureMint(
     await waitForAccount(connection, vaultState, `Vault state for ${mintConfig.symbol}`);
   }
 
-  await ensureAta(ctx, originMintKey, vaultState, true);
+  const vaultTokenAta = await ensureAta(ctx, originMintKey, vaultState, true);
 
   const mintMappingInfo = await connection.getAccountInfo(mintMapping);
   if (!mintMappingInfo) {
@@ -584,6 +636,27 @@ async function ensureMint(
 
   const resolvedPtknMint = ptknMintForConfig ?? twinMintKey;
 
+  const lookupAddresses: PublicKey[] = [
+    poolState,
+    hookConfig,
+    nullifierSet,
+    commitmentTree,
+    noteLedger,
+    mintMapping,
+    factoryState,
+    vaultState,
+    verifyingKey.verifierState,
+    PROGRAM_IDS.factory,
+    PROGRAM_IDS.verifier,
+    PROGRAM_IDS.vault,
+    TOKEN_PROGRAM_ID,
+    vaultTokenAta
+  ];
+  if (resolvedPtknMint) {
+    lookupAddresses.push(resolvedPtknMint);
+  }
+  const lookupTableKey = await ensureLookupTable(ctx, mintConfig.lookupTable ?? null, lookupAddresses);
+
   return {
     symbol: mintConfig.symbol,
     decimals: mintConfig.decimals,
@@ -593,7 +666,8 @@ async function ensureMint(
     features: {
       ...mintConfig.features,
       zTokenEnabled: decodedMintMapping.has_ptkn
-    }
+    },
+    lookupTable: lookupTableKey.toBase58()
   };
 }
 

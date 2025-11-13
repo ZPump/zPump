@@ -3,7 +3,16 @@ import { Buffer } from 'buffer';
 if (typeof globalThis.Buffer === 'undefined') {
   (globalThis as typeof globalThis & { Buffer: typeof Buffer }).Buffer = Buffer;
 }
-import { ComputeBudgetProgram, Connection, PublicKey, Transaction, TransactionInstruction } from '@solana/web3.js';
+import {
+  AddressLookupTableAccount,
+  ComputeBudgetProgram,
+  Connection,
+  PublicKey,
+  Transaction,
+  TransactionInstruction,
+  TransactionMessage,
+  VersionedTransaction
+} from '@solana/web3.js';
 import { WalletContextState } from '@solana/wallet-adapter-react';
 import { BorshCoder, BN, Idl } from '@coral-xyz/anchor';
 import {
@@ -88,6 +97,7 @@ interface UnwrapParams extends BaseParams {
   destination: string;
   mode: 'origin' | 'ztkn' | 'ptkn';
   proof: ProofResponse;
+  lookupTable?: string;
 }
 
 interface DecodedProofPayload {
@@ -336,6 +346,7 @@ export async function wrap(params: WrapParams): Promise<string> {
   transaction.recentBlockhash = latestBlockhash.blockhash;
 
   const signature = await wallet.sendTransaction(transaction, connection, { skipPreflight: false });
+
   await waitForSignatureConfirmation(
     connection,
     signature,
@@ -488,21 +499,22 @@ export async function unwrap(params: UnwrapParams): Promise<string> {
     { pubkey: verifyingKey, isSigner: false, isWritable: false },
     { pubkey: vaultStateKey, isSigner: false, isWritable: true },
     { pubkey: vaultTokenAccount, isSigner: false, isWritable: true },
-    { pubkey: destinationTokenAccount, isSigner: false, isWritable: true },
-    { pubkey: wallet.publicKey, isSigner: true, isWritable: true },
-    { pubkey: originMintKey, isSigner: false, isWritable: false },
-    { pubkey: VAULT_PROGRAM_ID, isSigner: false, isWritable: false },
-    { pubkey: factoryStateKey, isSigner: false, isWritable: false },
-    { pubkey: FACTORY_PROGRAM_ID, isSigner: false, isWritable: false },
-    { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false }
+    { pubkey: destinationTokenAccount, isSigner: false, isWritable: true }
   ];
 
   if (mode === 'ptkn') {
     if (!twinMintKey) {
       throw new Error('Twin mint key missing for ptkn unwrap mode.');
     }
-    keys.splice(11, 0, { pubkey: twinMintKey, isSigner: false, isWritable: true });
+    keys.push({ pubkey: twinMintKey, isSigner: false, isWritable: true });
   }
+
+  keys.push(
+    { pubkey: VAULT_PROGRAM_ID, isSigner: false, isWritable: false },
+    { pubkey: factoryStateKey, isSigner: false, isWritable: false },
+    { pubkey: FACTORY_PROGRAM_ID, isSigner: false, isWritable: false },
+    { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false }
+  );
 
   instructions.push(
     new TransactionInstruction({
@@ -512,12 +524,39 @@ export async function unwrap(params: UnwrapParams): Promise<string> {
     })
   );
 
-  const latestBlockhash = await connection.getLatestBlockhash('confirmed');
-  const transaction = new Transaction().add(...instructions);
-  transaction.feePayer = wallet.publicKey;
-  transaction.recentBlockhash = latestBlockhash.blockhash;
+  const lookupTables: AddressLookupTableAccount[] = [];
+  if (params.lookupTable) {
+    try {
+      const tableKey = new PublicKey(params.lookupTable);
+      const lookupResponse = await connection.getAddressLookupTable(tableKey);
+      if (lookupResponse.value) {
+        lookupTables.push(lookupResponse.value);
+      } else {
+        console.warn(`[unwrap] lookup table ${tableKey.toBase58()} not found`);
+      }
+    } catch (error) {
+      console.warn('[unwrap] failed to resolve lookup table', error);
+    }
+  }
 
-  const signature = await wallet.sendTransaction(transaction, connection, { skipPreflight: false });
+  const latestBlockhash = await connection.getLatestBlockhash('confirmed');
+
+  let signature: string;
+  if (lookupTables.length > 0) {
+    const message = new TransactionMessage({
+      payerKey: wallet.publicKey,
+      recentBlockhash: latestBlockhash.blockhash,
+      instructions
+    }).compileToV0Message(lookupTables);
+    const transaction = new VersionedTransaction(message);
+    signature = await wallet.sendTransaction(transaction, connection, { skipPreflight: false });
+  } else {
+    const transaction = new Transaction().add(...instructions);
+    transaction.feePayer = wallet.publicKey;
+    transaction.recentBlockhash = latestBlockhash.blockhash;
+    signature = await wallet.sendTransaction(transaction, connection, { skipPreflight: false });
+  }
+
   await waitForSignatureConfirmation(
     connection,
     signature,

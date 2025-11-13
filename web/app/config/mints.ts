@@ -8,6 +8,7 @@ export interface MintConfig {
     zTokenEnabled: boolean;
     wrappedTransfers: boolean;
   };
+  lookupTable?: string;
 }
 
 interface GeneratedMint {
@@ -20,6 +21,7 @@ interface GeneratedMint {
     zTokenEnabled: boolean;
     wrappedTransfers: boolean;
   };
+  lookupTable?: string | null;
 }
 
 const DEFAULT_MINTS: GeneratedMint[] = [
@@ -32,7 +34,8 @@ const DEFAULT_MINTS: GeneratedMint[] = [
     features: {
       zTokenEnabled: false,
       wrappedTransfers: false
-    }
+    },
+    lookupTable: null
   },
   {
     symbol: 'SOLx',
@@ -43,7 +46,8 @@ const DEFAULT_MINTS: GeneratedMint[] = [
     features: {
       zTokenEnabled: false,
       wrappedTransfers: false
-    }
+    },
+    lookupTable: null
   }
 ];
 
@@ -61,7 +65,8 @@ export const MINTS: MintConfig[] = generated.map((entry) => ({
   poolId: entry.poolId,
   zTokenMint: entry.zTokenMint ?? undefined,
   decimals: entry.decimals,
-  features: entry.features
+  features: entry.features,
+  lookupTable: entry.lookupTable ?? undefined
 }));
 
 export function getMintConfig(originMint: string): MintConfig | undefined {
