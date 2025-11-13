@@ -459,7 +459,7 @@ export async function unwrap(params: UnwrapParams): Promise<string> {
   }
 
   const redeemToTwin = mode === 'ptkn';
-  if (!twinMintKey && redeemToTwin) {
+  if (redeemToTwin && !twinMintKey) {
     throw new Error('Twin mint key missing for unwrap.');
   }
 
@@ -519,7 +519,7 @@ export async function unwrap(params: UnwrapParams): Promise<string> {
     { pubkey: destinationTokenAccount, isSigner: false, isWritable: true }
   ];
 
-  if (twinMintKey) {
+  if (redeemToTwin && twinMintKey) {
     keys.push({ pubkey: twinMintKey, isSigner: false, isWritable: redeemToTwin });
   }
 
