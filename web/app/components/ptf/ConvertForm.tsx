@@ -962,7 +962,8 @@ export function ConvertForm() {
           destination: destinationKey.toBase58(),
           mode: 'origin',
           proof: proofResponse,
-          lookupTable: mintConfig.lookupTable
+          lookupTable: mintConfig.lookupTable,
+          twinMint: mintConfig.zTokenMint
         } as {
           connection: typeof connection;
           wallet: typeof wallet;
