@@ -464,14 +464,14 @@ export async function unwrap(params: UnwrapParams): Promise<string> {
   const poolCoder = new BorshCoder(poolIdl as Idl);
 
   const unshieldArgs = {
-    oldRoot: Array.from(oldRootBytes),
-    newRoot: Array.from(newRootBytes),
+    old_root: Array.from(oldRootBytes),
+    new_root: Array.from(newRootBytes),
     nullifiers: nullifierBytes.map((entry) => Array.from(entry)),
-    outputCommitments: [Array.from(changeCommitmentBytes)],
-    outputAmountCommitments: [Array.from(changeAmountCommitmentBytes)],
+    output_commitments: [Array.from(changeCommitmentBytes)],
+    output_amount_commitments: [Array.from(changeAmountCommitmentBytes)],
     amount: new BN(params.amount.toString()),
     proof: decodedProof.proof,
-    publicInputs: decodedProof.publicInputs
+    public_inputs: decodedProof.publicInputs
   };
 
   const instructionName = mode === 'ptkn' ? 'unshield_to_ptkn' : 'unshield_to_origin';
