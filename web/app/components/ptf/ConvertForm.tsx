@@ -953,11 +953,7 @@ export function ConvertForm() {
 
         const privateMint = mintConfig.zTokenMint;
 
-        if (!mintConfig.zTokenMint) {
-          throw new Error('Twin mint not configured for this pool.');
-        }
-
-        await unwrapSdk({
+        const unwrapParams = {
           connection,
           wallet,
           originMint,
@@ -966,9 +962,25 @@ export function ConvertForm() {
           destination: destinationKey.toBase58(),
           mode: 'origin',
           proof: proofResponse,
-          lookupTable: mintConfig.lookupTable,
-          twinMint: mintConfig.zTokenMint
-        });
+          lookupTable: mintConfig.lookupTable
+        } as {
+          connection: typeof connection;
+          wallet: typeof wallet;
+          originMint: string;
+          amount: bigint;
+          poolId: string;
+          destination: string;
+          mode: 'origin';
+          proof: ProofResponse;
+          lookupTable?: string;
+          twinMint?: string;
+        };
+
+        if (mintConfig.zTokenMint) {
+          unwrapParams.twinMint = mintConfig.zTokenMint;
+        }
+
+        await unwrapSdk(unwrapParams);
 
         try {
           await indexerClient.adjustBalance(wallet.publicKey.toBase58(), privateMint, -amountValue);
