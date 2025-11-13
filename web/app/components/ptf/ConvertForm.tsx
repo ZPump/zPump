@@ -83,6 +83,67 @@ const generateRandomFieldHex = () => {
   return `0x${fallback}`;
 };
 
+const AMOUNT_INPUT_PATTERN = /^\d*(?:\.\d*)?$/;
+
+function normaliseAmountInput(value: string): string {
+  let trimmed = value.trim();
+  if (!trimmed) {
+    return '';
+  }
+  if (trimmed.startsWith('.')) {
+    trimmed = `0${trimmed}`;
+  }
+  if (trimmed.endsWith('.')) {
+    trimmed = trimmed.slice(0, -1);
+  }
+  return trimmed;
+}
+
+function parseUiAmountToBaseUnits(value: string, decimals: number, label = 'amount'): bigint {
+  const normalised = normaliseAmountInput(value);
+  if (!normalised) {
+    throw new Error(`Enter an ${label}.`);
+  }
+  if (!AMOUNT_INPUT_PATTERN.test(normalised)) {
+    throw new Error(`Invalid ${label}. Use a numeric value with up to ${decimals} decimal places.`);
+  }
+  const [wholePartRaw, fractionRaw = ''] = normalised.split('.');
+  if (fractionRaw.length > decimals) {
+    throw new Error(`Invalid ${label}. Maximum ${decimals} decimal places allowed.`);
+  }
+  const wholePart = wholePartRaw || '0';
+  if (decimals === 0) {
+    return BigInt(wholePart);
+  }
+  const fractionPart = fractionRaw.padEnd(decimals, '0');
+  const combined = `${wholePart}${fractionPart}`.replace(/^0+(?=\d)/, '') || '0';
+  return BigInt(combined);
+}
+
+function parseOptionalUiAmountToBaseUnits(value: string, decimals: number, label = 'amount'): bigint {
+  const normalised = normaliseAmountInput(value);
+  if (!normalised) {
+    return 0n;
+  }
+  if (!AMOUNT_INPUT_PATTERN.test(normalised)) {
+    throw new Error(`Invalid ${label}. Use a numeric value with up to ${decimals} decimal places.`);
+  }
+  return parseUiAmountToBaseUnits(normalised, decimals, label);
+}
+
+function formatBaseUnitsToUi(amount: bigint, decimals: number): string {
+  if (decimals === 0) {
+    return amount.toString();
+  }
+  const negative = amount < 0n;
+  const absolute = negative ? -amount : amount;
+  const base = absolute.toString().padStart(decimals + 1, '0');
+  const whole = base.slice(0, -decimals);
+  const fraction = base.slice(-decimals).replace(/0+$/, '');
+  const formatted = fraction ? `${whole}.${fraction}` : whole;
+  return negative ? `-${formatted}` : formatted;
+}
+
 export function ConvertForm() {
   const { connection } = useConnection();
   const wallet = useWallet();
@@ -382,19 +443,41 @@ export function ConvertForm() {
 
   const nullifierList = nullifierState?.values ?? [];
   const computedChangeAmount = useMemo(() => {
+    if (!mintConfig) {
+      return null;
+    }
+    const decimals = mintConfig.decimals;
     try {
-      const baseAmount = amount ? BigInt(amount) : 0n;
-      const feeAmount = unwrapAdvanced.exitFee ? BigInt(unwrapAdvanced.exitFee) : 0n;
+      const baseAmount = parseOptionalUiAmountToBaseUnits(amount, decimals);
+      const feeAmount = parseOptionalUiAmountToBaseUnits(unwrapAdvanced.exitFee, decimals);
       const totalOut = baseAmount + feeAmount;
       if (unwrapAdvanced.autoChange) {
-        const noteTotal = unwrapAdvanced.noteAmount ? BigInt(unwrapAdvanced.noteAmount) : totalOut;
+        const noteTotal = unwrapAdvanced.noteAmount
+          ? parseUiAmountToBaseUnits(unwrapAdvanced.noteAmount, decimals, 'note amount')
+          : totalOut;
         return noteTotal - totalOut;
       }
-      return unwrapAdvanced.changeAmount ? BigInt(unwrapAdvanced.changeAmount) : 0n;
+      return unwrapAdvanced.changeAmount
+        ? parseUiAmountToBaseUnits(unwrapAdvanced.changeAmount, decimals, 'change amount')
+        : 0n;
     } catch {
       return null;
     }
-  }, [amount, unwrapAdvanced.autoChange, unwrapAdvanced.changeAmount, unwrapAdvanced.exitFee, unwrapAdvanced.noteAmount]);
+  }, [
+    amount,
+    mintConfig,
+    unwrapAdvanced.autoChange,
+    unwrapAdvanced.changeAmount,
+    unwrapAdvanced.exitFee,
+    unwrapAdvanced.noteAmount
+  ]);
+
+  const changePreviewDisplay = useMemo(() => {
+    if (computedChangeAmount === null || !mintConfig) {
+      return null;
+    }
+    return formatBaseUnitsToUi(computedChangeAmount, mintConfig.decimals);
+  }, [computedChangeAmount, mintConfig]);
 
   const handleModeChange = (event: React.ChangeEvent<HTMLSelectElement>) => {
     setMode(event.target.value as ConvertMode);
@@ -553,10 +636,16 @@ export function ConvertForm() {
         throw new Error('Unable to resolve the current commitment tree root. Refresh and try again.');
       }
 
+      const decimals = mintConfig.decimals;
+
       if (mode === 'to-private') {
+        const baseAmount = parseUiAmountToBaseUnits(amount, decimals, 'amount');
+        if (baseAmount <= 0n) {
+          throw new Error('Amount must be greater than zero.');
+        }
         const payload = {
           oldRoot: rootValue,
-          amount,
+          amount: baseAmount.toString(),
           recipient: wallet.publicKey.toBase58(),
           depositId: wrapAdvanced.depositId,
           poolId,
@@ -574,7 +663,7 @@ export function ConvertForm() {
           connection,
           wallet,
           originMint,
-          amount: BigInt(amount),
+          amount: baseAmount,
           poolId,
           depositId: wrapAdvanced.depositId,
           blinding: wrapAdvanced.blinding,
@@ -584,28 +673,20 @@ export function ConvertForm() {
           twinMint: mintConfig.zTokenMint ?? null
         });
 
-        setResult(`Shielded ${amount} into ${zTokenSymbol}.`);
+        const displayAmount = formatBaseUnitsToUi(baseAmount, decimals);
+        setResult(`Shielded ${displayAmount} into ${zTokenSymbol}.`);
       } else {
         const destinationKey = await resolvePublicKey(unwrapAdvanced.destination, wallet.publicKey);
         const selectedRedemptionMode = twinRedemptionAvailable ? redeemMode : 'origin';
         const proofMode = selectedRedemptionMode === 'ztkn' ? 'ztkn' : 'origin';
 
-        const parseUnsigned = (value: string, label: string): bigint => {
-          try {
-            const parsed = BigInt(value);
-            if (parsed < 0n) {
-              throw new Error();
-            }
-            return parsed;
-          } catch {
-            throw new Error(`Invalid ${label}. Enter a non-negative integer.`);
-          }
-        };
-
-        const amountValue = parseUnsigned(amount, 'amount');
-        const feeValue = unwrapAdvanced.exitFee ? parseUnsigned(unwrapAdvanced.exitFee, 'exit fee') : 0n;
+        const amountValue = parseUiAmountToBaseUnits(amount, decimals, 'amount');
+        if (amountValue <= 0n) {
+          throw new Error('Amount must be greater than zero.');
+        }
+        const feeValue = parseOptionalUiAmountToBaseUnits(unwrapAdvanced.exitFee, decimals, 'exit fee');
         let noteAmountValue = unwrapAdvanced.noteAmount
-          ? parseUnsigned(unwrapAdvanced.noteAmount, 'note amount')
+          ? parseUiAmountToBaseUnits(unwrapAdvanced.noteAmount, decimals, 'note amount')
           : amountValue + feeValue;
 
         const totalOutflow = amountValue + feeValue;
@@ -617,7 +698,7 @@ export function ConvertForm() {
         if (unwrapAdvanced.autoChange) {
           changeAmountValue = noteAmountValue - totalOutflow;
         } else if (unwrapAdvanced.changeAmount) {
-          changeAmountValue = parseUnsigned(unwrapAdvanced.changeAmount, 'change amount');
+          changeAmountValue = parseUiAmountToBaseUnits(unwrapAdvanced.changeAmount, decimals, 'change amount');
         } else {
           changeAmountValue = 0n;
         }
@@ -729,9 +810,11 @@ export function ConvertForm() {
         }
 
         if (selectedRedemptionMode === 'ztkn') {
-          setResult(`Minted ${amount} ${mintConfig.symbol} privacy twin tokens.`);
+          const displayAmount = formatBaseUnitsToUi(amountValue, decimals);
+          setResult(`Minted ${displayAmount} ${mintConfig.symbol} privacy twin tokens.`);
         } else {
-        setResult(`Redeemed ${amount} ${mintConfig.symbol}.`);
+          const displayAmount = formatBaseUnitsToUi(amountValue, decimals);
+          setResult(`Redeemed ${displayAmount} ${mintConfig.symbol}.`);
         }
       }
       void refreshRoots();
@@ -868,9 +951,15 @@ export function ConvertForm() {
         )}
 
         <FormControl isRequired>
-          <FormLabel color="whiteAlpha.700">Amount (in base units)</FormLabel>
-          <NumberInput min={0} value={amount} onChange={(valueString) => setAmount(valueString)}>
-            <NumberInputField placeholder="0" />
+          <FormLabel color="whiteAlpha.700">Amount</FormLabel>
+          <NumberInput
+            min={0}
+            value={amount}
+            onChange={(valueString) => setAmount(valueString)}
+            precision={mintConfig?.decimals ?? 0}
+            clampValueOnBlur={false}
+          >
+            <NumberInputField placeholder="0" inputMode="decimal" />
           </NumberInput>
         </FormControl>
 
@@ -940,8 +1029,13 @@ export function ConvertForm() {
                     />
                   </FormControl>
                   <FormControl>
-                    <FormLabel color="whiteAlpha.700">Exit fee (lamports)</FormLabel>
-                    <Input value={unwrapAdvanced.exitFee} onChange={handleUnwrapAdvancedChange('exitFee')} />
+                    <FormLabel color="whiteAlpha.700">Exit fee</FormLabel>
+                    <Input
+                      value={unwrapAdvanced.exitFee}
+                      onChange={handleUnwrapAdvancedChange('exitFee')}
+                      inputMode="decimal"
+                      placeholder="0"
+                    />
                   </FormControl>
                   <FormControl>
                     <FormLabel color="whiteAlpha.700">Note identifier</FormLabel>
@@ -967,6 +1061,7 @@ export function ConvertForm() {
                         value={unwrapAdvanced.noteAmount}
                         onChange={handleUnwrapAdvancedChange('noteAmount')}
                         placeholder="Defaults to amount + fee"
+                        inputMode="decimal"
                       />
                       <Button
                         size="sm"
@@ -975,10 +1070,15 @@ export function ConvertForm() {
                           setUnwrapAdvanced((prev) => ({
                             ...prev,
                             noteAmount: (() => {
+                              if (!mintConfig) {
+                                return prev.noteAmount;
+                              }
                               try {
-                                const baseAmount = amount ? BigInt(amount) : 0n;
-                                const feeAmount = prev.exitFee ? BigInt(prev.exitFee) : 0n;
-                                return (baseAmount + feeAmount).toString();
+                                const decimals = mintConfig.decimals;
+                                const baseAmount = parseOptionalUiAmountToBaseUnits(amount, decimals);
+                                const feeAmount = parseOptionalUiAmountToBaseUnits(prev.exitFee, decimals, 'exit fee');
+                                const total = baseAmount + feeAmount;
+                                return formatBaseUnitsToUi(total, decimals);
                               } catch {
                                 return prev.noteAmount;
                               }
@@ -990,7 +1090,7 @@ export function ConvertForm() {
                       </Button>
                     </HStack>
                     <FormHelperText color="whiteAlpha.500">
-                      Provide the total note value in base units. Leave blank to assume the exact exit amount.
+                      Provide the total note value in tokens. Leave blank to assume the exact exit amount.
                     </FormHelperText>
                   </FormControl>
                   <FormControl>
@@ -1090,14 +1190,15 @@ export function ConvertForm() {
                   <FormControl isDisabled={unwrapAdvanced.autoChange}>
                     <FormLabel color="whiteAlpha.700">Change amount</FormLabel>
                     <Input
-                      value={unwrapAdvanced.autoChange ? computedChangeAmount?.toString() ?? '' : unwrapAdvanced.changeAmount}
+                      value={unwrapAdvanced.autoChange ? changePreviewDisplay ?? '' : unwrapAdvanced.changeAmount}
                       onChange={handleUnwrapAdvancedChange('changeAmount')}
                       placeholder="Defaults to note amount - amount - fee"
+                      inputMode="decimal"
                     />
                     <FormHelperText color={computedChangeAmount !== null && computedChangeAmount < 0n ? 'red.300' : 'whiteAlpha.500'}>
                       {computedChangeAmount === null
                         ? 'Enter numeric values to preview change.'
-                        : `Current change preview: ${computedChangeAmount.toString()}`}
+                        : `Current change preview: ${changePreviewDisplay}`}
                     </FormHelperText>
                   </FormControl>
                   <FormControl>
