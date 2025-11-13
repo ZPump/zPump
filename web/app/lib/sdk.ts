@@ -98,6 +98,7 @@ interface UnwrapParams extends BaseParams {
   mode: 'origin' | 'ztkn' | 'ptkn';
   proof: ProofResponse;
   lookupTable?: string;
+  twinMint?: string;
 }
 
 interface DecodedProofPayload {
