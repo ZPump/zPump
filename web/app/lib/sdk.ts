@@ -477,28 +477,35 @@ export async function unwrap(params: UnwrapParams): Promise<string> {
   const instructionName = mode === 'ptkn' ? 'unshield_to_ptkn' : 'unshield_to_origin';
   const unshieldData = poolCoder.instruction.encode(instructionName, { args: unshieldArgs });
 
-  const keys = [
+  const keys: { pubkey: PublicKey; isSigner: boolean; isWritable: boolean }[] = [
     { pubkey: poolStateKey, isSigner: false, isWritable: true },
     { pubkey: hookConfigKey, isSigner: false, isWritable: false },
     { pubkey: nullifierSetKey, isSigner: false, isWritable: true },
     { pubkey: commitmentTreeKey, isSigner: false, isWritable: true },
     { pubkey: noteLedgerKey, isSigner: false, isWritable: true },
-    { pubkey: mintMappingKey, isSigner: false, isWritable: false },
-    { pubkey: VERIFIER_PROGRAM_ID, isSigner: false, isWritable: false },
-    { pubkey: verifyingKey, isSigner: false, isWritable: false },
     { pubkey: vaultStateKey, isSigner: false, isWritable: true },
     { pubkey: vaultTokenAccount, isSigner: false, isWritable: true },
     { pubkey: destinationTokenAccount, isSigner: false, isWritable: true }
   ];
 
-  if (twinMintKey) {
-    keys.push({ pubkey: twinMintKey, isSigner: false, isWritable: mode === 'ptkn' });
+  if (mode === 'ptkn') {
+    if (!twinMintKey) {
+      throw new Error('Twin mint key missing for ptkn unwrap mode.');
+    }
+    keys.push(
+      { pubkey: twinMintKey, isSigner: false, isWritable: true },
+      { pubkey: mintMappingKey, isSigner: false, isWritable: false },
+      { pubkey: factoryStateKey, isSigner: false, isWritable: false },
+      { pubkey: FACTORY_PROGRAM_ID, isSigner: false, isWritable: false }
+    );
   }
 
   keys.push(
+    { pubkey: VERIFIER_PROGRAM_ID, isSigner: false, isWritable: false },
+    { pubkey: verifyingKey, isSigner: false, isWritable: false },
+    { pubkey: wallet.publicKey, isSigner: true, isWritable: true },
+    { pubkey: originMintKey, isSigner: false, isWritable: false },
     { pubkey: VAULT_PROGRAM_ID, isSigner: false, isWritable: false },
-    { pubkey: factoryStateKey, isSigner: false, isWritable: false },
-    { pubkey: FACTORY_PROGRAM_ID, isSigner: false, isWritable: false },
     { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false }
   );
 
