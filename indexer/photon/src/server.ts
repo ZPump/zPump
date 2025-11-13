@@ -40,6 +40,11 @@ const NotesResponseSchema = z.object({
   notes: z.array(NoteSchema)
 });
 
+const RootWriteSchema = z.object({
+  current: z.string(),
+  recent: z.array(z.string()).optional()
+});
+
 const BalanceDeltaSchema = z.object({
   mint: z.string(),
   delta: z.string()
@@ -328,6 +333,22 @@ async function bootstrap() {
       logger.error({ err: error, mint }, 'failed to resolve roots');
       res.status(502).json({ error: 'upstream_failed' });
     }
+  });
+
+  app.post('/roots/:mint', (req, res) => {
+    const mint = req.params.mint;
+    const parsed = RootWriteSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: 'invalid_payload' });
+      return;
+    }
+    const normalise = (value: string) => (value.startsWith('0x') ? value : `0x${value}`);
+    const payload: RootResponse = {
+      current: normalise(parsed.data.current),
+      recent: parsed.data.recent ? parsed.data.recent.map(normalise) : []
+    };
+    store.upsertRoots(mint, payload);
+    res.json({ mint, ...payload, source: 'local' });
   });
 
   app.get('/nullifiers/:mint', async (req, res) => {

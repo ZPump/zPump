@@ -67,5 +67,23 @@ async function fetchRootFromChain(mint: string) {
   }
 }
 
+export async function POST(request: Request, context: { params: { mint: string } }) {
+  const { mint } = context.params;
+  try {
+    const payload = await request.json();
+    const response = await fetch(`${INDEXER_INTERNAL_URL}/roots/${mint}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(payload)
+    });
+    const data = await response.json().catch(() => ({}));
+    return NextResponse.json(data, { status: response.status });
+  } catch (error) {
+    return NextResponse.json({ error: (error as Error).message ?? 'indexer_unreachable' }, { status: 502 });
+  }
+}
+
 
 
