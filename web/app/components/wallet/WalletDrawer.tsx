@@ -101,7 +101,12 @@ function WalletDrawerContent({ disclosure }: { disclosure: ReturnType<typeof use
 
   const mintMap = useMemo(() => {
     const map = new Map<string, { symbol: string; decimals: number }>();
-    MINTS.forEach((mint) => map.set(mint.originMint, { symbol: mint.symbol, decimals: mint.decimals }));
+    MINTS.forEach((mint) => {
+      map.set(mint.originMint, { symbol: mint.symbol, decimals: mint.decimals });
+      if (mint.zTokenMint) {
+        map.set(mint.zTokenMint, { symbol: `z${mint.symbol}`, decimals: mint.decimals });
+      }
+    });
     return map;
   }, []);
 

@@ -119,14 +119,15 @@ describe('ConvertForm', () => {
     await waitFor(() => expect(getRootsMock).toHaveBeenCalled());
     await waitFor(() => expect(getNullifiersMock).toHaveBeenCalled());
 
-    fireEvent.change(screen.getByLabelText(/Amount \(in base units\)/i), { target: { value: '5' } });
+    fireEvent.change(screen.getByLabelText(/^Amount/i), { target: { value: '5' } });
     fireEvent.click(screen.getByRole('button', { name: /Submit conversion/i }));
 
     await waitFor(() => expect(wrapMock).toHaveBeenCalledTimes(1));
     expect(requestProofMock).toHaveBeenCalledWith(
       'wrap',
-      expect.objectContaining({ amount: '5', depositId: expect.any(String), oldRoot: '0xabc' })
+      expect.objectContaining({ amount: '5000000', depositId: expect.any(String), oldRoot: '0xabc' })
     );
+    expect(wrapMock).toHaveBeenCalledWith(expect.objectContaining({ amount: 5000000n }));
     expect(screen.getByText(/Shielded 5 into z/)).toBeInTheDocument();
   });
 
@@ -137,16 +138,22 @@ describe('ConvertForm', () => {
     await waitFor(() => expect(getNullifiersMock).toHaveBeenCalled());
 
     fireEvent.change(screen.getByLabelText(/Mode/i), { target: { value: 'to-public' } });
-    fireEvent.change(screen.getByLabelText(/Amount \(in base units\)/i), { target: { value: '7' } });
+    fireEvent.change(screen.getByLabelText(/^Amount/i), { target: { value: '7' } });
     fireEvent.click(screen.getByRole('button', { name: /Submit conversion/i }));
 
     await waitFor(() => expect(unwrapMock).toHaveBeenCalledTimes(1));
     expect(requestProofMock).toHaveBeenCalledWith(
       'unwrap',
-      expect.objectContaining({ amount: '7', noteAmount: '7', fee: '0', noteId: expect.any(String), oldRoot: '0xabc' })
+      expect.objectContaining({
+        amount: '7000000',
+        noteAmount: '7000000',
+        fee: '0',
+        noteId: expect.any(String),
+        oldRoot: '0xabc'
+      })
     );
     expect(unwrapMock).toHaveBeenCalledWith(
-      expect.objectContaining({ amount: 7n })
+      expect.objectContaining({ amount: 7000000n })
     );
     await waitFor(() => expect(appendNullifiersMock).toHaveBeenCalledTimes(1));
     expect(screen.getByText(/Redeemed 7/)).toBeInTheDocument();

@@ -200,10 +200,26 @@ export async function wrap(params: WrapParams): Promise<string> {
   const instructions: TransactionInstruction[] = [];
   const computeLimitEnv =
     process.env.WRAP_COMPUTE_UNIT_LIMIT ?? process.env.NEXT_PUBLIC_WRAP_COMPUTE_UNIT_LIMIT;
-  if (computeLimitEnv) {
-    const units = Number(computeLimitEnv);
-    if (!Number.isNaN(units) && units > 0) {
-      instructions.push(ComputeBudgetProgram.setComputeUnitLimit({ units }));
+  const resolvedComputeLimit = (() => {
+    if (computeLimitEnv) {
+      const parsed = Number(computeLimitEnv);
+      if (!Number.isNaN(parsed) && parsed > 0) {
+        return parsed;
+      }
+    }
+    return 1_400_000;
+  })();
+
+  if (resolvedComputeLimit > 0) {
+    instructions.push(ComputeBudgetProgram.setComputeUnitLimit({ units: resolvedComputeLimit }));
+  }
+
+  const computePriceEnv =
+    process.env.WRAP_COMPUTE_UNIT_PRICE ?? process.env.NEXT_PUBLIC_WRAP_COMPUTE_UNIT_PRICE;
+  if (computePriceEnv) {
+    const microLamports = Number(computePriceEnv);
+    if (!Number.isNaN(microLamports) && microLamports > 0) {
+      instructions.push(ComputeBudgetProgram.setComputeUnitPrice({ microLamports }));
     }
   }
 

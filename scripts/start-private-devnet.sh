@@ -42,6 +42,19 @@ done
 
 mkdir -p "$LEDGER_DIR"
 
+if pgrep -f solana-test-validator >/dev/null; then
+  echo "==> Detected running solana-test-validator instances. Terminating..."
+  pkill -f solana-test-validator
+  # Allow processes a moment to exit cleanly
+  sleep 1
+fi
+
+if lsof -i :"$FAUCET_PORT" >/dev/null 2>&1; then
+  echo "warning: faucet port $FAUCET_PORT still in use; attempting to free it" >&2
+  fuser -k "$FAUCET_PORT"/tcp >/dev/null 2>&1 || true
+  sleep 1
+fi
+
 echo "==> Starting zPump private devnet"
 echo "    Ledger directory : $LEDGER_DIR"
 echo "    RPC endpoint     : http://127.0.0.1:$RPC_PORT"
