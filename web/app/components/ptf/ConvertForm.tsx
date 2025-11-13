@@ -24,6 +24,7 @@ import {
 import { useConnection, useWallet } from '@solana/wallet-adapter-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { PublicKey } from '@solana/web3.js';
+import { TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID } from '@solana/spl-token';
 import { MINTS, MintConfig } from '../../config/mints';
 import { ProofClient, ProofResponse } from '../../lib/proofClient';
 import { wrap as wrapSdk, unwrap as unwrapSdk, resolvePublicKey } from '../../lib/sdk';
@@ -57,6 +58,18 @@ interface UnwrapAdvancedState {
   autoChange: boolean;
 }
 
+interface TokenOption {
+  originMint: string;
+  variant: 'public' | 'private';
+  label: string;
+  balance: bigint;
+  displayBalance: string;
+  symbol: string;
+  decimals: number;
+  disabled: boolean;
+  zTokenMint?: string;
+}
+
 const createRandomSeed = () => Math.floor(Math.random() * 1_000_000).toString();
 
 interface StoredNoteEntry {
@@ -74,6 +87,8 @@ const bytesToHex = (bytes: Uint8Array): string =>
   `0x${Array.from(bytes)
     .map((value) => value.toString(16).padStart(2, '0'))
     .join('')}`;
+
+const bytesToCanonicalHex = (bytes: Uint8Array): string => bytesToHex(Uint8Array.from(bytes).reverse());
 
 const generateRandomFieldHex = () => {
   if (typeof window !== 'undefined' && window.crypto?.getRandomValues) {
@@ -138,7 +153,11 @@ export function ConvertForm() {
   const wallet = useWallet();
 
   const [mode, setMode] = useState<ConvertMode>('to-private');
-  const [originMint, setOriginMint] = useState<string>(MINTS[0]?.originMint ?? '');
+  const defaultOriginMint = MINTS[0]?.originMint ?? '';
+  const [tokenSelection, setTokenSelection] = useState<{ originMint: string; variant: 'public' | 'private' }>({
+    originMint: defaultOriginMint,
+    variant: 'public'
+  });
   const [amount, setAmount] = useState<string>('1');
   const [isSubmitting, setSubmitting] = useBoolean(false);
   const [showAdvanced, setShowAdvanced] = useBoolean(false);
@@ -184,6 +203,10 @@ export function ConvertForm() {
   const [nullifierPreview, setNullifierPreview] = useState<string | null>(null);
   const [nullifierPreviewError, setNullifierPreviewError] = useState<string | null>(null);
 
+  const [tokenOptions, setTokenOptions] = useState<TokenOption[]>([]);
+  const originMint = tokenSelection.originMint;
+  const tokenVariant = tokenSelection.variant;
+
   const mintConfig = useMemo<MintConfig | undefined>(
     () => MINTS.find((mint) => mint.originMint === originMint),
     [originMint]
@@ -198,6 +221,145 @@ export function ConvertForm() {
   const proofClient = useMemo(() => new ProofClient(), []);
   const indexerClient = useMemo(() => new IndexerClient(), []);
   const mountedRef = useRef(true);
+
+  const refreshTokenOptions = useCallback(async () => {
+    const walletKey = wallet.publicKey;
+
+    const buildOptions = (publicBalances: Map<string, bigint>, privateBalances: Map<string, bigint>) => {
+      const walletConnected = Boolean(walletKey);
+      const options: TokenOption[] = [];
+      MINTS.forEach((mint) => {
+        const publicBalance = publicBalances.get(mint.originMint) ?? 0n;
+        const publicDisplay = formatBaseUnitsToUi(publicBalance, mint.decimals);
+        options.push({
+          originMint: mint.originMint,
+          variant: 'public',
+          label: `${mint.symbol} (public) — ${publicDisplay}`,
+          balance: publicBalance,
+          displayBalance: publicDisplay,
+          symbol: mint.symbol,
+          decimals: mint.decimals,
+          disabled: !walletConnected || publicBalance === 0n,
+          zTokenMint: mint.zTokenMint
+        });
+        if (mint.zTokenMint) {
+          const privateBalance = privateBalances.get(mint.zTokenMint) ?? 0n;
+          const privateDisplay = formatBaseUnitsToUi(privateBalance, mint.decimals);
+          options.push({
+            originMint: mint.originMint,
+            variant: 'private',
+            label: `z${mint.symbol} (private) — ${privateDisplay}`,
+            balance: privateBalance,
+            displayBalance: privateDisplay,
+            symbol: `z${mint.symbol}`,
+            decimals: mint.decimals,
+            disabled: !walletConnected || privateBalance === 0n,
+            zTokenMint: mint.zTokenMint
+          });
+        }
+      });
+      return options;
+    };
+
+    if (!walletKey) {
+      const options = buildOptions(new Map(), new Map());
+      setTokenOptions(options);
+      return options;
+    }
+
+    try {
+      const [legacyAccounts, token2022Accounts] = await Promise.all([
+        connection.getParsedTokenAccountsByOwner(walletKey, { programId: TOKEN_PROGRAM_ID }),
+        connection.getParsedTokenAccountsByOwner(walletKey, { programId: TOKEN_2022_PROGRAM_ID })
+      ]);
+
+      const publicBalances = new Map<string, bigint>();
+      const accumulateBalance = (account: typeof legacyAccounts.value[number]) => {
+        const parsedInfo = account.account.data?.parsed?.info;
+        const mintAddress: string | undefined = parsedInfo?.mint ?? parsedInfo?.tokenAmount?.mint;
+        const amountStr: string | undefined = parsedInfo?.tokenAmount?.amount;
+        if (!mintAddress || typeof amountStr !== 'string') {
+          return;
+        }
+        let amount = 0n;
+        try {
+          amount = BigInt(amountStr);
+        } catch {
+          amount = 0n;
+        }
+        if (amount === 0n) {
+          return;
+        }
+        const current = publicBalances.get(mintAddress) ?? 0n;
+        publicBalances.set(mintAddress, current + amount);
+      };
+
+      legacyAccounts.value.forEach(accumulateBalance);
+      token2022Accounts.value.forEach(accumulateBalance);
+
+      const privateBalances = new Map<string, bigint>();
+      try {
+        const privateResult = await indexerClient.getBalances(walletKey.toBase58());
+        if (privateResult?.balances) {
+          Object.entries(privateResult.balances).forEach(([mint, value]) => {
+            try {
+              privateBalances.set(mint, BigInt(value));
+            } catch {
+              privateBalances.set(mint, 0n);
+            }
+          });
+        }
+      } catch (error) {
+        console.warn('[convert-form] failed to fetch private balances', error);
+      }
+
+      const options = buildOptions(publicBalances, privateBalances);
+      setTokenOptions(options);
+      return options;
+    } catch (error) {
+      console.warn('[convert-form] failed to fetch token balances', error);
+      const options = buildOptions(new Map(), new Map());
+      setTokenOptions(options);
+      return options;
+    }
+  }, [wallet.publicKey, connection, indexerClient]);
+
+  useEffect(() => {
+    void refreshTokenOptions();
+  }, [refreshTokenOptions]);
+
+  const allowedVariant: 'public' | 'private' = mode === 'to-private' ? 'public' : 'private';
+  const filteredTokenOptions = useMemo(
+    () => tokenOptions.filter((option) => option.variant === allowedVariant),
+    [tokenOptions, allowedVariant]
+  );
+  const tokenSelectValue =
+    filteredTokenOptions.length > 0 ? `${tokenVariant}:${originMint}` : '__none';
+  const selectedTokenOption = useMemo(
+    () => tokenOptions.find((option) => option.originMint === originMint && option.variant === tokenVariant) ?? null,
+    [tokenOptions, originMint, tokenVariant]
+  );
+
+  useEffect(() => {
+    if (!tokenOptions.length) {
+      return;
+    }
+    const desiredVariant: 'public' | 'private' = mode === 'to-private' ? 'public' : 'private';
+    const candidates = tokenOptions.filter((option) => option.variant === desiredVariant);
+    if (!candidates.length) {
+      return;
+    }
+    const hasCurrent = candidates.some((option) => option.originMint === originMint);
+    if (tokenVariant !== desiredVariant || !hasCurrent) {
+      const nextOption = hasCurrent
+        ? candidates.find((option) => option.originMint === originMint)!
+        : candidates[0];
+      setTokenSelection({
+        originMint: nextOption.originMint,
+        variant: desiredVariant
+      });
+    }
+  }, [mode, tokenOptions, originMint, tokenVariant]);
 
   useEffect(() => {
     return () => {
@@ -268,7 +430,7 @@ export function ConvertForm() {
       }
       const poolData = new Uint8Array(poolAccount.data);
       const treeState = decodeCommitmentTree(new Uint8Array(treeAccount.data));
-      const currentRootHex = bytesToHex(treeState.currentRoot);
+      const currentRootHex = bytesToCanonicalHex(treeState.currentRoot);
       const maxRoots = 16;
       const base = 8;
       const recentOffset = base + 32 * 8 + 32;
@@ -278,7 +440,7 @@ export function ConvertForm() {
       for (let idx = 0; idx < Math.min(rootsLen, maxRoots); idx += 1) {
         const start = recentOffset + idx * 32;
         const rootRaw = poolData.slice(start, start + 32);
-        recent.push(bytesToHex(rootRaw));
+        recent.push(bytesToCanonicalHex(rootRaw));
       }
       return {
         current: currentRootHex,
@@ -459,7 +621,8 @@ export function ConvertForm() {
   }, [computedChangeAmount, mintConfig]);
 
   const handleModeChange = (event: React.ChangeEvent<HTMLSelectElement>) => {
-    setMode(event.target.value as ConvertMode);
+    const nextMode = event.target.value as ConvertMode;
+    setMode(nextMode);
     setResult(null);
     setProofPreview(null);
     setError(null);
@@ -467,6 +630,10 @@ export function ConvertForm() {
     setNoteLabelDraft('');
     setNullifierPreview(null);
     setNullifierPreviewError(null);
+    setTokenSelection((prev) => ({
+      originMint: prev.originMint,
+      variant: nextMode === 'to-private' ? 'public' : 'private'
+    }));
   };
 
   const handleWrapAdvancedChange =
@@ -600,6 +767,9 @@ export function ConvertForm() {
       if (!mintConfig) {
         throw new Error('Select a supported token.');
       }
+      if (!selectedTokenOption) {
+        throw new Error('Select a token before converting.');
+      }
 
       const poolId = mintConfig.poolId;
       const mintId = mintConfig.originMint;
@@ -617,9 +787,15 @@ export function ConvertForm() {
       const decimals = mintConfig.decimals;
 
       if (mode === 'to-private') {
+        if (tokenVariant !== 'public') {
+          throw new Error('Select a public token to shield.');
+        }
         const baseAmount = parseUiAmountToBaseUnits(amount, decimals, 'amount');
         if (baseAmount <= 0n) {
           throw new Error('Amount must be greater than zero.');
+        }
+        if (selectedTokenOption && selectedTokenOption.balance < baseAmount) {
+          throw new Error(`Insufficient ${selectedTokenOption.symbol} balance.`);
         }
         const payload = {
           oldRoot: rootValue,
@@ -662,7 +838,14 @@ export function ConvertForm() {
         }
         const displayAmount = formatBaseUnitsToUi(baseAmount, decimals);
         setResult(`Shielded ${displayAmount} into ${zTokenSymbol}. Signature: ${signature}`);
+        await refreshTokenOptions();
       } else {
+        if (tokenVariant !== 'private') {
+          throw new Error('Select a private token to redeem.');
+        }
+        if (!mintConfig.zTokenMint) {
+          throw new Error('This token does not support private redemptions.');
+        }
         const destinationKey = await resolvePublicKey(unwrapAdvanced.destination, wallet.publicKey);
 
         const amountValue = parseUiAmountToBaseUnits(amount, decimals, 'amount');
@@ -677,6 +860,9 @@ export function ConvertForm() {
         const totalOutflow = amountValue + feeValue;
         if (noteAmountValue < totalOutflow) {
           throw new Error('Note amount must cover the requested amount plus exit fee.');
+        }
+        if (selectedTokenOption && selectedTokenOption.balance < totalOutflow) {
+          throw new Error(`Insufficient ${selectedTokenOption.symbol} balance.`);
         }
 
         let changeAmountValue: bigint;
@@ -765,6 +951,8 @@ export function ConvertForm() {
           throw new Error('This note appears to be already spent. Refresh and pick a different note.');
         }
 
+        const privateMint = mintConfig.zTokenMint;
+
         await unwrapSdk({
           connection,
           wallet,
@@ -776,7 +964,6 @@ export function ConvertForm() {
           proof: proofResponse
         });
 
-        const privateMint = mintConfig.zTokenMint ?? originMint;
         try {
           await indexerClient.adjustBalance(wallet.publicKey.toBase58(), privateMint, -amountValue);
         } catch (error) {
@@ -815,6 +1002,7 @@ export function ConvertForm() {
         const displayAmount = formatBaseUnitsToUi(amountValue, decimals);
         const targetSymbol = mintConfig?.symbol ?? 'TOKEN';
         setResult(`Redeemed ${displayAmount} ${targetSymbol}.`);
+        await refreshTokenOptions();
       }
       void refreshRoots();
       void refreshNullifiers();
@@ -858,16 +1046,47 @@ export function ConvertForm() {
 
         <FormControl>
           <FormLabel color="whiteAlpha.700">Token</FormLabel>
-          <Select value={originMint} onChange={(event) => setOriginMint(event.target.value)} bg="rgba(18, 16, 14, 0.78)">
-            {MINTS.map((mint) => (
-              <option key={mint.originMint} value={mint.originMint}>
-                {mint.symbol}
+          <Select
+            value={tokenSelectValue}
+            onChange={(event) => {
+              const { value } = event.target;
+              if (value === '__none') {
+                return;
+              }
+              const [variant, mint] = value.split(':');
+              setTokenSelection({
+                originMint: mint,
+                variant: variant === 'private' ? 'private' : 'public'
+              });
+            }}
+            bg="rgba(18, 16, 14, 0.78)"
+          >
+            {filteredTokenOptions.length > 0 ? (
+              filteredTokenOptions.map((option) => (
+                <option
+                  key={`${option.variant}:${option.originMint}`}
+                  value={`${option.variant}:${option.originMint}`}
+                  disabled={option.disabled}
+                >
+                  {option.label}
+                </option>
+              ))
+            ) : (
+              <option value="__none" disabled>
+                No tokens available
               </option>
-            ))}
+            )}
           </Select>
           <FormHelperText color="whiteAlpha.500">
-            Private balance will appear as {zTokenSymbol}.
+            {mode === 'to-private'
+              ? `Private balance will appear as ${zTokenSymbol}.`
+              : `Public balance will appear as ${mintConfig?.symbol ?? 'TOKEN'}.`}
           </FormHelperText>
+          {selectedTokenOption && (
+            <FormHelperText color="whiteAlpha.500">
+              Available: {selectedTokenOption.displayBalance} {selectedTokenOption.symbol}
+            </FormHelperText>
+          )}
         </FormControl>
 
         <FormControl>

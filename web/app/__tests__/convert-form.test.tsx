@@ -1,6 +1,7 @@
 import { fireEvent, screen, waitFor } from '@testing-library/react';
 import { ConvertForm } from '../components/ptf/ConvertForm';
 import { renderWithProviders } from '../test-utils/renderWithProviders';
+import { MINTS } from '../config/mints';
 
 const requestProofMock = jest.fn();
 const wrapMock = jest.fn();
@@ -12,10 +13,12 @@ const getNotesMock = jest.fn();
 const getBalancesMock = jest.fn();
 const adjustBalanceMock = jest.fn();
 const getAccountInfoMock = jest.fn();
+const getParsedTokenAccountsByOwnerMock = jest.fn();
 const appendNullifiersMock = jest.fn();
 
 const mockConnection = {
-  getAccountInfo: getAccountInfoMock
+  getAccountInfo: getAccountInfoMock,
+  getParsedTokenAccountsByOwner: getParsedTokenAccountsByOwnerMock
 };
 
 const mockWallet = {
@@ -86,6 +89,8 @@ describe('ConvertForm', () => {
     jest.clearAllMocks();
     getAccountInfoMock.mockReset();
     getAccountInfoMock.mockResolvedValue(null);
+    getParsedTokenAccountsByOwnerMock.mockReset();
+    getParsedTokenAccountsByOwnerMock.mockResolvedValue({ value: [] });
     mockWallet.sendTransaction.mockResolvedValue('sig111');
     window.localStorage.clear();
     wrapMock.mockResolvedValue('wrap-sig');
@@ -124,6 +129,23 @@ describe('ConvertForm', () => {
   });
 
   it('submits a wrap flow when converting to private', async () => {
+    const originMint = MINTS[0]?.originMint ?? 'OriginMint11111111111111111111111111111111111';
+    getParsedTokenAccountsByOwnerMock.mockResolvedValue({
+      value: [
+        {
+          account: {
+            data: {
+              parsed: {
+                info: {
+                  mint: originMint,
+                  tokenAmount: { amount: '5000000' }
+                }
+              }
+            }
+          }
+        }
+      ]
+    });
     renderWithProviders(<ConvertForm />);
 
     await waitFor(() => expect(getRootsMock).toHaveBeenCalled());
@@ -143,6 +165,31 @@ describe('ConvertForm', () => {
   });
 
   it('submits an unwrap flow when converting to public', async () => {
+    const originMint = MINTS[0]?.originMint ?? 'OriginMint11111111111111111111111111111111111';
+    const zTokenMint = MINTS[0]?.zTokenMint ?? 'zTokenMint111111111111111111111111111111111';
+    getParsedTokenAccountsByOwnerMock.mockResolvedValue({
+      value: [
+        {
+          account: {
+            data: {
+              parsed: {
+                info: {
+                  mint: originMint,
+                  tokenAmount: { amount: '0' }
+                }
+              }
+            }
+          }
+        }
+      ]
+    });
+    getBalancesMock.mockResolvedValue({
+      wallet: 'WALLET111',
+      balances: {
+        [zTokenMint]: '7000000'
+      },
+      source: 'indexer'
+    });
     renderWithProviders(<ConvertForm />);
 
     await waitFor(() => expect(getRootsMock).toHaveBeenCalled());
