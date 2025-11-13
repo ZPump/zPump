@@ -531,11 +531,19 @@ export async function unwrap(params: UnwrapParams): Promise<string> {
     { pubkey: destinationTokenAccount, isSigner: false, isWritable: true }
   ];
 
-  keys.push({
-    pubkey: redeemToTwin && twinMintKey ? twinMintKey : POOL_PROGRAM_ID,
-    isSigner: false,
-    isWritable: redeemToTwin
-  });
+  if (twinMintKey) {
+    keys.push({
+      pubkey: twinMintKey,
+      isSigner: false,
+      isWritable: true
+    });
+  } else {
+    keys.push({
+      pubkey: POOL_PROGRAM_ID,
+      isSigner: false,
+      isWritable: false
+    });
+  }
 
   keys.push(
     { pubkey: VAULT_PROGRAM_ID, isSigner: false, isWritable: false },
