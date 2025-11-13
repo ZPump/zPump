@@ -4,15 +4,14 @@ use ark_ff::{BigInteger256, Field, Zero};
 const WIDTH: usize = 3;
 const FULL_ROUNDS: usize = 8;
 const PARTIAL_ROUNDS: usize = 57;
-const TOTAL_ROUNDS: usize = FULL_ROUNDS + PARTIAL_ROUNDS;
-const ALPHA: u64 = 5;
 
 const fn fr(limbs: [u64; 4]) -> Fr {
     Fr::new(BigInteger256::new(limbs))
 }
 
+#[inline(always)]
 pub fn hash_two(left: &Fr, right: &Fr) -> Fr {
-    let mut state = [Fr::from(0u64), *left, *right];
+    let mut state = [Fr::zero(), *left, *right];
     apply_permutation(&mut state);
     state[0]
 }
@@ -50,22 +49,33 @@ fn add_round_constants(state: &mut [Fr; WIDTH], round: usize) {
 
 fn apply_full_sbox(state: &mut [Fr; WIDTH]) {
     for elem in state.iter_mut() {
-        *elem = elem.pow([ALPHA]);
+        quintic_pow_in_place(elem);
     }
 }
 
 fn apply_partial_sbox(state: &mut [Fr; WIDTH]) {
-    state[0] = state[0].pow([ALPHA]);
+    quintic_pow_in_place(&mut state[0]);
 }
 
 fn apply_mds(state: &mut [Fr; WIDTH]) {
     let mut next = [Fr::zero(); WIDTH];
-    for i in 0..WIDTH {
-        for j in 0..WIDTH {
-            next[i] += POSEIDON_MDS[i][j] * state[j];
+    for (row_index, row) in POSEIDON_MDS.iter().enumerate() {
+        let mut acc = Fr::zero();
+        for (coeff, value) in row.iter().zip(state.iter()) {
+            acc += *coeff * value;
         }
+        next[row_index] = acc;
     }
     *state = next;
+}
+
+#[inline(always)]
+fn quintic_pow_in_place(value: &mut Fr) {
+    let mut sq = *value;
+    sq.square_in_place();
+    let mut quad = sq;
+    quad.square_in_place();
+    *value *= quad;
 }
 
 include!("poseidon_consts.in");
