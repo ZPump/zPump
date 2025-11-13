@@ -7,6 +7,7 @@ use ark_bn254::Fr;
 use ark_ff::{BigInteger, BigInteger256, PrimeField};
 #[cfg(feature = "invariant_checks")]
 use core::convert::TryFrom;
+use core::convert::TryInto;
 use sha3::{Digest, Keccak256};
 
 use ptf_common::hooks::{HookInstruction, PostShieldHook, PostUnshieldHook};
@@ -940,12 +941,26 @@ fn validate_supply_components(
 }
 
 fn poseidon_hash(left: &[u8; 32], right: &[u8; 32]) -> [u8; 32] {
-    let left_fr = Fr::from_le_bytes_mod_order(left);
-    let right_fr = Fr::from_le_bytes_mod_order(right);
+    let left_fr = fr_from_bytes(left);
+    let right_fr = fr_from_bytes(right);
     let hash = poseidon::hash_two(&left_fr, &right_fr);
     fr_to_bytes(&hash)
 }
 
+#[inline(always)]
+fn fr_from_bytes(bytes: &[u8; 32]) -> Fr {
+    let mut limbs = [0u64; 4];
+    for (index, limb) in limbs.iter_mut().enumerate() {
+        let start = index * 8;
+        let chunk: [u8; 8] = bytes[start..start + 8]
+            .try_into()
+            .expect("slice with incorrect length");
+        *limb = u64::from_le_bytes(chunk);
+    }
+    Fr::new(BigInteger256::new(limbs))
+}
+
+#[inline(always)]
 fn fr_to_bytes(value: &Fr) -> [u8; 32] {
     let bigint: BigInteger256 = value.into_bigint();
     let bytes = bigint.to_bytes_le();

@@ -37,7 +37,9 @@ fn main() -> ExitCode {
     let input = match args.next() {
         Some(path) => PathBuf::from(path),
         None => {
-            eprintln!("Usage: cargo run --bin export_vk <path/to/verification_key.json> [output.bin]");
+            eprintln!(
+                "Usage: cargo run --bin export_vk <path/to/verification_key.json> [output.bin]"
+            );
             return ExitCode::FAILURE;
         }
     };
@@ -74,10 +76,7 @@ fn main() -> ExitCode {
     };
 
     let mut bytes = Vec::new();
-    if verifying_key
-        .serialize_uncompressed(&mut bytes)
-        .is_err()
-    {
+    if verifying_key.serialize_uncompressed(&mut bytes).is_err() {
         eprintln!("Failed to serialize verifying key");
         return ExitCode::FAILURE;
     }
@@ -94,4 +93,3 @@ fn main() -> ExitCode {
     );
     ExitCode::SUCCESS
 }
-
