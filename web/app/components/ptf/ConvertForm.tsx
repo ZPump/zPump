@@ -976,10 +976,6 @@ export function ConvertForm() {
           twinMint?: string;
         };
 
-        if (mintConfig.zTokenMint) {
-          unwrapParams.twinMint = mintConfig.zTokenMint;
-        }
-
         await unwrapSdk(unwrapParams);
 
         try {
