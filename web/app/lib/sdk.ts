@@ -447,15 +447,12 @@ export async function unwrap(params: UnwrapParams): Promise<string> {
   const factoryCoder = new BorshCoder(factoryIdl as Idl);
 
   let twinMintKey: PublicKey | null = params.twinMint ? new PublicKey(params.twinMint) : null;
-  if (mode === 'ptkn') {
-    const mintMappingAccount = await connection.getAccountInfo(mintMappingKey);
-    if (!mintMappingAccount) {
-      throw new Error('Mint mapping account missing on devnet');
-    }
-    const decodedMintMapping = factoryCoder.accounts.decode('MintMapping', mintMappingAccount.data);
-    if (!decodedMintMapping.hasPtkn) {
-      throw new Error('Twin mint is not enabled for this origin mint.');
-    }
+  const mintMappingAccount = await connection.getAccountInfo(mintMappingKey);
+  if (!mintMappingAccount) {
+    throw new Error('Mint mapping account missing on devnet');
+  }
+  const decodedMintMapping = factoryCoder.accounts.decode('MintMapping', mintMappingAccount.data);
+  if (decodedMintMapping.hasPtkn) {
     const candidate = new PublicKey(decodedMintMapping.ptknMint);
     if (candidate.equals(PublicKey.default)) {
       throw new Error('Twin mint address missing from mint mapping.');
@@ -469,10 +466,12 @@ export async function unwrap(params: UnwrapParams): Promise<string> {
     twinMintKey = candidate;
   }
 
+  if (mode === 'ptkn' && !decodedMintMapping.hasPtkn) {
+    throw new Error('Twin mint is not enabled for this origin mint.');
+  }
+
   const redeemToTwin = mode === 'ptkn';
-  if (!redeemToTwin) {
-    twinMintKey = null;
-  } else if (!twinMintKey) {
+  if (redeemToTwin && !twinMintKey) {
     throw new Error('Twin mint key missing for unwrap.');
   }
 
