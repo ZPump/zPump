@@ -366,6 +366,14 @@ export async function unwrap(params: UnwrapParams): Promise<string> {
   assertWallet(params.wallet);
 
   const mode = params.mode === 'ztkn' ? 'ptkn' : params.mode;
+  if (process.env.NEXT_PUBLIC_DEBUG_WRAP === 'true') {
+    // eslint-disable-next-line no-console
+    console.info('[unwrap] params', {
+      mode: params.mode,
+      normalizedMode: mode,
+      twinMintSupplied: Boolean(params.twinMint)
+    });
+  }
 
   const { wallet, connection } = params;
   const originMintKey = new PublicKey(params.originMint);
@@ -459,7 +467,9 @@ export async function unwrap(params: UnwrapParams): Promise<string> {
   }
 
   const redeemToTwin = mode === 'ptkn';
-  if (redeemToTwin && !twinMintKey) {
+  if (!redeemToTwin) {
+    twinMintKey = null;
+  } else if (!twinMintKey) {
     throw new Error('Twin mint key missing for unwrap.');
   }
 
