@@ -532,7 +532,7 @@ export async function unwrap(params: UnwrapParams): Promise<string> {
   ];
 
   keys.push({
-    pubkey: twinMintKey ?? POOL_PROGRAM_ID,
+    pubkey: redeemToTwin && twinMintKey ? twinMintKey : POOL_PROGRAM_ID,
     isSigner: false,
     isWritable: redeemToTwin
   });
