@@ -12,6 +12,7 @@ import { ProofClient } from '../lib/proofClient';
 import { IndexerClient } from '../lib/indexerClient';
 import { getMintConfig } from '../config/mints';
 import { derivePoolState } from '../lib/onchain/pdas';
+import { bytesLEToCanonicalHex, canonicalizeHex } from '../lib/onchain/utils';
 
 const SECRET_PATH = process.env.ZPUMP_TEST_WALLET ?? '/tmp/zpump-test.json';
 const RPC_URL = process.env.RPC_URL ?? 'http://127.0.0.1:8899';
@@ -71,15 +72,15 @@ async function main() {
   const poolData = Buffer.from(poolAccount.data);
   const currentRootOffset = 8 + 32 * 8; // discriminator + eight 32-byte fields before current_root
   const poolCurrentRootRaw = poolData.slice(currentRootOffset, currentRootOffset + 32);
-  const onChainRoot = `0x${poolCurrentRootRaw.toString('hex')}`;
+  const onChainRoot = bytesLEToCanonicalHex(poolCurrentRootRaw);
 
   let oldRoot = roots?.current ?? null;
-  if (!oldRoot || oldRoot.toLowerCase() !== onChainRoot.toLowerCase()) {
+  if (!oldRoot || canonicalizeHex(oldRoot).toLowerCase() !== onChainRoot.toLowerCase()) {
     oldRoot = onChainRoot;
   }
 
   const payload = {
-    oldRoot,
+    oldRoot: canonicalizeHex(oldRoot),
     amount: AMOUNT,
     recipient: payer.publicKey.toBase58(),
     depositId,

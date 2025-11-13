@@ -18,6 +18,7 @@ import { getMintConfig } from '../config/mints';
 import { wrap, unwrap } from '../lib/sdk';
 import { deriveCommitmentTree } from '../lib/onchain/pdas';
 import { decodeCommitmentTree, commitmentToHex } from '../lib/onchain/commitmentTree';
+import { bytesLEToCanonicalHex, canonicalizeHex } from '../lib/onchain/utils';
 import { poseidonHashMany } from '../lib/onchain/poseidon';
 
 type WalletLike = Parameters<typeof wrap>[0]['wallet'];
@@ -43,18 +44,6 @@ const bytesToHex = (bytes: Uint8Array) =>
 function randomField(): bigint {
   const bytes = crypto.randomBytes(32);
   return BigInt(`0x${bytes.toString('hex')}`);
-}
-
-function toCanonicalHex(leHex: string): string {
-  const body = leHex.startsWith('0x') ? leHex.slice(2) : leHex;
-  const reversed = Buffer.from(body, 'hex').reverse();
-  return `0x${reversed.toString('hex')}`;
-}
-
-function toLittleEndianHex(beHex: string): string {
-  const body = beHex.startsWith('0x') ? beHex.slice(2) : beHex;
-  const reversed = Buffer.from(body, 'hex').reverse();
-  return `0x${reversed.toString('hex')}`;
 }
 
 async function ensureSolBalance(connection: Connection, owner: PublicKey) {
@@ -182,7 +171,7 @@ function readPoolStateRoot(buffer: Buffer): string {
   // PoolState layout: discriminator (8) + Pubkey fields. current_root is the 9th 32-byte field.
   const CURRENT_ROOT_OFFSET = 8 + 32 * 8;
   const rootBytes = buffer.slice(CURRENT_ROOT_OFFSET, CURRENT_ROOT_OFFSET + 32);
-  return `0x${rootBytes.toString('hex')}`;
+  return bytesLEToCanonicalHex(rootBytes);
 }
 
 async function fetchPoolStateRoot(connection: Connection, poolId: string): Promise<string> {
@@ -202,8 +191,8 @@ async function waitForIndexerRoot(
   for (let attempt = 0; attempt < 60; attempt += 1) {
     const roots = await indexerClient.getRoots(originMint);
     if (roots) {
-      const known = new Set([roots.current, ...roots.recent]);
-      if (known.has(expectRoot)) {
+      const known = new Set([roots.current, ...roots.recent].map((entry) => canonicalizeHex(entry)));
+      if (known.has(canonicalizeHex(expectRoot))) {
         return;
       }
     }
@@ -229,7 +218,10 @@ async function publishRoot(
     headers: {
       'Content-Type': 'application/json'
     },
-    body: JSON.stringify({ current, recent })
+    body: JSON.stringify({
+      current: canonicalizeHex(current),
+      recent: recent.map((entry) => canonicalizeHex(entry))
+    })
   });
   if (!response.ok) {
     const payload = await response.json().catch(() => ({}));
@@ -264,16 +256,19 @@ async function main() {
   const blinding = crypto.randomInt(1_000_000, 9_000_000).toString();
 
   const roots = await indexerClient.getRoots(mintConfig.originMint);
-  const poolRoot = await fetchPoolStateRoot(connection, mintConfig.poolId);
-  const poolRootCanonical = toCanonicalHex(poolRoot);
+  const poolRootCanonical = await fetchPoolStateRoot(connection, mintConfig.poolId);
   const storedRootCanonical =
-    roots?.current && roots.current.length > 0 ? roots.current : poolRootCanonical;
+    roots?.current && roots.current.length > 0
+      ? canonicalizeHex(roots.current)
+      : poolRootCanonical;
   const oldRootCanonical =
     storedRootCanonical.toLowerCase() === poolRootCanonical.toLowerCase()
       ? storedRootCanonical
       : poolRootCanonical;
   const previousRoots = roots
-    ? [roots.current, ...roots.recent].map((entry) => (entry ? entry : poolRootCanonical))
+    ? [roots.current, ...roots.recent].map((entry) =>
+        entry ? canonicalizeHex(entry) : poolRootCanonical
+      )
     : [poolRootCanonical];
   await publishRoot(
     INDEXER_URL,
@@ -283,7 +278,7 @@ async function main() {
   );
 
   const wrapPayload = {
-    oldRoot: oldRootCanonical,
+    oldRoot: canonicalizeHex(oldRootCanonical),
     amount: WRAP_AMOUNT.toString(),
     recipient: payer.publicKey.toBase58(),
     depositId,
@@ -294,6 +289,11 @@ async function main() {
 
   console.info('[wrap] requesting proof');
   const wrapProof = await proofClient.requestProof('wrap', wrapPayload);
+  const wrapInputs = wrapProof.publicInputs ?? [];
+  const proofOldRoot = wrapInputs.length > 0 ? canonicalizeHex(wrapInputs[0]!) : null;
+  if (!proofOldRoot || proofOldRoot.toLowerCase() !== oldRootCanonical.toLowerCase()) {
+    throw new Error('Wrap proof root mismatch with canonical old root');
+  }
 
   console.info('[wrap] submitting transaction');
   const wrapSignature = await wrap({
@@ -311,8 +311,7 @@ async function main() {
   });
   console.info('[wrap] confirmed signature', wrapSignature);
 
-  const newRootLe = await fetchCommitmentRoot(connection, originMintKey);
-  const newRootCanonical = toCanonicalHex(newRootLe);
+  const newRootCanonical = await fetchCommitmentRoot(connection, originMintKey);
   const updatedRecent = [
     oldRootCanonical,
     ...previousRoots.filter((root) => root !== oldRootCanonical)
@@ -324,6 +323,11 @@ async function main() {
     console.warn('[wrap] indexer root not updated', (error as Error).message);
   }
   console.info('[wrap] commitment tree root', newRootCanonical);
+
+  const proofNewRoot = wrapInputs.length > 1 ? canonicalizeHex(wrapInputs[1]!) : null;
+  if (!proofNewRoot || proofNewRoot.toLowerCase() !== newRootCanonical.toLowerCase()) {
+    throw new Error('Wrap proof new root mismatch with on-chain commitment tree');
+  }
 
   const noteId = randomField();
   const spendingKey = randomField();

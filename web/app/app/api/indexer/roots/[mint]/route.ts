@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { Connection, PublicKey } from '@solana/web3.js';
 import { derivePoolState } from '../../../../../lib/onchain/pdas';
+import { bytesLEToCanonicalHex, canonicalizeHex } from '../../../../../lib/onchain/utils';
 
 const INDEXER_INTERNAL_URL = process.env.INDEXER_INTERNAL_URL ?? 'http://127.0.0.1:8787';
 const RPC_INTERNAL_URL = process.env.RPC_URL ?? 'http://127.0.0.1:8899';
@@ -41,9 +42,7 @@ async function fetchRootFromChain(mint: string) {
     const base = 8;
     const currentRootOffset = base + 32 * 8;
     const currentRootRaw = data.slice(currentRootOffset, currentRootOffset + 32);
-    const current = `0x${Array.from(currentRootRaw)
-      .map((value) => value.toString(16).padStart(2, '0'))
-      .join('')}`;
+    const current = bytesLEToCanonicalHex(currentRootRaw);
     const maxRoots = 16;
     const recentOffset = currentRootOffset + 32;
     const rootsLenOffset = recentOffset + 32 * maxRoots;
@@ -52,11 +51,7 @@ async function fetchRootFromChain(mint: string) {
     for (let idx = 0; idx < Math.min(rootsLen, maxRoots); idx += 1) {
       const start = recentOffset + idx * 32;
       const rootRaw = data.slice(start, start + 32);
-      recent.push(
-        `0x${Array.from(rootRaw)
-          .map((value) => value.toString(16).padStart(2, '0'))
-          .join('')}`
-      );
+      recent.push(bytesLEToCanonicalHex(rootRaw));
     }
     return {
       current,
@@ -76,7 +71,14 @@ export async function POST(request: Request, context: { params: { mint: string }
       headers: {
         'Content-Type': 'application/json'
       },
-      body: JSON.stringify(payload)
+      body: JSON.stringify({
+        current: canonicalizeHex(payload.current ?? '0x0'),
+        recent: Array.isArray(payload.recent)
+          ? payload.recent
+              .filter((entry: unknown): entry is string => typeof entry === 'string')
+              .map((entry) => canonicalizeHex(entry))
+          : []
+      })
     });
     const data = await response.json().catch(() => ({}));
     return NextResponse.json(data, { status: response.status });

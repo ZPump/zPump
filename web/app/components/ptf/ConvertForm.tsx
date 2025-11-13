@@ -33,6 +33,7 @@ import { getCachedRoots, setCachedRoots, getCachedNullifiers, setCachedNullifier
 import { derivePoolState, deriveCommitmentTree } from '../../lib/onchain/pdas';
 import { poseidonHashMany } from '../../lib/onchain/poseidon';
 import { decodeCommitmentTree } from '../../lib/onchain/commitmentTree';
+import { bytesLEToCanonicalHex } from '../../lib/onchain/utils';
 import { formatBaseUnitsToUi } from '../../lib/format';
 
 type ConvertMode = 'to-private' | 'to-public';
@@ -87,8 +88,6 @@ const bytesToHex = (bytes: Uint8Array): string =>
   `0x${Array.from(bytes)
     .map((value) => value.toString(16).padStart(2, '0'))
     .join('')}`;
-
-const bytesToCanonicalHex = (bytes: Uint8Array): string => bytesToHex(Uint8Array.from(bytes).reverse());
 
 const generateRandomFieldHex = () => {
   if (typeof window !== 'undefined' && window.crypto?.getRandomValues) {
@@ -430,7 +429,7 @@ export function ConvertForm() {
       }
       const poolData = new Uint8Array(poolAccount.data);
       const treeState = decodeCommitmentTree(new Uint8Array(treeAccount.data));
-      const currentRootHex = bytesToCanonicalHex(treeState.currentRoot);
+      const currentRootHex = bytesLEToCanonicalHex(treeState.currentRoot);
       const maxRoots = 16;
       const base = 8;
       const recentOffset = base + 32 * 8 + 32;
@@ -440,7 +439,7 @@ export function ConvertForm() {
       for (let idx = 0; idx < Math.min(rootsLen, maxRoots); idx += 1) {
         const start = recentOffset + idx * 32;
         const rootRaw = poolData.slice(start, start + 32);
-        recent.push(bytesToCanonicalHex(rootRaw));
+        recent.push(bytesLEToCanonicalHex(rootRaw));
       }
       return {
         current: currentRootHex,

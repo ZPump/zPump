@@ -127,13 +127,7 @@ type RootResponse = z.infer<typeof RootResponseSchema>;
 const poseidon = circomlibjs.poseidon;
 
 function bigIntify(value: string | number | bigint): bigint {
-  if (typeof value === 'bigint') {
-    return value;
-  }
-  if (typeof value === 'number') {
-    return BigInt(value);
-  }
-  return BigInt(value);
+  return normalizeBigInt(value);
 }
 
 function fieldToHex(value: bigint): string {
@@ -143,6 +137,25 @@ function fieldToHex(value: bigint): string {
 
 function fieldToString(value: bigint): string {
   return value.toString(10);
+}
+
+function canonicalizeHex(value: string): string {
+  const trimmed = value.trim();
+  if (trimmed.length === 0) {
+    return `0x${'0'.repeat(64)}`;
+  }
+  let body: string;
+  if (trimmed.startsWith('0x') || trimmed.startsWith('0X')) {
+    body = trimmed.slice(2);
+  } else if (/^[0-9a-fA-F]+$/.test(trimmed)) {
+    body = trimmed;
+  } else if (/^\d+$/.test(trimmed)) {
+    body = BigInt(trimmed).toString(16);
+  } else {
+    throw new Error(`invalid_hex:${value}`);
+  }
+  const normalised = body.replace(/^0+/, '') || '0';
+  return `0x${normalised.padStart(64, '0').toLowerCase()}`;
 }
 
 function normalizeBigInt(value: string | number | bigint): bigint {
@@ -156,6 +169,12 @@ function normalizeBigInt(value: string | number | bigint): bigint {
   if (trimmed.startsWith('0x') || trimmed.startsWith('0X')) {
     return BigInt(trimmed);
   }
+  if (trimmed.startsWith('0x') || trimmed.startsWith('0X')) {
+    return BigInt(trimmed);
+  }
+  if (/^[0-9a-fA-F]+$/.test(trimmed)) {
+    return BigInt(`0x${trimmed}`);
+  }
   return BigInt(trimmed);
 }
 
@@ -167,6 +186,13 @@ function bigIntToBeBuffer(value: string | number | bigint, length = 32): Buffer 
     remaining >>= 8n;
   }
   return result;
+}
+
+function canonicalHexToLeBuffer(value: string): Buffer {
+  const canonical = canonicalizeHex(value);
+  const body = canonical.slice(2);
+  const be = Buffer.from(body, 'hex');
+  return Buffer.from(be).reverse();
 }
 
 function serializeG1(point: string[]): Buffer {
@@ -197,7 +223,7 @@ function serializeGroth16Proof(proof: { pi_a: string[]; pi_b: string[][]; pi_c: 
 }
 
 function serializePublicInputs(values: string[]): Buffer {
-  const parts = values.map((value) => bigIntToBeBuffer(value));
+  const parts = values.map((value) => canonicalHexToLeBuffer(value));
   return Buffer.concat(parts);
 }
 
@@ -242,7 +268,8 @@ function deriveShieldPublic(input: ShieldInput) {
     blindingField
   ]);
   const commitmentHex = fieldToHex(commitmentValue);
-  const oldRootField = bigIntify(input.oldRoot);
+  const oldRootHexCanonical = canonicalizeHex(input.oldRoot);
+  const oldRootField = bigIntify(oldRootHexCanonical);
   const oldRootHex = fieldToHex(oldRootField);
   const newRootValue = poseidonValue([oldRootField, commitmentValue]);
   const newRootHex = fieldToHex(newRootValue);
@@ -277,22 +304,27 @@ function deriveShieldPublic(input: ShieldInput) {
 }
 
 function deriveTransferPublic(input: TransferInput) {
+  const mintFieldValue = parsePubkeyField(input.mintId);
+  const poolFieldValue = parsePubkeyField(input.poolId);
   const nullifierValues = input.inNotes.map((note) =>
     poseidonValue([note.noteId, note.spendingKey])
   );
   const nullifiers = nullifierValues.map(fieldToHex);
   const outputs = input.outNotes.map((note) =>
-    poseidonHex([note.amount, note.recipient, input.mintId, input.poolId, note.blinding])
+    poseidonHex([note.amount, note.recipient, mintFieldValue, poolFieldValue, note.blinding])
   );
-  const newRoot = poseidonHex([input.oldRoot, ...nullifierValues]);
+  const oldRootHex = canonicalizeHex(input.oldRoot);
+  const newRoot = poseidonHex([oldRootHex, ...nullifierValues]);
+  const mintHex = fieldToHex(mintFieldValue);
+  const poolHex = fieldToHex(poolFieldValue);
   return {
     publicInputs: [
-      input.oldRoot,
+      oldRootHex,
       newRoot,
       ...nullifiers,
       ...outputs,
-      input.mintId,
-      input.poolId
+      mintHex,
+      poolHex
     ],
     newRoot,
     nullifiers,
@@ -301,7 +333,9 @@ function deriveTransferPublic(input: TransferInput) {
 }
 
 function deriveUnshieldPublic(input: UnshieldInput) {
-  const nullifierValue = input.nullifier ? bigIntify(input.nullifier) : poseidonValue([input.noteId, input.spendingKey]);
+  const nullifierValue = input.nullifier
+    ? bigIntify(canonicalizeHex(input.nullifier))
+    : poseidonValue([input.noteId, input.spendingKey]);
   const nullifier = fieldToHex(nullifierValue);
 
   const amount = bigIntify(input.amount);
@@ -338,7 +372,8 @@ function deriveUnshieldPublic(input: UnshieldInput) {
     ? poseidonValue([changeAmount, changeAmountBlinding!])
     : 0n;
 
-  const newRoot = poseidonHex([input.oldRoot, nullifierValue, changeCommitmentValue, changeAmountCommitmentValue]);
+  const oldRootHex = canonicalizeHex(input.oldRoot);
+  const newRoot = poseidonHex([oldRootHex, nullifierValue, changeCommitmentValue, changeAmountCommitmentValue]);
 
   const changeCommitment = fieldToHex(changeCommitmentValue);
   const changeAmountCommitment = fieldToHex(changeAmountCommitmentValue);
@@ -352,7 +387,7 @@ function deriveUnshieldPublic(input: UnshieldInput) {
 
   return {
     publicInputs: [
-      input.oldRoot,
+      oldRootHex,
       newRoot,
       nullifier,
       changeCommitment,
@@ -505,7 +540,7 @@ class IndexerClient {
     }
     const parsed = RootResponseSchema.safeParse(payload);
     if (parsed.success) {
-      return parsed.data;
+      return this.canonicalizeRootResponse(parsed.data);
     }
     if (
       typeof payload === 'object' &&
@@ -515,7 +550,7 @@ class IndexerClient {
     ) {
       const nested = RootResponseSchema.safeParse((payload as { result: unknown }).result);
       if (nested.success) {
-        return nested.data;
+        return this.canonicalizeRootResponse(nested.data);
       }
     }
     throw new Error('unexpected indexer root payload');
@@ -528,12 +563,19 @@ class IndexerClient {
     }
     const parsed = NullifierResponseSchema.safeParse(payload);
     if (parsed.success) {
-      return new Set(parsed.data.nullifiers);
+      return new Set(parsed.data.nullifiers.map((entry) => canonicalizeHex(entry)));
     }
     if (Array.isArray(payload) && payload.every((value) => typeof value === 'string')) {
-      return new Set(payload);
+      return new Set(payload.map((entry) => canonicalizeHex(entry)));
     }
     throw new Error('unexpected indexer nullifier payload');
+  }
+
+  private canonicalizeRootResponse(payload: RootResponse): RootResponse {
+    return {
+      current: canonicalizeHex(payload.current),
+      recent: payload.recent.map((entry) => canonicalizeHex(entry))
+    };
   }
 }
 
@@ -563,15 +605,16 @@ async function validateAgainstIndexer(
     logger.warn({ mint }, 'Indexer returned no roots, skipping validation');
     return;
   }
-  const known = new Set([roots.current, ...roots.recent]);
-  if (!known.has(oldRoot)) {
+  const candidate = canonicalizeHex(oldRoot);
+  const known = new Set([roots.current, ...roots.recent].map((entry) => canonicalizeHex(entry)));
+  if (!known.has(candidate)) {
     throw new Error('unknown_root');
   }
   if (nullifiers.length === 0) {
     return;
   }
   const used = await client.getNullifiers(mint);
-  for (const nullifier of nullifiers) {
+  for (const nullifier of nullifiers.map((entry) => canonicalizeHex(entry))) {
     if (used.has(nullifier)) {
       throw new Error(`nullifier_reused:${nullifier}`);
     }
@@ -635,19 +678,19 @@ async function generateProof(
     case 'shield': {
       const payload = ShieldInputSchema.parse(request.payload);
       const derived = deriveShieldPublic(payload);
-      await validateAgainstIndexer(indexer, payload.mintId, payload.oldRoot, derived.nullifiers);
+      await validateAgainstIndexer(indexer, payload.mintId, canonicalizeHex(payload.oldRoot), derived.nullifiers);
       return produceProof(entry, request.circuit, derived.payload, derived.publicInputs);
     }
     case 'transfer': {
       const payload = TransferInputSchema.parse(request.payload);
       const derived = deriveTransferPublic(payload);
-      await validateAgainstIndexer(indexer, payload.mintId, payload.oldRoot, derived.nullifiers);
+      await validateAgainstIndexer(indexer, payload.mintId, canonicalizeHex(payload.oldRoot), derived.nullifiers);
       return produceProof(entry, request.circuit, payload, derived.publicInputs);
     }
     case 'unshield': {
       const payload = UnshieldInputSchema.parse(request.payload);
       const derived = deriveUnshieldPublic(payload);
-      await validateAgainstIndexer(indexer, payload.mintId, payload.oldRoot, derived.nullifiers);
+      await validateAgainstIndexer(indexer, payload.mintId, canonicalizeHex(payload.oldRoot), derived.nullifiers);
       return produceProof(entry, request.circuit, derived.payload, derived.publicInputs);
     }
   }
