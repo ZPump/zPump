@@ -1516,7 +1516,7 @@ impl CommitmentTree {
         let mut node_bytes = commitment;
         let mut node_fr = fr_from_bytes(&node_bytes);
         let mut index = self.next_index;
-        let mut path_hashes = [[0u8; 32]; Self::DEPTH];
+        let canopy_len = core::cmp::min(self.canopy_depth as usize, Self::MAX_CANOPY);
         for level in 0..Self::DEPTH {
             if index % 2 == 0 {
                 self.frontier[level] = node_bytes;
@@ -1527,7 +1527,12 @@ impl CommitmentTree {
                 node_fr = poseidon::hash_two(&left_fr, &node_fr);
             }
             node_bytes = fr_to_bytes(&node_fr);
-            path_hashes[level] = node_bytes;
+            if canopy_len > 0 {
+                let offset = Self::DEPTH - 1 - level;
+                if offset < canopy_len {
+                    self.canopy[offset] = node_bytes;
+                }
+            }
             index >>= 1;
         }
         self.next_index = self
@@ -1535,20 +1540,8 @@ impl CommitmentTree {
             .checked_add(1)
             .ok_or(PoolError::AmountOverflow)?;
         self.current_root = node_bytes;
-        self.update_canopy(&path_hashes);
         self.record_recent(index_position, commitment, amount_commit);
         Ok((self.current_root, index_position))
-    }
-
-    fn update_canopy(&mut self, path_hashes: &[[u8; 32]; Self::DEPTH]) {
-        if self.canopy_depth == 0 {
-            return;
-        }
-        let canopy_len = core::cmp::min(self.canopy_depth as usize, Self::MAX_CANOPY);
-        for offset in 0..canopy_len {
-            let level = Self::DEPTH - 1 - offset;
-            self.canopy[offset] = path_hashes[level];
-        }
     }
 
     fn record_recent(&mut self, index: u64, commitment: [u8; 32], amount_commit: [u8; 32]) {
@@ -1559,11 +1552,10 @@ impl CommitmentTree {
             self.recent_indices[idx] = index;
             self.recent_len += 1;
         } else {
-            for idx in 1..Self::MAX_CANOPY {
-                self.recent_commitments[idx - 1] = self.recent_commitments[idx];
-                self.recent_amount_commitments[idx - 1] = self.recent_amount_commitments[idx];
-                self.recent_indices[idx - 1] = self.recent_indices[idx];
-            }
+            self.recent_commitments.copy_within(1..Self::MAX_CANOPY, 0);
+            self.recent_amount_commitments
+                .copy_within(1..Self::MAX_CANOPY, 0);
+            self.recent_indices.copy_within(1..Self::MAX_CANOPY, 0);
             self.recent_commitments[Self::MAX_CANOPY - 1] = commitment;
             self.recent_amount_commitments[Self::MAX_CANOPY - 1] = amount_commit;
             self.recent_indices[Self::MAX_CANOPY - 1] = index;
