@@ -163,6 +163,27 @@ With the flags off the system trusts the client-supplied new root and skips dige
 
 ---
 
+### 3.3 Refreshing the Next.js bundle after config changes
+
+Most runtime configuration (mint catalogue, program IDs, RPC endpoints) is baked into the generated `/public` assets. After you:
+
+- regenerate `web/app/config/mints.generated.json` (e.g. running `bootstrap-private-devnet.ts`);
+- edit environment variables in `ecosystem.config.js`; or
+- pull a commit that touched front-end config;
+
+you **must** rebuild the dApp and restart the process manager so the UI serves the new bundle:
+
+```bash
+cd web/app
+npm run build
+cd ../..
+pm2 restart ptf-web --update-env
+```
+
+Skipping this step leaves the previous static bundle in place, which manifests as `{"error":"mint_not_found"}` or “Commitment tree account missing on-chain” in the Convert flow because the browser is still pointing at the old mint IDs.
+
+---
+
 ## 4. Testing
 
 ### 4.1 Rust / On-chain
