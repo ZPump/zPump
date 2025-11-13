@@ -1520,8 +1520,7 @@ impl CommitmentTree {
         for level in 0..Self::DEPTH {
             if index % 2 == 0 {
                 self.frontier[level] = node_bytes;
-                let right_fr = fr_from_bytes(&self.zeroes[level]);
-                node_fr = poseidon::hash_two(&node_fr, &right_fr);
+                node_fr = poseidon::hash_two(&node_fr, &poseidon::merkle_zero(level));
             } else {
                 let left_fr = fr_from_bytes(&self.frontier[level]);
                 node_fr = poseidon::hash_two(&left_fr, &node_fr);
