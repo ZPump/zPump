@@ -474,7 +474,7 @@ export async function unwrap(params: UnwrapParams): Promise<string> {
     publicInputs: decodedProof.publicInputs
   };
 
-  const instructionName = mode === 'ptkn' ? 'unshieldToPtkn' : 'unshieldToOrigin';
+  const instructionName = mode === 'ptkn' ? 'unshield_to_ptkn' : 'unshield_to_origin';
   const unshieldData = poolCoder.instruction.encode(instructionName, { args: unshieldArgs });
 
   const keys = [
