@@ -4,7 +4,7 @@ use anchor_lang::solana_program::program::invoke_signed;
 use anchor_lang::solana_program::program_option::COption;
 use anchor_spl::token_interface::{Mint, TokenAccount, TokenInterface};
 use ark_bn254::Fr;
-use ark_ff::{BigInteger, BigInteger256, PrimeField};
+use ark_ff::{BigInteger, BigInteger256, PrimeField, Zero};
 #[cfg(feature = "invariant_checks")]
 use core::convert::TryFrom;
 use core::convert::TryInto;
@@ -1495,8 +1495,10 @@ impl CommitmentTree {
         );
         let mut root = self.current_root;
         let mut indices = Vec::with_capacity(commitments.len());
+        let mut frontier_cache = self.frontier_as_fields();
         for (commitment, amount_commit) in commitments.iter().zip(amount_commitments.iter()) {
-            let (new_root, index) = self.insert_leaf(*commitment, *amount_commit)?;
+            let (new_root, index) =
+                self.insert_leaf_with_cache(&mut frontier_cache, *commitment, *amount_commit)?;
             root = new_root;
             indices.push(index);
         }
@@ -1505,6 +1507,16 @@ impl CommitmentTree {
 
     fn insert_leaf(
         &mut self,
+        commitment: [u8; 32],
+        amount_commit: [u8; 32],
+    ) -> Result<([u8; 32], u64)> {
+        let mut frontier_cache = self.frontier_as_fields();
+        self.insert_leaf_with_cache(&mut frontier_cache, commitment, amount_commit)
+    }
+
+    fn insert_leaf_with_cache(
+        &mut self,
+        frontier_cache: &mut [Fr; Self::DEPTH],
         commitment: [u8; 32],
         amount_commit: [u8; 32],
     ) -> Result<([u8; 32], u64)> {
@@ -1519,10 +1531,12 @@ impl CommitmentTree {
         let canopy_len = core::cmp::min(self.canopy_depth as usize, Self::MAX_CANOPY);
         for level in 0..Self::DEPTH {
             if index % 2 == 0 {
+                frontier_cache[level] = node_fr;
                 self.frontier[level] = node_bytes;
-                node_fr = poseidon::hash_two(&node_fr, &poseidon::merkle_zero(level));
+                let zero = poseidon::merkle_zero(level);
+                node_fr = poseidon::hash_two(&frontier_cache[level], &zero);
             } else {
-                let left_fr = fr_from_bytes(&self.frontier[level]);
+                let left_fr = frontier_cache[level];
                 node_fr = poseidon::hash_two(&left_fr, &node_fr);
             }
             node_bytes = fr_to_bytes(&node_fr);
@@ -1541,6 +1555,14 @@ impl CommitmentTree {
         self.current_root = node_bytes;
         self.record_recent(index_position, commitment, amount_commit);
         Ok((self.current_root, index_position))
+    }
+
+    fn frontier_as_fields(&self) -> [Fr; Self::DEPTH] {
+        let mut frontier = [Fr::zero(); Self::DEPTH];
+        for (idx, bytes) in self.frontier.iter().enumerate() {
+            frontier[idx] = fr_from_bytes(bytes);
+        }
+        frontier
     }
 
     fn record_recent(&mut self, index: u64, commitment: [u8; 32], amount_commit: [u8; 32]) {
