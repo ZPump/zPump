@@ -8,7 +8,8 @@
     "features": {
       "zTokenEnabled": true,
       "wrappedTransfers": false
-    }
+    },
+    "lookupTable": "4C43gdFCb59wfFQgeRT1fdJW6wYTGwU52sLm7bSQYHGo"
   },
   {
     "symbol": "SOLx",
@@ -19,6 +20,7 @@
     "features": {
       "zTokenEnabled": true,
       "wrappedTransfers": false
-    }
+    },
+    "lookupTable": "6st1F5ZgJtTzMZQ2tDnSMbtTYsqLcvf4nfZHeoeB1Q2T"
   }
 ]
