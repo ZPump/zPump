@@ -14,6 +14,32 @@ const __dirname = path.dirname(__filename);
 const logger = pino({ level: process.env.LOG_LEVEL ?? 'info' });
 const API_KEY_HEADER = 'x-ptf-api-key';
 
+function canonicalizeHex(value: string): string {
+  const trimmed = value.trim();
+  if (trimmed.length === 0) {
+    return `0x${'0'.repeat(64)}`;
+  }
+  let body: string;
+  if (trimmed.startsWith('0x') || trimmed.startsWith('0X')) {
+    body = trimmed.slice(2);
+  } else if (/^[0-9a-fA-F]+$/.test(trimmed)) {
+    body = trimmed;
+  } else if (/^\d+$/.test(trimmed)) {
+    body = BigInt(trimmed).toString(16);
+  } else {
+    throw new Error(`invalid_hex:${value}`);
+  }
+  const normalised = body.replace(/^0+/, '') || '0';
+  return `0x${normalised.padStart(64, '0').toLowerCase()}`;
+}
+
+function canonicalizeRootPayload(payload: RootResponse): RootResponse {
+  return {
+    current: canonicalizeHex(payload.current),
+    recent: payload.recent.map((entry) => canonicalizeHex(entry))
+  };
+}
+
 const RootResponseSchema = z.object({
   current: z.string(),
   recent: z.array(z.string())
@@ -76,15 +102,15 @@ class StateStore {
   async load(): Promise<void> {
     const snapshot = await this.tryRead(this.snapshotPath);
     if (snapshot) {
-      this.state = snapshot;
+      this.state = this.canonicalizeState(snapshot);
       return;
     }
     const fixture = await this.tryRead(this.fixturePath);
     if (fixture) {
-      this.state = fixture;
+      this.state = this.canonicalizeState(fixture);
       return;
     }
-    this.state = SnapshotSchema.parse({});
+    this.state = this.canonicalizeState(SnapshotSchema.parse({}));
   }
 
   private async tryRead(target: string): Promise<SnapshotShape | null> {
@@ -131,7 +157,7 @@ class StateStore {
 
   upsertRoots(mint: string, payload: RootResponse): void {
     const state = this.ensureState();
-    state.roots[mint] = payload;
+    state.roots[mint] = canonicalizeRootPayload(payload);
   }
 
   upsertNotes(viewKey: string, notes: Note[]): void {
@@ -183,6 +209,17 @@ class StateStore {
     }
     return balances;
   }
+
+  private canonicalizeState(state: SnapshotShape): SnapshotShape {
+    const canonicalRoots: Record<string, RootResponse> = {};
+    for (const [mint, payload] of Object.entries(state.roots ?? {})) {
+      canonicalRoots[mint] = canonicalizeRootPayload(payload);
+    }
+    return {
+      ...state,
+      roots: canonicalRoots
+    };
+  }
 }
 
 class PhotonClient {
@@ -215,7 +252,7 @@ class PhotonClient {
     }
     const parsed = RootResponseSchema.safeParse(payload);
     if (parsed.success) {
-      return parsed.data;
+      return canonicalizeRootPayload(parsed.data);
     }
     if (
       typeof payload === 'object' &&
@@ -225,7 +262,7 @@ class PhotonClient {
     ) {
       const nested = RootResponseSchema.safeParse((payload as { result: unknown }).result);
       if (nested.success) {
-        return nested.data;
+        return canonicalizeRootPayload(nested.data);
       }
     }
     throw new Error('unexpected upstream roots payload');
@@ -318,8 +355,9 @@ async function bootstrap() {
       if (upstreamClient) {
         const remote = await upstreamClient.getRoots(mint);
         if (remote) {
-          store.upsertRoots(mint, remote);
-          res.json({ mint, ...remote, source: 'upstream' });
+          const canonical = canonicalizeRootPayload(remote);
+          store.upsertRoots(mint, canonical);
+          res.json({ mint, ...canonical, source: 'upstream' });
           return;
         }
       }
@@ -328,7 +366,8 @@ async function bootstrap() {
         res.status(404).json({ error: 'mint_not_found' });
         return;
       }
-      res.json({ mint, ...local, source: upstreamClient ? 'cache' : 'snapshot' });
+      const canonical = canonicalizeRootPayload(local);
+      res.json({ mint, ...canonical, source: upstreamClient ? 'cache' : 'snapshot' });
     } catch (error) {
       logger.error({ err: error, mint }, 'failed to resolve roots');
       res.status(502).json({ error: 'upstream_failed' });
@@ -342,10 +381,9 @@ async function bootstrap() {
       res.status(400).json({ error: 'invalid_payload' });
       return;
     }
-    const normalise = (value: string) => (value.startsWith('0x') ? value : `0x${value}`);
     const payload: RootResponse = {
-      current: normalise(parsed.data.current),
-      recent: parsed.data.recent ? parsed.data.recent.map(normalise) : []
+      current: canonicalizeHex(parsed.data.current),
+      recent: parsed.data.recent ? parsed.data.recent.map((entry) => canonicalizeHex(entry)) : []
     };
     store.upsertRoots(mint, payload);
     res.json({ mint, ...payload, source: 'local' });
