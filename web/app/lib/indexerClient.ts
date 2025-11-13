@@ -81,7 +81,7 @@ export class IndexerClient {
       return;
     }
     const normalised = nullifiers.map((entry) => this.asHex(entry) ?? entry);
-    const url = new URL(`/nullifiers/${mint}`, this.baseUrl);
+    const url = this.buildUrl(`/nullifiers/${mint}`);
     const headers: HeadersInit = {
       Accept: 'application/json',
       'Content-Type': 'application/json'
@@ -132,7 +132,7 @@ export class IndexerClient {
     if (!wallet || !mint || delta === 0n) {
       return {};
     }
-    const url = new URL(`/balances/${wallet}`, this.baseUrl);
+    const url = this.buildUrl(`/balances/${wallet}`);
     const headers: HeadersInit = {
       Accept: 'application/json',
       'Content-Type': 'application/json'
