@@ -940,13 +940,6 @@ fn validate_supply_components(
     Ok(expected)
 }
 
-fn poseidon_hash(left: &[u8; 32], right: &[u8; 32]) -> [u8; 32] {
-    let left_fr = fr_from_bytes(left);
-    let right_fr = fr_from_bytes(right);
-    let hash = poseidon::hash_two(&left_fr, &right_fr);
-    fr_to_bytes(&hash)
-}
-
 #[inline(always)]
 fn fr_from_bytes(bytes: &[u8; 32]) -> Fr {
     let mut limbs = [0u64; 4];
@@ -1520,27 +1513,28 @@ impl CommitmentTree {
             PoolError::TreeFull,
         );
         let index_position = self.next_index;
-        let mut node = commitment;
+        let mut node_bytes = commitment;
+        let mut node_fr = fr_from_bytes(&node_bytes);
         let mut index = self.next_index;
         let mut path_hashes = [[0u8; 32]; Self::DEPTH];
         for level in 0..Self::DEPTH {
             if index % 2 == 0 {
-                self.frontier[level] = node;
-                let left = node;
-                let right = self.zeroes[level];
-                node = poseidon_hash(&left, &right);
+                self.frontier[level] = node_bytes;
+                let right_fr = fr_from_bytes(&self.zeroes[level]);
+                node_fr = poseidon::hash_two(&node_fr, &right_fr);
             } else {
-                let left = self.frontier[level];
-                node = poseidon_hash(&left, &node);
+                let left_fr = fr_from_bytes(&self.frontier[level]);
+                node_fr = poseidon::hash_two(&left_fr, &node_fr);
             }
-            path_hashes[level] = node;
+            node_bytes = fr_to_bytes(&node_fr);
+            path_hashes[level] = node_bytes;
             index >>= 1;
         }
         self.next_index = self
             .next_index
             .checked_add(1)
             .ok_or(PoolError::AmountOverflow)?;
-        self.current_root = node;
+        self.current_root = node_bytes;
         self.update_canopy(&path_hashes);
         self.record_recent(index_position, commitment, amount_commit);
         Ok((self.current_root, index_position))
@@ -1838,22 +1832,31 @@ impl NoteLedger {
 
     #[cfg(feature = "note_digests")]
     fn absorb_amount_commitments(&mut self, commits: &[[u8; 32]]) {
-        for commit in commits {
-            self.amount_commitment_digest = digest_pair(self.amount_commitment_digest, *commit);
+        if commits.is_empty() {
+            return;
         }
+
+        let mut digest = fr_from_bytes(&self.amount_commitment_digest);
+        for commit in commits {
+            let commit_fr = fr_from_bytes(commit);
+            digest = poseidon::hash_two(&digest, &commit_fr);
+        }
+        self.amount_commitment_digest = fr_to_bytes(&digest);
     }
 
     #[cfg(feature = "note_digests")]
     fn absorb_nullifiers(&mut self, nullifiers: &[[u8; 32]]) {
-        for nullifier in nullifiers {
-            self.nullifier_digest = digest_pair(self.nullifier_digest, *nullifier);
+        if nullifiers.is_empty() {
+            return;
         }
-    }
-}
 
-#[cfg(feature = "note_digests")]
-fn digest_pair(seed: [u8; 32], value: [u8; 32]) -> [u8; 32] {
-    poseidon_hash(&seed, &value)
+        let mut digest = fr_from_bytes(&self.nullifier_digest);
+        for nullifier in nullifiers {
+            let nullifier_fr = fr_from_bytes(nullifier);
+            digest = poseidon::hash_two(&digest, &nullifier_fr);
+        }
+        self.nullifier_digest = fr_to_bytes(&digest);
+    }
 }
 
 fn parse_field_elements(bytes: &[u8]) -> Result<Vec<[u8; 32]>> {
