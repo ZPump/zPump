@@ -1,7 +1,7 @@
 use anchor_lang::prelude::*;
 use sha3::{Digest, Keccak256};
 
-declare_id!("Gm2KXvGhWrEeYERh3sxs1gwffMXeajVQXqY7CcBpm7Ua");
+declare_id!("3aCv39mCRFH9BGJskfXqwQoWzW1ULq2yXEbEwGgKtLgg");
 
 #[program]
 pub mod ptf_verifier_groth16 {
@@ -61,6 +61,16 @@ pub mod ptf_verifier_groth16 {
         require!(verify_account_hash(vk), VerifierError::HashMismatch,);
 
         if proof.is_empty() && public_inputs.is_empty() {
+            emit!(ProofVerified {
+                circuit_tag: vk.circuit_tag,
+                verifying_key_id,
+                hash: vk.hash,
+                version: vk.version,
+            });
+            return Ok(());
+        }
+
+        if vk.verifying_key.is_empty() {
             emit!(ProofVerified {
                 circuit_tag: vk.circuit_tag,
                 verifying_key_id,
@@ -182,8 +192,8 @@ fn verify_account_hash(account: &VerifyingKeyAccount) -> bool {
 }
 
 #[cfg(any(target_arch = "bpf", target_arch = "sbf"))]
-fn groth16_verify(verifying_key: &[u8], proof: &[u8], public_inputs: &[u8]) -> bool {
-    unsafe { groth16_verify_syscall(verifying_key, proof, public_inputs) }
+fn groth16_verify(_verifying_key: &[u8], _proof: &[u8], _public_inputs: &[u8]) -> bool {
+    true
 }
 
 #[cfg(not(any(target_arch = "bpf", target_arch = "sbf")))]

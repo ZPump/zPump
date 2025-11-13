@@ -1,7 +1,9 @@
 /* eslint-disable no-console */
 import fs from 'fs/promises';
+import { execFile } from 'child_process';
 import path from 'path';
-import { keccak_256 } from 'js-sha3';
+import { promisify } from 'util';
+import { keccak_256 } from '@noble/hashes/sha3';
 import {
   Connection,
   ComputeBudgetProgram,
@@ -29,8 +31,8 @@ import { AnchorProvider, BN, BorshCoder, Idl, Wallet } from '@coral-xyz/anchor';
 const PROGRAM_IDS = {
   factory: new PublicKey('4z618BY2dXGqAUiegqDt8omo3e81TSdXRHt64ikX1bTy'),
   vault: new PublicKey('9g6ZodQwxK8MN6MX3dbvFC3E7vGVqFtKZEHY7PByRAuh'),
-  pool: new PublicKey('4Tx3v6is7qeVjdHvL3a16ggB9VVMBPVhpPSkUGoXZhre'),
-  verifier: new PublicKey('Gm2KXvGhWrEeYERh3sxs1gwffMXeajVQXqY7CcBpm7Ua')
+  pool: new PublicKey('7kbUWzeTPY6qb1mFJC1ZMRmTZAdaHC27yukc3Czj7fKh'),
+  verifier: new PublicKey('3aCv39mCRFH9BGJskfXqwQoWzW1ULq2yXEbEwGgKtLgg')
 } as const;
 
 const CIRCUIT_TAGS: Record<string, Buffer> = {
@@ -53,6 +55,7 @@ const VERIFYING_KEY_CONFIG: Record<string, string> = {
   unshield: 'unshield.json'
 };
 const TARGET_IDL_DIR = path.resolve(__dirname, '..', '..', '..', 'target', 'idl');
+const execFileAsync = promisify(execFile);
 
 async function loadIdl(name: string): Promise<Idl> {
   const target = path.join(TARGET_IDL_DIR, `${name}.json`);
@@ -146,7 +149,40 @@ async function sendInstruction(
   if (!ixDef) {
     throw new Error(`Instruction ${name} not found in IDL`);
   }
-  const data = coder.instruction.encode(name, args);
+  let data: Buffer;
+  try {
+    data = coder.instruction.encode(name, args);
+  } catch (error) {
+    if (error instanceof Error && error.message.includes('encoding overruns Buffer')) {
+      const layoutEntry = (coder.instruction as unknown as { ixLayouts?: Map<string, { discriminator: number[]; layout: any }> }).ixLayouts?.get(
+        name
+      );
+      if (!layoutEntry) {
+        throw error;
+      }
+      const { discriminator, layout } = layoutEntry;
+      const discriminatorBuffer = Buffer.from(discriminator);
+      const estimatedSize =
+        8 +
+        Object.values(args).reduce<number>((acc, value) => {
+          if (value instanceof Buffer || value instanceof Uint8Array) {
+            return acc + 4 + value.length;
+          }
+          if (typeof value === 'number') {
+            return acc + 8;
+          }
+          if (Array.isArray(value)) {
+            return acc + value.length;
+          }
+          return acc + 64;
+        }, 1024);
+      const buffer = Buffer.alloc(Math.max(estimatedSize, 64 * 1024));
+      const len = layout.encode(args, buffer);
+      data = Buffer.concat([discriminatorBuffer, buffer.slice(0, len)]);
+    } else {
+      throw error;
+    }
+  }
   const keys = buildAccountMetas(ixDef, accounts);
   const instructions = [
     ...preInstructions,
@@ -186,6 +222,29 @@ async function sendAndConfirm(
     await new Promise((resolve) => setTimeout(resolve, 1000));
   }
   throw new Error(`Transaction ${signature} timed out awaiting confirmation`);
+}
+
+async function ensureVerifyingKeyBinary(jsonPath: string): Promise<Buffer> {
+  const absoluteJson = path.resolve(jsonPath);
+  const binaryPath = absoluteJson.endsWith('.json')
+    ? absoluteJson.replace(/\.json$/i, '.vk.bin')
+    : `${absoluteJson}.vk.bin`;
+  try {
+    return await fs.readFile(binaryPath);
+  } catch {
+    await execFileAsync('cargo', [
+      'run',
+      '--quiet',
+      '-p',
+      'ptf-verifier-groth16',
+      '--bin',
+      'export_vk',
+      '--',
+      absoluteJson,
+      binaryPath
+    ]);
+    return await fs.readFile(binaryPath);
+  }
 }
 
 async function ensureAta(
@@ -314,9 +373,9 @@ async function ensureVerifyingKey(
     };
   }
 
-  const contents = await fs.readFile(verifyingKeyPath);
-  const hash = new Uint8Array(keccak_256.arrayBuffer(contents));
-  console.log(`Using verifying key hash ${Buffer.from(hash).toString('hex')}`);
+  const binary = await ensureVerifyingKeyBinary(verifyingKeyPath);
+  const hashBytes = keccak_256(binary);
+  console.log(`Using verifying key hash ${Buffer.from(hashBytes).toString('hex')}`);
 
   await sendInstruction(
     ctx,
@@ -332,14 +391,14 @@ async function ensureVerifyingKey(
     },
     {
       circuit_tag: padBytes(circuitTag),
-      verifying_key_id: hash,
-      hash,
+      verifying_key_id: hashBytes,
+      hash: hashBytes,
       version,
-      verifying_key_data: Buffer.from(contents)
+      verifying_key_data: Buffer.from(binary)
     }
   );
   console.log(`Registered verifying key for circuit ${circuit} -> ${verifierState.toBase58()}`);
-  return { verifierState, verifyingKeyId: hash, hash };
+  return { verifierState, verifyingKeyId: hashBytes, hash: hashBytes };
 }
 
 async function ensureMint(

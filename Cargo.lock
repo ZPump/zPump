@@ -3786,6 +3786,7 @@ dependencies = [
  "ark-snark",
  "ark-std",
  "ptf-common",
+ "serde",
  "serde_json",
  "sha3",
 ]

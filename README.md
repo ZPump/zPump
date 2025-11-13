@@ -52,8 +52,8 @@ All components run directly on the host (no Docker):
      --limit-ledger-size \
      --bpf-program 4z618BY2dXGqAUiegqDt8omo3e81TSdXRHt64ikX1bTy target/deploy/ptf_factory.so \
      --bpf-program 9g6ZodQwxK8MN6MX3dbvFC3E7vGVqFtKZEHY7PByRAuh target/deploy/ptf_vault.so \
-     --bpf-program 4Tx3v6is7qeVjdHvL3a16ggB9VVMBPVhpPSkUGoXZhre target/deploy/ptf_pool.so \
-     --bpf-program Gm2KXvGhWrEeYERh3sxs1gwffMXeajVQXqY7CcBpm7Ua target/deploy/ptf_verifier_groth16.so
+    --bpf-program 7kbUWzeTPY6qb1mFJC1ZMRmTZAdaHC27yukc3Czj7fKh target/deploy/ptf_pool.so \
+    --bpf-program 3aCv39mCRFH9BGJskfXqwQoWzW1ULq2yXEbEwGgKtLgg target/deploy/ptf_verifier_groth16.so
    ```
    > Optionally preload test mints with `--account` flags.
 
@@ -138,6 +138,28 @@ To avoid public devnet faucet throttling, run a persistent validator that mirror
    - Update `.env` files accordingly.
 
 Once flows are validated here, target the same binaries at public devnet/mainnet.
+
+---
+
+### 3.2 Pool Program Feature Flags
+
+To keep wrap transactions within Solana’s 1.4M CU ceiling during local testing we ship the `ptf-pool` program with several high-cost checks disabled by default. **This “lightweight” mode is only appropriate for developer environments.** For production clusters enable the full feature set when building:
+
+```bash
+anchor build -- --features full_tree,note_digests,invariant_checks
+```
+
+| Feature flag | Default | What it does | Why it matters |
+|--------------|---------|--------------|----------------|
+| `full_tree` | off | Rebuilds the commitment tree and verifies the supplied root entirely on-chain. | Prevents mismatched/malicious roots passed from the client. |
+| `note_digests` | off | Maintains Poseidon digests of note commitments and nullifiers in the ledger. | Enables double-spend detection and auditability. |
+| `invariant_checks` | off | Verifies vault/twin-mint supply conservation every shield/unshield. | Catches liquidity drift and accounting bugs. |
+
+With the flags off the system trusts the client-supplied new root and skips digest/invariant updates. This keeps CU usage low enough for end-to-end testing, but removes critical safety guarantees. Before promoting to shared devnet/mainnet:
+
+1. Rebuild `ptf-pool` with the flags enabled (see command above).
+2. Redeploy the resulting `.so` to your validator.
+3. Re-run wrap/unshield flows to confirm they still fit under your CU budget (optimisations may be required if they do not).
 
 ---
 

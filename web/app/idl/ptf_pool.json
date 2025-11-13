@@ -1,5 +1,5 @@
 {
-  "address": "4Tx3v6is7qeVjdHvL3a16ggB9VVMBPVhpPSkUGoXZhre",
+  "address": "7kbUWzeTPY6qb1mFJC1ZMRmTZAdaHC27yukc3Czj7fKh",
   "metadata": {
     "name": "ptf_pool",
     "version": "0.1.0",
@@ -305,7 +305,44 @@
                 "kind": "account",
                 "path": "origin_mint"
               }
-            ]
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                59,
+                50,
+                210,
+                164,
+                223,
+                35,
+                36,
+                179,
+                192,
+                127,
+                194,
+                187,
+                77,
+                118,
+                214,
+                109,
+                89,
+                154,
+                25,
+                124,
+                156,
+                82,
+                239,
+                156,
+                100,
+                188,
+                53,
+                24,
+                228,
+                191,
+                65,
+                100
+              ]
+            }
           }
         },
         {
@@ -361,7 +398,44 @@
                   100
                 ]
               }
-            ]
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                59,
+                50,
+                210,
+                164,
+                223,
+                35,
+                36,
+                179,
+                192,
+                127,
+                194,
+                187,
+                77,
+                118,
+                214,
+                109,
+                89,
+                154,
+                25,
+                124,
+                156,
+                82,
+                239,
+                156,
+                100,
+                188,
+                53,
+                24,
+                228,
+                191,
+                65,
+                100
+              ]
+            }
           }
         },
         {
@@ -371,7 +445,7 @@
         },
         {
           "name": "verifier_program",
-          "address": "Gm2KXvGhWrEeYERh3sxs1gwffMXeajVQXqY7CcBpm7Ua"
+          "address": "3aCv39mCRFH9BGJskfXqwQoWzW1ULq2yXEbEwGgKtLgg"
         },
         {
           "name": "verifying_key"
@@ -501,7 +575,7 @@
         },
         {
           "name": "verifier_program",
-          "address": "Gm2KXvGhWrEeYERh3sxs1gwffMXeajVQXqY7CcBpm7Ua"
+          "address": "3aCv39mCRFH9BGJskfXqwQoWzW1ULq2yXEbEwGgKtLgg"
         },
         {
           "name": "verifying_key"
@@ -799,7 +873,44 @@
                 "kind": "account",
                 "path": "pool_state"
               }
-            ]
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                128,
+                225,
+                112,
+                163,
+                76,
+                46,
+                101,
+                7,
+                167,
+                90,
+                254,
+                155,
+                84,
+                64,
+                168,
+                166,
+                59,
+                14,
+                160,
+                80,
+                114,
+                96,
+                118,
+                250,
+                147,
+                101,
+                159,
+                158,
+                221,
+                26,
+                37,
+                52
+              ]
+            }
           }
         },
         {
@@ -817,7 +928,7 @@
         },
         {
           "name": "verifier_program",
-          "address": "Gm2KXvGhWrEeYERh3sxs1gwffMXeajVQXqY7CcBpm7Ua"
+          "address": "3aCv39mCRFH9BGJskfXqwQoWzW1ULq2yXEbEwGgKtLgg"
         },
         {
           "name": "verifying_key"
@@ -984,12 +1095,49 @@
                 "kind": "account",
                 "path": "pool_state"
               }
-            ]
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                59,
+                50,
+                210,
+                164,
+                223,
+                35,
+                36,
+                179,
+                192,
+                127,
+                194,
+                187,
+                77,
+                118,
+                214,
+                109,
+                89,
+                154,
+                25,
+                124,
+                156,
+                82,
+                239,
+                156,
+                100,
+                188,
+                53,
+                24,
+                228,
+                191,
+                65,
+                100
+              ]
+            }
           }
         },
         {
           "name": "verifier_program",
-          "address": "Gm2KXvGhWrEeYERh3sxs1gwffMXeajVQXqY7CcBpm7Ua"
+          "address": "3aCv39mCRFH9BGJskfXqwQoWzW1ULq2yXEbEwGgKtLgg"
         },
         {
           "name": "verifying_key"
@@ -1068,7 +1216,44 @@
                   100
                 ]
               }
-            ]
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                59,
+                50,
+                210,
+                164,
+                223,
+                35,
+                36,
+                179,
+                192,
+                127,
+                194,
+                187,
+                77,
+                118,
+                214,
+                109,
+                89,
+                154,
+                25,
+                124,
+                156,
+                82,
+                239,
+                156,
+                100,
+                188,
+                53,
+                24,
+                228,
+                191,
+                65,
+                100
+              ]
+            }
           }
         },
         {
@@ -1226,12 +1411,49 @@
                 "kind": "account",
                 "path": "pool_state"
               }
-            ]
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                59,
+                50,
+                210,
+                164,
+                223,
+                35,
+                36,
+                179,
+                192,
+                127,
+                194,
+                187,
+                77,
+                118,
+                214,
+                109,
+                89,
+                154,
+                25,
+                124,
+                156,
+                82,
+                239,
+                156,
+                100,
+                188,
+                53,
+                24,
+                228,
+                191,
+                65,
+                100
+              ]
+            }
           }
         },
         {
           "name": "verifier_program",
-          "address": "Gm2KXvGhWrEeYERh3sxs1gwffMXeajVQXqY7CcBpm7Ua"
+          "address": "3aCv39mCRFH9BGJskfXqwQoWzW1ULq2yXEbEwGgKtLgg"
         },
         {
           "name": "verifying_key"
@@ -1310,7 +1532,44 @@
                   100
                 ]
               }
-            ]
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                59,
+                50,
+                210,
+                164,
+                223,
+                35,
+                36,
+                179,
+                192,
+                127,
+                194,
+                187,
+                77,
+                118,
+                214,
+                109,
+                89,
+                154,
+                25,
+                124,
+                156,
+                82,
+                239,
+                156,
+                100,
+                188,
+                53,
+                24,
+                228,
+                191,
+                65,
+                100
+              ]
+            }
           }
         },
         {
@@ -2723,24 +2982,6 @@
       "type": {
         "kind": "struct",
         "fields": [
-          {
-            "name": "new_root",
-            "type": {
-              "array": [
-                "u8",
-                32
-              ]
-            }
-          },
-          {
-            "name": "commitment",
-            "type": {
-              "array": [
-                "u8",
-                32
-              ]
-            }
-          },
           {
             "name": "amount_commit",
             "type": {

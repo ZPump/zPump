@@ -13,18 +13,7 @@ export function Header() {
     <Box as="header" py={6} px={{ base: 4, md: 10 }} position="sticky" top={0} zIndex={100} backdropFilter="blur(18px)">
       <Flex align="center" justify="space-between">
         <Link as={NextLink} href="/" display="flex" alignItems="center" gap={3} _hover={{ textDecoration: 'none' }}>
-          <Box
-            bg="rgba(14,14,18,0.92)"
-            border="1px solid rgba(255,205,96,0.25)"
-            rounded="full"
-            p="6px"
-            display="flex"
-            alignItems="center"
-            justifyContent="center"
-            boxShadow="0 12px 32px rgba(12,12,16,0.45)"
-          >
-            <Image src="/logo.svg" alt="zPump logo" width={34} height={34} priority />
-          </Box>
+          <Image src="/logo.svg" alt="zPump logo" width={36} height={36} priority />
           <Text fontSize="lg" fontWeight="semibold" letterSpacing="0.08em" color="brand.50">
             zPump
           </Text>

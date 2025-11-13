@@ -29,8 +29,7 @@ import { ProofClient, ProofResponse } from '../../lib/proofClient';
 import { wrap as wrapSdk, unwrap as unwrapSdk, resolvePublicKey } from '../../lib/sdk';
 import { IndexerClient, IndexerNote } from '../../lib/indexerClient';
 import { getCachedRoots, setCachedRoots, getCachedNullifiers, setCachedNullifiers } from '../../lib/indexerCache';
-import { deriveCommitmentTree } from '../../lib/onchain/pdas';
-import { commitmentToHex, decodeCommitmentTree } from '../../lib/onchain/commitmentTree';
+import { derivePoolState } from '../../lib/onchain/pdas';
 import { poseidonHashMany } from '../../lib/onchain/poseidon';
 
 type ConvertMode = 'to-private' | 'to-public';
@@ -221,15 +220,29 @@ export function ConvertForm() {
   const fetchRootsFromChain = useCallback(
     async (mint: string) => {
       const mintKey = new PublicKey(mint);
-      const treeKey = deriveCommitmentTree(mintKey);
-      const accountInfo = await connection.getAccountInfo(treeKey);
+      const poolKey = derivePoolState(mintKey);
+      const accountInfo = await connection.getAccountInfo(poolKey);
       if (!accountInfo) {
-        throw new Error('Commitment tree account missing on-chain');
+        throw new Error('Pool state account missing on-chain');
       }
-      const state = decodeCommitmentTree(new Uint8Array(accountInfo.data));
+      const data = new Uint8Array(accountInfo.data);
+      const base = 8;
+      const currentRootOffset = base + 32 * 8;
+      const currentRootRaw = data.slice(currentRootOffset, currentRootOffset + 32);
+      const currentRootHex = bytesToHex(currentRootRaw);
+      const maxRoots = 16;
+      const recentOffset = currentRootOffset + 32;
+      const rootsLenOffset = recentOffset + 32 * maxRoots;
+      const rootsLen = data[rootsLenOffset] ?? 0;
+      const recent: string[] = [];
+      for (let idx = 0; idx < Math.min(rootsLen, maxRoots); idx += 1) {
+        const start = recentOffset + idx * 32;
+        const rootRaw = data.slice(start, start + 32);
+        recent.push(bytesToHex(rootRaw));
+      }
       return {
-        current: commitmentToHex(state.currentRoot),
-        recent: [],
+        current: currentRootHex,
+        recent,
         source: 'chain'
       };
     },
@@ -243,6 +256,14 @@ export function ConvertForm() {
     setLoadingRoots(true);
     setRootsError(null);
     try {
+      let chainRoots: { current: string; recent: string[]; source: string } | null = null;
+      let chainError: unknown = null;
+      try {
+        chainRoots = await fetchRootsFromChain(originMint);
+      } catch (caughtChain) {
+        chainError = caughtChain;
+      }
+
       const result = await indexerClient.getRoots(originMint);
       if (result) {
         const parsed = {
@@ -250,18 +271,37 @@ export function ConvertForm() {
           recent: result.recent.map(normaliseField),
           source: result.source ?? 'indexer'
         };
+        if (chainRoots && parsed.current && parsed.current.toLowerCase() !== chainRoots.current.toLowerCase()) {
+          parsed.current = chainRoots.current;
+          parsed.source = `${parsed.source}+chain`;
+        }
+        if (chainRoots && chainRoots.recent.length && parsed.recent.length === 0) {
+          parsed.recent = chainRoots.recent;
+        }
         if (mountedRef.current) {
           setRoots(parsed);
           setCachedRoots({ mint: originMint, current: parsed.current, recent: parsed.recent, source: parsed.source });
         }
         return parsed;
       }
-      const fallback = await fetchRootsFromChain(originMint);
-      if (mountedRef.current) {
-        setRoots(fallback);
-        setCachedRoots({ mint: originMint, current: fallback.current, recent: fallback.recent, source: fallback.source });
+
+      if (chainRoots) {
+        if (mountedRef.current) {
+          setRoots(chainRoots);
+          setCachedRoots({
+            mint: originMint,
+            current: chainRoots.current,
+            recent: chainRoots.recent,
+            source: chainRoots.source
+          });
+        }
+        return chainRoots;
       }
-      return fallback;
+
+      if (chainError) {
+        throw chainError;
+      }
+      throw new Error('Unable to resolve commitment tree root from indexer or chain');
     } catch (caught) {
       try {
         const fallback = await fetchRootsFromChain(originMint);
@@ -540,7 +580,8 @@ export function ConvertForm() {
           blinding: wrapAdvanced.blinding,
           proof: wrapAdvanced.useProofRpc ? proofResponse : null,
           commitmentHint: proofResponse?.publicInputs?.[2] ?? null,
-          recipient: wallet.publicKey.toBase58()
+          recipient: wallet.publicKey.toBase58(),
+          twinMint: mintConfig.zTokenMint ?? null
         });
 
         setResult(`Shielded ${amount} into ${zTokenSymbol}.`);

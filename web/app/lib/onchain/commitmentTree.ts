@@ -101,10 +101,7 @@ export async function computeNextCommitmentTreeState(
 }
 
 export function commitmentToHex(commitment: Uint8Array): string {
-  return `0x${Array.from(commitment)
-    .map((byte) => byte.toString(16).padStart(2, '0'))
-    .reverse()
-    .join('')}`;
+  return `0x${Buffer.from(commitment).toString('hex')}`;
 }
 
 export function bigintToBytes32LE(value: bigint): Uint8Array {

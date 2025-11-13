@@ -1,0 +1,64 @@
+<svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="zpump-stroke-glow" x1="86" y1="64" x2="426" y2="448" gradientUnits="userSpaceOnUse">
+      <stop offset="0.08" stop-color="#2B2B30" stop-opacity="0.2" />
+      <stop offset="0.48" stop-color="#101013" stop-opacity="0.65" />
+      <stop offset="0.92" stop-color="#050505" />
+    </linearGradient>
+    <linearGradient id="zpump-stroke-highlight" x1="110" y1="96" x2="402" y2="416" gradientUnits="userSpaceOnUse">
+      <stop offset="0.12" stop-color="#48484F" stop-opacity="0.55" />
+      <stop offset="0.52" stop-color="#1F1F24" stop-opacity="0.1" />
+      <stop offset="0.88" stop-color="#0A0A0C" stop-opacity="0.4" />
+    </linearGradient>
+    <linearGradient id="zpump-pill-shine" x1="176" y1="200" x2="344" y2="344" gradientUnits="userSpaceOnUse">
+      <stop offset="0.1" stop-color="#FFD46B" />
+      <stop offset="0.5" stop-color="#F5B31A" />
+      <stop offset="0.88" stop-color="#D38A07" />
+    </linearGradient>
+    <linearGradient id="zpump-pill-shadow" x1="188" y1="216" x2="332" y2="328" gradientUnits="userSpaceOnUse">
+      <stop offset="0.22" stop-color="#FFDFA0" stop-opacity="0.45" />
+      <stop offset="0.54" stop-color="#F2B938" stop-opacity="0.1" />
+      <stop offset="0.92" stop-color="#944F00" stop-opacity="0.2" />
+    </linearGradient>
+  </defs>
+  <path
+    d="M120 96H392L120 416H392"
+    stroke="url(#zpump-stroke-glow)"
+    stroke-width="148"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  />
+  <path
+    d="M120 96H392L120 416H392"
+    stroke="url(#zpump-stroke-highlight)"
+    stroke-width="126"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  />
+  <path
+    d="M120 96H392L120 416H392"
+    stroke="#050505"
+    stroke-width="108"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  />
+  <rect
+    x="156"
+    y="196"
+    width="200"
+    height="120"
+    rx="60"
+    fill="url(#zpump-pill-shine)"
+    stroke="#050505"
+    stroke-width="24"
+  />
+  <rect
+    x="172"
+    y="210"
+    width="168"
+    height="92"
+    rx="46"
+    fill="url(#zpump-pill-shadow)"
+  />
+</svg>
+

@@ -3,7 +3,7 @@ import { Buffer } from 'buffer';
 if (typeof globalThis.Buffer === 'undefined') {
   (globalThis as typeof globalThis & { Buffer: typeof Buffer }).Buffer = Buffer;
 }
-import { Connection, PublicKey, Transaction, TransactionInstruction } from '@solana/web3.js';
+import { ComputeBudgetProgram, Connection, PublicKey, Transaction, TransactionInstruction } from '@solana/web3.js';
 import { WalletContextState } from '@solana/wallet-adapter-react';
 import { BorshCoder, BN, Idl } from '@coral-xyz/anchor';
 import {
@@ -24,13 +24,48 @@ import {
   deriveMintMapping,
   deriveFactoryState
 } from './onchain/pdas';
-import { decodeCommitmentTree, computeNextCommitmentTreeState } from './onchain/commitmentTree';
+import { decodeCommitmentTree } from './onchain/commitmentTree';
 import { bytesToBigIntLE, hexToBytes } from './onchain/utils';
 import { poseidonHashMany } from './onchain/poseidon';
 import { ProofResponse } from './proofClient';
 import poolIdl from '../idl/ptf_pool.json';
 import factoryIdl from '../idl/ptf_factory.json';
 import { getAssociatedTokenAddress, createAssociatedTokenAccountInstruction } from '@solana/spl-token';
+
+const DEFAULT_SIGNATURE_TIMEOUT_MS = 60_000;
+const SIGNATURE_POLL_INTERVAL_MS = 500;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function waitForSignatureConfirmation(
+  connection: Connection,
+  signature: string,
+  blockhash: string,
+  lastValidBlockHeight: number,
+  timeoutMs: number = DEFAULT_SIGNATURE_TIMEOUT_MS
+): Promise<void> {
+  const start = Date.now();
+  for (;;) {
+    const statusResponse = await connection.getSignatureStatuses([signature]);
+    const status = statusResponse.value[0];
+    if (status?.err) {
+      throw new Error(`Signature ${signature} failed: ${JSON.stringify(status.err)}`);
+    }
+    if (status?.confirmationStatus === 'confirmed' || status?.confirmationStatus === 'finalized') {
+      return;
+    }
+    if (Date.now() - start > timeoutMs) {
+      throw new Error(`Signature ${signature} timed out after ${timeoutMs}ms`);
+    }
+    const currentBlockHeight = await connection.getBlockHeight('confirmed');
+    if (currentBlockHeight > lastValidBlockHeight) {
+      throw new Error(`Signature ${signature} expired before confirmation (blockhash ${blockhash})`);
+    }
+    await sleep(SIGNATURE_POLL_INTERVAL_MS);
+  }
+}
 
 interface BaseParams {
   connection: Connection;
@@ -46,6 +81,7 @@ interface WrapParams extends BaseParams {
   proof: ProofResponse | null;
   commitmentHint?: string | null;
   recipient?: string;
+  twinMint?: string | null;
 }
 
 interface UnwrapParams extends BaseParams {
@@ -85,7 +121,21 @@ function decodeProofPayload(payload: ProofResponse | null): DecodedProofPayload 
     return bytes;
   });
 
-  const flattened = Buffer.concat(fieldBytes.map((entry) => Buffer.from(entry)));
+  const flattened = Buffer.concat(
+    fieldBytes.map((entry) => {
+      const be = Buffer.from(entry);
+      be.reverse();
+      return be;
+    })
+  );
+  if (process.env.NEXT_PUBLIC_DEBUG_WRAP === 'true') {
+    // eslint-disable-next-line no-console
+    console.info('[decodeProofPayload] publicInputs', {
+      count: fieldBytes.length,
+      fieldLengths: fieldBytes.map((entry) => entry.length),
+      flattenedLength: flattened.length
+    });
+  }
 
   return {
     proof: proofBytes,
@@ -117,6 +167,7 @@ export async function wrap(params: WrapParams): Promise<string> {
   const hookConfig = deriveHookConfig(originMintKey);
   const vaultState = deriveVaultState(originMintKey);
   const verifyingKey = deriveVerifyingKey();
+  const twinMintKey = params.twinMint ? new PublicKey(params.twinMint) : null;
 
   const commitmentTreeAccount = await connection.getAccountInfo(commitmentTreeKey);
   if (!commitmentTreeAccount) {
@@ -129,20 +180,7 @@ export async function wrap(params: WrapParams): Promise<string> {
   const blinding = BigInt(params.blinding);
   const amount = params.amount;
 
-  const commitmentBytes =
-    params.commitmentHint && params.commitmentHint !== '0x0'
-      ? hexToBytes(params.commitmentHint, 32)
-      : await poseidonHashMany([
-          amount,
-          bytesToBigIntLE(recipientKey.toBuffer()),
-          depositId,
-          bytesToBigIntLE(poolState.toBuffer()),
-          blinding
-        ]);
-
   const amountCommitmentBytes = await poseidonHashMany([amount, blinding]);
-
-  const { newRoot } = await computeNextCommitmentTreeState(treeState, commitmentBytes, amountCommitmentBytes);
 
   const vaultTokenAccount = await getAssociatedTokenAddress(
     originMintKey,
@@ -160,6 +198,14 @@ export async function wrap(params: WrapParams): Promise<string> {
   );
 
   const instructions: TransactionInstruction[] = [];
+  const computeLimitEnv =
+    process.env.WRAP_COMPUTE_UNIT_LIMIT ?? process.env.NEXT_PUBLIC_WRAP_COMPUTE_UNIT_LIMIT;
+  if (computeLimitEnv) {
+    const units = Number(computeLimitEnv);
+    if (!Number.isNaN(units) && units > 0) {
+      instructions.push(ComputeBudgetProgram.setComputeUnitLimit({ units }));
+    }
+  }
 
   const depositorInfo = await connection.getAccountInfo(depositorTokenAccount);
   if (!depositorInfo) {
@@ -177,15 +223,64 @@ export async function wrap(params: WrapParams): Promise<string> {
 
   const poolCoder = new BorshCoder(poolIdl as Idl);
   const decodedProof = decodeProofPayload(params.proof);
+  if (process.env.NEXT_PUBLIC_DEBUG_WRAP === 'true') {
+    // eslint-disable-next-line no-console
+    console.info('[wrap] current root', Buffer.from(treeState.currentRoot).toString('hex'));
+    // eslint-disable-next-line no-console
+    console.info('[wrap] old root field', Buffer.from(decodedProof.fields[0] ?? []).toString('hex'));
+    if (decodedProof.fields[0]) {
+      const reversed = Buffer.from(decodedProof.fields[0]).slice().reverse();
+      // eslint-disable-next-line no-console
+      console.info('[wrap] old root field (be)', reversed.toString('hex'));
+    }
+    if (decodedProof.fields[1]) {
+      const newRootBe = Buffer.from(decodedProof.fields[1]).slice().reverse();
+      // eslint-disable-next-line no-console
+      console.info('[wrap] new root field (be)', newRootBe.toString('hex'));
+    }
+  }
   const shieldArgs = {
-    newRoot: Array.from(newRoot),
-    commitment: Array.from(commitmentBytes),
-    amountCommit: Array.from(amountCommitmentBytes),
+    amount_commit: Array.from(amountCommitmentBytes),
     amount: new BN(amount.toString()),
-    proof: decodedProof.proof,
-    publicInputs: decodedProof.publicInputs
+    proof: Buffer.from(decodedProof.proof),
+    public_inputs: Buffer.from(decodedProof.publicInputs)
   };
   const shieldData = poolCoder.instruction.encode('shield', { args: shieldArgs });
+  if (process.env.NEXT_PUBLIC_DEBUG_WRAP === 'true') {
+    // eslint-disable-next-line no-console
+    console.info('[wrap] shield arg lengths', {
+      poolState: poolState.toBase58(),
+      commitmentTree: commitmentTreeKey.toBase58(),
+      nullifierSet: nullifierSet.toBase58(),
+      noteLedger: noteLedger.toBase58(),
+      vaultState: vaultState.toBase58(),
+      vaultTokenAccount: vaultTokenAccount.toBase58(),
+      depositorTokenAccount: depositorTokenAccount.toBase58(),
+      proof: decodedProof.proof.length,
+      publicInputs: decodedProof.publicInputs.length
+    });
+    // eslint-disable-next-line no-console
+    console.info('[wrap] encoded data length', shieldData.length);
+    try {
+      const decoded = poolCoder.instruction.decode(Buffer.from(shieldData)) as
+        | {
+            name: string;
+            data?: { args?: { amount?: BN; proof?: Uint8Array; publicInputs?: Uint8Array } };
+          }
+        | null;
+      const decodedArgs = decoded?.name === 'shield' ? decoded?.data?.args ?? null : null;
+      // eslint-disable-next-line no-console
+      console.info('[wrap] decoded shield args', {
+        amount: decodedArgs?.amount?.toString?.(),
+        proofLen: decodedArgs?.proof?.length,
+        publicInputsLen: decodedArgs?.publicInputs?.length
+      });
+    } catch (decodeError) {
+      // eslint-disable-next-line no-console
+      console.error('[wrap] failed to decode shield args', decodeError);
+      throw decodeError;
+    }
+  }
 
   const keys = [
     { pubkey: poolState, isSigner: false, isWritable: true },
@@ -195,15 +290,21 @@ export async function wrap(params: WrapParams): Promise<string> {
     { pubkey: noteLedger, isSigner: false, isWritable: true },
     { pubkey: vaultState, isSigner: false, isWritable: true },
     { pubkey: vaultTokenAccount, isSigner: false, isWritable: true },
-    { pubkey: depositorTokenAccount, isSigner: false, isWritable: true },
-    { pubkey: PublicKey.default, isSigner: false, isWritable: false }, // twin mint placeholder
+    { pubkey: depositorTokenAccount, isSigner: false, isWritable: true }
+  ];
+
+  if (twinMintKey) {
+    keys.push({ pubkey: twinMintKey, isSigner: false, isWritable: true });
+  }
+
+  keys.push(
     { pubkey: VERIFIER_PROGRAM_ID, isSigner: false, isWritable: false },
     { pubkey: verifyingKey, isSigner: false, isWritable: false },
     { pubkey: wallet.publicKey, isSigner: true, isWritable: true },
     { pubkey: originMintKey, isSigner: false, isWritable: false },
     { pubkey: VAULT_PROGRAM_ID, isSigner: false, isWritable: false },
     { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false }
-  ];
+  );
 
   instructions.push(
     new TransactionInstruction({
@@ -213,10 +314,19 @@ export async function wrap(params: WrapParams): Promise<string> {
     })
   );
 
+  const latestBlockhash = await connection.getLatestBlockhash('confirmed');
   const transaction = new Transaction().add(...instructions);
   transaction.feePayer = wallet.publicKey;
+  transaction.recentBlockhash = latestBlockhash.blockhash;
 
-  const signature = await wallet.sendTransaction(transaction, connection, { skipPreflight: true });
+  const signature = await wallet.sendTransaction(transaction, connection, { skipPreflight: false });
+  await waitForSignatureConfirmation(
+    connection,
+    signature,
+    latestBlockhash.blockhash,
+    latestBlockhash.lastValidBlockHeight
+  );
+
   return signature;
 }
 
@@ -353,17 +463,19 @@ export async function unwrap(params: UnwrapParams): Promise<string> {
     { pubkey: verifyingKey, isSigner: false, isWritable: false },
     { pubkey: vaultStateKey, isSigner: false, isWritable: true },
     { pubkey: vaultTokenAccount, isSigner: false, isWritable: true },
-    { pubkey: destinationTokenAccount, isSigner: false, isWritable: true },
-    {
-      pubkey: twinMintKey ?? PublicKey.default,
-      isSigner: false,
-      isWritable: mode === 'ptkn'
-    },
+    { pubkey: destinationTokenAccount, isSigner: false, isWritable: true }
+  ];
+
+  if (twinMintKey) {
+    keys.push({ pubkey: twinMintKey, isSigner: false, isWritable: mode === 'ptkn' });
+  }
+
+  keys.push(
     { pubkey: VAULT_PROGRAM_ID, isSigner: false, isWritable: false },
     { pubkey: factoryStateKey, isSigner: false, isWritable: false },
     { pubkey: FACTORY_PROGRAM_ID, isSigner: false, isWritable: false },
     { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false }
-  ];
+  );
 
   instructions.push(
     new TransactionInstruction({
@@ -373,10 +485,19 @@ export async function unwrap(params: UnwrapParams): Promise<string> {
     })
   );
 
+  const latestBlockhash = await connection.getLatestBlockhash('confirmed');
   const transaction = new Transaction().add(...instructions);
   transaction.feePayer = wallet.publicKey;
+  transaction.recentBlockhash = latestBlockhash.blockhash;
 
-  const signature = await wallet.sendTransaction(transaction, connection, { skipPreflight: true });
+  const signature = await wallet.sendTransaction(transaction, connection, { skipPreflight: false });
+  await waitForSignatureConfirmation(
+    connection,
+    signature,
+    latestBlockhash.blockhash,
+    latestBlockhash.lastValidBlockHeight
+  );
+
   return signature;
 }
 

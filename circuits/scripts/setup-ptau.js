@@ -5,8 +5,9 @@ const https = require('https');
 const crypto = require('crypto');
 
 const PTAU_URL =
-  'https://storage.googleapis.com/zkat-experiments/powersoftau/powersOfTau28_hez_final_20.ptau';
-const PTAU_SHA256 = '93f3145d8133f11b8677d6b5c6b867b4099d5b6c0ee6f2d14a3cd59cab9492d1';
+  process.env.PTAU_URL ??
+  'https://storage.googleapis.com/zkevm/ptau/powersOfTau28_hez_final_20.ptau';
+const PTAU_SHA256 = '159d3f938d941e06767d99f30b9fe59a245400a4aae138cf8e411732d7a2f6cd';
 const targetDir = path.join(__dirname, '..', 'pot');
 const targetPath = path.join(targetDir, 'powersOfTau28_hez_final_20.ptau');
 
