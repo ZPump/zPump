@@ -326,6 +326,9 @@ export async function wrap(params: WrapParams): Promise<string> {
 
   if (twinMintKey) {
     keys.push({ pubkey: twinMintKey, isSigner: false, isWritable: true });
+  } else {
+    // Anchor treats an optional account as `None` when the slot equals the program id.
+    keys.push({ pubkey: POOL_PROGRAM_ID, isSigner: false, isWritable: false });
   }
 
   keys.push(
@@ -531,6 +534,9 @@ export async function unwrap(params: UnwrapParams): Promise<string> {
 
   if (redeemToTwin && twinMintKey) {
     keys.push({ pubkey: twinMintKey, isSigner: false, isWritable: redeemToTwin });
+  } else {
+    // Anchor treats an optional account as `None` when the slot equals the program id.
+    keys.push({ pubkey: POOL_PROGRAM_ID, isSigner: false, isWritable: false });
   }
 
   keys.push(
