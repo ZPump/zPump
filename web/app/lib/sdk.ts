@@ -531,7 +531,7 @@ export async function unwrap(params: UnwrapParams): Promise<string> {
     { pubkey: destinationTokenAccount, isSigner: false, isWritable: true }
   ];
 
-  if (redeemToTwin && twinMintKey) {
+  if (twinMintKey) {
     keys.push({ pubkey: twinMintKey, isSigner: false, isWritable: redeemToTwin });
   } else {
     // Anchor treats an optional account as `None` when the slot equals the program id.
