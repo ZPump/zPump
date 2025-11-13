@@ -9,6 +9,8 @@ const resolvePublicKeyMock = jest.fn();
 const getRootsMock = jest.fn();
 const getNullifiersMock = jest.fn();
 const getNotesMock = jest.fn();
+const getBalancesMock = jest.fn();
+const adjustBalanceMock = jest.fn();
 const getAccountInfoMock = jest.fn();
 const appendNullifiersMock = jest.fn();
 
@@ -73,6 +75,8 @@ jest.mock('../lib/indexerClient', () => ({
     getRoots: getRootsMock,
     getNullifiers: getNullifiersMock,
     getNotes: getNotesMock,
+    getBalances: getBalancesMock,
+    adjustBalance: adjustBalanceMock,
     appendNullifiers: appendNullifiersMock
   }))
 }));
@@ -86,6 +90,7 @@ describe('ConvertForm', () => {
     window.localStorage.clear();
     wrapMock.mockResolvedValue('wrap-sig');
     unwrapMock.mockResolvedValue('unwrap-sig');
+    adjustBalanceMock.mockResolvedValue(undefined);
     appendNullifiersMock.mockResolvedValue(undefined);
     resolvePublicKeyMock.mockResolvedValue({
       toBase58: () => 'DEST111'
@@ -111,6 +116,11 @@ describe('ConvertForm', () => {
       notes: [],
       source: 'indexer'
     });
+    getBalancesMock.mockResolvedValue({
+      wallet: 'WALLET111',
+      balances: {},
+      source: 'indexer'
+    });
   });
 
   it('submits a wrap flow when converting to private', async () => {
@@ -128,6 +138,7 @@ describe('ConvertForm', () => {
       expect.objectContaining({ amount: '5000000', depositId: expect.any(String), oldRoot: '0xabc' })
     );
     expect(wrapMock).toHaveBeenCalledWith(expect.objectContaining({ amount: 5000000n }));
+    expect(adjustBalanceMock).toHaveBeenCalledWith('WALLET111', expect.any(String), 5000000n);
     expect(screen.getByText(/Shielded 5 into z/)).toBeInTheDocument();
   });
 
@@ -155,6 +166,7 @@ describe('ConvertForm', () => {
     expect(unwrapMock).toHaveBeenCalledWith(
       expect.objectContaining({ amount: 7000000n })
     );
+    expect(adjustBalanceMock).toHaveBeenCalledWith('WALLET111', expect.any(String), -7000000n);
     await waitFor(() => expect(appendNullifiersMock).toHaveBeenCalledTimes(1));
     expect(screen.getByText(/Redeemed 7/)).toBeInTheDocument();
   });

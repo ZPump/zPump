@@ -31,6 +31,7 @@ import { IndexerClient, IndexerNote } from '../../lib/indexerClient';
 import { getCachedRoots, setCachedRoots, getCachedNullifiers, setCachedNullifiers } from '../../lib/indexerCache';
 import { derivePoolState } from '../../lib/onchain/pdas';
 import { poseidonHashMany } from '../../lib/onchain/poseidon';
+import { formatBaseUnitsToUi } from '../../lib/format';
 
 type ConvertMode = 'to-private' | 'to-public';
 
@@ -129,19 +130,6 @@ function parseOptionalUiAmountToBaseUnits(value: string, decimals: number, label
     throw new Error(`Invalid ${label}. Use a numeric value with up to ${decimals} decimal places.`);
   }
   return parseUiAmountToBaseUnits(normalised, decimals, label);
-}
-
-function formatBaseUnitsToUi(amount: bigint, decimals: number): string {
-  if (decimals === 0) {
-    return amount.toString();
-  }
-  const negative = amount < 0n;
-  const absolute = negative ? -amount : amount;
-  const base = absolute.toString().padStart(decimals + 1, '0');
-  const whole = base.slice(0, -decimals);
-  const fraction = base.slice(-decimals).replace(/0+$/, '');
-  const formatted = fraction ? `${whole}.${fraction}` : whole;
-  return negative ? `-${formatted}` : formatted;
 }
 
 export function ConvertForm() {
@@ -659,7 +647,7 @@ export function ConvertForm() {
           setProofPreview(proofResponse);
         }
 
-        await wrapSdk({
+        const signature = await wrapSdk({
           connection,
           wallet,
           originMint,
@@ -673,8 +661,13 @@ export function ConvertForm() {
           twinMint: mintConfig.zTokenMint ?? null
         });
 
+        try {
+          await indexerClient.adjustBalance(wallet.publicKey.toBase58(), originMint, baseAmount);
+        } catch (error) {
+          console.warn('Failed to adjust private balance', error);
+        }
         const displayAmount = formatBaseUnitsToUi(baseAmount, decimals);
-        setResult(`Shielded ${displayAmount} into ${zTokenSymbol}.`);
+        setResult(`Shielded ${displayAmount} into ${zTokenSymbol}. Signature: ${signature}`);
       } else {
         const destinationKey = await resolvePublicKey(unwrapAdvanced.destination, wallet.publicKey);
         const selectedRedemptionMode = twinRedemptionAvailable ? redeemMode : 'origin';
@@ -790,6 +783,19 @@ export function ConvertForm() {
           mode: selectedRedemptionMode,
           proof: proofResponse
         });
+
+        try {
+          await indexerClient.adjustBalance(wallet.publicKey.toBase58(), originMint, -amountValue);
+        } catch (error) {
+          console.warn('Failed to decrement private balance', error);
+        }
+        if (changeAmountValue > 0n) {
+          try {
+            await indexerClient.adjustBalance(wallet.publicKey.toBase58(), originMint, changeAmountValue);
+          } catch (error) {
+            console.warn('Failed to increment change balance', error);
+          }
+        }
 
         try {
           await indexerClient.appendNullifiers(originMint, [normalisedNullifier]);

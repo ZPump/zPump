@@ -30,6 +30,12 @@ export interface IndexerNote {
   slot: number;
 }
 
+export interface IndexerBalanceResult {
+  wallet: string;
+  balances: Record<string, string>;
+  source?: string;
+}
+
 export class IndexerClient {
   private readonly baseUrl: string;
   private readonly apiKey?: string;
@@ -100,6 +106,60 @@ export class IndexerClient {
       return null;
     }
     return this.parseNotes(payload, viewKey);
+  }
+
+  async getBalances(wallet: string): Promise<IndexerBalanceResult | null> {
+    const payload = await this.request(`/balances/${wallet}`);
+    if (!payload) {
+      return null;
+    }
+    if (payload && typeof payload === 'object') {
+      const entry = payload as Record<string, unknown>;
+      const balances = entry.balances;
+      if (balances && typeof balances === 'object') {
+        const result: IndexerBalanceResult = {
+          wallet: typeof entry.wallet === 'string' ? entry.wallet : wallet,
+          balances: this.normaliseBalanceMap(balances),
+          source: typeof entry.source === 'string' ? entry.source : undefined
+        };
+        return result;
+      }
+    }
+    throw new Error('Unexpected indexer balances payload');
+  }
+
+  async adjustBalance(wallet: string, mint: string, delta: bigint): Promise<Record<string, string>> {
+    if (!wallet || !mint || delta === 0n) {
+      return {};
+    }
+    const url = new URL(`/balances/${wallet}`, this.baseUrl);
+    const headers: HeadersInit = {
+      Accept: 'application/json',
+      'Content-Type': 'application/json'
+    };
+    if (this.apiKey) {
+      headers['x-ptf-api-key'] = this.apiKey;
+    }
+    const response = await this.fetchImpl(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ mint, delta: delta.toString() })
+    });
+    const payload = await response.json().catch(() => null);
+    if (!response.ok) {
+      let message = response.statusText;
+      if (payload && typeof payload === 'object' && payload !== null) {
+        message = (payload as { error?: string; message?: string }).error ?? message;
+      }
+      throw new Error(`Indexer error: ${response.status} ${message}`);
+    }
+    if (payload && typeof payload === 'object' && payload !== null && 'balances' in payload) {
+      const entry = payload as { balances?: unknown };
+      if (entry.balances && typeof entry.balances === 'object') {
+        return this.normaliseBalanceMap(entry.balances);
+      }
+    }
+    return {};
   }
 
   private async request(path: string): Promise<unknown | null> {
@@ -243,6 +303,19 @@ export class IndexerClient {
     return value
       .filter((entry): entry is string => typeof entry === 'string')
       .map((entry) => this.asHex(entry) ?? entry);
+  }
+
+  private normaliseBalanceMap(value: unknown): Record<string, string> {
+    const result: Record<string, string> = {};
+    if (!value || typeof value !== 'object') {
+      return result;
+    }
+    for (const [mint, raw] of Object.entries(value as Record<string, unknown>)) {
+      if (typeof raw === 'string') {
+        result[mint] = raw;
+      }
+    }
+    return result;
   }
 }
 
