@@ -976,6 +976,11 @@ export function ConvertForm() {
           twinMint?: string;
         };
 
+        if (process.env.NEXT_PUBLIC_DEBUG_WRAP === 'true') {
+          // eslint-disable-next-line no-console
+          console.info('[convert] unwrap params', unwrapParams);
+        }
+
         await unwrapSdk(unwrapParams);
 
         try {
