@@ -29,8 +29,9 @@ import { ProofClient, ProofResponse } from '../../lib/proofClient';
 import { wrap as wrapSdk, unwrap as unwrapSdk, resolvePublicKey } from '../../lib/sdk';
 import { IndexerClient, IndexerNote } from '../../lib/indexerClient';
 import { getCachedRoots, setCachedRoots, getCachedNullifiers, setCachedNullifiers } from '../../lib/indexerCache';
-import { derivePoolState } from '../../lib/onchain/pdas';
+import { derivePoolState, deriveCommitmentTree } from '../../lib/onchain/pdas';
 import { poseidonHashMany } from '../../lib/onchain/poseidon';
+import { decodeCommitmentTree } from '../../lib/onchain/commitmentTree';
 import { formatBaseUnitsToUi } from '../../lib/format';
 
 type ConvertMode = 'to-private' | 'to-public';
@@ -141,7 +142,6 @@ export function ConvertForm() {
   const [amount, setAmount] = useState<string>('1');
   const [isSubmitting, setSubmitting] = useBoolean(false);
   const [showAdvanced, setShowAdvanced] = useBoolean(false);
-  const [redeemMode, setRedeemMode] = useState<'origin' | 'ztkn'>('origin');
 
   const [wrapAdvanced, setWrapAdvanced] = useState<WrapAdvancedState>({
     depositId: createRandomSeed(),
@@ -190,19 +190,10 @@ export function ConvertForm() {
   );
 
   const zTokenSymbol = useMemo(() => `z${mintConfig?.symbol ?? 'TOKEN'}`, [mintConfig?.symbol]);
-  const twinRedemptionAvailable = useMemo(
-    () => Boolean(mintConfig?.features?.zTokenEnabled && mintConfig?.zTokenMint),
-    [mintConfig?.features?.zTokenEnabled, mintConfig?.zTokenMint]
+  const redeemDisplaySymbol = useMemo(
+    () => (mode === 'to-private' ? zTokenSymbol : mintConfig?.symbol ?? 'TOKEN'),
+    [mode, zTokenSymbol, mintConfig?.symbol]
   );
-  const redeemDisplaySymbol = useMemo(() => {
-    if (mode === 'to-private') {
-      return zTokenSymbol;
-    }
-    if (redeemMode === 'ztkn' && twinRedemptionAvailable) {
-      return `${mintConfig?.symbol ?? 'TOKEN'} twin`;
-    }
-    return mintConfig?.symbol ?? 'TOKEN';
-  }, [mintConfig?.symbol, mode, redeemMode, twinRedemptionAvailable, zTokenSymbol]);
 
   const proofClient = useMemo(() => new ProofClient(), []);
   const indexerClient = useMemo(() => new IndexerClient(), []);
@@ -213,12 +204,6 @@ export function ConvertForm() {
       mountedRef.current = false;
     };
   }, []);
-
-  useEffect(() => {
-    if (mode !== 'to-public' || !twinRedemptionAvailable) {
-      setRedeemMode('origin');
-    }
-  }, [mode, twinRedemptionAvailable]);
 
   useEffect(() => {
     if (typeof window === 'undefined') {
@@ -270,23 +255,29 @@ export function ConvertForm() {
     async (mint: string) => {
       const mintKey = new PublicKey(mint);
       const poolKey = derivePoolState(mintKey);
-      const accountInfo = await connection.getAccountInfo(poolKey);
-      if (!accountInfo) {
+      const treeKey = deriveCommitmentTree(mintKey);
+      const [poolAccount, treeAccount] = await Promise.all([
+        connection.getAccountInfo(poolKey),
+        connection.getAccountInfo(treeKey)
+      ]);
+      if (!poolAccount) {
         throw new Error('Pool state account missing on-chain');
       }
-      const data = new Uint8Array(accountInfo.data);
-      const base = 8;
-      const currentRootOffset = base + 32 * 8;
-      const currentRootRaw = data.slice(currentRootOffset, currentRootOffset + 32);
-      const currentRootHex = bytesToHex(currentRootRaw);
+      if (!treeAccount) {
+        throw new Error('Commitment tree account missing on-chain');
+      }
+      const poolData = new Uint8Array(poolAccount.data);
+      const treeState = decodeCommitmentTree(new Uint8Array(treeAccount.data));
+      const currentRootHex = bytesToHex(treeState.currentRoot);
       const maxRoots = 16;
-      const recentOffset = currentRootOffset + 32;
+      const base = 8;
+      const recentOffset = base + 32 * 8 + 32;
       const rootsLenOffset = recentOffset + 32 * maxRoots;
-      const rootsLen = data[rootsLenOffset] ?? 0;
+      const rootsLen = poolData[rootsLenOffset] ?? 0;
       const recent: string[] = [];
       for (let idx = 0; idx < Math.min(rootsLen, maxRoots); idx += 1) {
         const start = recentOffset + idx * 32;
-        const rootRaw = data.slice(start, start + 32);
+        const rootRaw = poolData.slice(start, start + 32);
         recent.push(bytesToHex(rootRaw));
       }
       return {
@@ -476,7 +467,6 @@ export function ConvertForm() {
     setNoteLabelDraft('');
     setNullifierPreview(null);
     setNullifierPreviewError(null);
-    setRedeemMode('origin');
   };
 
   const handleWrapAdvancedChange =
@@ -674,8 +664,6 @@ export function ConvertForm() {
         setResult(`Shielded ${displayAmount} into ${zTokenSymbol}. Signature: ${signature}`);
       } else {
         const destinationKey = await resolvePublicKey(unwrapAdvanced.destination, wallet.publicKey);
-        const selectedRedemptionMode = twinRedemptionAvailable ? redeemMode : 'origin';
-        const proofMode = selectedRedemptionMode === 'ztkn' ? 'ztkn' : 'origin';
 
         const amountValue = parseUiAmountToBaseUnits(amount, decimals, 'amount');
         if (amountValue <= 0n) {
@@ -746,7 +734,7 @@ export function ConvertForm() {
           amount: amountValue.toString(),
           fee: feeValue.toString(),
           destPubkey: destinationKey.toBase58(),
-          mode: proofMode,
+          mode: 'origin',
           mintId,
           poolId,
           noteId: unwrapAdvanced.noteId,
@@ -784,7 +772,7 @@ export function ConvertForm() {
           amount: amountValue,
           poolId,
           destination: destinationKey.toBase58(),
-          mode: selectedRedemptionMode,
+          mode: 'origin',
           proof: proofResponse
         });
 
@@ -824,13 +812,9 @@ export function ConvertForm() {
           console.warn('Failed to persist nullifier to indexer', caught);
         }
 
-        if (selectedRedemptionMode === 'ztkn') {
-          const displayAmount = formatBaseUnitsToUi(amountValue, decimals);
-          setResult(`Minted ${displayAmount} ${mintConfig.symbol} privacy twin tokens.`);
-        } else {
-          const displayAmount = formatBaseUnitsToUi(amountValue, decimals);
-          setResult(`Redeemed ${displayAmount} ${mintConfig.symbol}.`);
-        }
+        const displayAmount = formatBaseUnitsToUi(amountValue, decimals);
+        const targetSymbol = mintConfig?.symbol ?? 'TOKEN';
+        setResult(`Redeemed ${displayAmount} ${targetSymbol}.`);
       }
       void refreshRoots();
       void refreshNullifiers();
@@ -907,23 +891,6 @@ export function ConvertForm() {
           ) : null}
           {rootsError && <FormHelperText color="red.300">{rootsError}</FormHelperText>}
         </FormControl>
-
-        {mode === 'to-public' && twinRedemptionAvailable && (
-          <FormControl>
-            <FormLabel color="whiteAlpha.700">Redeem to</FormLabel>
-            <Select
-              value={redeemMode}
-              onChange={(event) => setRedeemMode(event.target.value as 'origin' | 'ztkn')}
-              bg="rgba(18, 16, 14, 0.78)"
-            >
-              <option value="origin">Original mint ({mintConfig?.symbol ?? 'TOKEN'})</option>
-              <option value="ztkn">Privacy twin ({mintConfig?.symbol ?? 'TOKEN'})</option>
-            </Select>
-            <FormHelperText color="whiteAlpha.500">
-              Choose whether to receive the original token or its privacy twin on exit.
-            </FormHelperText>
-          </FormControl>
-        )}
 
         {mode === 'to-public' && (
           <FormControl>

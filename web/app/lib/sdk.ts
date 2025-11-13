@@ -394,9 +394,19 @@ export async function unwrap(params: UnwrapParams): Promise<string> {
   const changeCommitmentBytes = decodedProof.fields[2 + nullifierCount];
   const changeAmountCommitmentBytes = decodedProof.fields[3 + nullifierCount];
 
-  const oldRootHex = Buffer.from(oldRootBytes).toString('hex');
-  const currentRootHex = Buffer.from(decodedTree.currentRoot).toString('hex');
-  if (oldRootHex !== currentRootHex) {
+  const oldRootBuffer = Buffer.from(oldRootBytes);
+  const currentRootBuffer = Buffer.from(decodedTree.currentRoot);
+  if (!oldRootBuffer.equals(currentRootBuffer)) {
+    const oldRootLe = oldRootBuffer.toString('hex');
+    const currentRootLe = currentRootBuffer.toString('hex');
+    const oldRootBe = Buffer.from(oldRootBytes).reverse().toString('hex');
+    const currentRootBe = Buffer.from(decodedTree.currentRoot).slice().reverse().toString('hex');
+    console.warn('[unwrap] root mismatch', {
+      oldRootLe,
+      currentRootLe,
+      oldRootBe,
+      currentRootBe
+    });
     throw new Error('Commitment tree root mismatch. Refresh notes and try again.');
   }
 
