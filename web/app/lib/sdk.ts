@@ -431,7 +431,7 @@ export async function unwrap(params: UnwrapParams): Promise<string> {
 
   const factoryCoder = new BorshCoder(factoryIdl as Idl);
 
-  let twinMintKey: PublicKey | null = null;
+  let twinMintKey: PublicKey | null = params.twinMint ? new PublicKey(params.twinMint) : null;
   if (mode === 'ptkn') {
     const mintMappingAccount = await connection.getAccountInfo(mintMappingKey);
     if (!mintMappingAccount) {
@@ -444,6 +444,12 @@ export async function unwrap(params: UnwrapParams): Promise<string> {
     const candidate = new PublicKey(decodedMintMapping.ptknMint);
     if (candidate.equals(PublicKey.default)) {
       throw new Error('Twin mint address missing from mint mapping.');
+    }
+    if (twinMintKey && !twinMintKey.equals(candidate)) {
+      console.warn('[unwrap] twin mint mismatch', {
+        provided: twinMintKey.toBase58(),
+        mapping: candidate.toBase58()
+      });
     }
     twinMintKey = candidate;
   }
