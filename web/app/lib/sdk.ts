@@ -502,12 +502,10 @@ export async function unwrap(params: UnwrapParams): Promise<string> {
     { pubkey: destinationTokenAccount, isSigner: false, isWritable: true }
   ];
 
-  if (mode === 'ptkn') {
-    if (!twinMintKey) {
-      throw new Error('Twin mint key missing for ptkn unwrap mode.');
-    }
-    keys.push({ pubkey: twinMintKey, isSigner: false, isWritable: true });
+  if (!twinMintKey) {
+    throw new Error('Twin mint key missing for unwrap.');
   }
+  keys.push({ pubkey: twinMintKey, isSigner: false, isWritable: mode === 'ptkn' });
 
   keys.push(
     { pubkey: VAULT_PROGRAM_ID, isSigner: false, isWritable: false },
