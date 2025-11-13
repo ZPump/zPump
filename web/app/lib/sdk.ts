@@ -39,7 +39,11 @@ import { poseidonHashMany } from './onchain/poseidon';
 import { ProofResponse } from './proofClient';
 import poolIdl from '../idl/ptf_pool.json';
 import factoryIdl from '../idl/ptf_factory.json';
-import { getAssociatedTokenAddress, createAssociatedTokenAccountInstruction } from '@solana/spl-token';
+import {
+  TOKEN_2022_PROGRAM_ID,
+  getAssociatedTokenAddress,
+  createAssociatedTokenAccountInstruction
+} from '@solana/spl-token';
 
 const DEFAULT_SIGNATURE_TIMEOUT_MS = 60_000;
 const SIGNATURE_POLL_INTERVAL_MS = 500;
@@ -454,12 +458,18 @@ export async function unwrap(params: UnwrapParams): Promise<string> {
     twinMintKey = candidate;
   }
 
-  const destinationMint = twinMintKey ?? originMintKey;
+  const redeemToTwin = mode === 'ptkn';
+  if (!twinMintKey && redeemToTwin) {
+    throw new Error('Twin mint key missing for unwrap.');
+  }
+
+  const destinationMint = redeemToTwin ? twinMintKey! : originMintKey;
+  const destinationTokenProgram = redeemToTwin ? TOKEN_2022_PROGRAM_ID : TOKEN_PROGRAM_ID;
   const destinationTokenAccount = await getAssociatedTokenAddress(
     destinationMint,
     destinationKey,
     false,
-    TOKEN_PROGRAM_ID,
+    destinationTokenProgram,
     ASSOCIATED_TOKEN_PROGRAM_ID
   );
 
@@ -473,7 +483,7 @@ export async function unwrap(params: UnwrapParams): Promise<string> {
         destinationTokenAccount,
         destinationKey,
         destinationMint,
-        TOKEN_PROGRAM_ID,
+        destinationTokenProgram,
         ASSOCIATED_TOKEN_PROGRAM_ID
       )
     );
@@ -509,10 +519,9 @@ export async function unwrap(params: UnwrapParams): Promise<string> {
     { pubkey: destinationTokenAccount, isSigner: false, isWritable: true }
   ];
 
-  if (!twinMintKey) {
-    throw new Error('Twin mint key missing for unwrap.');
+  if (twinMintKey) {
+    keys.push({ pubkey: twinMintKey, isSigner: false, isWritable: redeemToTwin });
   }
-  keys.push({ pubkey: twinMintKey, isSigner: false, isWritable: mode === 'ptkn' });
 
   keys.push(
     { pubkey: VAULT_PROGRAM_ID, isSigner: false, isWritable: false },
