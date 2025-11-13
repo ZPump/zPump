@@ -961,7 +961,8 @@ export function ConvertForm() {
           poolId,
           destination: destinationKey.toBase58(),
           mode: 'origin',
-          proof: proofResponse
+          proof: proofResponse,
+          lookupTable: mintConfig.lookupTable
         });
 
         try {
