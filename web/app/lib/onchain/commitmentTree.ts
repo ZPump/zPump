@@ -1,5 +1,5 @@
 import { PublicKey } from '@solana/web3.js';
-import { bytesToBigIntLE, bigIntToBytesLE } from './utils';
+import { bytesToBigIntLE, bigIntToBytesLE, bytesLEToCanonicalHex } from './utils';
 import { poseidonHash2 } from './poseidon';
 
 const DISCRIMINATOR_SIZE = 8;
@@ -101,7 +101,7 @@ export async function computeNextCommitmentTreeState(
 }
 
 export function commitmentToHex(commitment: Uint8Array): string {
-  return `0x${Buffer.from(commitment).toString('hex')}`;
+  return bytesLEToCanonicalHex(commitment);
 }
 
 export function bigintToBytes32LE(value: bigint): Uint8Array {

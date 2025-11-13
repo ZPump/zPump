@@ -34,7 +34,12 @@ import {
   deriveFactoryState
 } from './onchain/pdas';
 import { decodeCommitmentTree } from './onchain/commitmentTree';
-import { bytesToBigIntLE, hexToBytes } from './onchain/utils';
+import {
+  bytesToBigIntLE,
+  canonicalHexToBytesLE,
+  bytesLEToCanonicalHex,
+  canonicalizeHex
+} from './onchain/utils';
 import { poseidonHashMany } from './onchain/poseidon';
 import { ProofResponse } from './proofClient';
 import poolIdl from '../idl/ptf_pool.json';
@@ -129,20 +134,15 @@ function decodeProofPayload(payload: ProofResponse | null): DecodedProofPayload 
     if (typeof input !== 'string') {
       throw new Error(`Public input at index ${index} is not a string`);
     }
-    const bytes = hexToBytes(input, 32);
+    const canonical = canonicalizeHex(input);
+    const bytes = canonicalHexToBytesLE(canonical, 32);
     if (bytes.length !== 32) {
       throw new Error(`Public input at index ${index} must be 32 bytes`);
     }
     return bytes;
   });
 
-  const flattened = Buffer.concat(
-    fieldBytes.map((entry) => {
-      const be = Buffer.from(entry);
-      be.reverse();
-      return be;
-    })
-  );
+  const flattened = Buffer.concat(fieldBytes.map((entry) => Buffer.from(entry)));
   if (process.env.NEXT_PUBLIC_DEBUG_WRAP === 'true') {
     // eslint-disable-next-line no-console
     console.info('[decodeProofPayload] publicInputs', {
@@ -260,14 +260,12 @@ export async function wrap(params: WrapParams): Promise<string> {
     // eslint-disable-next-line no-console
     console.info('[wrap] old root field', Buffer.from(decodedProof.fields[0] ?? []).toString('hex'));
     if (decodedProof.fields[0]) {
-      const reversed = Buffer.from(decodedProof.fields[0]).slice().reverse();
       // eslint-disable-next-line no-console
-      console.info('[wrap] old root field (be)', reversed.toString('hex'));
+      console.info('[wrap] old root field (canonical)', bytesLEToCanonicalHex(decodedProof.fields[0]));
     }
     if (decodedProof.fields[1]) {
-      const newRootBe = Buffer.from(decodedProof.fields[1]).slice().reverse();
       // eslint-disable-next-line no-console
-      console.info('[wrap] new root field (be)', newRootBe.toString('hex'));
+      console.info('[wrap] new root field (canonical)', bytesLEToCanonicalHex(decodedProof.fields[1]));
     }
   }
   const shieldArgs = {
@@ -421,15 +419,12 @@ export async function unwrap(params: UnwrapParams): Promise<string> {
   const changeCommitmentBytes = decodedProof.fields[2 + nullifierCount];
   const changeAmountCommitmentBytes = decodedProof.fields[3 + nullifierCount];
 
-  const canonicalHex = (bytes: Uint8Array) => Buffer.from(bytes).slice().reverse().toString('hex');
-  const littleEndianHex = (bytes: Uint8Array) => Buffer.from(bytes).toString('hex');
-
-  const oldRootCanonical = canonicalHex(oldRootBytes);
-  const currentRootCanonical = canonicalHex(decodedTree.currentRoot);
+  const oldRootCanonical = bytesLEToCanonicalHex(oldRootBytes);
+  const currentRootCanonical = bytesLEToCanonicalHex(decodedTree.currentRoot);
   if (oldRootCanonical !== currentRootCanonical) {
     console.warn('[unwrap] root mismatch', {
-      oldRootLe: littleEndianHex(oldRootBytes),
-      currentRootLe: littleEndianHex(decodedTree.currentRoot),
+      oldRootLe: Buffer.from(oldRootBytes).toString('hex'),
+      currentRootLe: Buffer.from(decodedTree.currentRoot).toString('hex'),
       oldRootBe: oldRootCanonical,
       currentRootBe: currentRootCanonical
     });

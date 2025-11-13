@@ -1,3 +1,5 @@
+import { canonicalizeHex } from './onchain/utils';
+
 interface IndexerClientOptions {
   baseUrl?: string;
   apiKey?: string;
@@ -80,7 +82,9 @@ export class IndexerClient {
     if (!nullifiers.length) {
       return;
     }
-    const normalised = nullifiers.map((entry) => this.asHex(entry) ?? entry);
+    const normalised = nullifiers
+      .map((entry) => this.asCanonicalHex(entry) ?? entry)
+      .filter((entry): entry is string => typeof entry === 'string');
     const url = this.buildUrl(`/nullifiers/${mint}`);
     const headers: HeadersInit = {
       Accept: 'application/json',
@@ -192,18 +196,18 @@ export class IndexerClient {
   private parseRoots(payload: unknown, fallbackMint: string): IndexerRootResult {
     if (payload && typeof payload === 'object') {
       const entry = payload as Record<string, unknown>;
-      const current = this.asHex(entry.current);
+      const current = this.asCanonicalHex(entry.current);
       if (current) {
         return {
           mint: typeof entry.mint === 'string' ? entry.mint : fallbackMint,
           current,
-          recent: this.asHexArray(entry.recent),
+            recent: this.asHexArray(entry.recent),
           source: typeof entry.source === 'string' ? entry.source : undefined
         };
       }
       if ('result' in entry && entry.result && typeof entry.result === 'object') {
         const inner = entry.result as Record<string, unknown>;
-        const innerCurrent = this.asHex(inner.current);
+        const innerCurrent = this.asCanonicalHex(inner.current);
         if (innerCurrent) {
           return {
             mint: typeof inner.mint === 'string' ? inner.mint : fallbackMint,
@@ -219,11 +223,14 @@ export class IndexerClient {
 
   private parseNullifiers(payload: unknown, fallbackMint: string): IndexerNullifierResult {
     if (Array.isArray(payload) && payload.every((value) => typeof value === 'string')) {
-      return {
-        mint: fallbackMint,
-        nullifiers: payload.map((entry) => this.asHex(entry) ?? entry),
-        source: undefined
-      };
+        const canonical = payload
+          .map((entry) => this.asCanonicalHex(entry) ?? entry)
+          .filter((entry): entry is string => typeof entry === 'string');
+        return {
+          mint: fallbackMint,
+          nullifiers: canonical,
+          source: undefined
+        };
     }
     if (payload && typeof payload === 'object') {
       const entry = payload as Record<string, unknown>;
@@ -231,7 +238,9 @@ export class IndexerClient {
       if (Array.isArray(nullifiers) && nullifiers.every((value) => typeof value === 'string')) {
         return {
           mint: typeof entry.mint === 'string' ? entry.mint : fallbackMint,
-          nullifiers: nullifiers.map((value) => this.asHex(value as string) ?? (value as string)),
+          nullifiers: nullifiers
+            .map((value) => this.asCanonicalHex(value) ?? (value as string))
+            .filter((value): value is string => typeof value === 'string'),
           source: typeof entry.source === 'string' ? entry.source : undefined
         };
       }
@@ -279,8 +288,12 @@ export class IndexerClient {
       if (typeof note.commitment !== 'string' || typeof note.ciphertext !== 'string' || typeof note.mint !== 'string') {
         return null;
       }
+      const commitment = this.asCanonicalHex(note.commitment);
+      if (!commitment) {
+        return null;
+      }
       notes.push({
-        commitment: this.asHex(note.commitment) ?? note.commitment,
+        commitment,
         ciphertext: note.ciphertext,
         mint: note.mint,
         slot: typeof note.slot === 'number' ? note.slot : Number(note.slot ?? 0)
@@ -289,20 +302,25 @@ export class IndexerClient {
     return notes;
   }
 
-  private asHex(value: unknown): string | null {
-    if (typeof value !== 'string' || value.length === 0) {
-      return null;
-    }
-    return value.startsWith('0x') ? value : `0x${value}`;
-  }
-
   private asHexArray(value: unknown): string[] {
     if (!Array.isArray(value)) {
       return [];
     }
     return value
       .filter((entry): entry is string => typeof entry === 'string')
-      .map((entry) => this.asHex(entry) ?? entry);
+      .map((entry) => this.asCanonicalHex(entry))
+      .filter((entry): entry is string => Boolean(entry));
+  }
+
+  private asCanonicalHex(value: unknown): string | null {
+    if (typeof value !== 'string' || value.length === 0) {
+      return null;
+    }
+    try {
+      return canonicalizeHex(value);
+    } catch {
+      return null;
+    }
   }
 
   private normaliseBalanceMap(value: unknown): Record<string, string> {
