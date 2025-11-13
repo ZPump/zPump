@@ -40,10 +40,16 @@ const NotesResponseSchema = z.object({
   notes: z.array(NoteSchema)
 });
 
+const BalanceDeltaSchema = z.object({
+  mint: z.string(),
+  delta: z.string()
+});
+
 const SnapshotSchema = z.object({
   roots: z.record(RootResponseSchema).default({}),
   nullifiers: z.record(z.array(z.string())).default({}),
-  notes: z.record(z.array(NoteSchema)).default({})
+  notes: z.record(z.array(NoteSchema)).default({}),
+  balances: z.record(z.record(z.string())).default({})
 });
 
 type RootResponse = z.infer<typeof RootResponseSchema>;
@@ -114,6 +120,10 @@ class StateStore {
     return this.state?.notes[viewKey] ?? [];
   }
 
+  getBalances(wallet: string): Record<string, string> {
+    return { ...(this.state?.balances[wallet] ?? {}) };
+  }
+
   upsertRoots(mint: string, payload: RootResponse): void {
     const state = this.ensureState();
     state.roots[mint] = payload;
@@ -134,6 +144,39 @@ class StateStore {
     const existing = new Set(state.nullifiers[mint] ?? []);
     nullifiers.forEach((value) => existing.add(value));
     state.nullifiers[mint] = Array.from(existing);
+  }
+
+  applyBalanceDelta(wallet: string, mint: string, delta: string): Record<string, string> {
+    const state = this.ensureState();
+    const balances = { ...(state.balances[wallet] ?? {}) };
+    let current = 0n;
+    if (balances[mint]) {
+      try {
+        current = BigInt(balances[mint]!);
+      } catch {
+        current = 0n;
+      }
+    }
+    let next = current;
+    try {
+      next = current + BigInt(delta);
+    } catch {
+      throw new Error('invalid_delta');
+    }
+    if (next < 0n) {
+      next = 0n;
+    }
+    if (next === 0n) {
+      delete balances[mint];
+    } else {
+      balances[mint] = next.toString();
+    }
+    if (Object.keys(balances).length === 0) {
+      delete state.balances[wallet];
+    } else {
+      state.balances[wallet] = balances;
+    }
+    return balances;
   }
 }
 
@@ -342,6 +385,33 @@ async function bootstrap() {
     } catch (error) {
       logger.error({ err: error, viewKey }, 'failed to resolve notes');
       res.status(502).json({ error: 'upstream_failed' });
+    }
+  });
+
+  app.get('/balances/:wallet', (req, res) => {
+    const wallet = req.params.wallet;
+    const balances = store.getBalances(wallet);
+    res.json({ wallet, balances, source: 'local' });
+  });
+
+  app.post('/balances/:wallet', (req, res) => {
+    const wallet = req.params.wallet;
+    const parsed = BalanceDeltaSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: 'invalid_payload' });
+      return;
+    }
+    try {
+      const balances = store.applyBalanceDelta(wallet, parsed.data.mint, parsed.data.delta);
+      res.json({ wallet, balances, source: 'local' });
+    } catch (error) {
+      const message = (error as Error).message;
+      if (message === 'invalid_delta') {
+        res.status(400).json({ error: 'invalid_delta' });
+        return;
+      }
+      logger.error({ err: error, wallet }, 'failed to adjust balances');
+      res.status(500).json({ error: 'internal_error' });
     }
   });
 

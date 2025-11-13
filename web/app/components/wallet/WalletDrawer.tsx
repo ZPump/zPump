@@ -35,11 +35,13 @@ import {
 } from '@chakra-ui/react';
 import { useConnection } from '@solana/wallet-adapter-react';
 import { LAMPORTS_PER_SOL, PublicKey } from '@solana/web3.js';
-import { TOKEN_PROGRAM_ID } from '@solana/spl-token';
+import { TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID } from '@solana/spl-token';
 import { Coins, Copy, Plus, Trash2, Wallet } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useLocalWallet } from './LocalWalletContext';
 import { MINTS } from '../../config/mints';
+import { formatBaseUnitsToUi } from '../../lib/format';
+import { IndexerClient } from '../../lib/indexerClient';
 
 interface TokenBalance {
   mint: string;
@@ -88,6 +90,7 @@ function WalletDrawerContent({ disclosure }: { disclosure: ReturnType<typeof use
   const { accounts, activeAccount, selectAccount, createAccount, importAccount, renameAccount, deleteAccount } =
     useLocalWallet();
   const [balances, setBalances] = useState<TokenBalance[]>([]);
+  const [privateBalances, setPrivateBalances] = useState<Record<string, string>>({});
   const [transactions, setTransactions] = useState<TransactionEntry[]>([]);
   const [solBalance, setSolBalance] = useState<number>(0);
   const [loadingBalances, setLoadingBalances] = useBoolean(false);
@@ -109,6 +112,21 @@ function WalletDrawerContent({ disclosure }: { disclosure: ReturnType<typeof use
     });
     return map;
   }, []);
+
+  const indexerClient = useMemo(() => new IndexerClient(), []);
+
+  const loadPrivateBalances = useCallback(
+    async (walletAddress: string) => {
+      try {
+        const response = await indexerClient.getBalances(walletAddress);
+        setPrivateBalances(response?.balances ?? {});
+      } catch (error) {
+        console.warn('[wallet drawer] failed to load private balances', error);
+        setPrivateBalances({});
+      }
+    },
+    [indexerClient]
+  );
 
   const refreshTransactions = useCallback(
     async (showSpinner: boolean) => {
@@ -202,6 +220,7 @@ function WalletDrawerContent({ disclosure }: { disclosure: ReturnType<typeof use
 
       if (!activeAccount) {
         setBalances([]);
+        setPrivateBalances({});
         setSolBalance(0);
         if (showSpinner) {
           setLoadingBalances.off();
@@ -216,9 +235,10 @@ function WalletDrawerContent({ disclosure }: { disclosure: ReturnType<typeof use
       }
 
       try {
-        const [lamports, tokenAccounts] = await Promise.all([
+        const [lamports, tokenAccountsLegacy, tokenAccounts2022] = await Promise.all([
           connection.getBalance(publicKey),
-          connection.getParsedTokenAccountsByOwner(publicKey, { programId: TOKEN_PROGRAM_ID })
+          connection.getParsedTokenAccountsByOwner(publicKey, { programId: TOKEN_PROGRAM_ID }),
+          connection.getParsedTokenAccountsByOwner(publicKey, { programId: TOKEN_2022_PROGRAM_ID })
         ]);
 
         console.info('[wallet drawer] refreshed SOL balance', {
@@ -228,7 +248,9 @@ function WalletDrawerContent({ disclosure }: { disclosure: ReturnType<typeof use
         });
         setSolBalance(lamports / LAMPORTS_PER_SOL);
 
-        const rows: TokenBalance[] = tokenAccounts.value
+        const combinedAccounts = [...tokenAccountsLegacy.value, ...tokenAccounts2022.value];
+
+        const rows: TokenBalance[] = combinedAccounts
           .map((entry) => {
             const info = entry.account.data.parsed.info;
             const mint = info.mint as string;
@@ -246,6 +268,7 @@ function WalletDrawerContent({ disclosure }: { disclosure: ReturnType<typeof use
           .filter((entry) => entry.amount > 0);
 
         setBalances(rows);
+        await loadPrivateBalances(activeAccount.publicKey);
         await refreshTransactions(showSpinner);
       } catch (error) {
         console.error(error);
@@ -263,7 +286,7 @@ function WalletDrawerContent({ disclosure }: { disclosure: ReturnType<typeof use
         refreshingRef.current = false;
       }
     },
-    [activeAccount, connection, mintMap, refreshTransactions, setLoadingBalances, toast]
+    [activeAccount, connection, mintMap, refreshTransactions, setLoadingBalances, toast, loadPrivateBalances]
   );
 
   useEffect(() => {
@@ -288,6 +311,40 @@ function WalletDrawerContent({ disclosure }: { disclosure: ReturnType<typeof use
       clearInterval(interval);
     };
   }, [disclosure.isOpen, activeAccount, refreshBalances]);
+
+  useEffect(() => {
+    if (!activeAccount) {
+      setPrivateBalances({});
+      return;
+    }
+    void loadPrivateBalances(activeAccount.publicKey);
+  }, [activeAccount, loadPrivateBalances]);
+
+  const privateBalanceEntries = useMemo(() => {
+    return Object.entries(privateBalances)
+      .map(([mint, amountString]) => {
+        let amount = 0n;
+        try {
+          amount = BigInt(amountString);
+        } catch {
+          amount = 0n;
+        }
+        if (amount === 0n) {
+          return null;
+        }
+        const metadata = mintMap.get(mint);
+        const decimals = metadata?.decimals ?? 0;
+        const baseSymbol = metadata?.symbol?.replace(/^z/, '') ?? mint.slice(0, 6);
+        const symbol = `z${baseSymbol}`;
+        const formatted = formatBaseUnitsToUi(amount, decimals);
+        return {
+          mint,
+          symbol,
+          formatted
+        };
+      })
+      .filter((entry): entry is { mint: string; symbol: string; formatted: string } => Boolean(entry));
+  }, [mintMap, privateBalances]);
 
   const handleCreateAccount = () => {
     createAccount(newLabel.trim() || undefined);
@@ -493,12 +550,36 @@ function WalletDrawerContent({ disclosure }: { disclosure: ReturnType<typeof use
                           </Text>
                         </Flex>
                       ))}
-                      {balances.length === 0 && (
-                        <Text fontSize="sm" color="whiteAlpha.500">
-                          No SPL token balances found for this account.
-                        </Text>
-                      )}
                     </SimpleGrid>
+                    {privateBalanceEntries.length > 0 && (
+                      <Stack spacing={2}>
+                        <Text fontSize="sm" color="whiteAlpha.500">
+                          Shielded balances
+                        </Text>
+                        <SimpleGrid columns={1} spacing={3}>
+                          {privateBalanceEntries.map((entry) => (
+                            <Flex key={`private-${entry.mint}`} align="center" justify="space-between">
+                              <Stack spacing={0}>
+                                <Text fontWeight="medium" color="whiteAlpha.800">
+                                  {entry.symbol}
+                                </Text>
+                                <Text fontSize="xs" color="whiteAlpha.500">
+                                  {formatAddress(entry.mint)}
+                                </Text>
+                              </Stack>
+                              <Text fontWeight="semibold" color="whiteAlpha.900">
+                                {entry.formatted}
+                              </Text>
+                            </Flex>
+                          ))}
+                        </SimpleGrid>
+                      </Stack>
+                    )}
+                    {balances.length === 0 && privateBalanceEntries.length === 0 && (
+                      <Text fontSize="sm" color="whiteAlpha.500">
+                        No balances found for this account.
+                      </Text>
+                    )}
                   </Stack>
                 )}
               </Box>
