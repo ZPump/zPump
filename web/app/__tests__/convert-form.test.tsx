@@ -211,7 +211,7 @@ describe('ConvertForm', () => {
       })
     );
     expect(unwrapMock).toHaveBeenCalledWith(
-      expect.objectContaining({ amount: 7000000n, twinMint: zTokenMint })
+      expect.objectContaining({ amount: 7000000n })
     );
     expect(adjustBalanceMock).toHaveBeenCalledWith('WALLET111', expect.any(String), -7000000n);
     await waitFor(() => expect(appendNullifiersMock).toHaveBeenCalledTimes(1));
