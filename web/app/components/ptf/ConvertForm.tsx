@@ -23,17 +23,13 @@ import {
 } from '@chakra-ui/react';
 import { useConnection, useWallet } from '@solana/wallet-adapter-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { PublicKey } from '@solana/web3.js';
 import { TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID } from '@solana/spl-token';
 import { MINTS, MintConfig } from '../../config/mints';
 import { ProofClient, ProofResponse } from '../../lib/proofClient';
 import { wrap as wrapSdk, unwrap as unwrapSdk, resolvePublicKey } from '../../lib/sdk';
 import { IndexerClient, IndexerNote } from '../../lib/indexerClient';
 import { getCachedRoots, setCachedRoots, getCachedNullifiers, setCachedNullifiers } from '../../lib/indexerCache';
-import { derivePoolState, deriveCommitmentTree } from '../../lib/onchain/pdas';
 import { poseidonHashMany } from '../../lib/onchain/poseidon';
-import { decodeCommitmentTree } from '../../lib/onchain/commitmentTree';
-import { bytesLEToCanonicalHex } from '../../lib/onchain/utils';
 import { formatBaseUnitsToUi } from '../../lib/format';
 
 type ConvertMode = 'to-private' | 'to-public';
@@ -412,52 +408,6 @@ export function ConvertForm() {
     return value;
   };
 
-  const fetchRootsFromChain = useCallback(
-    async (mint: string) => {
-      const mintKey = new PublicKey(mint);
-      const poolKey = derivePoolState(mintKey);
-      const treeKey = deriveCommitmentTree(mintKey);
-      const [poolAccount, treeAccount] = await Promise.all([
-        connection.getAccountInfo(poolKey),
-        connection.getAccountInfo(treeKey)
-      ]);
-      if (!poolAccount) {
-        throw new Error('Pool state account missing on-chain');
-      }
-      if (!treeAccount) {
-        throw new Error('Commitment tree account missing on-chain');
-      }
-      const poolData = new Uint8Array(poolAccount.data);
-      const treeState = decodeCommitmentTree(new Uint8Array(treeAccount.data));
-      const treeRootHex = bytesLEToCanonicalHex(treeState.currentRoot);
-      const maxRoots = 16;
-      const base = 8;
-      const recentOffset = base + 32 * 8 + 32;
-      const rootsLenOffset = recentOffset + 32 * maxRoots;
-      const rootsLen = poolData[rootsLenOffset] ?? 0;
-      const recent: string[] = [];
-      for (let idx = 0; idx < Math.min(rootsLen, maxRoots); idx += 1) {
-        const start = recentOffset + idx * 32;
-        const rootRaw = poolData.slice(start, start + 32);
-        recent.push(bytesLEToCanonicalHex(rootRaw));
-      }
-      const poolCurrentRootOffset = base + 32 * 8;
-      const poolCurrentRootRaw = poolData.slice(poolCurrentRootOffset, poolCurrentRootOffset + 32);
-      const poolRootHex = bytesLEToCanonicalHex(poolCurrentRootRaw);
-      const currentRootHex = poolRootHex || treeRootHex;
-      if (poolRootHex.toLowerCase() !== treeRootHex.toLowerCase()) {
-        // eslint-disable-next-line no-console
-        console.warn('[roots] pool/tree mismatch', { poolRootHex, treeRootHex });
-      }
-      return {
-        current: currentRootHex,
-        recent,
-        source: 'chain'
-      };
-    },
-    [connection]
-  );
-
   const refreshRoots = useCallback(async () => {
     if (!originMint) {
       return null;
@@ -465,14 +415,6 @@ export function ConvertForm() {
     setLoadingRoots(true);
     setRootsError(null);
     try {
-      let chainRoots: { current: string; recent: string[]; source: string } | null = null;
-      let chainError: unknown = null;
-      try {
-        chainRoots = await fetchRootsFromChain(originMint);
-      } catch (caughtChain) {
-        chainError = caughtChain;
-      }
-
       const result = await indexerClient.getRoots(originMint);
       if (result) {
         const parsed = {
@@ -480,63 +422,77 @@ export function ConvertForm() {
           recent: result.recent.map(normaliseField),
           source: result.source ?? 'indexer'
         };
-        if (chainRoots && parsed.current && parsed.current.toLowerCase() !== chainRoots.current.toLowerCase()) {
-          parsed.current = chainRoots.current;
-          parsed.source = `${parsed.source}+chain`;
-          void (async () => {
-            try {
-              await indexerClient.publishRoots(originMint, chainRoots.current, chainRoots.recent);
-            } catch (publishError) {
-              // eslint-disable-next-line no-console
-              console.warn('[roots] failed to publish updated root to indexer', publishError);
-            }
-          })();
-        }
-        if (chainRoots && chainRoots.recent.length && parsed.recent.length === 0) {
-          parsed.recent = chainRoots.recent;
-        }
         if (mountedRef.current) {
           setRoots(parsed);
           setCachedRoots({ mint: originMint, current: parsed.current, recent: parsed.recent, source: parsed.source });
         }
+        void (async () => {
+          try {
+            const chainRoots = await indexerClient.getRoots(originMint, { source: 'chain' });
+            if (chainRoots) {
+              const chainCurrent = normaliseField(chainRoots.current);
+              const chainRecent = chainRoots.recent.map(normaliseField);
+              if (chainCurrent && chainCurrent.toLowerCase() !== parsed.current.toLowerCase()) {
+                if (mountedRef.current) {
+                  setRoots({
+                    current: chainCurrent,
+                    recent: chainRecent,
+                    source: `${parsed.source}+chain`
+                  });
+                  setCachedRoots({
+                    mint: originMint,
+                    current: chainCurrent,
+                    recent: chainRecent,
+                    source: `${parsed.source}+chain`
+                  });
+                }
+                await indexerClient.publishRoots(originMint, chainCurrent, chainRecent);
+              } else if (!parsed.recent.length && chainRecent.length && mountedRef.current) {
+                setRoots({
+                  current: parsed.current,
+                  recent: chainRecent,
+                  source: parsed.source
+                });
+                setCachedRoots({
+                  mint: originMint,
+                  current: parsed.current,
+                  recent: chainRecent,
+                  source: parsed.source
+                });
+              }
+            }
+          } catch (publishError) {
+            // eslint-disable-next-line no-console
+            console.warn('[roots] failed to reconcile indexer roots with chain', publishError);
+          }
+        })();
         return parsed;
       }
-
-      if (chainRoots) {
-        if (mountedRef.current) {
-          setRoots(chainRoots);
+      throw new Error('Unable to resolve commitment tree root from indexer');
+    } catch (caught) {
+      try {
+        const fallback = await indexerClient.getRoots(originMint, { source: 'chain' });
+        if (fallback && mountedRef.current) {
+          const chainCurrent = normaliseField(fallback.current);
+          const chainRecent = fallback.recent.map(normaliseField);
+          const nextState = {
+            current: chainCurrent,
+            recent: chainRecent,
+            source: fallback.source ?? 'chain'
+          };
+          setRoots(nextState);
           setCachedRoots({
             mint: originMint,
-            current: chainRoots.current,
-            recent: chainRoots.recent,
-            source: chainRoots.source
+            current: nextState.current,
+            recent: nextState.recent,
+            source: nextState.source
           });
         }
         void (async () => {
           try {
-            await indexerClient.publishRoots(originMint, chainRoots.current, chainRoots.recent);
-          } catch (publishError) {
-            // eslint-disable-next-line no-console
-            console.warn('[roots] failed to publish chain roots to indexer', publishError);
-          }
-        })();
-        return chainRoots;
-      }
-
-      if (chainError) {
-        throw chainError;
-      }
-      throw new Error('Unable to resolve commitment tree root from indexer or chain');
-    } catch (caught) {
-      try {
-        const fallback = await fetchRootsFromChain(originMint);
-        if (mountedRef.current) {
-          setRoots(fallback);
-          setCachedRoots({ mint: originMint, current: fallback.current, recent: fallback.recent, source: fallback.source });
-        }
-        void (async () => {
-          try {
-            await indexerClient.publishRoots(originMint, fallback.current, fallback.recent);
+            if (fallback) {
+              await indexerClient.publishRoots(originMint, fallback.current, fallback.recent);
+            }
           } catch (publishError) {
             // eslint-disable-next-line no-console
             console.warn('[roots] failed to publish fallback roots to indexer', publishError);
@@ -558,7 +514,7 @@ export function ConvertForm() {
         setLoadingRoots(false);
       }
     }
-  }, [fetchRootsFromChain, indexerClient, originMint]);
+  }, [indexerClient, originMint]);
 
   useEffect(() => {
     const cached = originMint ? getCachedRoots(originMint) : null;
