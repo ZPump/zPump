@@ -4,7 +4,7 @@ use anchor_lang::solana_program::program::invoke_signed;
 use anchor_lang::solana_program::program_option::COption;
 use anchor_spl::token_interface::{Mint, TokenAccount, TokenInterface};
 use ark_bn254::Fr;
-use ark_ff::{BigInteger, BigInteger256, PrimeField, Zero};
+use ark_ff::{BigInteger256, PrimeField, Zero};
 #[cfg(feature = "invariant_checks")]
 use core::convert::TryFrom;
 use core::convert::TryInto;
@@ -962,11 +962,13 @@ fn fr_from_bytes(bytes: &[u8; 32]) -> Fr {
 
 #[inline(always)]
 fn fr_to_bytes(value: &Fr) -> [u8; 32] {
-    let bigint: BigInteger256 = value.into_bigint();
-    let bytes = bigint.to_bytes_le();
-    let mut array = [0u8; 32];
-    array.copy_from_slice(&bytes);
-    array
+    let limbs = (*value).into_bigint().0;
+    let mut bytes = [0u8; 32];
+    for (index, limb) in limbs.iter().enumerate() {
+        let start = index * 8;
+        bytes[start..start + 8].copy_from_slice(&limb.to_le_bytes());
+    }
+    bytes
 }
 #[derive(Accounts)]
 pub struct InitializePool<'info> {
