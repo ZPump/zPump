@@ -28,7 +28,7 @@ const RPC_URL = process.env.RPC_URL ?? 'http://127.0.0.1:8899';
 const PROOF_URL = process.env.PROOF_URL ?? 'http://127.0.0.1:3000/api/proof';
 const INDEXER_URL = process.env.INDEXER_URL ?? 'http://127.0.0.1:3000/api/indexer';
 const FAUCET_URL = process.env.FAUCET_URL ?? 'http://127.0.0.1:3000/api/faucet';
-const ORIGIN_MINT = process.env.ORIGIN_MINT ?? 'Aw5iYNvtWZuTUJ4k5pfJ3Mtf7QrQcPJ6uK4XV9AhaSBm';
+const ORIGIN_MINT = process.env.ORIGIN_MINT ?? 'iq8vG5SBdAZSwgCEME5b4yDqiLydbFciUZ3ZrgCSp4J';
 const WRAP_AMOUNT = BigInt(process.env.WRAP_AMOUNT ?? '1000000'); // 1 USDC (6 decimals)
 
 const SOL_AIRDROP_AMOUNT = 2n * 10n ** 9n;

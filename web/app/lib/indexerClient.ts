@@ -30,12 +30,36 @@ export interface IndexerNote {
   ciphertext: string;
   mint: string;
   slot: number;
+  viewTag?: string;
+  leafIndex?: number;
 }
 
 export interface IndexerBalanceResult {
   wallet: string;
   balances: Record<string, string>;
   source?: string;
+}
+
+export interface IndexerMintNotesResult {
+  mint: string;
+  notes: IndexerNote[];
+  cursor: number | null;
+  hasMore: boolean;
+  source?: string;
+}
+
+export interface IndexerSyncResult {
+  mint: string;
+  roots: IndexerRootResult;
+  nullifiers: string[];
+  notes: IndexerNote[];
+  cursor: number | null;
+  hasMore: boolean;
+  sources?: {
+    roots?: string;
+    nullifiers?: string;
+    notes?: string;
+  };
 }
 
 export class IndexerClient {
@@ -110,6 +134,75 @@ export class IndexerClient {
       return null;
     }
     return this.parseNotes(payload, viewKey);
+  }
+
+  async getMintNotes(
+    mint: string,
+    options: { afterSlot?: number; limit?: number; viewTag?: string } = {}
+  ): Promise<IndexerMintNotesResult> {
+    const query = this.buildQuery(options);
+    const path = query ? `/notes/mint/${mint}?${query}` : `/notes/mint/${mint}`;
+    const payload = await this.request(path);
+    if (!payload) {
+      return {
+        mint,
+        notes: [],
+        cursor: null,
+        hasMore: false
+      };
+    }
+    return this.parseMintNotes(payload, mint);
+  }
+
+  async syncMint(
+    mint: string,
+    options: { afterSlot?: number; limit?: number; viewTag?: string } = {}
+  ): Promise<IndexerSyncResult> {
+    const query = this.buildQuery(options);
+    const path = query ? `/sync/${mint}?${query}` : `/sync/${mint}`;
+    const payload = await this.request(path);
+    if (!payload) {
+      return {
+        mint,
+        roots: {
+          mint,
+          current: this.asCanonicalHex('0x0') ?? '0x0',
+          recent: []
+        },
+        nullifiers: [],
+        notes: [],
+        cursor: null,
+        hasMore: false,
+        sources: {}
+      };
+    }
+    return this.parseSync(payload, mint);
+  }
+
+  async publishRoots(mint: string, current: string, recent: string[] = []): Promise<void> {
+    const url = this.buildUrl(`/roots/${mint}`);
+    const headers: HeadersInit = {
+      Accept: 'application/json',
+      'Content-Type': 'application/json'
+    };
+    if (this.apiKey) {
+      headers['x-ptf-api-key'] = this.apiKey;
+    }
+    const payload = {
+      current: this.asCanonicalHex(current) ?? current,
+      recent: recent
+        .map((entry) => this.asCanonicalHex(entry) ?? entry)
+        .filter((entry): entry is string => typeof entry === 'string')
+    };
+    const response = await this.fetchImpl(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(payload)
+    });
+    if (!response.ok) {
+      throw new Error(`Indexer error: ${response.status} ${response.statusText}`);
+    }
+    await response.json().catch(() => null);
   }
 
   async getBalances(wallet: string): Promise<IndexerBalanceResult | null> {
@@ -201,7 +294,7 @@ export class IndexerClient {
         return {
           mint: typeof entry.mint === 'string' ? entry.mint : fallbackMint,
           current,
-            recent: this.asHexArray(entry.recent),
+          recent: this.asHexArray(entry.recent),
           source: typeof entry.source === 'string' ? entry.source : undefined
         };
       }
@@ -292,11 +385,18 @@ export class IndexerClient {
       if (!commitment) {
         return null;
       }
+      const viewTag =
+        typeof note.viewTag === 'string' && note.viewTag.trim().length > 0
+          ? note.viewTag.toLowerCase()
+          : undefined;
+      const leafIndex = typeof note.leafIndex === 'number' ? note.leafIndex : undefined;
       notes.push({
         commitment,
         ciphertext: note.ciphertext,
         mint: note.mint,
-        slot: typeof note.slot === 'number' ? note.slot : Number(note.slot ?? 0)
+        slot: typeof note.slot === 'number' ? note.slot : Number(note.slot ?? 0),
+        viewTag,
+        leafIndex
       });
     }
     return notes;
@@ -334,6 +434,99 @@ export class IndexerClient {
       }
     }
     return result;
+  }
+
+  private parseMintNotes(payload: unknown, fallbackMint: string): IndexerMintNotesResult {
+    if (payload && typeof payload === 'object') {
+      const entry = payload as Record<string, unknown>;
+      const notes = this.normaliseNotes(entry.notes);
+      if (notes) {
+        return {
+          mint: typeof entry.mint === 'string' ? entry.mint : fallbackMint,
+          notes,
+          cursor: this.parseCursor(entry.cursor),
+          hasMore: this.parseBoolean(entry.hasMore),
+          source: typeof entry.source === 'string' ? entry.source : undefined
+        };
+      }
+    }
+    throw new Error('Unexpected indexer mint notes payload');
+  }
+
+  private parseSync(payload: unknown, fallbackMint: string): IndexerSyncResult {
+    if (!payload || typeof payload !== 'object') {
+      throw new Error('Unexpected indexer sync payload');
+    }
+    const entry = payload as Record<string, unknown>;
+    const mint = typeof entry.mint === 'string' ? entry.mint : fallbackMint;
+    const rootsPayload = entry.roots;
+    const nullifiersPayload = entry.nullifiers;
+    const notesPayload = entry.notes;
+    const roots =
+      rootsPayload && typeof rootsPayload === 'object'
+        ? this.parseRoots({ ...(rootsPayload as object), mint }, mint)
+        : {
+            mint,
+            current: this.asCanonicalHex('0x0') ?? '0x0',
+            recent: []
+          };
+    const nullifiers =
+      Array.isArray(nullifiersPayload) && nullifiersPayload.every((value) => typeof value === 'string')
+        ? nullifiersPayload
+            .map((value) => this.asCanonicalHex(value) ?? (value as string))
+            .filter((value): value is string => typeof value === 'string')
+        : [];
+    const notes = this.normaliseNotes(notesPayload) ?? [];
+    const sources =
+      entry.sources && typeof entry.sources === 'object'
+        ? (entry.sources as Record<string, unknown>)
+        : undefined;
+    return {
+      mint,
+      roots,
+      nullifiers,
+      notes,
+      cursor: this.parseCursor(entry.cursor),
+      hasMore: this.parseBoolean(entry.hasMore),
+      sources: sources as IndexerSyncResult['sources']
+    };
+  }
+
+  private parseCursor(value: unknown): number | null {
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      return value;
+    }
+    if (typeof value === 'string' && value.length > 0) {
+      const parsed = Number(value);
+      if (!Number.isNaN(parsed)) {
+        return parsed;
+      }
+    }
+    return null;
+  }
+
+  private parseBoolean(value: unknown): boolean {
+    if (typeof value === 'boolean') {
+      return value;
+    }
+    if (typeof value === 'string') {
+      return value.toLowerCase() === 'true';
+    }
+    return false;
+  }
+
+  private buildQuery(options: { afterSlot?: number; limit?: number; viewTag?: string }): string {
+    const params = new URLSearchParams();
+    if (typeof options.afterSlot === 'number' && Number.isFinite(options.afterSlot)) {
+      params.set('afterSlot', options.afterSlot.toString());
+    }
+    if (typeof options.limit === 'number' && Number.isFinite(options.limit) && options.limit > 0) {
+      params.set('limit', options.limit.toString());
+    }
+    if (options.viewTag && options.viewTag.trim().length > 0) {
+      params.set('viewTag', options.viewTag.toLowerCase());
+    }
+    return params.toString();
   }
 }
 

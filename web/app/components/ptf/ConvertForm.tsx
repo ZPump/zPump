@@ -429,7 +429,7 @@ export function ConvertForm() {
       }
       const poolData = new Uint8Array(poolAccount.data);
       const treeState = decodeCommitmentTree(new Uint8Array(treeAccount.data));
-      const currentRootHex = bytesLEToCanonicalHex(treeState.currentRoot);
+      const treeRootHex = bytesLEToCanonicalHex(treeState.currentRoot);
       const maxRoots = 16;
       const base = 8;
       const recentOffset = base + 32 * 8 + 32;
@@ -440,6 +440,14 @@ export function ConvertForm() {
         const start = recentOffset + idx * 32;
         const rootRaw = poolData.slice(start, start + 32);
         recent.push(bytesLEToCanonicalHex(rootRaw));
+      }
+      const poolCurrentRootOffset = base + 32 * 8;
+      const poolCurrentRootRaw = poolData.slice(poolCurrentRootOffset, poolCurrentRootOffset + 32);
+      const poolRootHex = bytesLEToCanonicalHex(poolCurrentRootRaw);
+      const currentRootHex = poolRootHex || treeRootHex;
+      if (poolRootHex.toLowerCase() !== treeRootHex.toLowerCase()) {
+        // eslint-disable-next-line no-console
+        console.warn('[roots] pool/tree mismatch', { poolRootHex, treeRootHex });
       }
       return {
         current: currentRootHex,
@@ -475,6 +483,14 @@ export function ConvertForm() {
         if (chainRoots && parsed.current && parsed.current.toLowerCase() !== chainRoots.current.toLowerCase()) {
           parsed.current = chainRoots.current;
           parsed.source = `${parsed.source}+chain`;
+          void (async () => {
+            try {
+              await indexerClient.publishRoots(originMint, chainRoots.current, chainRoots.recent);
+            } catch (publishError) {
+              // eslint-disable-next-line no-console
+              console.warn('[roots] failed to publish updated root to indexer', publishError);
+            }
+          })();
         }
         if (chainRoots && chainRoots.recent.length && parsed.recent.length === 0) {
           parsed.recent = chainRoots.recent;
@@ -496,6 +512,14 @@ export function ConvertForm() {
             source: chainRoots.source
           });
         }
+        void (async () => {
+          try {
+            await indexerClient.publishRoots(originMint, chainRoots.current, chainRoots.recent);
+          } catch (publishError) {
+            // eslint-disable-next-line no-console
+            console.warn('[roots] failed to publish chain roots to indexer', publishError);
+          }
+        })();
         return chainRoots;
       }
 
@@ -510,6 +534,14 @@ export function ConvertForm() {
           setRoots(fallback);
           setCachedRoots({ mint: originMint, current: fallback.current, recent: fallback.recent, source: fallback.source });
         }
+        void (async () => {
+          try {
+            await indexerClient.publishRoots(originMint, fallback.current, fallback.recent);
+          } catch (publishError) {
+            // eslint-disable-next-line no-console
+            console.warn('[roots] failed to publish fallback roots to indexer', publishError);
+          }
+        })();
         return fallback;
       } catch {
         if (mountedRef.current) {
@@ -774,9 +806,9 @@ export function ConvertForm() {
       const mintId = mintConfig.originMint;
 
       let rootValue = resolvedOldRoot;
-      if (!rootValue) {
-        const latest = await refreshRoots();
-        rootValue = latest?.current ?? null;
+      const latestRoots = await refreshRoots();
+      if (latestRoots?.current) {
+        rootValue = latestRoots.current;
       }
 
       if (!rootValue) {

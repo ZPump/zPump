@@ -88,7 +88,10 @@ All components run directly on the host (no Docker):
    ```
 
 5. **Indexer** *(optional until private transfers go live)*  
-   Bring up `indexer/photon` to expose `/roots`, `/nullifiers` to the dApp.
+   Bring up `indexer/photon` to expose `/roots`, `/nullifiers`, and filtered `/notes` feeds to the dApp.  
+   - `/notes/mint/:mint` now accepts `afterSlot`, `limit`, and `viewTag` query params so clients can stream just the new ciphertexts they care about instead of downloading the entire history.  
+   - `/sync/:mint` mirrors those params and returns a cursor alongside roots/nullifiers, enabling stateless polling.  
+   - Legacy responses remain compatible—if you omit the query params you still receive the full snapshot.
 
 6. **Next.js dApp**
    ```bash
@@ -181,6 +184,25 @@ pm2 restart ptf-web --update-env
 ```
 
 Skipping this step leaves the previous static bundle in place, which manifests as `{"error":"mint_not_found"}` or “Commitment tree account missing on-chain” in the Convert flow because the browser is still pointing at the old mint IDs.
+
+---
+
+### 3.4 Resetting a stale commitment tree
+
+If shield transactions start failing with `E_ROOT_MISMATCH` even though proofs reference the latest root, the pool PDA and commitment-tree PDA are out of sync (usually after an unclean validator shutdown). Fix by resetting the private devnet and rebuilding:
+
+```bash
+pkill -f solana-test-validator || true
+rm -rf ~/.local/share/zpump-devnet-ledger
+./scripts/start-private-devnet.sh             # runs in the background; wait a few seconds
+npx tsx web/app/scripts/bootstrap-private-devnet.ts
+rm -f indexer/photon/data/state.json
+pm2 restart ptf-indexer --update-env
+cd web/app && npm run build && cd ..
+pm2 restart ptf-web --update-env
+```
+
+After these steps the commitment tree root at `JDiiL6cvDWaCCFj3KbHNYCq6nM8eTG3UQG1abj8sHEAi` and the pool state will agree again.
 
 ---
 
