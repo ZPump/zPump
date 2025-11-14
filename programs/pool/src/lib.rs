@@ -1024,6 +1024,16 @@ fn validate_supply_components(
 }
 
 #[inline(always)]
+fn highest_power_of_two_leq(n: usize) -> usize {
+    debug_assert!(n > 0);
+    let mut power = 1usize;
+    while (power << 1) <= n {
+        power <<= 1;
+    }
+    power
+}
+
+#[inline(always)]
 fn fr_from_bytes(bytes: &[u8; 32]) -> Fr {
     let mut limbs = [0u64; 4];
     for (index, limb) in limbs.iter_mut().enumerate() {
@@ -1623,16 +1633,113 @@ impl CommitmentTree {
             commitments.len() == amount_commitments.len(),
             PoolError::OutputSetMismatch,
         );
-        let mut root = self.current_root;
         let mut indices = Vec::with_capacity(commitments.len());
         let mut frontier_cache = ([Fr::zero(); Self::DEPTH], [false; Self::DEPTH]);
-        for (commitment, amount_commit) in commitments.iter().zip(amount_commitments.iter()) {
-            let (new_root, index) =
-                self.insert_leaf_with_cache(&mut frontier_cache, *commitment, *amount_commit)?;
-            root = new_root;
-            indices.push(index);
+        let canopy_len = core::cmp::min(self.canopy_depth as usize, Self::MAX_CANOPY);
+        let mut processed = 0usize;
+        let total = commitments.len();
+
+        while processed < total {
+            let remaining = total - processed;
+            let base_index = self.next_index as usize;
+            require!(
+                (base_index as u128) < (1u128 << Self::DEPTH),
+                PoolError::TreeFull,
+            );
+
+            let tz = if base_index == 0 {
+                Self::DEPTH
+            } else {
+                core::cmp::min(base_index.trailing_zeros() as usize, Self::DEPTH)
+            };
+
+            let mut chunk_size = (1u128 << tz) as usize;
+            if chunk_size > remaining {
+                chunk_size = highest_power_of_two_leq(remaining);
+            }
+
+            let capacity_remaining = ((1u128 << Self::DEPTH) - base_index as u128) as usize;
+            require!(capacity_remaining > 0, PoolError::TreeFull);
+            chunk_size = core::cmp::min(chunk_size, highest_power_of_two_leq(capacity_remaining));
+
+            let chunk_commitments = &commitments[processed..processed + chunk_size];
+            let chunk_amounts = &amount_commitments[processed..processed + chunk_size];
+
+            for (offset, (commitment, amount_commit)) in chunk_commitments
+                .iter()
+                .zip(chunk_amounts.iter())
+                .enumerate()
+            {
+                let index_position = self
+                    .next_index
+                    .checked_add(offset as u64)
+                    .ok_or(PoolError::AmountOverflow)?;
+                self.record_recent(index_position, *commitment, *amount_commit);
+                indices.push(index_position);
+            }
+
+            let level_start = chunk_size.trailing_zeros() as usize;
+            let mut level_nodes: Vec<Vec<Fr>> = Vec::with_capacity(level_start + 1);
+            let mut current_level: Vec<Fr> = chunk_commitments.iter().map(fr_from_bytes).collect();
+            level_nodes.push(current_level.clone());
+
+            for _ in 0..level_start {
+                let mut next_level = Vec::with_capacity(current_level.len() / 2);
+                for pair in current_level.chunks_exact(2) {
+                    next_level.push(poseidon::hash_two(&pair[0], &pair[1]));
+                }
+                current_level = next_level;
+                level_nodes.push(current_level.clone());
+            }
+
+            let mut node_fr = current_level[0];
+            let mut node_bytes = fr_to_bytes(&node_fr);
+
+            for level in 0..level_start {
+                let pos = ((chunk_size - (1 << level) - 1) >> level) as usize;
+                let cached = level_nodes[level][pos];
+                self.frontier[level] = fr_to_bytes(&cached);
+                frontier_cache.0[level] = cached;
+                frontier_cache.1[level] = true;
+            }
+
+            let mut index = (self.next_index + chunk_size as u64 - 1) >> (level_start as u32);
+            let mut level = level_start;
+            while level < Self::DEPTH {
+                if index % 2 == 0 {
+                    frontier_cache.0[level] = node_fr;
+                    frontier_cache.1[level] = true;
+                    self.frontier[level] = node_bytes;
+                    let zero = poseidon::merkle_zero(level);
+                    node_fr = poseidon::hash_two(&frontier_cache.0[level], &zero);
+                } else {
+                    if !frontier_cache.1[level] {
+                        frontier_cache.0[level] = fr_from_bytes(&self.frontier[level]);
+                        frontier_cache.1[level] = true;
+                    }
+                    let left_fr = frontier_cache.0[level];
+                    node_fr = poseidon::hash_two(&left_fr, &node_fr);
+                }
+                node_bytes = fr_to_bytes(&node_fr);
+                if canopy_len > 0 {
+                    let offset = Self::DEPTH - 1 - level;
+                    if offset < canopy_len {
+                        self.canopy[offset] = node_bytes;
+                    }
+                }
+                index >>= 1;
+                level += 1;
+            }
+
+            self.current_root = node_bytes;
+            self.next_index = self
+                .next_index
+                .checked_add(chunk_size as u64)
+                .ok_or(PoolError::AmountOverflow)?;
+            processed += chunk_size;
         }
-        Ok((root, indices))
+
+        Ok((self.current_root, indices))
     }
 
     fn insert_leaf(
