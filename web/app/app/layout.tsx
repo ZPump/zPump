@@ -14,8 +14,8 @@ export const metadata: Metadata = {
 
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
-    <html lang="en" className={spaceGrotesk.variable}>
-      <body>
+    <html lang="en">
+      <body className={`${spaceGrotesk.variable} chakra-ui-dark`}>
         <Providers>{children}</Providers>
       </body>
     </html>
