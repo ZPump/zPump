@@ -78,7 +78,7 @@ Performs wrap (public → private):
 5. **Note ledger**
    - Appends note amount commitment and (optionally) updates digest.
 6. **Hooks (optional)**
-   - If hooks enabled, validates remaining accounts and performs post-shield hook CPI.
+   - If the hook feature is enabled _and_ `post_shield_enabled` is true, validates remaining accounts and performs the post-shield hook CPI.
 
 ### `unshield_to_origin` / `unshield_to_ptkn`
 

@@ -11,7 +11,7 @@ A quick reference for terminology used throughout the zPump project.
 | **Commitment Tree** | Merkle tree tracking note commitments. Each pool has its own tree PDA. |
 | **Compute Units (CU)** | Measure of computational cost on Solana. Transactions are limited to ~1.4M CU; `ptf_pool` currently runs in lightweight mode to stay under this cap. |
 | **Groth16** | Zero-knowledge proof system used for shield/unshield circuits. Verified on-chain via `ptf_verifier_groth16`. |
-| **Hook** | Optional post-shield callback configured per pool. Controlled via `hook_config` PDA and feature flags. |
+| **Hook** | Optional post-shield/post-unshield callbacks configured per pool. Controlled via `hook_config` PDA, enable toggles, and feature flags. |
 | **Index er (Photon)** | Off-chain service that tracks roots, nullifiers, notes, and shielded balances for efficient querying. |
 | **Lightweight Mode** | Build profile of `ptf_pool` that disables `full_tree`, `note_digests`, and `invariant_checks`. Currently default due to compute constraints. |
 | **Mint Catalogue** | Generated JSON (`web/app/config/mints.generated.json`) listing origin mints, pool IDs, twin mints, lookup tables. |
