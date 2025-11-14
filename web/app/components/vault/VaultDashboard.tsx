@@ -29,9 +29,10 @@ import {
   getAssociatedTokenAddress,
   getMint
 } from '@solana/spl-token';
-import { MINTS, MintConfig } from '../../config/mints';
+import type { MintConfig } from '../../config/mints';
 import { deriveVaultState } from '../../lib/onchain/pdas';
 import { Copy, RefreshCw } from 'lucide-react';
+import { useMintCatalog } from '../providers/MintCatalogProvider';
 
 interface MintSnapshot {
   config: MintConfig;
@@ -64,16 +65,21 @@ function formatLamports(amount: string, decimals: number): string {
 export function VaultDashboard() {
   const { connection } = useConnection();
   const toast = useToast();
+  const { mints, loading: mintCatalogLoading, error: mintCatalogError } = useMintCatalog();
   const [snapshots, setSnapshots] = useState<MintSnapshot[]>([]);
   const [isLoading, setLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
 
   const loadSnapshots = useCallback(async () => {
+    if (!mints.length) {
+      setSnapshots([]);
+      return;
+    }
     setLoading(true);
     setError(null);
     try {
       const entries = await Promise.all(
-        MINTS.map(async (mint) => {
+        mints.map(async (mint) => {
           const originMintKey = new PublicKey(mint.originMint);
           const vaultStateKey = deriveVaultState(originMintKey);
           const vaultTokenAccount = await getAssociatedTokenAddress(
@@ -116,15 +122,24 @@ export function VaultDashboard() {
     } finally {
       setLoading(false);
     }
-  }, [connection, toast]);
+  }, [connection, toast, mints]);
 
   useEffect(() => {
     void loadSnapshots();
   }, [loadSnapshots]);
 
-  const hasMints = useMemo(() => MINTS.length > 0, []);
+  if (mintCatalogError) {
+    return (
+      <Alert status="error" variant="left-accent">
+        <AlertIcon />
+        <AlertDescription>
+          Unable to load the mint catalogue. {mintCatalogError}. Run the bootstrap or refresh the page.
+        </AlertDescription>
+      </Alert>
+    );
+  }
 
-  if (!hasMints) {
+  if (!mintCatalogLoading && !mints.length) {
     return (
       <Alert status="info" variant="left-accent">
         <AlertIcon />
@@ -202,9 +217,9 @@ export function VaultDashboard() {
             </Stack>
           </Box>
         ))}
-        {isLoading && snapshots.length === 0 && (
+        {isLoading && snapshots.length === 0 && mints.length > 0 && (
           <Stack spacing={3}>
-            {MINTS.map((mint) => (
+            {mints.map((mint) => (
               <Skeleton key={mint.originMint} height="180px" rounded="2xl" />
             ))}
           </Stack>

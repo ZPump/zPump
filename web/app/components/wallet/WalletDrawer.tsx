@@ -39,9 +39,9 @@ import { TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID } from '@solana/spl-token';
 import { Coins, Copy, Plus, Trash2, Wallet } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useLocalWallet } from './LocalWalletContext';
-import { MINTS } from '../../config/mints';
 import { formatBaseUnitsToUi } from '../../lib/format';
 import { IndexerClient } from '../../lib/indexerClient';
+import { useMintCatalog } from '../providers/MintCatalogProvider';
 
 interface TokenBalance {
   mint: string;
@@ -102,16 +102,18 @@ function WalletDrawerContent({ disclosure }: { disclosure: ReturnType<typeof use
   const [importLabel, setImportLabel] = useState('');
   const refreshingRef = useRef(false);
 
+  const { mints } = useMintCatalog();
+
   const mintMap = useMemo(() => {
     const map = new Map<string, { symbol: string; decimals: number }>();
-    MINTS.forEach((mint) => {
+    mints.forEach((mint) => {
       map.set(mint.originMint, { symbol: mint.symbol, decimals: mint.decimals });
       if (mint.zTokenMint) {
         map.set(mint.zTokenMint, { symbol: `z${mint.symbol}`, decimals: mint.decimals });
       }
     });
     return map;
-  }, []);
+  }, [mints]);
 
   const indexerClient = useMemo(() => new IndexerClient(), []);
 

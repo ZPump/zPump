@@ -68,6 +68,10 @@ Ensure pm2 processes exist; if not, start them:
 pm2 start ecosystem.config.cjs   # example, adjust when config is defined
 ```
 
+### Registering additional mints
+
+After the reset you can bring new test assets online directly from the faucet UI (or via `POST /api/mints`). Each request provisions a fresh origin mint, registers it with `ptf_factory`, initializes the vault/pool/commitment tree, publishes the root to the indexer, and updates `web/app/config/mints.generated.json`. Once the flow completes (typically <60s on a local devnet) the new mint shows up automatically in the faucet, convert form, vault dashboard, and wallet drawer—no rebuild required.
+
 ## 5. Frontend Access
 
 - Open the Convert page (default `http://localhost:3000/convert`).
