@@ -1,314 +1,65 @@
 # zPump
 
-A Solana zero-knowledge privacy exchange stack: Anchor programs (`factory`, `vault`, `pool`, `verifier`), proof services, indexer hooks, and a Next.js dApp capable of running against a local “simnet” or live clusters.
+zPump is a Solana-based privacy exchange stack. It combines multiple Anchor programs (`ptf_pool`, `ptf_factory`, `ptf_vault`, `ptf_verifier_groth16`), a Groth16 proof service, Photon indexer, and a Next.js frontend to let users shield SPL tokens into privacy-preserving notes and redeem them later.
+
+The README focuses on high-level onboarding. Deep dives live in [`docs/`](docs/README.md).
 
 ---
 
-## 1. Project Structure
+## Quickstart
+
+1. **Install dependencies**
+   ```bash
+   git clone https://github.com/ZPump/zPump.git
+   cd zPump/web/app && npm install
+   cd ../../indexer/photon && npm install
+   cd ../../services/proof-rpc && npm install
+   cd ../..
+   ```
+
+2. **Start the private devnet**
+   ```bash
+   ./scripts/start-private-devnet.sh
+   npx tsx web/app/scripts/bootstrap-private-devnet.ts
+   cd web/app && npm run build && cd ..
+   pm2 restart ptf-proof --update-env
+   pm2 restart ptf-indexer --update-env
+  pm2 restart ptf-web --update-env
+   ```
+
+3. **Visit the dApp** at [http://localhost:3000/convert](http://localhost:3000/convert). Use the faucet page to mint origin tokens (e.g. USDC) and test shield/unshield flows.
+
+> **Note:** The `ptf_pool` program currently runs in “lightweight” mode (full-tree, note digest, and invariant checks disabled) to stay within Solana’s 1.4 M CU limit. We are actively trimming the contracts so the full security feature set fits inside the budget.
+
+---
+
+## Essential Docs
+
+| Topic | Location |
+|-------|----------|
+| Project overview | [`docs/overview/overview.md`](docs/overview/overview.md) |
+| System architecture | [`docs/architecture/system-architecture.md`](docs/architecture/system-architecture.md) |
+| Smart contracts | [`docs/smart-contracts/`](docs/smart-contracts/) |
+| Frontend | [`docs/frontend/overview.md`](docs/frontend/overview.md) |
+| Proof RPC / Photon | [`docs/services/`](docs/services/) |
+| Dev workflow | [`docs/development/`](docs/development/) |
+| Operations & troubleshooting | [`docs/operations/`](docs/operations/) |
+| Glossary | [`docs/reference/glossary.md`](docs/reference/glossary.md) |
+
+Start with the overview and architecture pages, then drill into specific components.
+
+---
+
+## Project Structure
 
 ```
-programs/               # Anchor workspace (factory, vault, pool, verifier-groth16)
-docs/                   # Product+protocol specs
-services/proof-rpc/     # Stateless proof builder (Groth16)
-indexer/photon/         # Optional roots/nullifiers indexer
-web/app/                # Next.js front-end (simulation wallet + faucet)
-tests/program-test-harness/  # Solana program-test harness (Branch A)
-scripts/                # Dev automation (build/test bootstrap)
+programs/               Anchor workspace (factory, vault, pool, verifier)
+docs/                   Developer documentation (this replaces the old giant README)
+services/proof-rpc/     Groth16 proof generation service
+indexer/photon/         Photon snapshot/indexer service
+web/app/                Next.js frontend + SDK
+scripts/                Automation (bootstrap, wrap/unwrap smoke tests, etc.)
 ```
 
-Key reference: `docs/solana-privacy-twin-factory-spec-v0.5.md`
-
 ---
 
-## 2. Required Tooling
-
-All components run directly on the host (no Docker):
-
-| Component | Version | Notes |
-|-----------|---------|-------|
-| Rust | 1.78+ | `rustup toolchain install stable` |
-| Anchor CLI | 0.32.1 | `cargo install --git https://github.com/coral-xyz/anchor --tag v0.32.1 anchor-cli` |
-| Solana CLI | 2.3.2 | `sh -c "$(curl -sSfL https://release.solana.com/v2.3.2/install)"` then `solana config set -u localhost` |
-| Node.js | 18.x | for web app & proof service |
-| pnpm (optional) | 8.x | faster JS installs |
-| sccache (optional) | | speeds up `anchor build` |
-| tmux / systemd (optional) | | keep validator & services running |
-
----
-
-## 3. Simnet (Local Validator) Workflow
-
-1. **Build Solana programs**
-   ```bash
-   anchor build --no-idl
-   ```
-   Produces `.so` artifacts under `target/deploy/`.
-
-2. **Start local validator** (separate shell/tmux pane)
-   ```bash
-   solana-test-validator \
-     --ledger ~/.zpump-ledger \
-     --reset \
-     --limit-ledger-size \
-     --bpf-program 4z618BY2dXGqAUiegqDt8omo3e81TSdXRHt64ikX1bTy target/deploy/ptf_factory.so \
-     --bpf-program 9g6ZodQwxK8MN6MX3dbvFC3E7vGVqFtKZEHY7PByRAuh target/deploy/ptf_vault.so \
-    --bpf-program 7kbUWzeTPY6qb1mFJC1ZMRmTZAdaHC27yukc3Czj7fKh target/deploy/ptf_pool.so \
-    --bpf-program 3aCv39mCRFH9BGJskfXqwQoWzW1ULq2yXEbEwGgKtLgg target/deploy/ptf_verifier_groth16.so
-   ```
-   > Optionally preload test mints with `--account` flags.
-
-3. **Bootstrap programs + verifying keys**
-   ```bash
-   cd web/app
-   npm install
-   npx tsx scripts/bootstrap-private-devnet.ts
-   ```
-   This script registers the factory, initializes vaults/pools, uploads Groth16 verifying keys for `shield`/`unshield`, and refreshes `config/mints.generated.json` with real mint + pool PDAs. Re-run it any time the validator ledger is reset—otherwise the dApp cannot locate the commitment-tree PDAs and will refuse to shield.
-
-4. **Rebuild the dApp after bootstrapping** (required so the static bundle picks up the new mint catalogue):
-   ```bash
-   npm run build
-   ```
-   For local `npm run dev` sessions you can skip the rebuild, but production/PM2 deployments must run this step after every bootstrap.
-
-5. **Restart the web process (if using PM2/systemd)**
-   ```bash
-   cd ..
-   pm2 restart ptf-web --update-env
-   pm2 save
-   ```
-   > Skipped when running `npm run dev`. For PM2 the restart is mandatory—otherwise the site keeps the old mint IDs and the Convert page shows “Commitment tree account missing on-chain”.
-
-6. **Proof RPC service**
-   ```bash
-   cd services/proof-rpc
-   npm install
-   npm run build
-   RPC_PORT=8787 npm start
-   ```
-
-5. **Indexer** *(optional until private transfers go live)*  
-   Bring up `indexer/photon` to expose `/roots`, `/nullifiers`, and filtered `/notes` feeds to the dApp.  
-   - `/notes/mint/:mint` now accepts `afterSlot`, `limit`, and `viewTag` query params so clients can stream just the new ciphertexts they care about instead of downloading the entire history.  
-   - `/sync/:mint` mirrors those params and returns a cursor alongside roots/nullifiers, enabling stateless polling.  
-   - Legacy responses remain compatible—if you omit the query params you still receive the full snapshot.
-
-6. **Next.js dApp**
-   ```bash
-   cd web/app
-   npm install
-   NEXT_PUBLIC_RPC_URL=https://devnet-rpc.zpump.xyz \
-   NEXT_PUBLIC_PROOF_RPC_URL=/api/proof \
-   NEXT_PUBLIC_FAUCET_MODE=local \
-   npm run dev
-   ```
-   - Set `FAUCET_MODE=local` (and optionally `FAUCET_KEYPAIR=/path/to/id.json`) in your server environment so the `/api/faucet/*` routes can mint against the local validator.
-   - When targeting public devnet/testnet/mainnet, omit these variables so the faucet hides itself and relies on existing tokens.
-
----
-
-### 3.1 Private Devnet (Server) Workflow
-
-To avoid public devnet faucet throttling, run a persistent validator that mirrors the same program IDs:
-
-1. **Ensure artifacts are built**
-   ```bash
-   anchor build --no-idl
-   ```
-
-2. **Start the validator**
-   ```bash
-   scripts/start-private-devnet.sh
-   ```
-   - Uses `~/.local/share/zpump-devnet-ledger` by default.
-   - Exposes RPC on `http://127.0.0.1:8899`. Override with `RPC_PORT`.
-   - Loads the four Anchor programs with fixed IDs so the dApp and scripts operate unchanged.
-
-3. **Bootstrap on-chain state**
-   ```bash
-   cd web/app
-   npx tsx scripts/bootstrap-private-devnet.ts
-   npm run build
-   cd ..
-   pm2 restart ptf-web --update-env
-   pm2 save
-   ```
-   The script is idempotent—rerun it any time you reset the ledger to recreate mint metadata, verifying keys, and vault accounts. Always rebuild and restart after bootstrapping so the site serves the current PDAs (otherwise the Convert page shows “Commitment tree account missing on-chain”).
-
-4. **Point services at the private cluster**
-   - `NEXT_PUBLIC_RPC_URL` pointing at your tunnel (e.g. `https://devnet-rpc.zpump.xyz`) so browsers can reach the validator from outside the box.
-   - Proof RPC: expose it via the Next.js proxy (`NEXT_PUBLIC_PROOF_RPC_URL=/api/proof`) and set `PROOF_RPC_INTERNAL_URL=http://127.0.0.1:8788/prove` so the server can forward requests internally.
-   - Update `.env` files accordingly.
-
-Once flows are validated here, target the same binaries at public devnet/mainnet.
-
----
-
-### 3.2 Pool Program Feature Flags
-
-To keep wrap transactions within Solana’s 1.4M CU ceiling during local testing we ship the `ptf-pool` program with several high-cost checks disabled by default. **This “lightweight” mode is only appropriate for developer environments.** For production clusters enable the full feature set when building:
-
-```bash
-anchor build -- --features full_tree,note_digests,invariant_checks
-```
-
-| Feature flag | Default | What it does | Why it matters |
-|--------------|---------|--------------|----------------|
-| `full_tree` | off | Rebuilds the commitment tree and verifies the supplied root entirely on-chain. | Prevents mismatched/malicious roots passed from the client. |
-| `note_digests` | off | Maintains Poseidon digests of note commitments and nullifiers in the ledger. | Enables double-spend detection and auditability. |
-| `invariant_checks` | off | Verifies vault/twin-mint supply conservation every shield/unshield. | Catches liquidity drift and accounting bugs. |
-
-With the flags off the system trusts the client-supplied new root and skips digest/invariant updates. This keeps CU usage low enough for end-to-end testing, but removes critical safety guarantees. Before promoting to shared devnet/mainnet:
-
-1. Rebuild `ptf-pool` with the flags enabled (see command above).
-2. Redeploy the resulting `.so` to your validator.
-3. Re-run wrap/unshield flows to confirm they still fit under your CU budget (optimisations may be required if they do not).
-
----
-
-### 3.3 Refreshing the Next.js bundle after config changes
-
-Most runtime configuration (mint catalogue, program IDs, RPC endpoints) is baked into the generated `/public` assets. After you:
-
-- regenerate `web/app/config/mints.generated.json` (e.g. running `bootstrap-private-devnet.ts`);
-- edit environment variables in `ecosystem.config.js`; or
-- pull a commit that touched front-end config;
-
-you **must** rebuild the dApp and restart the process manager so the UI serves the new bundle:
-
-```bash
-cd web/app
-npm run build
-cd ../..
-pm2 restart ptf-web --update-env
-```
-
-Skipping this step leaves the previous static bundle in place, which manifests as `{"error":"mint_not_found"}` or “Commitment tree account missing on-chain” in the Convert flow because the browser is still pointing at the old mint IDs.
-
----
-
-### 3.4 Resetting a stale commitment tree
-
-If shield transactions start failing with `E_ROOT_MISMATCH` even though proofs reference the latest root, the pool PDA and commitment-tree PDA are out of sync (usually after an unclean validator shutdown). Fix by resetting the private devnet and rebuilding:
-
-- Why it happens: the pool account and commitment tree are updated in separate writes. If `solana-test-validator` is killed mid-slot (or crashes) after the pool state is flushed but before the tree account is, the pool “remembers” the new root while the tree rolls back to the old one. Likewise, re-running `bootstrap-private-devnet.ts` against a stale ledger (or indexer snapshot) can recreate the pool PDA with a fresh root while leaving the tree untouched. The guard in `shield` then compares the two byte arrays and immediately throws `E_ROOT_MISMATCH`.
-
-```bash
-pkill -f solana-test-validator || true
-rm -rf ~/.local/share/zpump-devnet-ledger
-./scripts/start-private-devnet.sh             # runs in the background; wait a few seconds
-npx tsx web/app/scripts/bootstrap-private-devnet.ts
-rm -f indexer/photon/data/state.json
-pm2 restart ptf-indexer --update-env
-cd web/app && npm run build && cd ..
-pm2 restart ptf-web --update-env
-```
-
-After these steps the commitment tree root at `JDiiL6cvDWaCCFj3KbHNYCq6nM8eTG3UQG1abj8sHEAi` and the pool state will agree again.
-
----
-
-## 4. Testing
-
-### 4.1 Rust / On-chain
-- **Unit tests** (no network)
-  ```bash
-  cargo test --offline
-  ```
-
-- **Branch A program-test harness**
-  ```bash
-  anchor build
-  cargo test -p program-test-harness -- --ignored
-  ```
-  or
-  ```bash
-  scripts/run-local-ci.sh
-  ```
-
-### 4.2 Front-end / Services
-- `web/app`:
-  - `npm run lint`
-  - `npm run test`
-  - `npm run dev`
-- `tests/e2e`:
-  ```bash
-  cd tests/e2e
-  npm install
-  npx playwright test
-  ```
-- `services/proof-rpc`:
-  - `npm run lint`
-  - `npm run test` *(add once spec’d)*
-  - `npm run dev`
-
----
-
-## 5. Front-end to On-chain Integration
-
-- The dApp currently features:
-- **Simulation wallet** for power users that want burner accounts entirely in-browser.
-- **Local validator faucet** (when `FAUCET_MODE=local`) that airdrops SOL and mints origin tokens against the bootstrap mint authority. In other environments the faucet hides itself and expects existing tokens.
-- **Convert** flow hooked to the live SDK with Proof RPC integration (shield, unshield to origin/twin, change notes).
-- **Vault dashboard** (`/vault`) showing on-chain mint supply and vault balances after bootstrap
-
-### Immediate Next Steps
-1. Harden the Proof RPC surface (metrics, rate limiting, operational alarms).
-2. Document governance playbooks for enabling PTkn redemption on shared devnets/mainnet.
-3. Build optional public-network faucet tooling once testnet/mainnet partners define funding sources.
-
-### Planned Upgrades After Simnet Validation
-- Investigate optional backend transaction builder (Option 2) for caching & UX.
-- Bring Photon indexer online to surface roots/nullifiers in UI.
-- Automate program bootstrap via `scripts/bootstrap-simnet.ts`.
-- Extend Cypress/Jest suites for shield→unshield happy path.
-- Evaluate Docker compose once bare-metal workflow is stable (user request: avoid Docker today).
-
-These notes capture future enhancements; implement after the simnet path is proven end-to-end.
-
----
-
-## 6. Environment Variables
-
-| Location | Variable | Purpose | Default |
-|----------|----------|---------|---------|
-| web/app | `NEXT_PUBLIC_RPC_URL` | Solana RPC endpoint (defaults to `https://devnet-rpc.zpump.xyz`) | `https://devnet-rpc.zpump.xyz` |
-| web/app | `NEXT_PUBLIC_PROOF_RPC_URL` | Proof RPC endpoint (defaults to `/api/proof`) | `/api/proof` |
-| web/app | `NEXT_PUBLIC_INDEXER_URL` | Photon indexer endpoint | `http://127.0.0.1:8787` |
-| web/app | `NEXT_PUBLIC_FAUCET_MODE` | `local` to enable validator faucet, `simulation`/unset otherwise | `simulation` |
-| web/app | `NEXT_PUBLIC_ENABLE_BURNER` | `true` to expose UnsafeBurner wallet (local only) | `false` |
-| web/app | `NEXT_PUBLIC_CLUSTER` *(planned)* | `localnet` / `devnet` / `mainnet` | – |
-| backend | `RPC_URL` | Solana RPC endpoint for proof/indexer services | `http://127.0.0.1:8899` |
-| backend | `PROOF_RPC_INTERNAL_URL` | Internal proof RPC base (used by proxy) | `http://127.0.0.1:8788/prove` |
-| backend | `PHOTON_URL` | Upstream Photon/Helius endpoint (optional) | – |
-| backend | `INDEXER_INTERNAL_URL` | Base URL the Next.js server uses to reach the indexer | `http://127.0.0.1:8787` |
-| services/proof-rpc | `RPC_PORT` | HTTP port | `8787` |
-| services/proof-rpc | `GROTH16_DIR` *(planned)* | Verifying key path | `config/verifying-keys.json` |
-| services/faucet | `FAUCET_MODE` | `local` to enable mint/airdrop helpers | `disabled` |
-| services/faucet | `FAUCET_KEYPAIR` | Authority keypair path (defaults to `~/.config/solana/id.json`) | – |
-| services/faucet | `FAUCET_RPC_URL` | Override RPC endpoint for faucet | Inherits `RPC_URL` |
-
-Add `.env.example` once values are finalized.
-
----
-
-## 7. Contributing
-
-1. Ensure toolchain versions match §2.
-2. Format Rust (`cargo fmt`) and TypeScript (`npm run lint`) before PRs.
-3. Run `scripts/run-local-ci.sh` to verify programs before pushing.
-4. Document any spec deviations in `docs/solana-privacy-twin-factory-spec-v0.5.md`.
-
----
-
-## 8. Release Targets
-
-| Milestone | Description |
-|-----------|-------------|
-| **Simnet** | Validator + programs + dApp + proof RPC all local. Primary focus right now. |
-| **Private Devnet** *(in progress)* | Long-lived validator on shared server using `scripts/start-private-devnet.sh`; mirrors program IDs for end-to-end rehearsals. |
-| **Devnet** *(planned)* | Deploy same binaries to public devnet once private devnet passes E2E tests. |
-| **Mainnet Guarded** *(future)* | Governance-controlled launch, cap supply, enable hooks selectively. |
-| **Relayer Interface** *(future)* | Optional service once private transfer audits clear. |
-
-This README will evolve as we lock each stage. Feel free to open issues/PRs with clarifications or new automation scripts.
