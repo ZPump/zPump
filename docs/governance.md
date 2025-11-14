@@ -39,6 +39,7 @@ status: Draft (sync with Spec v0.5)
 2. **Execute governance instruction**
    - Call `configure_hooks` on `ptf_pool` with:
      - `post_shield_program_id`, `post_unshield_program_id`
+     - `post_shield_enabled`, `post_unshield_enabled`
      - `required_accounts`
      - `mode` (`Strict` or `Lenient`)
 3. **Enable feature flag**
@@ -47,7 +48,7 @@ status: Draft (sync with Spec v0.5)
    - Subscribe to `PTFHookPostShield` / `PTFHookPostUnshield` events
 
 **Rollback**
-- Clear hook configuration via `configure_hooks` with default pubkeys
+- Clear hook configuration via `configure_hooks` with default pubkeys and both enable flags set to `false`
 - Disable feature flag (`set_features` without `FEATURE_HOOKS_ENABLED`)
 
 ## 3. Pausing the Protocol
