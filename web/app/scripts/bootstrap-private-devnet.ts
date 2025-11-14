@@ -28,6 +28,8 @@ import {
   TOKEN_PROGRAM_ID
 } from '@solana/spl-token';
 import { AnchorProvider, BN, BorshCoder, Idl, Wallet } from '@coral-xyz/anchor';
+import { decodeCommitmentTree } from '../lib/onchain/commitmentTree';
+import { bytesLEToCanonicalHex } from '../lib/onchain/utils';
 
 const PROGRAM_IDS = {
   factory: new PublicKey('4z618BY2dXGqAUiegqDt8omo3e81TSdXRHt64ikX1bTy'),
@@ -56,7 +58,31 @@ const VERIFYING_KEY_CONFIG: Record<string, string> = {
   unshield: 'unshield.json'
 };
 const TARGET_IDL_DIR = path.resolve(__dirname, '..', '..', '..', 'target', 'idl');
+const INDEXER_URL =
+  process.env.INDEXER_INTERNAL_URL ??
+  process.env.NEXT_PUBLIC_INDEXER_URL ??
+  process.env.INDEXER_URL ??
+  'http://127.0.0.1:8787';
 const execFileAsync = promisify(execFile);
+async function publishRoot(indexerUrl: string, mint: string, current: string, recent: string[] = []) {
+  try {
+    const url = new URL(`/roots/${mint}`, indexerUrl);
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ current, recent })
+    });
+    if (!response.ok) {
+      const message = await response.text().catch(() => response.statusText);
+      throw new Error(`indexer status ${response.status}: ${message}`);
+    }
+    await response.json().catch(() => null);
+    console.info(`[indexer] published initial root for ${mint} -> ${current}`);
+  } catch (error) {
+    console.warn(`[indexer] failed to publish root for ${mint}:`, (error as Error).message);
+  }
+}
+
 
 async function loadIdl(name: string): Promise<Idl> {
   const target = path.join(TARGET_IDL_DIR, `${name}.json`);
@@ -632,6 +658,24 @@ async function ensureMint(
     await waitForAccount(connection, noteLedger, `Note ledger for ${mintConfig.symbol}`);
     await waitForAccount(connection, commitmentTree, `Commitment tree for ${mintConfig.symbol}`);
     await waitForAccount(connection, hookConfig, `Hook config for ${mintConfig.symbol}`);
+
+    if (INDEXER_URL) {
+      const commitmentTreeAccount = await connection.getAccountInfo(commitmentTree);
+      if (commitmentTreeAccount) {
+        const decodedTree = decodeCommitmentTree(new Uint8Array(commitmentTreeAccount.data));
+        const currentRootHex = bytesLEToCanonicalHex(decodedTree.currentRoot);
+        await publishRoot(INDEXER_URL, originMintKey.toBase58(), currentRootHex);
+      } else {
+        console.warn(`[bootstrap] commitment tree account missing when publishing root for ${mintConfig.symbol}`);
+      }
+    }
+  } else if (INDEXER_URL) {
+    const commitmentTreeAccount = await connection.getAccountInfo(commitmentTree);
+    if (commitmentTreeAccount) {
+      const decodedTree = decodeCommitmentTree(new Uint8Array(commitmentTreeAccount.data));
+      const currentRootHex = bytesLEToCanonicalHex(decodedTree.currentRoot);
+      await publishRoot(INDEXER_URL, originMintKey.toBase58(), currentRootHex);
+    }
   }
 
   const resolvedPtknMint = ptknMintForConfig ?? twinMintKey;

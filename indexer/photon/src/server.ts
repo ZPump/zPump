@@ -33,6 +33,34 @@ function canonicalizeHex(value: string): string {
   return `0x${normalised.padStart(64, '0').toLowerCase()}`;
 }
 
+function normalizeMintKey(mint: string): string {
+  return mint.trim();
+}
+
+function parseOptionalNumber(value: unknown): number | undefined {
+  if (typeof value === 'string' && value.trim().length > 0) {
+    const parsed = Number(value);
+    if (!Number.isNaN(parsed)) {
+      return parsed;
+    }
+  }
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value;
+  }
+  return undefined;
+}
+
+function canonicalizeNote(note: Note): Note {
+  return {
+    ...note,
+    commitment: canonicalizeHex(note.commitment),
+    mint: normalizeMintKey(note.mint),
+    slot: Number(note.slot),
+    viewTag: note.viewTag ? note.viewTag.toLowerCase() : undefined,
+    leafIndex: typeof note.leafIndex === 'number' ? note.leafIndex : undefined
+  };
+}
+
 function canonicalizeRootPayload(payload: RootResponse): RootResponse {
   return {
     current: canonicalizeHex(payload.current),
@@ -49,7 +77,9 @@ const NoteSchema = z.object({
   commitment: z.string(),
   ciphertext: z.string(),
   mint: z.string(),
-  slot: z.number()
+  slot: z.number(),
+  viewTag: z.string().optional(),
+  leafIndex: z.number().optional()
 });
 
 const NullifierResponseSchema = z.object({
@@ -140,11 +170,13 @@ class StateStore {
   }
 
   getRoots(mint: string): RootResponse | null {
-    return this.state?.roots[mint] ?? null;
+    const key = normalizeMintKey(mint);
+    return this.state?.roots[key] ?? null;
   }
 
   getNullifiers(mint: string): string[] {
-    return this.state?.nullifiers[mint] ?? [];
+    const key = normalizeMintKey(mint);
+    return this.state?.nullifiers[key] ?? [];
   }
 
   getNotes(viewKey: string): Note[] {
@@ -157,33 +189,39 @@ class StateStore {
 
   upsertRoots(mint: string, payload: RootResponse): void {
     const state = this.ensureState();
-    state.roots[mint] = canonicalizeRootPayload(payload);
+    const key = normalizeMintKey(mint);
+    state.roots[key] = canonicalizeRootPayload(payload);
   }
 
   upsertNotes(viewKey: string, notes: Note[]): void {
     const state = this.ensureState();
-    state.notes[viewKey] = notes;
+    state.notes[viewKey] = notes.map((note) => canonicalizeNote(note));
   }
 
   replaceNullifiers(mint: string, values: string[]): void {
     const state = this.ensureState();
-    state.nullifiers[mint] = Array.from(new Set(values));
+    const key = normalizeMintKey(mint);
+    state.nullifiers[key] = Array.from(
+      new Set(values.map((value) => canonicalizeHex(value)))
+    );
   }
 
   addNullifiers(mint: string, nullifiers: string[]): void {
     const state = this.ensureState();
-    const existing = new Set(state.nullifiers[mint] ?? []);
-    nullifiers.forEach((value) => existing.add(value));
-    state.nullifiers[mint] = Array.from(existing);
+    const key = normalizeMintKey(mint);
+    const existing = new Set(state.nullifiers[key] ?? []);
+    nullifiers.forEach((value) => existing.add(canonicalizeHex(value)));
+    state.nullifiers[key] = Array.from(existing);
   }
 
   applyBalanceDelta(wallet: string, mint: string, delta: string): Record<string, string> {
     const state = this.ensureState();
+    const mintKey = normalizeMintKey(mint);
     const balances = { ...(state.balances[wallet] ?? {}) };
     let current = 0n;
-    if (balances[mint]) {
+    if (balances[mintKey]) {
       try {
-        current = BigInt(balances[mint]!);
+        current = BigInt(balances[mintKey]!);
       } catch {
         current = 0n;
       }
@@ -198,9 +236,9 @@ class StateStore {
       next = 0n;
     }
     if (next === 0n) {
-      delete balances[mint];
+      delete balances[mintKey];
     } else {
-      balances[mint] = next.toString();
+      balances[mintKey] = next.toString();
     }
     if (Object.keys(balances).length === 0) {
       delete state.balances[wallet];
@@ -210,16 +248,61 @@ class StateStore {
     return balances;
   }
 
+  getNotesByMint(
+    mint: string,
+    options: { afterSlot?: number; viewTag?: string; limit?: number } = {}
+  ): Note[] {
+    const target = normalizeMintKey(mint);
+    const { afterSlot, viewTag, limit } = options;
+    const tag = viewTag ? viewTag.toLowerCase() : undefined;
+    const state = this.ensureState();
+    const result: Note[] = [];
+    for (const noteList of Object.values(state.notes ?? {})) {
+      for (const note of noteList) {
+        if (normalizeMintKey(note.mint) !== target) {
+          continue;
+        }
+        if (typeof afterSlot === 'number' && note.slot <= afterSlot) {
+          continue;
+        }
+        if (tag && note.viewTag !== tag) {
+          continue;
+        }
+        result.push(note);
+      }
+    }
+    result.sort(compareNotes);
+    if (typeof limit === 'number' && limit > 0 && result.length > limit) {
+      return result.slice(0, limit);
+    }
+    return result;
+  }
+
   private canonicalizeState(state: SnapshotShape): SnapshotShape {
     const canonicalRoots: Record<string, RootResponse> = {};
     for (const [mint, payload] of Object.entries(state.roots ?? {})) {
-      canonicalRoots[mint] = canonicalizeRootPayload(payload);
+      const key = normalizeMintKey(mint);
+      canonicalRoots[key] = canonicalizeRootPayload(payload);
+    }
+    const canonicalNotes: Record<string, Note[]> = {};
+    for (const [viewKey, notes] of Object.entries(state.notes ?? {})) {
+      canonicalNotes[viewKey] = notes.map((note) => canonicalizeNote(note));
     }
     return {
       ...state,
-      roots: canonicalRoots
+      roots: canonicalRoots,
+      notes: canonicalNotes
     };
   }
+}
+
+function compareNotes(a: Note, b: Note): number {
+  if (a.slot !== b.slot) {
+    return a.slot - b.slot;
+  }
+  const indexA = typeof a.leafIndex === 'number' ? a.leafIndex : 0;
+  const indexB = typeof b.leafIndex === 'number' ? b.leafIndex : 0;
+  return indexA - indexB;
 }
 
 class PhotonClient {
@@ -299,6 +382,60 @@ class PhotonClient {
   }
 }
 
+type FetchSource = 'snapshot' | 'cache' | 'upstream';
+
+async function fetchRootsForMint(
+  store: StateStore,
+  upstream: PhotonClient | null,
+  mint: string
+): Promise<{ payload: RootResponse; source: FetchSource }> {
+  const canonicalMint = normalizeMintKey(mint);
+  if (upstream) {
+    try {
+      const remote = await upstream.getRoots(canonicalMint);
+      if (remote) {
+        const canonical = canonicalizeRootPayload(remote);
+        store.upsertRoots(canonicalMint, canonical);
+        return { payload: canonical, source: 'upstream' };
+      }
+    } catch (error) {
+      logger.warn({ err: error, mint: canonicalMint }, 'failed to fetch roots from upstream');
+    }
+  }
+  const local = store.getRoots(canonicalMint);
+  if (!local) {
+    throw new Error('mint_not_found');
+  }
+  return {
+    payload: canonicalizeRootPayload(local),
+    source: upstream ? 'cache' : 'snapshot'
+  };
+}
+
+async function fetchNullifiersForMint(
+  store: StateStore,
+  upstream: PhotonClient | null,
+  mint: string
+): Promise<{ payload: string[]; source: FetchSource }> {
+  const canonicalMint = normalizeMintKey(mint);
+  if (upstream) {
+    try {
+      const remote = await upstream.getNullifiers(canonicalMint);
+      if (remote) {
+        store.replaceNullifiers(canonicalMint, remote);
+        return { payload: remote, source: 'upstream' };
+      }
+    } catch (error) {
+      logger.warn({ err: error, mint: canonicalMint }, 'failed to fetch nullifiers from upstream');
+    }
+  }
+  const local = store.getNullifiers(canonicalMint);
+  return {
+    payload: local,
+    source: upstream ? 'cache' : 'snapshot'
+  };
+}
+
 function extractApiKey(req: express.Request): string | null {
   const header = req.header(API_KEY_HEADER);
   if (header) {
@@ -314,6 +451,8 @@ function extractApiKey(req: express.Request): string | null {
 async function bootstrap() {
   const app = express();
   const port = Number(process.env.PORT ?? 8787);
+  const enableBalanceApi =
+    (process.env.ENABLE_BALANCE_API ?? 'true').toLowerCase() !== 'false';
   const store = new StateStore();
   await store.load();
 
@@ -447,32 +586,94 @@ async function bootstrap() {
     }
   });
 
-  app.get('/balances/:wallet', (req, res) => {
-    const wallet = req.params.wallet;
-    const balances = store.getBalances(wallet);
-    res.json({ wallet, balances, source: 'local' });
+  app.get('/notes/mint/:mint', (req, res) => {
+    const mint = req.params.mint;
+    const normalizedMint = normalizeMintKey(mint);
+    const afterSlot = parseOptionalNumber(req.query.afterSlot);
+    const limit = parseOptionalNumber(req.query.limit);
+    const viewTag =
+      typeof req.query.viewTag === 'string' && req.query.viewTag.trim().length > 0
+        ? req.query.viewTag
+        : undefined;
+    const notes = store.getNotesByMint(normalizedMint, { afterSlot, viewTag, limit });
+    const cursor = notes.length > 0 ? notes[notes.length - 1].slot : afterSlot ?? null;
+    const hasMore = typeof limit === 'number' && limit > 0 ? notes.length === limit : false;
+    res.json({ mint: normalizedMint, notes, cursor, hasMore });
   });
 
-  app.post('/balances/:wallet', (req, res) => {
-    const wallet = req.params.wallet;
-    const parsed = BalanceDeltaSchema.safeParse(req.body);
-    if (!parsed.success) {
-      res.status(400).json({ error: 'invalid_payload' });
-      return;
-    }
+  app.get('/sync/:mint', async (req, res) => {
+    const mint = req.params.mint;
     try {
-      const balances = store.applyBalanceDelta(wallet, parsed.data.mint, parsed.data.delta);
-      res.json({ wallet, balances, source: 'local' });
+      const rootsResult = await fetchRootsForMint(store, upstreamClient, mint);
+      const nullifiersResult = await fetchNullifiersForMint(store, upstreamClient, mint);
+      const canonicalMint = normalizeMintKey(mint);
+      const afterSlot = parseOptionalNumber(req.query.afterSlot);
+      const limit = parseOptionalNumber(req.query.limit);
+      const viewTag =
+        typeof req.query.viewTag === 'string' && req.query.viewTag.trim().length > 0
+          ? req.query.viewTag
+          : undefined;
+      const notes = store.getNotesByMint(canonicalMint, { afterSlot, viewTag, limit });
+      const cursor = notes.length > 0 ? notes[notes.length - 1].slot : afterSlot ?? null;
+      const hasMore = typeof limit === 'number' && limit > 0 ? notes.length === limit : false;
+      res.json({
+        mint: canonicalMint,
+        roots: rootsResult.payload,
+        nullifiers: nullifiersResult.payload,
+        notes,
+        cursor,
+        hasMore,
+        sources: {
+          roots: rootsResult.source,
+          nullifiers: nullifiersResult.source,
+          notes: 'snapshot'
+        }
+      });
     } catch (error) {
-      const message = (error as Error).message;
-      if (message === 'invalid_delta') {
-        res.status(400).json({ error: 'invalid_delta' });
+      if ((error as Error).message === 'mint_not_found') {
+        res.status(404).json({ error: 'mint_not_found' });
         return;
       }
-      logger.error({ err: error, wallet }, 'failed to adjust balances');
-      res.status(500).json({ error: 'internal_error' });
+      logger.error({ err: error, mint }, 'failed to assemble sync payload');
+      res.status(502).json({ error: 'upstream_failed' });
     }
   });
+
+  if (enableBalanceApi) {
+    app.get('/balances/:wallet', (req, res) => {
+      const wallet = req.params.wallet;
+      const balances = store.getBalances(wallet);
+      res.json({ wallet, balances, source: 'local' });
+    });
+
+    app.post('/balances/:wallet', (req, res) => {
+      const wallet = req.params.wallet;
+      const parsed = BalanceDeltaSchema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: 'invalid_payload' });
+        return;
+      }
+      try {
+        const balances = store.applyBalanceDelta(wallet, parsed.data.mint, parsed.data.delta);
+        res.json({ wallet, balances, source: 'local' });
+      } catch (error) {
+        const message = (error as Error).message;
+        if (message === 'invalid_delta') {
+          res.status(400).json({ error: 'invalid_delta' });
+          return;
+        }
+        logger.error({ err: error, wallet }, 'failed to adjust balances');
+        res.status(500).json({ error: 'internal_error' });
+      }
+    });
+  } else {
+    app.get('/balances/:_wallet', (_req, res) => {
+      res.status(404).json({ error: 'endpoint_disabled' });
+    });
+    app.post('/balances/:_wallet', (_req, res) => {
+      res.status(404).json({ error: 'endpoint_disabled' });
+    });
+  }
 
   const server = app.listen(port, () => {
     logger.info({ port, upstream: Boolean(upstreamClient) }, 'Photon indexer listening');

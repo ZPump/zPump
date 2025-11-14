@@ -754,6 +754,14 @@ fn process_unshield<'info>(
         .checked_add(u128::from(fee))
         .ok_or(PoolError::AmountOverflow)?;
 
+    let pool_bump = pool_state.bump;
+    let twin_mint_key = pool_state.twin_mint;
+    let twin_mint_enabled = pool_state.twin_mint_enabled;
+    let pool_features = pool_state.features;
+    let hook_config_present = pool_state.hook_config_present;
+
+    drop(pool_state);
+
     match mode {
         UnshieldMode::Origin => {
             require_keys_eq!(
@@ -763,8 +771,8 @@ fn process_unshield<'info>(
             );
             let signer_seeds: [&[u8]; 3] = [
                 seeds::POOL,
-                pool_state.origin_mint.as_ref(),
-                &[pool_state.bump],
+                origin_mint.as_ref(),
+                &[pool_bump],
             ];
             let cpi_accounts = ptf_vault::cpi::accounts::Release {
                 vault_state: ctx.accounts.vault_state.to_account_info(),
@@ -789,7 +797,7 @@ fn process_unshield<'info>(
         }
         UnshieldMode::Twin => {
             require!(
-                pool_state.twin_mint_enabled,
+                twin_mint_enabled,
                 PoolError::TwinMintNotConfigured
             );
             require!(
@@ -803,13 +811,13 @@ fn process_unshield<'info>(
                 .ok_or(PoolError::TwinMintNotConfigured)?;
             require_keys_eq!(
                 ctx.accounts.destination_token_account.mint,
-                pool_state.twin_mint,
+                twin_mint_key,
                 PoolError::TwinMintMismatch,
             );
             let signer_seeds: [&[u8]; 3] = [
                 seeds::POOL,
-                pool_state.origin_mint.as_ref(),
-                &[pool_state.bump],
+                origin_mint.as_ref(),
+                &[pool_bump],
             ];
             let factory_accounts = ptf_factory::cpi::accounts::MintPtkn {
                 factory_state: ctx.accounts.factory_state.to_account_info(),
@@ -835,12 +843,9 @@ fn process_unshield<'info>(
         }
     }
 
-    let hook_enabled = pool_state
-        .features
-        .contains(FeatureFlags::from(FEATURE_HOOKS_ENABLED))
-        && pool_state.hook_config_present;
+    let hook_enabled = pool_features.contains(FeatureFlags::from(FEATURE_HOOKS_ENABLED))
+        && hook_config_present;
     let pool_key = pool_loader.key();
-    let pool_bump = pool_state.bump;
 
     if hook_enabled {
         let (required_accounts, hook_mode, target_program) = {
@@ -901,6 +906,7 @@ fn process_unshield<'info>(
 
     #[cfg(feature = "invariant_checks")]
     {
+        let pool_state = pool_loader.load()?;
         enforce_supply_invariant(
             &pool_state,
             &note_ledger,
