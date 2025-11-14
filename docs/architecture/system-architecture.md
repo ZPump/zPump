@@ -47,23 +47,22 @@ Solana Accounts
 ## Request Flow: Shield (Wrap)
 
 1. **UI / SDK**
-   - Fetch latest commitment tree root from the indexer (fallback to chain).
+   - Fetch latest commitment tree root from the indexer (fallback to chain) and derive the `ShieldClaim` PDA for the pool.
    - Build proof payload: old root, amount, recipient, deposit identifier, blinding.
-   - Request proof from Proof RPC (Groth16), receive base64 proof + canonical public inputs.
-   - Build transaction: compute budget instruction, optional ATA create, call `ptf_pool::shield`.
+   - Request proof from Proof RPC (Groth16), receive base64 proof + canonical public inputs, including the canonical byte decomposition of the Poseidon note commitment that will hash to the on-chain SHA leaf.
+   - Build the **first** transaction: compute budget instruction, optional ATA create, call `ptf_pool::shield`. After confirmation the SDK drives two additional transactions (`shield_finalize_tree`, `shield_finalize_ledger`) plus the optional `shield_check_invariant`, waiting for the claim PDA to advance between stages.
 
 2. **Proof RPC**
    - Validates inputs, converts to little-endian bytes, derives note commitment, amount commitment.
    - Produces Groth16 proof (`proof`, `publicInputs`) using snarkjs and cached verification keys.
 
-3. **On-chain (`ptf_pool::shield`)**
-   - Loads pool state, commitment tree; ensures the stored `pool_state.current_root` equals the tree’s `current_root` (this is where drift manifests if the validator crashed).
+3. **On-chain (`ptf_pool::shield` + finalize pipeline)**
+   - `shield` loads pool state, commitment tree, and the lazily-created `ShieldClaim` PDA; it ensures the stored `pool_state.current_root` equals the tree’s `current_root` (this is where drift manifests if the validator crashed).
    - Verifies the Groth16 proof via `ptf_verifier_groth16`.
    - CPI into `ptf_vault::deposit` to pull public tokens into custody.
-   - In lightweight mode:
-     - Increment commitment tree `next_index`, set `current_root` to the proof’s `new_root`, record recent root list.
-     - Append note record to the in-memory note ledger.
-   - Push new root into the pool’s recent queue.
+   - `shield_finalize_tree` appends the new note to the SHA-based commitment tree (no Poseidon in BPF any more) and pushes the root into the pool’s queue.
+   - `shield_finalize_ledger` records the amount commitment in the note ledger, potentially firing hooks and marking whether the invariant needs to be enforced.
+   - `shield_check_invariant` enforces the vault/twin supply check only when requested by the ledger stage; many flows can skip it, keeping compute low.
 
 4. **Post-transaction**
    - Indexer picks up new root/nullifiers (either via client POST or on next sync).
@@ -103,13 +102,17 @@ Solana Accounts
 
 ## Feature Flags & Compute Profiles
 
-`ptf_pool` consumes significant compute. To stay below Solana’s 1.4 M CU transaction limit, the repo currently compiles the program with the `lightweight` feature (default), which:
+The on-chain tree now relies on Solana’s SHA-256 syscall (Poseidon is confined to the circuits), allowing us to ship **full** security features by default. The current `main` build compiles with `full_tree`, `note_digests`, and `invariant_checks`, yielding the following representative CU costs on private devnet:
 
-- Skips full commitment tree recomputation (`full_tree` disabled).
-- Skips note digest maintenance (`note_digests` disabled).
-- Skips invariant checks on vault/twin mint supply (`invariant_checks` disabled).
+| Instruction                  | CU (approx.) |
+|-----------------------------|--------------|
+| `shield`                    | 115k         |
+| `shield_finalize_tree`      | 15k          |
+| `shield_finalize_ledger`    | 11k          |
+| `shield_check_invariant`    | 9.6k         |
+| `unshield_to_origin`        | 146k         |
 
-Full security features are still available (`anchor build -- --features full_tree,note_digests,invariant_checks`), but they presently exceed the CU budget. We are actively refactoring to re-enable them while staying within the limit. The documentation calls out feature-dependent sections throughout.
+The legacy `lightweight` feature still exists for comparison testing, but the documentation now assumes the full-profile build unless explicitly stated.
 
 ## PDAs & Seeds
 

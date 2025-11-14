@@ -2,18 +2,15 @@
 
 The `ptf_pool` Anchor program is the core of zPump. It orchestrates the shielding (wrap) and unshielding (unwrap) flows, maintains the commitment tree and note ledger, and coordinates with the vault and factory programs. This document covers architecture, PDAs, instructions, feature flags, and compute considerations.
 
-> **Active Work:** The program currently ships in a “lightweight” build that skips heavy Merkle operations and invariant checks to stay below Solana’s 1.4 M CU limit. Re-enabling `full_tree`, `note_digests`, and `invariant_checks` is ongoing.
-
 ## Program ID & Features
 
 - Program ID: `7kbUWzeTPY6qb1mFJC1ZMRmTZAdaHC27yukc3Czj7fKh`
 - `Cargo.toml` feature flags:
-  - `lightweight` *(default)*: Minimal commitment tree updates.
-  - `full_tree`: Recomputes the full tree on every shield/unshield.
-  - `note_digests`: Maintains Poseidon digests of commitments/nullifiers.
+  - `lightweight`: Legacy mode that trusts proof-supplied roots (only used for benchmarking).
+  - `full_tree`: Recomputes the Merkle tree on-chain.
+  - `note_digests`: Maintains digests of commitments/nullifiers (now backed by SHA-256).
   - `invariant_checks`: Enforces vault/twin-mint supply conservation.
-- Default build profile: `["lightweight"]`
-- Production profile (goal): `["full_tree","note_digests","invariant_checks"]`
+- Default build profile: `["full_tree","note_digests","invariant_checks"]`
 
 ## PDAs & Accounts
 
@@ -23,6 +20,7 @@ The `ptf_pool` Anchor program is the core of zPump. It orchestrates the shieldin
 | Commitment Tree | `["commitment-tree", origin_mint]` | Stores Merkle tree frontier, canopy, next index, current root. |
 | Note Ledger | `["note-ledger", origin_mint]` | Tracks note commitments, amount commitments, poseidon digests (optional). |
 | Nullifier Set | `["nullifier-set", origin_mint]` | Maintains spent note nullifiers. |
+| Shield Claim | `["claim", pool_state]` | Tracks the multi-step wrap finalisation pipeline. |
 | Hook Config | `["hook", origin_mint]` | Optional post-shield hook metadata. |
 
 Important foreign accounts:
@@ -58,27 +56,27 @@ Initialises all PDAs for a mint:
 - Registers hook features if provided.
 - Requires CPI to `ptf_vault` to allocate the vault state ahead of time.
 
-### `shield`
+### `shield` + finalisation pipeline
 
-Performs wrap (public → private):
+Performs wrap (public → private). The work is split across several instructions so each stays well below 200 k CU:
 
-1. **Account validation**
-   - Verifies verifying key program & account matches pool state.
-   - Asserts vault token account is owned by pool’s vault PDA and minted to the origin mint.
-   - Ensures commitment tree account key matches pool state and current root equals pool’s root.
-2. **Proof verification**
-   - Parses Groth16 public inputs: old root, new root, commitment, amount, etc.
-   - Requires `old_root == pool_state.current_root`.
+1. **`shield`**
+   - Validates accounts, verifying key, vault ownership, and the `ShieldClaim` PDA (initialised lazily via `init_if_needed`).
+   - Parses Groth16 inputs (old root, new root, note commitment bytes, amount, recipient, etc.) and ensures `old_root == pool_state.current_root`.
    - Calls `ptf_verifier_groth16::verify_groth16`.
-3. **Custody update**
-   - CPI into `ptf_vault::deposit` to transfer tokens from `depositor_token_account` to vault.
-4. **Commitment tree**
-   - Lightweight mode: increments `next_index`, updates `current_root` with the proof’s `new_root`, records `(index, commitment, amount_commit)` in recent canopy.
-   - Full-tree mode: recomputes the Merkle path with Poseidon hashes.
-5. **Note ledger**
-   - Appends note amount commitment and (optionally) updates digest.
-6. **Hooks (optional)**
-   - If the hook feature is enabled _and_ `post_shield_enabled` is true, validates remaining accounts and performs the post-shield hook CPI.
+   - CPIs into `ptf_vault::deposit` to transfer tokens from the depositor ATA.
+   - Activates the `ShieldClaim` PDA with the pending commitment data; no heavy state mutation happens yet.
+2. **`shield_finalize_tree`**
+   - Appends the note to the on-chain Merkle tree using SHA-256 leaves/branches (the Poseidon commitment bytes exported by the circuit are re-hashed via `hashv`).
+   - Updates the pool’s `current_root`, canopy, and pending shield metadata.
+3. **`shield_finalize_ledger`**
+   - Records the note in the ledger, updates optional digests, and, if hooks are enabled, performs the post-shield CPI.
+   - Marks whether the supply invariant needs to be enforced in a follow-up instruction.
+4. **`shield_check_invariant`**
+   - Enforces the vault/twin mint invariant only when flagged by the ledger step.
+   - Clears the `ShieldClaim`.
+
+The frontend SDK monitors the claim PDA between each step to ensure it has progressed before submitting the next transaction.
 
 ### `unshield_to_origin` / `unshield_to_ptkn`
 
@@ -99,8 +97,7 @@ Redeems zTokens back to public form or the private twin mint:
    - Mode `Origin`: CPI into `ptf_vault::release` to transfer public tokens to destination ATA.
    - Mode `Twin`: CPI into `ptf_factory::mint_ptkn` for privacy twin redemption.
 6. **Commitment tree**
-   - Lightweight mode: increments `next_index`, sets `current_root` to proof’s `new_root`.
-   - Full-tree mode: recomputes tree with `append_many`.
+   - Full mode recomputes the SHA tree via `append_many`, emitting a log if the proof-supplied root differs from the computed one (for diagnostics). Lightweight mode, if compiled, still trusts the proof root.
 
 ### `set_fee`, `toggle_features`, `update_hook_config`
 
@@ -109,9 +106,10 @@ Administrative instructions (authority-gated). In devnet they are primarily used
 ## Commitment Tree Implementation
 
 - Depth: 32 levels (1024 leaves), canopy size configurable (default 16).
-- Uses Poseidon hash (`programs/pool/src/poseidon.rs`) with precomputed zero nodes (`MERKLE_ZEROES`).
-- Frontier caching avoids repeated conversions.
-- Lightweight feature: `commitment_tree.append_note` is replaced with a minimal update that trusts the proof’s `new_root`.
+- Leaves and branches are hashed with Solana’s SHA-256 syscall (`hashv`). Poseidon commitments remain inside the circuits; the circuits also expose canonical byte arrays so on-chain hashing is deterministic.
+- Precomputed SHA zero nodes replace the old Poseidon constants.
+- Frontier caching avoids repeated allocations.
+- Lightweight feature: `commitment_tree.append_note` still short-circuits for profiling, but it is no longer the default path.
 
 ## Note Ledger & Nullifier Set
 
@@ -121,9 +119,9 @@ Administrative instructions (authority-gated). In devnet they are primarily used
 
 ## Compute Budget
 
-- Wrap transactions include `ComputeBudgetProgram.setComputeUnitLimit({ units: 1_400_000 })`. Actual usage in lightweight mode ~ 1.0–1.1 M.
-- Unwrap transactions include both limit and optional price; ALTs reduce instruction account list size.
-- Full feature flags currently exceed the 1.4 M cap—work in progress to profile hotspots (Merkle reconstruction, digest updates, invariant checks) and slim them down.
+- Wrap transactions include `ComputeBudgetProgram.setComputeUnitLimit({ units: 1_400_000 })`, and the SDK sends **four** transactions (shield + three follow-ups). Combined CU is ~150 k per shield pipeline.
+- Unwrap transactions leverage ALTs and consume ~146 k CU with all features enabled.
+- The `lightweight` feature remains available for regression testing but is no longer required to stay under the budget.
 
 ## Common Errors
 
