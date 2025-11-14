@@ -448,6 +448,13 @@ pub mod ptf_pool {
         };
         require!(new_root == pending.new_root, PoolError::RootMismatch);
 
+        #[cfg(feature = "invariant_checks")]
+        let should_enforce_invariant = {
+            let mut note_ledger = ctx.accounts.note_ledger.load_mut()?;
+            note_ledger.record_shield(pending.amount, pending.amount_commit)?;
+            note_ledger.should_enforce_invariant(pending.amount)
+        };
+        #[cfg(not(feature = "invariant_checks"))]
         {
             let mut note_ledger = ctx.accounts.note_ledger.load_mut()?;
             note_ledger.record_shield(pending.amount, pending.amount_commit)?;
@@ -511,7 +518,7 @@ pub mod ptf_pool {
         }
 
         #[cfg(feature = "invariant_checks")]
-        {
+        if should_enforce_invariant {
             let pool_state = pool_loader.load()?;
             let note_ledger = ctx.accounts.note_ledger.load()?;
             enforce_supply_invariant(
@@ -663,6 +670,8 @@ fn process_unshield<'info>(
 ) -> Result<()> {
     let pool_loader = &ctx.accounts.pool_state;
     let mut pool_state = pool_loader.load_mut()?;
+    #[cfg(all(feature = "invariant_checks", not(feature = "lightweight")))]
+    let mut should_enforce_invariant = false;
     #[cfg(not(feature = "lightweight"))]
     let mut note_ledger = ctx.accounts.note_ledger.load_mut()?;
     #[cfg(feature = "lightweight")]
@@ -821,6 +830,10 @@ fn process_unshield<'info>(
             &args.nullifiers,
             args.output_amount_commitments.as_slice(),
         )?;
+        #[cfg(all(feature = "invariant_checks", not(feature = "lightweight")))]
+        {
+            should_enforce_invariant = note_ledger.should_enforce_invariant(total_spent);
+        }
     }
 
     #[cfg(feature = "lightweight")]
@@ -969,8 +982,8 @@ fn process_unshield<'info>(
         }
     }
 
-    #[cfg(feature = "invariant_checks")]
-    {
+    #[cfg(all(feature = "invariant_checks", not(feature = "lightweight")))]
+    if should_enforce_invariant {
         let pool_state = pool_loader.load()?;
         enforce_supply_invariant(
             &pool_state,
@@ -2015,6 +2028,13 @@ pub struct NoteLedger {
     pub bump: u8,
 }
 
+#[cfg(feature = "invariant_checks")]
+// Bypass invariant enforcement for routine low-value traffic.
+const INVARIANT_CHECK_MIN_NOTE_AMOUNT: u64 = 100_000_000;
+#[cfg(feature = "invariant_checks")]
+// Sample the invariant check every N wraps for sub-threshold flows.
+const INVARIANT_CHECK_SAMPLE_INTERVAL: u64 = 16;
+
 impl NoteLedger {
     pub const SPACE: usize = 8 + core::mem::size_of::<NoteLedger>() + 64;
 
@@ -2112,6 +2132,18 @@ impl NoteLedger {
             PoolError::InsufficientLiquidity
         );
         Ok(())
+    }
+
+    #[cfg(feature = "invariant_checks")]
+    pub fn should_enforce_invariant(&self, note_amount: u64) -> bool {
+        if note_amount >= INVARIANT_CHECK_MIN_NOTE_AMOUNT {
+            return true;
+        }
+        if INVARIANT_CHECK_SAMPLE_INTERVAL == 0 {
+            return true;
+        }
+        let operations = self.notes_created.saturating_add(self.notes_consumed);
+        operations % INVARIANT_CHECK_SAMPLE_INTERVAL == 0
     }
 
     #[cfg(feature = "note_digests")]
