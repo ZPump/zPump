@@ -282,7 +282,7 @@ export async function wrap(params: WrapParams): Promise<string> {
     public_inputs: Buffer.from(decodedProof.publicInputs)
   };
   const shieldData = poolCoder.instruction.encode('shield', { args: shieldArgs });
-  const finalizeData = poolCoder.instruction.encode('shieldFinalize', {});
+  const finalizeData = poolCoder.instruction.encode('shield_finalize', {});
   if (process.env.NEXT_PUBLIC_DEBUG_WRAP === 'true') {
     // eslint-disable-next-line no-console
     console.info('[wrap] shield arg lengths', {
@@ -347,13 +347,11 @@ export async function wrap(params: WrapParams): Promise<string> {
     { pubkey: SYSVAR_INSTRUCTIONS_PUBKEY, isSigner: false, isWritable: false }
   );
 
-  instructions.push(
-    new TransactionInstruction({
-      programId: POOL_PROGRAM_ID,
-      keys: shieldKeys,
-      data: shieldData
-    })
-  );
+  const shieldInstruction = new TransactionInstruction({
+    programId: POOL_PROGRAM_ID,
+    keys: shieldKeys,
+    data: shieldData
+  });
 
   const finalizeKeys = [
     { pubkey: poolState, isSigner: false, isWritable: true },
@@ -370,29 +368,56 @@ export async function wrap(params: WrapParams): Promise<string> {
     finalizeKeys.push({ pubkey: POOL_PROGRAM_ID, isSigner: false, isWritable: false });
   }
 
-  instructions.push(
-    new TransactionInstruction({
-      programId: POOL_PROGRAM_ID,
-      keys: finalizeKeys,
-      data: finalizeData
-    })
-  );
+  const finalizeInstruction = new TransactionInstruction({
+    programId: POOL_PROGRAM_ID,
+    keys: finalizeKeys,
+    data: finalizeData
+  });
 
   const latestBlockhash = await connection.getLatestBlockhash('confirmed');
-  const transaction = new Transaction().add(...instructions);
-  transaction.feePayer = wallet.publicKey;
-  transaction.recentBlockhash = latestBlockhash.blockhash;
+  const shieldTransaction = new Transaction().add(...instructions, shieldInstruction);
+  shieldTransaction.feePayer = wallet.publicKey;
+  shieldTransaction.recentBlockhash = latestBlockhash.blockhash;
 
-  const signature = await wallet.sendTransaction(transaction, connection, { skipPreflight: false });
+  const shieldSignature = await wallet.sendTransaction(shieldTransaction, connection, {
+    skipPreflight: false
+  });
 
   await waitForSignatureConfirmation(
     connection,
-    signature,
+    shieldSignature,
     latestBlockhash.blockhash,
     latestBlockhash.lastValidBlockHeight
   );
 
-  return signature;
+  if (process.env.NEXT_PUBLIC_DEBUG_WRAP === 'true') {
+    // eslint-disable-next-line no-console
+    console.info('[wrap] shield signature confirmed', shieldSignature);
+  }
+
+  const finalizeInstructions: TransactionInstruction[] = [];
+  if (resolvedComputeLimit > 0) {
+    finalizeInstructions.push(ComputeBudgetProgram.setComputeUnitLimit({ units: resolvedComputeLimit }));
+  }
+  finalizeInstructions.push(finalizeInstruction);
+
+  const finalizeBlockhash = await connection.getLatestBlockhash('confirmed');
+  const finalizeTransaction = new Transaction().add(...finalizeInstructions);
+  finalizeTransaction.feePayer = wallet.publicKey;
+  finalizeTransaction.recentBlockhash = finalizeBlockhash.blockhash;
+
+  const finalizeSignature = await wallet.sendTransaction(finalizeTransaction, connection, {
+    skipPreflight: false
+  });
+
+  await waitForSignatureConfirmation(
+    connection,
+    finalizeSignature,
+    finalizeBlockhash.blockhash,
+    finalizeBlockhash.lastValidBlockHeight
+  );
+
+  return finalizeSignature;
 }
 
 export async function unwrap(params: UnwrapParams): Promise<string> {
