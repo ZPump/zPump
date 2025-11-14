@@ -3,6 +3,9 @@ import { PublicKey } from '@solana/web3.js';
 import { assertFaucetEnabled, createFaucetConnection, mintTokensToOwner } from '../../../../lib/server/faucet';
 import { appendFaucetEvent } from '../../../../lib/server/faucetLog';
 
+export const runtime = 'nodejs';
+export const dynamic = 'force-dynamic';
+
 interface TokenRequestPayload {
   recipient?: string;
   mint?: string;

@@ -1,7 +1,8 @@
-'use server';
-
 import { NextResponse } from 'next/server';
 import { readFaucetEvents } from '../../../../lib/server/faucetLog';
+
+export const runtime = 'nodejs';
+export const dynamic = 'force-dynamic';
 
 export async function GET() {
   try {

@@ -7,12 +7,16 @@ This guide walks through starting a local Solana validator with the zPump progra
 If you previously ran the devnet, stop and clean up to avoid root drift:
 
 ```bash
-pkill -f solana-test-validator || true
-rm -rf ~/.local/share/zpump-devnet-ledger
-rm -f indexer/photon/data/state.json
+./scripts/reset-dev-env.sh
 ```
 
-This prevents mismatched commitment tree and pool roots (see [Root Drift Playbook](../operations/root-drift.md)).
+The script performs the full reset:
+- Stops all PM2 services, terminates any stray validators.
+- Wipes the ledger at `~/.local/share/zpump-devnet-ledger` and resets Photon snapshots.
+- Re-establishes required symlinks (`services/circuits -> ../circuits`).
+- Restarts the validator, waits for RPC health, reinstalls Photon/Proof RPC deps, reruns the bootstrap script, and relaunches `ptf-indexer`, `ptf-proof`, and `ptf-web` under PM2.
+
+This one-shot reset prevents mismatched commitment tree and pool roots (see [Root Drift Playbook](../operations/root-drift.md)).
 
 ## 2. Launch Local Validator
 
