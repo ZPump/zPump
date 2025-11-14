@@ -16,6 +16,7 @@ ptf-vault = { path = "../vault", features = ["no-entrypoint", "cpi"] }
 ptf-verifier-groth16 = { path = "../verifier-groth16", features = ["no-entrypoint", "cpi"] }
 thiserror = { workspace = true }
 hex = { workspace = true }
+solana-program = { workspace = true }
 ark-bn254 = { version = "0.4", default-features = false, features = ["scalar_field"] }
 ark-ff = { version = "0.4", default-features = false }
 sha3 = { workspace = true }

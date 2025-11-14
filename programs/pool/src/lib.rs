@@ -2,6 +2,9 @@ use anchor_lang::prelude::*;
 use anchor_lang::solana_program::instruction::{AccountMeta, Instruction};
 use anchor_lang::solana_program::program::invoke_signed;
 use anchor_lang::solana_program::program_option::COption;
+use anchor_lang::solana_program::sysvar::instructions::{
+    load_current_index_checked, load_instruction_at_checked,
+};
 use anchor_spl::token_interface::{Mint, TokenAccount, TokenInterface};
 use ark_bn254::Fr;
 use ark_ff::{BigInteger256, PrimeField, Zero};
@@ -9,6 +12,7 @@ use ark_ff::{BigInteger256, PrimeField, Zero};
 use core::convert::TryFrom;
 use core::convert::TryInto;
 use sha3::{Digest, Keccak256};
+use solana_program::hash::hashv;
 
 use ptf_common::hooks::{HookInstruction, PostShieldHook, PostUnshieldHook};
 use ptf_common::{
@@ -100,6 +104,7 @@ pub mod ptf_pool {
             pool_state.twin_mint = Pubkey::default();
             pool_state.twin_mint_enabled = false;
         }
+        pool_state.pending_shield = PendingShield::inactive();
 
         require_keys_eq!(
             ctx.accounts.vault_state.pool_authority,
@@ -215,175 +220,245 @@ pub mod ptf_pool {
         ctx: Context<'_, '_, '_, 'info, Shield<'info>>,
         args: ShieldArgs,
     ) -> Result<()> {
-        let (origin_mint, hook_enabled, pool_key, pool_bump, commitment_bytes) = {
-            let pool_loader = &ctx.accounts.pool_state;
-            let mut pool_state = pool_loader.load_mut()?;
+        let pool_loader = &ctx.accounts.pool_state;
+        let mut pool_state = pool_loader.load_mut()?;
+        require!(
+            pool_state.pending_shield.is_inactive(),
+            PoolError::PendingShieldInFlight
+        );
+        require_keys_eq!(
+            ctx.accounts.verifier_program.key(),
+            pool_state.verifier_program,
+            PoolError::VerifierMismatch,
+        );
+        require_keys_eq!(
+            ctx.accounts.verifying_key.key(),
+            pool_state.verifying_key,
+            PoolError::VerifierMismatch,
+        );
+        require!(
+            ctx.accounts.verifying_key.verifying_key_id == pool_state.verifying_key_id,
+            PoolError::VerifierMismatch,
+        );
+        require!(
+            ctx.accounts.verifying_key.hash == pool_state.verifying_key_hash,
+            PoolError::VerifyingKeyHashMismatch,
+        );
+        require_keys_eq!(
+            ctx.accounts.vault_state.key(),
+            pool_state.vault,
+            PoolError::MismatchedVaultAuthority,
+        );
+        require_keys_eq!(
+            ctx.accounts.vault_state.pool_authority,
+            pool_loader.key(),
+            PoolError::MismatchedVaultAuthority,
+        );
+        require_keys_eq!(
+            ctx.accounts.vault_token_account.owner,
+            pool_state.vault,
+            PoolError::VaultTokenAccountMismatch,
+        );
+        require_keys_eq!(
+            ctx.accounts.vault_token_account.mint,
+            pool_state.origin_mint,
+            PoolError::OriginMintMismatch,
+        );
+        require_keys_eq!(
+            ctx.accounts.origin_mint.key(),
+            pool_state.origin_mint,
+            PoolError::OriginMintMismatch,
+        );
+        require_keys_eq!(
+            ctx.accounts.depositor_token_account.owner,
+            ctx.accounts.payer.key(),
+            PoolError::InvalidDepositorAccount,
+        );
+        require_keys_eq!(
+            ctx.accounts.depositor_token_account.mint,
+            pool_state.origin_mint,
+            PoolError::OriginMintMismatch,
+        );
+        require_keys_eq!(
+            ctx.accounts.commitment_tree.key(),
+            pool_state.commitment_tree,
+            PoolError::CommitmentTreeMismatch,
+        );
+
+        let commitment_tree_data = ctx.accounts.commitment_tree.load()?;
+        require!(
+            commitment_tree_data.current_root == pool_state.current_root,
+            PoolError::RootMismatch,
+        );
+
+        if pool_state.twin_mint_enabled {
+            let twin_mint = ctx
+                .accounts
+                .twin_mint
+                .as_ref()
+                .ok_or(PoolError::TwinMintNotConfigured)?;
             require_keys_eq!(
-                ctx.accounts.verifier_program.key(),
-                pool_state.verifier_program,
-                PoolError::VerifierMismatch,
+                twin_mint.key(),
+                pool_state.twin_mint,
+                PoolError::TwinMintMismatch,
             );
-            require_keys_eq!(
-                ctx.accounts.verifying_key.key(),
-                pool_state.verifying_key,
-                PoolError::VerifierMismatch,
-            );
+        }
+
+        let public_fields = parse_field_elements(&args.public_inputs)?;
+        require!(public_fields.len() >= 3, PoolError::InvalidPublicInputs);
+
+        let old_root_bytes = public_fields[0];
+        let new_root_bytes = public_fields[1];
+        let commitment_bytes = public_fields[2];
+        let mut old_root_be = old_root_bytes;
+        old_root_be.reverse();
+        let mut new_root_be = new_root_bytes;
+        new_root_be.reverse();
+
+        require!(
+            old_root_bytes == pool_state.current_root,
+            PoolError::RootMismatch
+        );
+
+        let cpi_accounts = ptf_verifier_groth16::cpi::accounts::VerifyGroth16 {
+            verifier_state: ctx.accounts.verifying_key.to_account_info(),
+        };
+        let cpi_ctx = CpiContext::new(
+            ctx.accounts.verifier_program.to_account_info(),
+            cpi_accounts,
+        );
+        ptf_verifier_groth16::cpi::verify_groth16(
+            cpi_ctx,
+            pool_state.verifying_key_id,
+            args.proof.clone(),
+            args.public_inputs.clone(),
+        )?;
+
+        let deposit_accounts = ptf_vault::cpi::accounts::Deposit {
+            vault_state: ctx.accounts.vault_state.to_account_info(),
+            vault_token_account: ctx.accounts.vault_token_account.to_account_info(),
+            origin_mint: ctx.accounts.origin_mint.to_account_info(),
+            depositor: ctx.accounts.payer.to_account_info(),
+            depositor_token_account: ctx.accounts.depositor_token_account.to_account_info(),
+            token_program: ctx.accounts.token_program.to_account_info(),
+        };
+        let deposit_ctx = CpiContext::new(
+            ctx.accounts.vault_program.to_account_info(),
+            deposit_accounts,
+        );
+        ptf_vault::cpi::deposit(deposit_ctx, args.amount)?;
+
+        pool_state.pending_shield = PendingShield {
+            active: 1,
+            old_root: old_root_bytes,
+            new_root: new_root_bytes,
+            commitment: commitment_bytes,
+            amount_commit: args.amount_commit,
+            amount: args.amount,
+            depositor: ctx.accounts.payer.key(),
+            next_index: commitment_tree_data.next_index,
+        };
+
+        let ix_sysvar = ctx.accounts.instructions.to_account_info();
+        let current_index = match load_current_index_checked(&ix_sysvar) {
+            Ok(idx) => idx as usize,
+            Err(_) => return err!(PoolError::MissingShieldFinalize),
+        };
+        let finalize_index = current_index + 1;
+        let finalize_ix = match load_instruction_at_checked(finalize_index, &ix_sysvar) {
+            Ok(ix) => ix,
+            Err(_) => return err!(PoolError::MissingShieldFinalize),
+        };
+        require_keys_eq!(
+            finalize_ix.program_id,
+            crate::ID,
+            PoolError::MissingShieldFinalize,
+        );
+        require!(
+            finalize_ix.data.len() >= 8
+                && finalize_ix.data[..8] == instruction_discriminator("shield_finalize"),
+            PoolError::MissingShieldFinalize,
+        );
+        let finalize_accounts = finalize_ix.accounts;
+        require!(
+            finalize_accounts.first().map(|meta| meta.pubkey) == Some(pool_loader.key()),
+            PoolError::MissingShieldFinalize,
+        );
+
+        Ok(())
+    }
+
+    pub fn shield_finalize<'info>(
+        ctx: Context<'_, '_, '_, 'info, ShieldFinalize<'info>>,
+    ) -> Result<()> {
+        let pool_loader = &ctx.accounts.pool_state;
+        let (pending, hook_enabled, pool_key, pool_bump, origin_mint) = {
+            let pool_state = pool_loader.load()?;
             require!(
-                ctx.accounts.verifying_key.verifying_key_id == pool_state.verifying_key_id,
-                PoolError::VerifierMismatch,
+                !pool_state.pending_shield.is_inactive(),
+                PoolError::NoPendingShield
             );
-            require!(
-                ctx.accounts.verifying_key.hash == pool_state.verifying_key_hash,
-                PoolError::VerifyingKeyHashMismatch,
-            );
-            require_keys_eq!(
-                ctx.accounts.vault_state.key(),
-                pool_state.vault,
-                PoolError::MismatchedVaultAuthority,
-            );
-            require_keys_eq!(
-                ctx.accounts.vault_state.pool_authority,
-                pool_loader.key(),
-                PoolError::MismatchedVaultAuthority,
-            );
-            require_keys_eq!(
-                ctx.accounts.vault_token_account.owner,
-                pool_state.vault,
-                PoolError::VaultTokenAccountMismatch,
-            );
-            require_keys_eq!(
-                ctx.accounts.vault_token_account.mint,
-                pool_state.origin_mint,
-                PoolError::OriginMintMismatch,
-            );
-            require_keys_eq!(
-                ctx.accounts.origin_mint.key(),
-                pool_state.origin_mint,
-                PoolError::OriginMintMismatch,
-            );
-            require_keys_eq!(
-                ctx.accounts.depositor_token_account.owner,
-                ctx.accounts.payer.key(),
-                PoolError::InvalidDepositorAccount,
-            );
-            require_keys_eq!(
-                ctx.accounts.depositor_token_account.mint,
-                pool_state.origin_mint,
-                PoolError::OriginMintMismatch,
-            );
-            require_keys_eq!(
-                ctx.accounts.commitment_tree.key(),
-                pool_state.commitment_tree,
-                PoolError::CommitmentTreeMismatch,
-            );
-            {
-                let commitment_tree_data = ctx.accounts.commitment_tree.load()?;
-                require!(
-                    commitment_tree_data.current_root == pool_state.current_root,
-                    PoolError::RootMismatch,
-                );
-            }
-
-            if pool_state.twin_mint_enabled {
-                let twin_mint = ctx
-                    .accounts
-                    .twin_mint
-                    .as_ref()
-                    .ok_or(PoolError::TwinMintNotConfigured)?;
-                require_keys_eq!(
-                    twin_mint.key(),
-                    pool_state.twin_mint,
-                    PoolError::TwinMintMismatch,
-                );
-            }
-
-            let public_fields = parse_field_elements(&args.public_inputs)?;
-            require!(public_fields.len() >= 3, PoolError::InvalidPublicInputs);
-
-            let old_root_bytes = public_fields[0];
-            let new_root_bytes = public_fields[1];
-            let commitment_bytes = public_fields[2];
-            let mut old_root_be = old_root_bytes;
-            old_root_be.reverse();
-            let mut new_root_be = new_root_bytes;
-            new_root_be.reverse();
-
-            require!(
-                old_root_bytes == pool_state.current_root,
-                PoolError::RootMismatch
-            );
-
-            let cpi_accounts = ptf_verifier_groth16::cpi::accounts::VerifyGroth16 {
-                verifier_state: ctx.accounts.verifying_key.to_account_info(),
-            };
-            let cpi_ctx = CpiContext::new(
-                ctx.accounts.verifier_program.to_account_info(),
-                cpi_accounts,
-            );
-            ptf_verifier_groth16::cpi::verify_groth16(
-                cpi_ctx,
-                pool_state.verifying_key_id,
-                args.proof.clone(),
-                args.public_inputs.clone(),
-            )?;
-
-            let deposit_accounts = ptf_vault::cpi::accounts::Deposit {
-                vault_state: ctx.accounts.vault_state.to_account_info(),
-                vault_token_account: ctx.accounts.vault_token_account.to_account_info(),
-                origin_mint: ctx.accounts.origin_mint.to_account_info(),
-                depositor: ctx.accounts.payer.to_account_info(),
-                depositor_token_account: ctx.accounts.depositor_token_account.to_account_info(),
-                token_program: ctx.accounts.token_program.to_account_info(),
-            };
-            let deposit_ctx = CpiContext::new(
-                ctx.accounts.vault_program.to_account_info(),
-                deposit_accounts,
-            );
-            ptf_vault::cpi::deposit(deposit_ctx, args.amount)?;
-
-            #[cfg(feature = "full_tree")]
-            let (new_root, _note_index) = {
-                let mut commitment_tree = ctx.accounts.commitment_tree.load_mut()?;
-                commitment_tree.append_note(commitment_bytes, args.amount_commit)?
-            };
-            #[cfg(not(feature = "full_tree"))]
-            let (new_root, _note_index) = {
-                let mut commitment_tree = ctx.accounts.commitment_tree.load_mut()?;
-                require!(
-                    commitment_tree.next_index < (1u128 << CommitmentTree::DEPTH) as u64,
-                    PoolError::TreeFull
-                );
-                let note_index = commitment_tree.next_index;
-                commitment_tree.next_index = commitment_tree
-                    .next_index
-                    .checked_add(1)
-                    .ok_or(PoolError::AmountOverflow)?;
-                commitment_tree.current_root = new_root_bytes;
-                (new_root_bytes, note_index)
-            };
-            require!(new_root_bytes == new_root, PoolError::RootMismatch);
-            pool_state.push_root(new_root);
-            {
-                let mut note_ledger = ctx.accounts.note_ledger.load_mut()?;
-                note_ledger.record_shield(args.amount, args.amount_commit)?;
-            }
-
+            let pending = pool_state.pending_shield;
             let hook_enabled = pool_state
                 .features
                 .contains(FeatureFlags::from(FEATURE_HOOKS_ENABLED))
                 && pool_state.hook_config_present;
             let pool_key = pool_loader.key();
             let pool_bump = pool_state.bump;
-
             let origin_mint = pool_state.origin_mint;
-            (
-                origin_mint,
-                hook_enabled,
-                pool_key,
-                pool_bump,
-                commitment_bytes,
-            )
+            (pending, hook_enabled, pool_key, pool_bump, origin_mint)
         };
+
+        #[cfg(feature = "full_tree")]
+        let new_root = {
+            let mut commitment_tree = ctx.accounts.commitment_tree.load_mut()?;
+            require!(
+                commitment_tree.current_root == pending.old_root,
+                PoolError::RootMismatch,
+            );
+            require!(
+                commitment_tree.next_index == pending.next_index,
+                PoolError::PendingShieldMismatch,
+            );
+            let (computed_root, _note_index) =
+                commitment_tree.append_note(pending.commitment, pending.amount_commit)?;
+            computed_root
+        };
+        #[cfg(not(feature = "full_tree"))]
+        let new_root = {
+            let mut commitment_tree = ctx.accounts.commitment_tree.load_mut()?;
+            require!(
+                commitment_tree.current_root == pending.old_root,
+                PoolError::RootMismatch,
+            );
+            require!(
+                commitment_tree.next_index == pending.next_index,
+                PoolError::PendingShieldMismatch,
+            );
+            require!(
+                commitment_tree.next_index < (1u128 << CommitmentTree::DEPTH) as u64,
+                PoolError::TreeFull
+            );
+            commitment_tree.next_index = commitment_tree
+                .next_index
+                .checked_add(1)
+                .ok_or(PoolError::AmountOverflow)?;
+            commitment_tree.current_root = pending.new_root;
+            pending.new_root
+        };
+        require!(new_root == pending.new_root, PoolError::RootMismatch);
+
+        {
+            let mut note_ledger = ctx.accounts.note_ledger.load_mut()?;
+            note_ledger.record_shield(pending.amount, pending.amount_commit)?;
+        }
+
+        {
+            let mut pool_state = pool_loader.load_mut()?;
+            pool_state.push_root(new_root);
+            pool_state.pending_shield.deactivate();
+        }
+
         if hook_enabled {
             let (required_accounts, hook_mode, target_program) = {
                 let hook_config = ctx.accounts.hook_config.load()?;
@@ -422,10 +497,10 @@ pub mod ptf_pool {
                     data: HookInstruction::PostShield(PostShieldHook {
                         origin_mint,
                         pool: pool_key,
-                        depositor: ctx.accounts.payer.key(),
-                        commitment: commitment_bytes,
-                        amount_commit: args.amount_commit,
-                        amount: args.amount,
+                        depositor: pending.depositor,
+                        commitment: pending.commitment,
+                        amount_commit: pending.amount_commit,
+                        amount: pending.amount,
                     })
                     .try_to_vec()?,
                 };
@@ -437,7 +512,7 @@ pub mod ptf_pool {
 
         #[cfg(feature = "invariant_checks")]
         {
-            let pool_state = ctx.accounts.pool_state.load()?;
+            let pool_state = pool_loader.load()?;
             let note_ledger = ctx.accounts.note_ledger.load()?;
             enforce_supply_invariant(
                 &pool_state,
@@ -446,6 +521,7 @@ pub mod ptf_pool {
                 ctx.accounts.twin_mint.as_ref(),
             )?;
         }
+
         Ok(())
     }
 
@@ -1114,6 +1190,51 @@ pub struct Shield<'info> {
     pub origin_mint: InterfaceAccount<'info, Mint>,
     pub vault_program: Program<'info, PtfVault>,
     pub token_program: Interface<'info, TokenInterface>,
+    /// CHECK: constrained by address check
+    #[account(address = solana_program::sysvar::instructions::ID)]
+    pub instructions: UncheckedAccount<'info>,
+}
+
+#[derive(Accounts)]
+pub struct ShieldFinalize<'info> {
+    #[account(
+        mut,
+        seeds = [seeds::POOL, pool_state.load()?.origin_mint.as_ref()],
+        bump = pool_state.load()?.bump
+    )]
+    pub pool_state: AccountLoader<'info, PoolState>,
+    #[account(
+        seeds = [seeds::HOOKS, pool_state.load()?.origin_mint.as_ref()],
+        bump = pool_state.load()?.hook_config_bump,
+        constraint = hook_config.load()?.pool == pool_state.key() @ PoolError::HookConfigInvalid,
+    )]
+    pub hook_config: AccountLoader<'info, HookConfig>,
+    #[account(
+        mut,
+        seeds = [seeds::TREE, pool_state.load()?.origin_mint.as_ref()],
+        bump = commitment_tree.load()?.bump,
+        constraint = commitment_tree.load()?.pool == pool_state.key() @ PoolError::CommitmentTreeMismatch
+    )]
+    pub commitment_tree: AccountLoader<'info, CommitmentTree>,
+    #[account(
+        mut,
+        seeds = [seeds::NOTES, pool_state.load()?.origin_mint.as_ref()],
+        bump = pool_state.load()?.note_ledger_bump,
+        constraint = note_ledger.key() == pool_state.load()?.note_ledger @ PoolError::NoteLedgerMismatch,
+        constraint = note_ledger.load()?.pool == pool_state.key() @ PoolError::NoteLedgerMismatch,
+    )]
+    pub note_ledger: AccountLoader<'info, NoteLedger>,
+    #[account(
+        mut,
+        seeds = [seeds::VAULT, pool_state.load()?.origin_mint.as_ref()],
+        bump = vault_state.bump,
+        seeds::program = ptf_vault::ID
+    )]
+    pub vault_state: Account<'info, ptf_vault::VaultState>,
+    #[account(mut)]
+    pub vault_token_account: InterfaceAccount<'info, TokenAccount>,
+    #[account(mut)]
+    pub twin_mint: Option<InterfaceAccount<'info, Mint>>,
 }
 
 #[derive(Accounts)]
@@ -1619,6 +1740,7 @@ pub struct PoolState {
     pub bump: u8,
     pub twin_mint: Pubkey,
     pub twin_mint_enabled: bool,
+    pub pending_shield: PendingShield,
 }
 
 impl PoolState {
@@ -1657,6 +1779,42 @@ impl PoolState {
             .ok_or(PoolError::AmountOverflow)?
             / 10_000u128;
         Ok(fee as u64)
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct PendingShield {
+    pub active: u8,
+    pub old_root: [u8; 32],
+    pub new_root: [u8; 32],
+    pub commitment: [u8; 32],
+    pub amount_commit: [u8; 32],
+    pub amount: u64,
+    pub depositor: Pubkey,
+    pub next_index: u64,
+}
+
+impl PendingShield {
+    pub fn inactive() -> Self {
+        Self {
+            active: 0,
+            old_root: [0u8; 32],
+            new_root: [0u8; 32],
+            commitment: [0u8; 32],
+            amount_commit: [0u8; 32],
+            amount: 0,
+            depositor: Pubkey::default(),
+            next_index: 0,
+        }
+    }
+
+    pub fn is_inactive(&self) -> bool {
+        self.active == 0
+    }
+
+    pub fn deactivate(&mut self) {
+        *self = Self::inactive();
     }
 }
 
@@ -1876,6 +2034,13 @@ impl NoteLedger {
         }
         self.nullifier_digest = fr_to_bytes(&digest);
     }
+}
+
+fn instruction_discriminator(name: &str) -> [u8; 8] {
+    let hash = hashv(&[b"global", name.as_bytes()]);
+    let mut out = [0u8; 8];
+    out.copy_from_slice(&hash.to_bytes()[..8]);
+    out
 }
 
 fn parse_field_elements(bytes: &[u8]) -> Result<Vec<[u8; 32]>> {
@@ -2218,6 +2383,14 @@ pub enum PoolError {
     TreeFull,
     #[msg("E_ROOT_MISMATCH")]
     RootMismatch,
+    #[msg("E_PENDING_SHIELD_IN_FLIGHT")]
+    PendingShieldInFlight,
+    #[msg("E_NO_PENDING_SHIELD")]
+    NoPendingShield,
+    #[msg("E_PENDING_SHIELD_MISMATCH")]
+    PendingShieldMismatch,
+    #[msg("E_SHIELD_FINALIZE_MISSING")]
+    MissingShieldFinalize,
 }
 
 fn validate_hook_accounts(
@@ -2422,6 +2595,7 @@ mod tests {
             bump: 255,
             twin_mint,
             twin_mint_enabled: twin_enabled,
+            pending_shield: PendingShield::inactive(),
         }
     }
 

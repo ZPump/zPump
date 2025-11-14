@@ -8,6 +8,7 @@ import {
   ComputeBudgetProgram,
   Connection,
   PublicKey,
+  SYSVAR_INSTRUCTIONS_PUBKEY,
   Transaction,
   TransactionInstruction,
   TransactionMessage,
@@ -281,6 +282,7 @@ export async function wrap(params: WrapParams): Promise<string> {
     public_inputs: Buffer.from(decodedProof.publicInputs)
   };
   const shieldData = poolCoder.instruction.encode('shield', { args: shieldArgs });
+  const finalizeData = poolCoder.instruction.encode('shieldFinalize', {});
   if (process.env.NEXT_PUBLIC_DEBUG_WRAP === 'true') {
     // eslint-disable-next-line no-console
     console.info('[wrap] shield arg lengths', {
@@ -317,7 +319,7 @@ export async function wrap(params: WrapParams): Promise<string> {
     }
   }
 
-  const keys = [
+  const shieldKeys = [
     { pubkey: poolState, isSigner: false, isWritable: true },
     { pubkey: hookConfig, isSigner: false, isWritable: false },
     { pubkey: nullifierSet, isSigner: false, isWritable: true },
@@ -329,26 +331,50 @@ export async function wrap(params: WrapParams): Promise<string> {
   ];
 
   if (twinMintKey) {
-    keys.push({ pubkey: twinMintKey, isSigner: false, isWritable: true });
+    shieldKeys.push({ pubkey: twinMintKey, isSigner: false, isWritable: true });
   } else {
     // Anchor treats an optional account as `None` when the slot equals the program id.
-    keys.push({ pubkey: POOL_PROGRAM_ID, isSigner: false, isWritable: false });
+    shieldKeys.push({ pubkey: POOL_PROGRAM_ID, isSigner: false, isWritable: false });
   }
 
-  keys.push(
+  shieldKeys.push(
     { pubkey: VERIFIER_PROGRAM_ID, isSigner: false, isWritable: false },
     { pubkey: verifyingKey, isSigner: false, isWritable: false },
     { pubkey: wallet.publicKey, isSigner: true, isWritable: true },
     { pubkey: originMintKey, isSigner: false, isWritable: false },
     { pubkey: VAULT_PROGRAM_ID, isSigner: false, isWritable: false },
-    { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false }
+    { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
+    { pubkey: SYSVAR_INSTRUCTIONS_PUBKEY, isSigner: false, isWritable: false }
   );
 
   instructions.push(
     new TransactionInstruction({
       programId: POOL_PROGRAM_ID,
-      keys,
+      keys: shieldKeys,
       data: shieldData
+    })
+  );
+
+  const finalizeKeys = [
+    { pubkey: poolState, isSigner: false, isWritable: true },
+    { pubkey: hookConfig, isSigner: false, isWritable: false },
+    { pubkey: commitmentTreeKey, isSigner: false, isWritable: true },
+    { pubkey: noteLedger, isSigner: false, isWritable: true },
+    { pubkey: vaultState, isSigner: false, isWritable: true },
+    { pubkey: vaultTokenAccount, isSigner: false, isWritable: true }
+  ];
+
+  if (twinMintKey) {
+    finalizeKeys.push({ pubkey: twinMintKey, isSigner: false, isWritable: true });
+  } else {
+    finalizeKeys.push({ pubkey: POOL_PROGRAM_ID, isSigner: false, isWritable: false });
+  }
+
+  instructions.push(
+    new TransactionInstruction({
+      programId: POOL_PROGRAM_ID,
+      keys: finalizeKeys,
+      data: finalizeData
     })
   );
 
