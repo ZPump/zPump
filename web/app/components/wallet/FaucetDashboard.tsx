@@ -12,6 +12,7 @@ import {
   FormHelperText,
   FormLabel,
   Heading,
+  Input,
   NumberInput,
   NumberInputField,
   Select,
@@ -24,7 +25,8 @@ import { Droplet } from 'lucide-react';
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { LAMPORTS_PER_SOL, PublicKey } from '@solana/web3.js';
 import { useConnection, useWallet } from '@solana/wallet-adapter-react';
-import { MINTS } from '../../config/mints';
+import type { MintConfig } from '../../config/mints';
+import { useMintCatalog } from '../providers/MintCatalogProvider';
 
 const FAUCET_MODE = process.env.NEXT_PUBLIC_FAUCET_MODE ?? 'local';
 const SOL_FORMATTER = new Intl.NumberFormat(undefined, {
@@ -60,20 +62,24 @@ function LocalFaucetDashboard() {
   const toast = useToast();
   const wallet = useWallet();
   const { connection } = useConnection();
+  const { mints, loading: mintCatalogLoading, error: mintCatalogError, refresh: refreshMintCatalog } = useMintCatalog();
   const [solAmount, setSolAmount] = useState('1');
-  const [tokenMint, setTokenMint] = useState<string>(MINTS[0]?.originMint ?? '');
+  const [tokenMint, setTokenMint] = useState<string>('');
   const [tokenAmount, setTokenAmount] = useState('100');
   const [isAirdropping, setAirdropping] = useBoolean(false);
   const [isMinting, setMinting] = useBoolean(false);
+  const [isCreatingMint, setCreatingMint] = useBoolean(false);
   const [walletBalance, setWalletBalance] = useState<number | null>(null);
   const [sharedEvents, setSharedEvents] = useState<SharedFaucetEvent[]>([]);
   const hasLoadedStoredEventsRef = useRef(false);
+  const [newMintSymbol, setNewMintSymbol] = useState('');
+  const [newMintDecimals, setNewMintDecimals] = useState('6');
 
   useEffect(() => {
-    if (!tokenMint && MINTS.length > 0) {
-      setTokenMint(MINTS[0].originMint);
+    if (!tokenMint && mints.length > 0) {
+      setTokenMint(mints[0].originMint);
     }
-  }, [tokenMint]);
+  }, [tokenMint, mints]);
 
   const refreshWalletBalance = useCallback(async () => {
     if (!wallet.publicKey) {
@@ -188,8 +194,8 @@ function LocalFaucetDashboard() {
   }, [eventsAreEqual]);
 
   const selectedMint = useMemo(
-    () => MINTS.find((mint) => mint.originMint === tokenMint),
-    [tokenMint]
+    () => mints.find((mint) => mint.originMint === tokenMint),
+    [mints, tokenMint]
   );
 
   const handleSolAirdrop = async (event: FormEvent<HTMLFormElement>) => {
@@ -306,6 +312,51 @@ function LocalFaucetDashboard() {
     }
   };
 
+  const handleMintRegistration = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const symbol = newMintSymbol.trim().toUpperCase();
+    if (!symbol) {
+      toast({ title: 'Enter a mint symbol', status: 'error' });
+      return;
+    }
+    const decimals = Number.parseInt(newMintDecimals, 10);
+    if (!Number.isInteger(decimals) || decimals < 0 || decimals > 9) {
+      toast({ title: 'Decimals must be between 0 and 9', status: 'error' });
+      return;
+    }
+    setCreatingMint.on();
+    try {
+      const response = await fetch('/api/mints', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ symbol, decimals })
+      });
+      const payload = (await response.json().catch(() => ({}))) as { mint?: MintConfig; error?: string };
+      if (!response.ok || !payload.mint) {
+        throw new Error(payload.error ?? 'Mint registration failed');
+      }
+      toast({
+        title: `${payload.mint.symbol} registered`,
+        description: `Origin mint: ${payload.mint.originMint}`,
+        status: 'success',
+        duration: 5000,
+        isClosable: true
+      });
+      setNewMintSymbol('');
+      setNewMintDecimals(payload.mint.decimals.toString());
+      await refreshMintCatalog();
+      setTokenMint(payload.mint.originMint);
+    } catch (error) {
+      toast({
+        title: 'Unable to register mint',
+        description: (error as Error).message,
+        status: 'error'
+      });
+    } finally {
+      setCreatingMint.off();
+    }
+  };
+
   return (
     <Stack spacing={8}>
       <Stack spacing={2}>
@@ -319,6 +370,15 @@ function LocalFaucetDashboard() {
         <Alert status="warning" variant="left-accent">
           <AlertIcon />
           <AlertDescription>Connect a wallet to receive funds from the local faucet.</AlertDescription>
+        </Alert>
+      )}
+
+      {mintCatalogError && (
+        <Alert status="error" variant="left-accent">
+          <AlertIcon />
+          <AlertDescription>
+            Unable to load the mint catalogue. {mintCatalogError}. Try refreshing or running the bootstrap script again.
+          </AlertDescription>
         </Alert>
       )}
 
@@ -360,14 +420,19 @@ function LocalFaucetDashboard() {
         >
           <Stack spacing={4}>
             <Heading size="md">Mint origin tokens</Heading>
-            <FormControl isDisabled={MINTS.length === 0}>
+            <FormControl isDisabled={mints.length === 0 || mintCatalogLoading}>
               <FormLabel color="whiteAlpha.700">Origin mint</FormLabel>
-              <Select value={tokenMint} onChange={(event) => setTokenMint(event.target.value)}>
-                {MINTS.map((mint) => (
+              <Select value={tokenMint || '__none'} onChange={(event) => setTokenMint(event.target.value)}>
+                {mints.map((mint) => (
                   <option key={mint.originMint} value={mint.originMint}>
                     {mint.symbol} — {mint.originMint}
                   </option>
                 ))}
+                {(!mints.length || mintCatalogLoading) && (
+                  <option value="__none" disabled>
+                    {mintCatalogLoading ? 'Loading...' : 'No tokens available'}
+                  </option>
+                )}
               </Select>
               <FormHelperText color="whiteAlpha.500">
                 Tokens come from the bootstrap mint authority. Ensure the origin mint is registered locally.
@@ -395,10 +460,57 @@ function LocalFaucetDashboard() {
               type="submit"
               leftIcon={<Droplet size={16} />}
               isLoading={isMinting}
-              isDisabled={!wallet.publicKey || MINTS.length === 0}
+              isDisabled={!wallet.publicKey || !mints.length}
             >
               Mint tokens
             </Button>
+          </Stack>
+        </Box>
+
+        <Box
+          as="form"
+          onSubmit={handleMintRegistration}
+          bg="rgba(18, 16, 14, 0.9)"
+          border="1px solid rgba(245,178,27,0.24)"
+          rounded="3xl"
+          p={{ base: 6, md: 8 }}
+          boxShadow="0 0 35px rgba(245, 178, 27, 0.2)"
+        >
+          <Stack spacing={4}>
+            <Heading size="md">Register a new origin mint</Heading>
+            <FormControl isRequired>
+              <FormLabel color="whiteAlpha.700">Symbol</FormLabel>
+              <Input
+                value={newMintSymbol}
+                onChange={(event) => setNewMintSymbol(event.target.value.toUpperCase())}
+                placeholder="e.g. GOLD"
+              />
+              <FormHelperText color="whiteAlpha.500">2–6 uppercase characters.</FormHelperText>
+            </FormControl>
+            <FormControl>
+              <FormLabel color="whiteAlpha.700">Decimals</FormLabel>
+              <NumberInput
+                min={0}
+                max={9}
+                value={newMintDecimals}
+                onChange={(value) => setNewMintDecimals(value)}
+                clampValueOnBlur
+              >
+                <NumberInputField />
+              </NumberInput>
+              <FormHelperText color="whiteAlpha.500">
+                Each mint spins up its own pool, vault, and commitment tree automatically.
+              </FormHelperText>
+            </FormControl>
+            <Button type="submit" leftIcon={<Droplet size={16} />} isLoading={isCreatingMint}>
+              Create mint + pool
+            </Button>
+            <Alert status="info" variant="subtle">
+              <AlertIcon />
+              <AlertDescription>
+                The devnet bootstrap runs behind the scenes. This can take up to a minute the first time.
+              </AlertDescription>
+            </Alert>
           </Stack>
         </Box>
       </Stack>

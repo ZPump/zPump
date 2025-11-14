@@ -24,13 +24,14 @@ import {
 import { useConnection, useWallet } from '@solana/wallet-adapter-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID } from '@solana/spl-token';
-import { MINTS, MintConfig } from '../../config/mints';
+import type { MintConfig } from '../../config/mints';
 import { ProofClient, ProofResponse } from '../../lib/proofClient';
 import { wrap as wrapSdk, unwrap as unwrapSdk, resolvePublicKey } from '../../lib/sdk';
 import { IndexerClient, IndexerNote } from '../../lib/indexerClient';
 import { getCachedRoots, setCachedRoots, getCachedNullifiers, setCachedNullifiers } from '../../lib/indexerCache';
 import { poseidonHashMany } from '../../lib/onchain/poseidon';
 import { formatBaseUnitsToUi } from '../../lib/format';
+import { useMintCatalog } from '../providers/MintCatalogProvider';
 
 type ConvertMode = 'to-private' | 'to-public';
 
@@ -146,13 +147,14 @@ function parseOptionalUiAmountToBaseUnits(value: string, decimals: number, label
 export function ConvertForm() {
   const { connection } = useConnection();
   const wallet = useWallet();
+  const { mints, loading: mintCatalogLoading, error: mintCatalogError } = useMintCatalog();
 
   const [mode, setMode] = useState<ConvertMode>('to-private');
-  const defaultOriginMint = MINTS[0]?.originMint ?? '';
   const [tokenSelection, setTokenSelection] = useState<{ originMint: string; variant: 'public' | 'private' }>({
-    originMint: defaultOriginMint,
+    originMint: '',
     variant: 'public'
   });
+  const [selectionInitialized, setSelectionInitialized] = useState(false);
   const [amount, setAmount] = useState<string>('1');
   const [isSubmitting, setSubmitting] = useBoolean(false);
   const [showAdvanced, setShowAdvanced] = useBoolean(false);
@@ -203,8 +205,8 @@ export function ConvertForm() {
   const tokenVariant = tokenSelection.variant;
 
   const mintConfig = useMemo<MintConfig | undefined>(
-    () => MINTS.find((mint) => mint.originMint === originMint),
-    [originMint]
+    () => mints.find((mint) => mint.originMint === originMint),
+    [mints, originMint]
   );
 
   const zTokenSymbol = useMemo(() => `z${mintConfig?.symbol ?? 'TOKEN'}`, [mintConfig?.symbol]);
@@ -220,10 +222,15 @@ export function ConvertForm() {
   const refreshTokenOptions = useCallback(async () => {
     const walletKey = wallet.publicKey;
 
+    if (!mints.length) {
+      setTokenOptions([]);
+      return [];
+    }
+
     const buildOptions = (publicBalances: Map<string, bigint>, privateBalances: Map<string, bigint>) => {
       const walletConnected = Boolean(walletKey);
       const options: TokenOption[] = [];
-      MINTS.forEach((mint) => {
+      mints.forEach((mint) => {
         const publicBalance = publicBalances.get(mint.originMint) ?? 0n;
         const publicDisplay = formatBaseUnitsToUi(publicBalance, mint.decimals);
         options.push({
@@ -317,7 +324,7 @@ export function ConvertForm() {
       setTokenOptions(options);
       return options;
     }
-  }, [wallet.publicKey, connection, indexerClient]);
+  }, [wallet.publicKey, connection, indexerClient, mints]);
 
   useEffect(() => {
     void refreshTokenOptions();
@@ -334,6 +341,38 @@ export function ConvertForm() {
     () => tokenOptions.find((option) => option.originMint === originMint && option.variant === tokenVariant) ?? null,
     [tokenOptions, originMint, tokenVariant]
   );
+
+  useEffect(() => {
+    if (!mints.length) {
+      setSelectionInitialized(false);
+      if (tokenSelection.originMint) {
+        setTokenSelection((prev) => ({ ...prev, originMint: '' }));
+      }
+      return;
+    }
+    const desiredVariant: 'public' | 'private' = mode === 'to-private' ? 'public' : 'private';
+    if (!selectionInitialized) {
+      setTokenSelection({
+        originMint: mints[0].originMint,
+        variant: desiredVariant
+      });
+      setSelectionInitialized(true);
+      return;
+    }
+    if (tokenSelection.originMint && !mints.some((mint) => mint.originMint === tokenSelection.originMint)) {
+      setTokenSelection({
+        originMint: mints[0].originMint,
+        variant: desiredVariant
+      });
+      return;
+    }
+    if (tokenSelection.variant !== desiredVariant) {
+      setTokenSelection((prev) => ({
+        ...prev,
+        variant: desiredVariant
+      }));
+    }
+  }, [mints, selectionInitialized, tokenSelection.originMint, tokenSelection.variant, mode]);
 
   useEffect(() => {
     if (!tokenOptions.length) {
@@ -1023,6 +1062,37 @@ export function ConvertForm() {
     }
   };
 
+  if (mintCatalogError) {
+    return (
+      <Alert status="error" variant="left-accent">
+        <AlertIcon />
+        <AlertDescription>
+          Unable to load mint catalogue. {mintCatalogError}. Try refreshing the page or regenerating the devnet.
+        </AlertDescription>
+      </Alert>
+    );
+  }
+
+  if (mintCatalogLoading && !selectionInitialized) {
+    return (
+      <Stack spacing={4}>
+        <Heading size="lg">Convert between public tokens and zTokens</Heading>
+        <Text color="whiteAlpha.700">Loading mint catalogue…</Text>
+      </Stack>
+    );
+  }
+
+  if (!mintCatalogLoading && !mints.length) {
+    return (
+      <Alert status="info" variant="left-accent">
+        <AlertIcon />
+        <AlertDescription>
+          No origin mints are registered yet. Use the Faucet page to create a local token, then refresh this view.
+        </AlertDescription>
+      </Alert>
+    );
+  }
+
   return (
     <Box
       as="form"
@@ -1051,7 +1121,7 @@ export function ConvertForm() {
           </Select>
         </FormControl>
 
-        <FormControl>
+        <FormControl isDisabled={!tokenOptions.length || mintCatalogLoading}>
           <FormLabel color="whiteAlpha.700">Token</FormLabel>
           <Select
             value={tokenSelectValue}
