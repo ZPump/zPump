@@ -116,7 +116,9 @@ pub mod ptf_pool {
             let mut hook_config = ctx.accounts.hook_config.load_init()?;
             hook_config.pool = pool_key;
             hook_config.post_shield_program_id = Pubkey::default();
+            hook_config.post_shield_enabled = false;
             hook_config.post_unshield_program_id = Pubkey::default();
+            hook_config.post_unshield_enabled = false;
             hook_config.required_accounts = [[0u8; 32]; HookConfig::MAX_REQUIRED_ACCOUNTS];
             hook_config.required_accounts_len = 0;
             hook_config.mode = HookAccountMode::Strict;
@@ -185,7 +187,9 @@ pub mod ptf_pool {
         let mut hook_config = ctx.accounts.hook_config.load_mut()?;
         hook_config.pool = ctx.accounts.pool_state.key();
         hook_config.post_shield_program_id = args.post_shield_program;
+        hook_config.post_shield_enabled = args.post_shield_enabled;
         hook_config.post_unshield_program_id = args.post_unshield_program;
+        hook_config.post_unshield_enabled = args.post_unshield_enabled;
         hook_config.mode = args.mode;
         hook_config.required_accounts_len = 0;
         hook_config.required_accounts = [[0u8; 32]; HookConfig::MAX_REQUIRED_ACCOUNTS];
@@ -199,18 +203,16 @@ pub mod ptf_pool {
         }
 
         pool_state.hook_config = ctx.accounts.hook_config.key();
-        if args.post_shield_program == Pubkey::default()
-            && args.post_unshield_program == Pubkey::default()
-        {
-            pool_state.hook_config_present = false;
-        } else {
-            pool_state.hook_config_present = true;
-        }
+        pool_state.hook_config_present = (args.post_shield_enabled
+            && args.post_shield_program != Pubkey::default())
+            || (args.post_unshield_enabled && args.post_unshield_program != Pubkey::default());
 
         emit!(HookConfigUpdated {
             origin_mint: pool_state.origin_mint,
             post_shield_program: args.post_shield_program,
             post_unshield_program: args.post_unshield_program,
+            post_shield_enabled: args.post_shield_enabled,
+            post_unshield_enabled: args.post_unshield_enabled,
             mode: args.mode as u8,
         });
         Ok(())
@@ -467,15 +469,16 @@ pub mod ptf_pool {
         }
 
         if hook_enabled {
-            let (required_accounts, hook_mode, target_program) = {
+            let (required_accounts, hook_mode, target_program, post_shield_enabled) = {
                 let hook_config = ctx.accounts.hook_config.load()?;
                 (
                     hook_config.required_keys().collect::<Vec<_>>(),
                     hook_config.mode,
                     hook_config.post_shield_program_id,
+                    hook_config.post_shield_enabled,
                 )
             };
-            if target_program != Pubkey::default() {
+            if post_shield_enabled && target_program != Pubkey::default() {
                 validate_hook_accounts(&required_accounts, hook_mode, ctx.remaining_accounts)?;
 
                 let mut metas = Vec::with_capacity(2 + ctx.remaining_accounts.len());
@@ -926,15 +929,16 @@ fn process_unshield<'info>(
     let pool_key = pool_loader.key();
 
     if hook_enabled {
-        let (required_accounts, hook_mode, target_program) = {
+        let (required_accounts, hook_mode, target_program, post_unshield_enabled) = {
             let hook_config = ctx.accounts.hook_config.load()?;
             (
                 hook_config.required_keys().collect::<Vec<_>>(),
                 hook_config.mode,
                 hook_config.post_unshield_program_id,
+                hook_config.post_unshield_enabled,
             )
         };
-        if target_program != Pubkey::default() {
+        if post_unshield_enabled && target_program != Pubkey::default() {
             validate_hook_accounts(&required_accounts, hook_mode, ctx.remaining_accounts)?;
 
             let mut metas = Vec::with_capacity(2 + ctx.remaining_accounts.len());
@@ -1417,7 +1421,9 @@ pub struct TransferArgs {
 #[derive(AnchorSerialize, AnchorDeserialize, Clone)]
 pub struct HookConfigArgs {
     pub post_shield_program: Pubkey,
+    pub post_shield_enabled: bool,
     pub post_unshield_program: Pubkey,
+    pub post_unshield_enabled: bool,
     pub required_accounts: Vec<Pubkey>,
     pub mode: HookAccountMode,
 }
@@ -2333,7 +2339,9 @@ fn validate_unshield_public_inputs(
 pub struct HookConfig {
     pub pool: Pubkey,
     pub post_shield_program_id: Pubkey,
+    pub post_shield_enabled: bool,
     pub post_unshield_program_id: Pubkey,
+    pub post_unshield_enabled: bool,
     pub required_accounts: [[u8; 32]; HookConfig::MAX_REQUIRED_ACCOUNTS],
     pub required_accounts_len: u8,
     pub mode: HookAccountMode,
@@ -2417,6 +2425,8 @@ pub struct HookConfigUpdated {
     pub origin_mint: Pubkey,
     pub post_shield_program: Pubkey,
     pub post_unshield_program: Pubkey,
+    pub post_shield_enabled: bool,
+    pub post_unshield_enabled: bool,
     pub mode: u8,
 }
 
@@ -3237,7 +3247,9 @@ mod tests {
                 data: crate::instruction::ConfigureHooks {
                     args: HookConfigArgs {
                         post_shield_program: hook_stub::ID,
+                        post_shield_enabled: true,
                         post_unshield_program: Pubkey::default(),
+                        post_unshield_enabled: false,
                         required_accounts: vec![],
                         mode: HookAccountMode::Strict,
                     },
@@ -3290,7 +3302,9 @@ mod tests {
                 data: crate::instruction::ConfigureHooks {
                     args: HookConfigArgs {
                         post_shield_program: hook_stub::ID,
+                        post_shield_enabled: true,
                         post_unshield_program: hook_stub::ID,
+                        post_unshield_enabled: true,
                         required_accounts: vec![required.pubkey()],
                         mode: HookAccountMode::Strict,
                     },

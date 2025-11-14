@@ -2352,8 +2352,16 @@
             "type": "pubkey"
           },
           {
+            "name": "post_shield_enabled",
+            "type": "bool"
+          },
+          {
             "name": "post_unshield_program_id",
             "type": "pubkey"
+          },
+          {
+            "name": "post_unshield_enabled",
+            "type": "bool"
           },
           {
             "name": "required_accounts",
@@ -2398,8 +2406,16 @@
             "type": "pubkey"
           },
           {
+            "name": "post_shield_enabled",
+            "type": "bool"
+          },
+          {
             "name": "post_unshield_program",
             "type": "pubkey"
+          },
+          {
+            "name": "post_unshield_enabled",
+            "type": "bool"
           },
           {
             "name": "required_accounts",
@@ -2434,6 +2450,14 @@
           {
             "name": "post_unshield_program",
             "type": "pubkey"
+          },
+          {
+            "name": "post_shield_enabled",
+            "type": "bool"
+          },
+          {
+            "name": "post_unshield_enabled",
+            "type": "bool"
           },
           {
             "name": "mode",
