@@ -946,6 +946,10 @@
         },
         {
           "name": "token_program"
+        },
+        {
+          "name": "instructions",
+          "address": "Sysvar1nstructions1111111111111111111111111"
         }
       ],
       "args": [
@@ -958,6 +962,175 @@
           }
         }
       ]
+    },
+    {
+      "name": "shield_finalize",
+      "discriminator": [
+        23,
+        247,
+        85,
+        139,
+        149,
+        202,
+        37,
+        43
+      ],
+      "accounts": [
+        {
+          "name": "pool_state",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  111,
+                  111,
+                  108
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "pool_state"
+              }
+            ]
+          }
+        },
+        {
+          "name": "hook_config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  104,
+                  111,
+                  111,
+                  107,
+                  115
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "pool_state"
+              }
+            ]
+          }
+        },
+        {
+          "name": "commitment_tree",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  114,
+                  101,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "pool_state"
+              }
+            ]
+          }
+        },
+        {
+          "name": "note_ledger",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  110,
+                  111,
+                  116,
+                  101,
+                  115
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "pool_state"
+              }
+            ]
+          }
+        },
+        {
+          "name": "vault_state",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "pool_state"
+              }
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                128,
+                225,
+                112,
+                163,
+                76,
+                46,
+                101,
+                7,
+                167,
+                90,
+                254,
+                155,
+                84,
+                64,
+                168,
+                166,
+                59,
+                14,
+                160,
+                80,
+                114,
+                96,
+                118,
+                250,
+                147,
+                101,
+                159,
+                158,
+                221,
+                26,
+                37,
+                52
+              ]
+            }
+          }
+        },
+        {
+          "name": "vault_token_account",
+          "writable": true
+        },
+        {
+          "name": "twin_mint",
+          "writable": true,
+          "optional": true
+        }
+      ],
+      "args": []
     },
     {
       "name": "unshield_to_origin",
