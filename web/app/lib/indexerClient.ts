@@ -86,8 +86,9 @@ export class IndexerClient {
       fetchFn.call(globalThis, input, init)) as typeof fetch;
   }
 
-  async getRoots(mint: string): Promise<IndexerRootResult | null> {
-    const payload = await this.request(`/roots/${mint}`);
+  async getRoots(mint: string, options?: { source?: 'chain' | 'indexer' }): Promise<IndexerRootResult | null> {
+    const query = options?.source ? `?source=${options.source}` : '';
+    const payload = await this.request(`/roots/${mint}${query}`);
     if (!payload) {
       return null;
     }

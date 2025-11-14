@@ -3,11 +3,26 @@ import { Connection, PublicKey } from '@solana/web3.js';
 import { derivePoolState } from '../../../../../lib/onchain/pdas';
 import { bytesLEToCanonicalHex, canonicalizeHex } from '../../../../../lib/onchain/utils';
 
+export const runtime = 'nodejs';
+export const dynamic = 'force-dynamic';
+
 const INDEXER_INTERNAL_URL = process.env.INDEXER_INTERNAL_URL ?? 'http://127.0.0.1:8787';
 const RPC_INTERNAL_URL = process.env.RPC_URL ?? 'http://127.0.0.1:8899';
 
-export async function GET(_request: Request, context: { params: { mint: string } }) {
+export async function GET(request: Request, context: { params: { mint: string } }) {
   const { mint } = context.params;
+  const url = new URL(request.url);
+  const preferSource = url.searchParams.get('source');
+  const preferChain = preferSource === 'chain';
+
+  if (preferChain) {
+    const fallback = await fetchRootFromChain(mint);
+    if (fallback) {
+      return NextResponse.json({ mint, ...fallback, source: 'chain' });
+    }
+    return NextResponse.json({ error: 'chain_unavailable' }, { status: 502 });
+  }
+
   try {
     const response = await fetch(`${INDEXER_INTERNAL_URL}/roots/${mint}`);
     if (!response.ok) {
