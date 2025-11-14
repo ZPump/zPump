@@ -76,7 +76,7 @@ export async function POST(request: Request, context: { params: { mint: string }
         recent: Array.isArray(payload.recent)
           ? payload.recent
               .filter((entry: unknown): entry is string => typeof entry === 'string')
-              .map((entry) => canonicalizeHex(entry))
+              .map((entry: string) => canonicalizeHex(entry))
           : []
       })
     });

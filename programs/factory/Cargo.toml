@@ -25,6 +25,7 @@ no-log-ix-name = []
 custom-heap = []
 custom-panic = []
 solana = []
+lightweight = []
 
 [dev-dependencies]
 solana-program-test = "2.3.1"

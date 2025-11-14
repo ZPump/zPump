@@ -167,20 +167,45 @@ async function fetchCommitmentRoot(connection: Connection, originMint: PublicKey
   return commitmentToHex(decoded.currentRoot);
 }
 
-function readPoolStateRoot(buffer: Buffer): string {
-  // PoolState layout: discriminator (8) + Pubkey fields. current_root is the 9th 32-byte field.
-  const CURRENT_ROOT_OFFSET = 8 + 32 * 8;
-  const rootBytes = buffer.slice(CURRENT_ROOT_OFFSET, CURRENT_ROOT_OFFSET + 32);
-  return bytesLEToCanonicalHex(rootBytes);
-}
-
-async function fetchPoolStateRoot(connection: Connection, poolId: string): Promise<string> {
+async function fetchPoolStateRoot(connection: Connection, poolId: string): Promise<{ root: string; feeBps: number }> {
   const poolKey = new PublicKey(poolId);
   const account = await connection.getAccountInfo(poolKey, 'confirmed');
   if (!account) {
     throw new Error('Pool state account missing');
   }
-  return readPoolStateRoot(Buffer.from(account.data));
+  const buffer = Buffer.from(account.data);
+  let offset = 8; // account discriminator
+
+  const advance = (bytes: number) => {
+    offset += bytes;
+  };
+
+  // Skip authority, origin_mint, vault, verifier_program, verifying_key, commitment_tree
+  advance(32 * 6);
+  // Skip verifying_key_id and verifying_key_hash
+  advance(32); // verifying_key_id
+  advance(32); // verifying_key_hash
+
+  const rootBytes = buffer.slice(offset, offset + 32);
+  advance(32); // current_root
+
+  // Skip recent_roots
+  advance(32 * 16);
+
+  // roots_len (u8)
+  offset += 1;
+
+  // Align to 2-byte boundary for fee_bps (u16)
+  if (offset % 2 !== 0) {
+    offset += 1;
+  }
+
+  const feeBps = buffer.readUInt16LE(offset);
+
+  return {
+    root: bytesLEToCanonicalHex(rootBytes),
+    feeBps
+  };
 }
 
 async function waitForIndexerRoot(
@@ -248,7 +273,6 @@ async function main() {
 
   console.info('[setup] ensuring balances');
   await ensureSolBalance(connection, payer.publicKey);
-  await ensureTokenBalance(connection, payer.publicKey, originMintKey, WRAP_AMOUNT);
 
   const wallet = createWalletAdapter(payer, connection);
 
@@ -256,7 +280,25 @@ async function main() {
   const blinding = crypto.randomInt(1_000_000, 9_000_000).toString();
 
   const roots = await indexerClient.getRoots(mintConfig.originMint);
-  const poolRootCanonical = await fetchPoolStateRoot(connection, mintConfig.poolId);
+  const poolStateInfo = await fetchPoolStateRoot(connection, mintConfig.poolId);
+  const unwrapAmount = WRAP_AMOUNT;
+  const feeBpsBig = BigInt(poolStateInfo.feeBps);
+  const fee = (unwrapAmount * feeBpsBig) / 10_000n;
+  const noteAmount = unwrapAmount + fee;
+  if (noteAmount === 0n) {
+    throw new Error('Note amount must be greater than zero.');
+  }
+
+  console.info('[setup] pool fee config', {
+    feeBps: poolStateInfo.feeBps,
+    unwrapAmount: unwrapAmount.toString(),
+    fee: fee.toString(),
+    noteAmount: noteAmount.toString()
+  });
+
+  await ensureTokenBalance(connection, payer.publicKey, originMintKey, noteAmount);
+
+  const poolRootCanonical = poolStateInfo.root;
   const storedRootCanonical =
     roots?.current && roots.current.length > 0
       ? canonicalizeHex(roots.current)
@@ -279,7 +321,7 @@ async function main() {
 
   const wrapPayload = {
     oldRoot: canonicalizeHex(oldRootCanonical),
-    amount: WRAP_AMOUNT.toString(),
+    amount: noteAmount.toString(),
     recipient: payer.publicKey.toBase58(),
     depositId,
     poolId: mintConfig.poolId,
@@ -290,6 +332,7 @@ async function main() {
   console.info('[wrap] requesting proof');
   const wrapProof = await proofClient.requestProof('wrap', wrapPayload);
   const wrapInputs = wrapProof.publicInputs ?? [];
+  console.info('[wrap] public inputs', wrapInputs);
   const proofOldRoot = wrapInputs.length > 0 ? canonicalizeHex(wrapInputs[0]!) : null;
   if (!proofOldRoot || proofOldRoot.toLowerCase() !== oldRootCanonical.toLowerCase()) {
     throw new Error('Wrap proof root mismatch with canonical old root');
@@ -300,7 +343,7 @@ async function main() {
     connection,
     wallet,
     originMint: mintConfig.originMint,
-    amount: WRAP_AMOUNT,
+    amount: noteAmount,
     poolId: mintConfig.poolId,
     depositId,
     blinding,
@@ -311,7 +354,21 @@ async function main() {
   });
   console.info('[wrap] confirmed signature', wrapSignature);
 
-  const newRootCanonical = await fetchCommitmentRoot(connection, originMintKey);
+  const commitmentTreeKey = deriveCommitmentTree(originMintKey);
+  const treeAccount = await connection.getAccountInfo(commitmentTreeKey, 'confirmed');
+  let treeRootCanonical: string | null = null;
+  if (treeAccount) {
+    const rawRoot = decodeCommitmentTree(new Uint8Array(treeAccount.data)).currentRoot;
+    treeRootCanonical = bytesLEToCanonicalHex(rawRoot);
+    console.info('[wrap] tree raw root', Buffer.from(rawRoot).toString('hex'));
+    console.info('[wrap] tree canonical root', treeRootCanonical);
+  }
+  const updatedPoolStateInfo = await fetchPoolStateRoot(connection, mintConfig.poolId);
+  console.info('[wrap] pool state root', updatedPoolStateInfo.root, 'fee bps', updatedPoolStateInfo.feeBps);
+  const newRootCanonical = updatedPoolStateInfo.root;
+  if (treeRootCanonical && treeRootCanonical.toLowerCase() !== newRootCanonical.toLowerCase()) {
+    console.warn('[wrap] tree/pool root mismatch', { treeRootCanonical, poolRootCanonical });
+  }
   const updatedRecent = [
     oldRootCanonical,
     ...previousRoots.filter((root) => root !== oldRootCanonical)
@@ -326,37 +383,40 @@ async function main() {
 
   const proofNewRoot = wrapInputs.length > 1 ? canonicalizeHex(wrapInputs[1]!) : null;
   if (!proofNewRoot || proofNewRoot.toLowerCase() !== newRootCanonical.toLowerCase()) {
-    throw new Error('Wrap proof new root mismatch with on-chain commitment tree');
+    throw new Error(
+      `Wrap proof new root mismatch with on-chain commitment tree (proof=${proofNewRoot}, tree=${newRootCanonical})`
+    );
   }
 
-  const noteId = randomField();
-  const spendingKey = randomField();
+  const noteId = BigInt(depositId);
+  const spendingKey = BigInt(blinding);
   const nullifierBytes = await poseidonHashMany([noteId, spendingKey]);
   const nullifierHex = bytesToHex(nullifierBytes);
 
   const unshieldPayload = {
     oldRoot: newRootCanonical,
-    amount: WRAP_AMOUNT.toString(),
-    fee: '0',
+    amount: unwrapAmount.toString(),
+    fee: fee.toString(),
     destPubkey: payer.publicKey.toBase58(),
     mode: 'origin' as const,
     mintId: mintConfig.originMint,
     poolId: mintConfig.poolId,
     noteId: noteId.toString(),
-    noteAmount: WRAP_AMOUNT.toString(),
+    noteAmount: noteAmount.toString(),
     spendingKey: spendingKey.toString(),
     nullifier: nullifierHex
   };
 
   console.info('[unwrap] requesting proof');
   const unshieldProof = await proofClient.requestProof('unwrap', unshieldPayload);
+  console.info('[unwrap] public inputs', unshieldProof.publicInputs);
 
   console.info('[unwrap] submitting transaction');
   const unwrapSignature = await unwrap({
     connection,
     wallet,
     originMint: mintConfig.originMint,
-    amount: WRAP_AMOUNT,
+    amount: unwrapAmount,
     poolId: mintConfig.poolId,
     destination: payer.publicKey.toBase58(),
     mode: 'origin',
