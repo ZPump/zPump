@@ -13,7 +13,7 @@ import {
   UnorderedList
 } from '@chakra-ui/react';
 import { ArrowRight, ArrowDown } from 'lucide-react';
-import { PageContainer } from '../../components/PageContainer';
+import { PageContainer as WhitepaperContainer } from '../../components/PageContainer';
 
 export const metadata: Metadata = {
   title: 'Whitepaper | zPump',
@@ -60,7 +60,7 @@ function DiagramArrow({ vertical = false }: { vertical?: boolean }) {
 
 export default function WhitepaperPage() {
   return (
-    <PageContainer maxW="6xl">
+    <WhitepaperContainer maxW="6xl">
       <Stack spacing={12} py={10}>
         <Stack spacing={3}>
           <Text fontSize="sm" color="whiteAlpha.600">
@@ -226,6 +226,7 @@ export default function WhitepaperPage() {
             That swap, plus chunked tree updates replaced by a dedicated SHA pipeline, shaved the largest compute hotspot.
             Nullifiers still guarantee each note spends once, and commitments remain the cryptographic envelope for value plus
             recipient key plus randomness.
+          </Text>
         </Section>
 
         <Section title="User Flows">
@@ -384,7 +385,7 @@ NullifierSet: ["nulls", <origin_mint>]`}
           Questions or feedback? Open an issue in the repository or reach out to the core team.
         </Text>
       </Stack>
-    </PageContainer>
+    </WhitepaperContainer>
   );
 }
 
