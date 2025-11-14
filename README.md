@@ -191,6 +191,8 @@ Skipping this step leaves the previous static bundle in place, which manifests a
 
 If shield transactions start failing with `E_ROOT_MISMATCH` even though proofs reference the latest root, the pool PDA and commitment-tree PDA are out of sync (usually after an unclean validator shutdown). Fix by resetting the private devnet and rebuilding:
 
+- Why it happens: the pool account and commitment tree are updated in separate writes. If `solana-test-validator` is killed mid-slot (or crashes) after the pool state is flushed but before the tree account is, the pool “remembers” the new root while the tree rolls back to the old one. Likewise, re-running `bootstrap-private-devnet.ts` against a stale ledger (or indexer snapshot) can recreate the pool PDA with a fresh root while leaving the tree untouched. The guard in `shield` then compares the two byte arrays and immediately throws `E_ROOT_MISMATCH`.
+
 ```bash
 pkill -f solana-test-validator || true
 rm -rf ~/.local/share/zpump-devnet-ledger
