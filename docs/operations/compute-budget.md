@@ -8,24 +8,28 @@ Solana enforces a per-transaction compute budget of ~1.4 M units (CU) and a pe
 - `ptf_vault` and `ptf_factory` are lightweight (basic SPL token CPI).
 - `ptf_verifier_groth16` cost depends on proof size but is relatively small compared to tree operations.
 
-## Lightweight Mode (Default)
+## SHA-Tree Full-Security Mode (Default)
 
-To fit inside 1.4 M CU, the repository currently builds `ptf_pool` with the `lightweight` feature:
+We now ship `ptf_pool` with **all** security flags enabled (`full_tree`, `note_digests`, `invariant_checks`). The key optimisation was moving the on-chain Merkle tree to Solana’s SHA-256 syscall while keeping Poseidon inside the circuits. Combined with the `ShieldClaim` PDA and multi-step finalisation, the wrap flow fits comfortably inside the compute budget. Representative numbers from `wrap-unwrap-local.ts` on private devnet:
 
-- **Disabled features:** `full_tree`, `note_digests`, `invariant_checks`.
-- **Effect:** The program trusts the new root provided by the proof, increments `next_index`, and skips expensive recomputation of the Merkle tree and digests. Invariant checks (vault supply vs. ledger) are also skipped.
-- **Compute usage:** Wrap/unwrap typically ~1.0–1.1 M CU depending on ATA creation and hook configuration.
-- **Trade-off:** Reduced on-chain assurances—clients must supply valid roots; trust rests on off-chain components keeping state consistent (indexer, proof generation).
+| Instruction               | CU (approx.) |
+|--------------------------|--------------|
+| `shield`                 | 115 k        |
+| `shield_finalize_tree`   | 15 k         |
+| `shield_finalize_ledger` | 11 k         |
+| `shield_check_invariant` | 9.6 k        |
+| `unshield_to_origin`     | 146 k        |
 
-## Full Feature Mode (Work in Progress)
+Even when ATA creation or hooks are involved, the combined pipeline stays well below 1.4 M CU because the tree update and invariant enforcement are split into their own transactions.
 
-Building with `anchor build -- --features full_tree,note_digests,invariant_checks` re-enables all safety checks:
+## Lightweight Mode (Legacy / Testing)
 
-- **`full_tree`:** Recalculates every level of the Merkle tree, updates canopy and recent commitments.
-- **`note_digests`:** Maintains Poseidon digests of note commitments and nullifiers.
-- **`invariant_checks`:** Enforces vault and twin mint supply invariants after shield/unshield.
+The `lightweight` feature is still available for regression testing:
 
-Current state: compute exceeds 1.4 M CU, so transactions fail with `ComputeUnitExceeded`. We are actively profiling hotspots and refactoring to slim them down (e.g. caching frontier values, reducing duplicate hashing, splitting instructions if necessary).
+- **Disabled:** `full_tree`, `note_digests`, `invariant_checks`.
+- **Effect:** Trusts the proof-supplied root and skips digest/invariant maintenance—useful for bisecting regressions but no longer required for day-to-day development.
+- **Compute usage:** ~1.0–1.1 M CU for the entire wrap/unwrap sequence.
+- **Trade-off:** Reduced on-chain assurances; only use when explicitly investigating performance issues.
 
 ## Toolbox
 
@@ -36,20 +40,16 @@ Current state: compute exceeds 1.4 M CU, so transactions fail with `ComputeUni
 ## Optimization Targets
 
 1. **Merkle Tree Updates**
-   - Investigate batching Poseidon hashes with SIMD-like optimisations (within Anchor constraints).
-   - Precompute zero nodes (already implemented via `MERKLE_ZEROES`).
-   - Explore two-phase transaction (verify proof in one instruction, apply state change in another) to split compute cost—requires careful atomicity considerations.
+   - Continue monitoring SHA-tree performance; chunk size adjustments or future SIMD intrinsics (if exposed) could reduce latency further.
 
 2. **Note Ledger Digests**
-   - Consider incremental hashing or off-chain verification.
-   - Potential use of parallel instructions or asynchronous digest updates recorded via hooks.
+   - Future work: explore batching SHA hashes or sampling strategies to keep `note_digests` cheap if wrap volume spikes.
 
 3. **Invariant Checks**
-   - Evaluate whether they can be deferred or sampled (e.g. run every N transactions).
-   - Possibly move heavy arithmetic off-chain with verifiable proofs.
+   - Currently sampled based on ledger policy (`should_enforce_invariant`). Tune thresholds as liquidity grows.
 
 4. **Groth16 Verifier**
-   - Ensure proof size remains minimal; investigate alternative curves/circuits if verification dominates compute.
+   - Maintain lean circuits (1-in/1-out) so verification stays a small fraction of total compute.
 
 ## Monitoring Compute
 

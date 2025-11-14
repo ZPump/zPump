@@ -37,7 +37,7 @@ anchor build -- --features full_tree,note_digests,invariant_checks
 # cargo test -p ptf-pool -- --nocapture
 ```
 
-Please contribute coverage (e.g. verifying lightweight vs full-tree feature parity, ensuring invariants hold when flags enabled).
+Please contribute coverage (e.g. regression tests for the SHA-tree wrap pipeline, ensuring invariant sampling behaves as expected).
 
 ## Suggested CI Workflow
 
@@ -57,7 +57,7 @@ While full CI automation is still pending, the following steps are recommended b
    - `npx tsx web/app/scripts/wrap-unwrap-local.ts`.
 
 4. **Manual UI verification** (quick):
-   - Visit `/convert`, `/faucet`, ensure roots display and shielding works in lightweight mode.
+   - Visit `/convert` and `/faucet`, ensure roots update after wraps and that the SDK submits the three follow-up finalize transactions (check browser console when `NEXT_PUBLIC_DEBUG_WRAP=true`).
 
 ## Future Enhancements
 
@@ -66,7 +66,7 @@ While full CI automation is still pending, the following steps are recommended b
   - Spins up `solana-test-validator` in CI container.
   - Runs bootstrap + wrap/unwrap script headlessly.
   - Publishes JUnit-style results for Jest and future Rust tests.
-- Add Rust integration tests covering both lightweight and full feature builds.
+- Add Rust integration tests covering both the default (full-security) build and the legacy `lightweight` feature gate.
 - Include linting/fmt checks to enforce style automatically.
 
 ## Troubleshooting Test Failures

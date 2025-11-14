@@ -7,7 +7,7 @@ zPump is a Solana-based privacy exchange stack that allows users to shield SPL t
 - **Private value transfer:** Let users convert fungible tokens (e.g. USDC) into anonymised privacy notes (zTokens), hold them off-chain, and redeem them without leaking transaction history.
 - **Composable architecture:** Keep shielding/unshielding logic in the on-chain `ptf_pool` program, with supporting programs (`ptf_factory`, `ptf_vault`, `ptf_verifier_groth16`) handling mapping, custody, and verification.
 - **Developer-friendly environment:** Provide scripts, services, and documentation so engineers can bootstrap the entire stack locally, generate proofs, and iterate quickly.
-- **Performance optimisations:** Stay within Solana’s 1.4 M compute unit (CU) limit per transaction. Today the project ships with a “lightweight” feature profile that fits comfortably inside that budget, while ongoing work focuses on reintroducing full-tree and invariant checks without breaching the limit.
+- **Performance optimisations:** Stay within Solana’s 1.4 M compute unit (CU) limit per transaction. The on-chain tree now uses SHA-256 and the wrap flow is split into multiple instructions, so we can ship with all safeguards (`full_tree`, `note_digests`, `invariant_checks`) enabled by default.
 
 ## Core Components
 
@@ -24,7 +24,7 @@ zPump is a Solana-based privacy exchange stack that allows users to shield SPL t
 
 ## Current Status
 
-- **Compute budget:** The `ptf_pool` program currently operates in “lightweight mode” (feature set `lightweight`) where full-tree rebuilds, note digests, and invariant checks are disabled. This reduces compute to ~1.0–1.1 M CU per wrap/unwrap. Full-feature mode (with `full_tree`, `note_digests`, `invariant_checks`) is under active optimisation to fit under the 1.4 M CU ceiling.
+- **Compute budget:** The `ptf_pool` program now runs the full security feature set. Typical CU usage on private devnet is ~115 k (`shield`), 15 k (`shield_finalize_tree`), 11 k (`shield_finalize_ledger`), 9.6 k (`shield_check_invariant`), and 146 k (`unshield_to_origin`). The legacy `lightweight` profile is still available for regression testing.
 - **Local-first workflow:** `scripts/start-private-devnet.sh` + `bootstrap-private-devnet.ts` set up everything locally, including faucets, verifying keys, and commitment tree state. The README references short instructions; detailed walkthroughs live in [development/private-devnet.md](../development/private-devnet.md).
 - **Proof interoperability:** The proof RPC accepts canonical big-endian hex inputs, converts them to little-endian for on-chain comparison, and is compatible with the public Groth16 verifier program.
 - **Indexer-backed balances:** Shielded balances and note state are stored in Photon’s snapshot, accessible via `/api/indexer/balances/:wallet` and `/notes/mint/:mint?afterSlot=…`. Clients use view tags to fetch only relevant ciphertexts.

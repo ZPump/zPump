@@ -29,7 +29,7 @@ The README focuses on high-level onboarding. Deep dives live in [`docs/`](docs/R
 
 3. **Visit the dApp** at [http://localhost:3000/convert](http://localhost:3000/convert). Use the faucet page to mint origin tokens (e.g. USDC) and test shield/unshield flows.
 
-> **Note:** The `ptf_pool` program currently runs in “lightweight” mode (full-tree, note digest, and invariant checks disabled) to stay within Solana’s 1.4 M CU limit. We are actively trimming the contracts so the full security feature set fits inside the budget.
+> **Note:** The `ptf_pool` program now runs with all security flags enabled (`full_tree`, `note_digests`, `invariant_checks`). We replaced the on-chain Merkle tree with SHA-256 hashing and split wrap finalisation into several low-cost instructions so the entire flow fits comfortably under the 1.4 M CU limit. The legacy “lightweight” flag remains for regression testing but is no longer required for day-to-day work.
 
 ---
 

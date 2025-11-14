@@ -73,8 +73,8 @@ This reference lists frequently encountered errors while developing or running z
 ## Validator-Level Issues
 
 ### `Error: Transaction simulation failed: exceeded CUs meter`
-- **Cause:** Feature flags enabled without compute optimisation.
-- **Fix:** Stick with lightweight build until optimisations land. If testing full build, reduce amount of work per instruction or increase compute units (within limits).
+- **Cause:** Missing compute budget instruction, stale SDK (still attempting the single-instruction wrap), or a custom build that reintroduced heavy logging.
+- **Fix:** Ensure the SDK submits the four-step wrap pipeline, keep `ComputeBudgetProgram.setComputeUnitLimit` at the top of each transaction, and avoid re-enabling `sol_log_compute_units` in production. If you intentionally toggle the `lightweight` flag, remember to revert before running end-to-end tests.
 
 ### `Program failed to complete. Logs: memory allocation failed`
 - **Cause:** Running with old Solana runtime settings or using large instruction data.
