@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use ark_bn254::Fr;
 use ark_ff::{BigInteger256, Field, Zero};
 

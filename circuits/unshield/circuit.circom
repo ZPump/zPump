@@ -2,6 +2,7 @@ pragma circom 2.1.9;
 
 include "../node_modules/circomlib/circuits/poseidon.circom";
 include "../node_modules/circomlib/circuits/comparators.circom";
+include "../node_modules/circomlib/circuits/bitify.circom";
 
 // Reference unshield circuit enforcing single-note exit semantics for the MVP.
 template UnshieldCircuit() {
@@ -61,6 +62,21 @@ template UnshieldCircuit() {
 
     signal output accounted_amount;
     accounted_amount <== total_outflow;
+
+    // Canonical byte decomposition for the change commitment so the on-chain
+    // tree can derive the SHA leaf deterministically.
+    component changeCommitmentBits = Num2Bits(256);
+    changeCommitmentBits.in <== change_commitment;
+
+    signal output change_commitment_bytes[32];
+    component changeCommitmentByteVals[32];
+    for (var byteIdx = 0; byteIdx < 32; byteIdx++) {
+        changeCommitmentByteVals[byteIdx] = Bits2Num(8);
+        for (var bitIdx = 0; bitIdx < 8; bitIdx++) {
+            changeCommitmentByteVals[byteIdx].in[bitIdx] <== changeCommitmentBits.out[byteIdx * 8 + bitIdx];
+        }
+        change_commitment_bytes[byteIdx] <== changeCommitmentByteVals[byteIdx].out;
+    }
 }
 
 component main = UnshieldCircuit();

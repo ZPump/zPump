@@ -58,6 +58,7 @@ pub mod seeds {
     pub const VAULT: &[u8] = b"vault";
     pub const POOL: &[u8] = b"pool";
     pub const NOTES: &[u8] = b"notes";
+    pub const CLAIM: &[u8] = b"claim";
     pub const HOOKS: &[u8] = b"hooks";
     pub const VERIFIER: &[u8] = b"vk";
     pub const NULLIFIERS: &[u8] = b"nulls";

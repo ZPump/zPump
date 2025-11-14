@@ -934,6 +934,28 @@
           "name": "verifying_key"
         },
         {
+          "name": "shield_claim",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  108,
+                  97,
+                  105,
+                  109
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "pool_state"
+              }
+            ]
+          }
+        },
+        {
           "name": "payer",
           "signer": true
         },
@@ -950,6 +972,10 @@
         {
           "name": "instructions",
           "address": "Sysvar1nstructions1111111111111111111111111"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
         }
       ],
       "args": [
@@ -964,16 +990,96 @@
       ]
     },
     {
-      "name": "shield_finalize",
+      "name": "shield_finalize_tree",
       "discriminator": [
-        23,
-        247,
+        36,
+        219,
+        246,
+        74,
+        130,
+        228,
+        104,
+        116
+      ],
+      "accounts": [
+        {
+          "name": "pool_state",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  111,
+                  111,
+                  108
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "pool_state"
+              }
+            ]
+          }
+        },
+        {
+          "name": "commitment_tree",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  114,
+                  101,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "pool_state"
+              }
+            ]
+          }
+        },
+        {
+          "name": "shield_claim",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  108,
+                  97,
+                  105,
+                  109
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "pool_state"
+              }
+            ]
+          }
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "shield_finalize_ledger",
+      "discriminator": [
         85,
-        139,
+        98,
+        228,
         149,
-        202,
-        37,
-        43
+        232,
+        89,
+        204,
+        56
       ],
       "accounts": [
         {
@@ -1019,27 +1125,6 @@
           }
         },
         {
-          "name": "commitment_tree",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  116,
-                  114,
-                  101,
-                  101
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "pool_state"
-              }
-            ]
-          }
-        },
-        {
           "name": "note_ledger",
           "writable": true,
           "pda": {
@@ -1062,62 +1147,104 @@
           }
         },
         {
-          "name": "vault_state",
+          "name": "shield_claim",
           "writable": true,
           "pda": {
             "seeds": [
               {
                 "kind": "const",
                 "value": [
-                  118,
-                  97,
-                  117,
+                  99,
                   108,
-                  116
+                  97,
+                  105,
+                  109
                 ]
               },
               {
                 "kind": "account",
                 "path": "pool_state"
               }
-            ],
-            "program": {
-              "kind": "const",
-              "value": [
-                128,
-                225,
-                112,
-                163,
-                76,
-                46,
-                101,
-                7,
-                167,
-                90,
-                254,
-                155,
-                84,
-                64,
-                168,
-                166,
-                59,
-                14,
-                160,
-                80,
-                114,
-                96,
-                118,
-                250,
-                147,
-                101,
-                159,
-                158,
-                221,
-                26,
-                37,
-                52
-              ]
-            }
+            ]
+          }
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "shield_check_invariant",
+      "discriminator": [
+        231,
+        129,
+        222,
+        245,
+        92,
+        193,
+        189,
+        196
+      ],
+      "accounts": [
+        {
+          "name": "pool_state",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  111,
+                  111,
+                  108
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "pool_state"
+              }
+            ]
+          }
+        },
+        {
+          "name": "note_ledger",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  110,
+                  111,
+                  116,
+                  101,
+                  115
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "pool_state"
+              }
+            ]
+          }
+        },
+        {
+          "name": "shield_claim",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  108,
+                  97,
+                  105,
+                  109
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "pool_state"
+              }
+            ]
           }
         },
         {
@@ -1932,6 +2059,105 @@
         222,
         70
       ]
+    },
+    {
+      "name": "ShieldClaim",
+      "discriminator": [
+        68,
+        154,
+        146,
+        103,
+        48,
+        75,
+        137,
+        34
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "pool",
+            "type": "publicKey"
+          },
+          {
+            "name": "depositor",
+            "type": "publicKey"
+          },
+          {
+            "name": "commitment",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "amount_commit",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "old_root",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "new_root",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "amount",
+            "type": "u64"
+          },
+          {
+            "name": "next_index",
+            "type": "u64"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          },
+          {
+            "name": "status",
+            "type": "u8"
+          },
+          {
+            "name": "enforce_invariant",
+            "type": "u8"
+          },
+          {
+            "name": "tree_level",
+            "type": "u8"
+          },
+          {
+            "name": "tree_index_cursor",
+            "type": "u64"
+          },
+          {
+            "name": "tree_node",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          }
+        ]
+      }
     },
     {
       "name": "VaultState",
@@ -3170,6 +3396,95 @@
           {
             "name": "twin_mint_enabled",
             "type": "bool"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ShieldClaim",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "pool",
+            "type": "pubkey"
+          },
+          {
+            "name": "depositor",
+            "type": "pubkey"
+          },
+          {
+            "name": "commitment",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "amount_commit",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "old_root",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "new_root",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "amount",
+            "type": "u64"
+          },
+          {
+            "name": "next_index",
+            "type": "u64"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          },
+          {
+            "name": "status",
+            "type": "u8"
+          },
+          {
+            "name": "enforce_invariant",
+            "type": "u8"
+          },
+          {
+            "name": "tree_level",
+            "type": "u8"
+          },
+          {
+            "name": "tree_index_cursor",
+            "type": "u64"
+          },
+          {
+            "name": "tree_node",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
           }
         ]
       }
