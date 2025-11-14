@@ -769,11 +769,7 @@ fn process_unshield<'info>(
                 origin_mint,
                 PoolError::OriginMintMismatch,
             );
-            let signer_seeds: [&[u8]; 3] = [
-                seeds::POOL,
-                origin_mint.as_ref(),
-                &[pool_bump],
-            ];
+            let signer_seeds: [&[u8]; 3] = [seeds::POOL, origin_mint.as_ref(), &[pool_bump]];
             let cpi_accounts = ptf_vault::cpi::accounts::Release {
                 vault_state: ctx.accounts.vault_state.to_account_info(),
                 vault_token_account: ctx.accounts.vault_token_account.to_account_info(),
@@ -796,10 +792,7 @@ fn process_unshield<'info>(
             });
         }
         UnshieldMode::Twin => {
-            require!(
-                twin_mint_enabled,
-                PoolError::TwinMintNotConfigured
-            );
+            require!(twin_mint_enabled, PoolError::TwinMintNotConfigured);
             require!(
                 ctx.accounts.mint_mapping.has_ptkn,
                 PoolError::TwinMintNotConfigured
@@ -814,11 +807,7 @@ fn process_unshield<'info>(
                 twin_mint_key,
                 PoolError::TwinMintMismatch,
             );
-            let signer_seeds: [&[u8]; 3] = [
-                seeds::POOL,
-                origin_mint.as_ref(),
-                &[pool_bump],
-            ];
+            let signer_seeds: [&[u8]; 3] = [seeds::POOL, origin_mint.as_ref(), &[pool_bump]];
             let factory_accounts = ptf_factory::cpi::accounts::MintPtkn {
                 factory_state: ctx.accounts.factory_state.to_account_info(),
                 mint_mapping: ctx.accounts.mint_mapping.to_account_info(),
@@ -843,8 +832,8 @@ fn process_unshield<'info>(
         }
     }
 
-    let hook_enabled = pool_features.contains(FeatureFlags::from(FEATURE_HOOKS_ENABLED))
-        && hook_config_present;
+    let hook_enabled =
+        pool_features.contains(FeatureFlags::from(FEATURE_HOOKS_ENABLED)) && hook_config_present;
     let pool_key = pool_loader.key();
 
     if hook_enabled {
