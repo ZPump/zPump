@@ -64,7 +64,7 @@ export default function WhitepaperPage() {
       <Stack spacing={12} py={10}>
         <Stack spacing={3}>
           <Text fontSize="sm" color="whiteAlpha.600">
-            Version 1.0 • 2025-11-09
+            Version 1.1 • 2025-11-14
           </Text>
           <Heading size="2xl">zPump on Solana</Heading>
           <Heading size="md" fontWeight="medium" color="whiteAlpha.700">
@@ -78,8 +78,9 @@ export default function WhitepaperPage() {
             a program-controlled vault and receive a private note in the shielded pool. Inside the pool, movements are proven
             with zero-knowledge proofs so observers can’t learn who sent what. When you want to go public again, you unshield
             back to the original mint—or, if governance enables it, to a public twin that always stays 1:1 backed by the vault.
-            The first release ships without a relayer, but the hooks are wired in so one can be enabled later without rewiring
-            the protocol.
+            The system now runs its full security profile (Merkle digests, note digests, and invariant checks) inside Solana’s
+            1.4M compute unit budget thanks to a SHA-256 commitment tree and a staged finalize pipeline. Relayer hooks remain
+            wired in for future upgrades.
           </Text>
         </Section>
 
@@ -111,7 +112,7 @@ export default function WhitepaperPage() {
               <Text as="span" fontWeight="semibold">
                 Shielded Pool:
               </Text>{' '}
-              Maintains notes, nullifiers, Merkle roots, and verifies zero-knowledge proofs.
+              Maintains notes, nullifiers, SHA-256 Merkle roots, and verifies zero-knowledge proofs.
             </ListItem>
             <ListItem>
               <Text as="span" fontWeight="semibold">
@@ -194,9 +195,15 @@ export default function WhitepaperPage() {
             </ListItem>
             <ListItem>
               <Text as="span" fontWeight="semibold">
+                ShieldClaim:
+              </Text>{' '}
+              A PDA that tracks an in-flight shield through finalize_tree → finalize_ledger → invariant_check so multi-transaction flows stay atomic.
+            </ListItem>
+            <ListItem>
+              <Text as="span" fontWeight="semibold">
                 Invariant:
               </Text>{' '}
-              Vault balance of M = Supply of P(M) + Live private notes − Protocol fees. Every exit checks this.
+              Vault balance of M = Supply of P(M) + Live private notes − Protocol fees. The final finalize step enforces this.
             </ListItem>
           </UnorderedList>
         </Section>
@@ -210,19 +217,24 @@ export default function WhitepaperPage() {
           </UnorderedList>
         </Section>
 
-        <Section title="The Lightest Possible Math">
+        <Section title="Optimized Math Path">
           <Text>
-            zPump relies on Poseidon hashing, Groth16 proofs over BN254, and a depth-32 Merkle tree. A nullifier guarantees
-            each note spends once; a commitment is the cryptographic envelope for value plus recipient key plus randomness.
-          </Text>
+            Circuit commitments still use Poseidon and Groth16 proofs over BN254, but the on-chain tree now runs entirely on
+            SHA-256 syscalls. Proofs expose canonical commitment bytes so the program can derive the SHA leaf deterministically.
+            That swap, plus chunked tree updates replaced by a dedicated SHA pipeline, shaved the largest compute hotspot.
+            Nullifiers still guarantee each note spends once, and commitments remain the cryptographic envelope for value plus
+            recipient key plus randomness.
         </Section>
 
         <Section title="User Flows">
           <Heading size="md">Shield (public → private)</Heading>
           <OrderedList spacing={2} pl={4}>
             <ListItem>Pick origin mint M and an amount.</ListItem>
-            <ListItem>Wallet sends M to Vault(M).</ListItem>
-            <ListItem>App builds a shield proof; the pool verifies it and records the private note.</ListItem>
+            <ListItem>Wallet sends M to Vault(M) while starting a `ShieldClaim`.</ListItem>
+            <ListItem>
+              Finalize in three lightweight steps: update the SHA-256 tree, post ledger entries/hooks, then enforce the supply
+              invariant. Each phase can live in its own transaction while the claim keeps state.
+            </ListItem>
           </OrderedList>
 
           <Heading size="md">Private transfer (optional in MVP)</Heading>
@@ -242,7 +254,7 @@ export default function WhitepaperPage() {
         <Section title="Design Choices Already Locked In">
           <UnorderedList spacing={2}>
             <ListItem>Proof system: Groth16 on BN254.</ListItem>
-            <ListItem>Hashing: Poseidon; Merkle depth 32.</ListItem>
+            <ListItem>Hashing: Poseidon inside circuits; SHA-256 on-chain Merkle (depth 32).</ListItem>
             <ListItem>Fees: default 5 bps on shield and unshield, none on private transfers.</ListItem>
             <ListItem>Programs: factory, vault, pool, verifier-groth16.</ListItem>
             <ListItem>Twin tokens optional; decimals mirror origin; factory owns mint authority.</ListItem>
@@ -326,6 +338,10 @@ NullifierSet: ["nulls", <origin_mint>]`}
           <Text fontWeight="semibold">Feature flags (PoolState.features):</Text>
           <UnorderedList spacing={2}>
             <ListItem>
+              <Code>full_tree</Code>, <Code>note_digests</Code>, and <Code>invariant_checks</Code> ship enabled by default; `lightweight`
+              builds live on as a regression profile only.
+            </ListItem>
+            <ListItem>
               <Code>0x01</Code> → PRIVATE_TRANSFER_ENABLED
             </ListItem>
             <ListItem>
@@ -341,8 +357,8 @@ NullifierSet: ["nulls", <origin_mint>]`}
           </UnorderedList>
           <Text fontWeight="semibold">Default parameters:</Text>
           <UnorderedList spacing={2}>
-            <ListItem>Merkle depth: 32</ListItem>
-            <ListItem>Hash: Poseidon</ListItem>
+            <ListItem>Merkle depth: 32 (SHA-256 on-chain)</ListItem>
+            <ListItem>Hash (circuit commitments): Poseidon</ListItem>
             <ListItem>Proof system: Groth16 (BN254)</ListItem>
             <ListItem>Fee: 5 bps on shield/unshield</ListItem>
             <ListItem>Hooks: disabled by default</ListItem>
