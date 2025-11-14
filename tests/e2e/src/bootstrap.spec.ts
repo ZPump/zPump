@@ -11,7 +11,8 @@ import {
   PublicKey,
   LAMPORTS_PER_SOL,
   Transaction,
-  TransactionInstruction
+  TransactionInstruction,
+  SYSVAR_INSTRUCTIONS_PUBKEY
 } from '@solana/web3.js';
 import {
   getAssociatedTokenAddress,
@@ -277,7 +278,8 @@ test.describe.serial('private devnet bootstrap', () => {
       { pubkey: payer.publicKey, isSigner: true, isWritable: true },
       { pubkey: originMint, isSigner: false, isWritable: false },
       { pubkey: VAULT_PROGRAM_ID, isSigner: false, isWritable: false },
-      { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false }
+      { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
+      { pubkey: SYSVAR_INSTRUCTIONS_PUBKEY, isSigner: false, isWritable: false }
     ];
 
     const shieldIx = new TransactionInstruction({
@@ -286,7 +288,23 @@ test.describe.serial('private devnet bootstrap', () => {
       data: poolCoder.instruction.encode('shield', { args: shieldArgs })
     });
 
-    await sendInstructions(connection, payer, [shieldIx]);
+    const finalizeKeys = [
+      { pubkey: poolStateKey, isSigner: false, isWritable: true },
+      { pubkey: hookConfigKey, isSigner: false, isWritable: false },
+      { pubkey: commitmentTreeKey, isSigner: false, isWritable: true },
+      { pubkey: noteLedgerKey, isSigner: false, isWritable: true },
+      { pubkey: vaultStateKey, isSigner: false, isWritable: true },
+      { pubkey: vaultTokenAccount, isSigner: false, isWritable: true },
+      { pubkey: PublicKey.default, isSigner: false, isWritable: false }
+    ];
+
+    const shieldFinalizeIx = new TransactionInstruction({
+      programId: POOL_PROGRAM_ID,
+      keys: finalizeKeys,
+      data: poolCoder.instruction.encode('shieldFinalize', {})
+    });
+
+    await sendInstructions(connection, payer, [shieldIx, shieldFinalizeIx]);
 
     const balanceAfterShield = await getTokenBalance(connection, vaultTokenAccount);
     expect(balanceAfterShield).toBe(initialVaultBalance + amount);

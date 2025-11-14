@@ -3759,6 +3759,7 @@ dependencies = [
  "ptf-vault",
  "ptf-verifier-groth16",
  "sha3",
+ "solana-program 2.3.0",
  "thiserror 1.0.69",
 ]
 
