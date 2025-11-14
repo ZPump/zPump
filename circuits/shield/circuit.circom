@@ -2,6 +2,7 @@ pragma circom 2.1.9;
 
 include "../node_modules/circomlib/circuits/poseidon.circom";
 include "../node_modules/circomlib/circuits/comparators.circom";
+include "../node_modules/circomlib/circuits/bitify.circom";
 
 // Reference implementation of the PTF shield circuit.
 // This circuit deliberately keeps the arithmetic minimal so it can be audited easily.
@@ -43,6 +44,21 @@ template ShieldCircuit() {
     // Output used by the on-chain event payload for documentation parity.
     signal output note_commitment;
     note_commitment <== commitment_hash;
+
+    // Canonical byte decomposition of the Poseidon commitment so the on-chain
+    // program can derive a SHA-256 leaf deterministically.
+    component commitmentBits = Num2Bits(256);
+    commitmentBits.in <== commitment_hash;
+
+    signal output commitment_bytes[32];
+    component commitmentByteVals[32];
+    for (var byteIdx = 0; byteIdx < 32; byteIdx++) {
+        commitmentByteVals[byteIdx] = Bits2Num(8);
+        for (var bitIdx = 0; bitIdx < 8; bitIdx++) {
+            commitmentByteVals[byteIdx].in[bitIdx] <== commitmentBits.out[byteIdx * 8 + bitIdx];
+        }
+        commitment_bytes[byteIdx] <== commitmentByteVals[byteIdx].out;
+    }
 }
 
 component main = ShieldCircuit();

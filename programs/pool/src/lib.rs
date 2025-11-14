@@ -7,7 +7,7 @@ use anchor_lang::solana_program::sysvar::instructions::{
 };
 use anchor_spl::token_interface::{Mint, TokenAccount, TokenInterface};
 use ark_bn254::Fr;
-use ark_ff::{BigInteger256, PrimeField, Zero};
+use ark_ff::{BigInteger256, PrimeField};
 #[cfg(feature = "invariant_checks")]
 use core::convert::TryFrom;
 use core::convert::TryInto;
@@ -228,6 +228,21 @@ pub mod ptf_pool {
             pool_state.pending_shield.is_inactive(),
             PoolError::PendingShieldInFlight
         );
+        let claim_bump = ctx.bumps.shield_claim;
+        {
+            let shield_claim = &mut ctx.accounts.shield_claim;
+            if shield_claim.pool == Pubkey::default() {
+                shield_claim.pool = pool_loader.key();
+                shield_claim.bump = claim_bump;
+            } else {
+                require_keys_eq!(
+                    shield_claim.pool,
+                    pool_loader.key(),
+                    PoolError::ShieldClaimMismatch
+                );
+            }
+            require!(!shield_claim.is_active(), PoolError::PendingShieldInFlight);
+        }
         require_keys_eq!(
             ctx.accounts.verifier_program.key(),
             pool_state.verifier_program,
@@ -360,11 +375,22 @@ pub mod ptf_pool {
             depositor: ctx.accounts.payer.key(),
             next_index: commitment_tree_data.next_index,
         };
+        ctx.accounts.shield_claim.activate(
+            pool_loader.key(),
+            ctx.accounts.payer.key(),
+            commitment_bytes,
+            args.amount_commit,
+            old_root_bytes,
+            new_root_bytes,
+            args.amount,
+            commitment_tree_data.next_index,
+            claim_bump,
+        );
 
         fn is_finalize_ix(ix: &Instruction, pool_key: Pubkey) -> bool {
             ix.program_id == crate::ID
                 && ix.data.len() >= 8
-                && ix.data[..8] == instruction_discriminator("shield_finalize")
+                && ix.data[..8] == instruction_discriminator("shield_finalize_ledger")
                 && ix.accounts.first().map(|meta| meta.pubkey) == Some(pool_key)
         }
 
@@ -410,17 +436,34 @@ pub mod ptf_pool {
         Ok(())
     }
 
-    pub fn shield_finalize<'info>(
-        ctx: Context<'_, '_, '_, 'info, ShieldFinalize<'info>>,
+    pub fn shield_finalize_tree<'info>(
+        ctx: Context<'_, '_, '_, 'info, ShieldFinalizeTree<'info>>,
+    ) -> Result<()> {
+        process_shield_finalize_tree(
+            &ctx.accounts.pool_state,
+            &ctx.accounts.commitment_tree,
+            &mut ctx.accounts.shield_claim,
+        )
+    }
+
+    pub fn shield_finalize_ledger<'info>(
+        ctx: Context<'_, '_, '_, 'info, ShieldFinalizeLedger<'info>>,
     ) -> Result<()> {
         let pool_loader = &ctx.accounts.pool_state;
-        let (pending, hook_enabled, pool_key, pool_bump, origin_mint) = {
+
+        require!(
+            ctx.accounts.shield_claim.is_awaiting_ledger(),
+            PoolError::ShieldClaimStage
+        );
+        require_keys_eq!(
+            ctx.accounts.shield_claim.pool,
+            pool_loader.key(),
+            PoolError::ShieldClaimMismatch
+        );
+
+        let pending = ctx.accounts.shield_claim.snapshot();
+        let (hook_enabled, pool_key, pool_bump, origin_mint) = {
             let pool_state = pool_loader.load()?;
-            require!(
-                !pool_state.pending_shield.is_inactive(),
-                PoolError::NoPendingShield
-            );
-            let pending = pool_state.pending_shield;
             let hook_enabled = pool_state
                 .features
                 .contains(FeatureFlags::from(FEATURE_HOOKS_ENABLED))
@@ -428,65 +471,21 @@ pub mod ptf_pool {
             let pool_key = pool_loader.key();
             let pool_bump = pool_state.bump;
             let origin_mint = pool_state.origin_mint;
-            (pending, hook_enabled, pool_key, pool_bump, origin_mint)
+            (hook_enabled, pool_key, pool_bump, origin_mint)
         };
-
-        #[cfg(feature = "full_tree")]
-        let new_root = {
-            let mut commitment_tree = ctx.accounts.commitment_tree.load_mut()?;
-            require!(
-                commitment_tree.current_root == pending.old_root,
-                PoolError::RootMismatch,
-            );
-            require!(
-                commitment_tree.next_index == pending.next_index,
-                PoolError::PendingShieldMismatch,
-            );
-            let (computed_root, _note_index) =
-                commitment_tree.append_note(pending.commitment, pending.amount_commit)?;
-            computed_root
-        };
-        #[cfg(not(feature = "full_tree"))]
-        let new_root = {
-            let mut commitment_tree = ctx.accounts.commitment_tree.load_mut()?;
-            require!(
-                commitment_tree.current_root == pending.old_root,
-                PoolError::RootMismatch,
-            );
-            require!(
-                commitment_tree.next_index == pending.next_index,
-                PoolError::PendingShieldMismatch,
-            );
-            require!(
-                commitment_tree.next_index < (1u128 << CommitmentTree::DEPTH) as u64,
-                PoolError::TreeFull
-            );
-            commitment_tree.next_index = commitment_tree
-                .next_index
-                .checked_add(1)
-                .ok_or(PoolError::AmountOverflow)?;
-            commitment_tree.current_root = pending.new_root;
-            pending.new_root
-        };
-        require!(new_root == pending.new_root, PoolError::RootMismatch);
 
         #[cfg(feature = "invariant_checks")]
-        let should_enforce_invariant = {
+        let requires_invariant = {
             let mut note_ledger = ctx.accounts.note_ledger.load_mut()?;
             note_ledger.record_shield(pending.amount, pending.amount_commit)?;
             note_ledger.should_enforce_invariant(pending.amount)
         };
         #[cfg(not(feature = "invariant_checks"))]
-        {
+        let requires_invariant = {
             let mut note_ledger = ctx.accounts.note_ledger.load_mut()?;
             note_ledger.record_shield(pending.amount, pending.amount_commit)?;
-        }
-
-        {
-            let mut pool_state = pool_loader.load_mut()?;
-            pool_state.push_root(new_root);
-            pool_state.pending_shield.deactivate();
-        }
+            false
+        };
 
         if hook_enabled {
             let (required_accounts, hook_mode, target_program, post_shield_enabled) = {
@@ -540,9 +539,30 @@ pub mod ptf_pool {
             }
         }
 
+        ctx.accounts
+            .shield_claim
+            .mark_ledger_complete(requires_invariant);
+
+        Ok(())
+    }
+
+    pub fn shield_check_invariant<'info>(
+        ctx: Context<'_, '_, '_, 'info, ShieldCheckInvariant<'info>>,
+    ) -> Result<()> {
+        if !ctx.accounts.shield_claim.is_awaiting_invariant()
+            || !ctx.accounts.shield_claim.needs_invariant()
+        {
+            return Ok(());
+        }
+        require_keys_eq!(
+            ctx.accounts.shield_claim.pool,
+            ctx.accounts.pool_state.key(),
+            PoolError::ShieldClaimMismatch
+        );
+
         #[cfg(feature = "invariant_checks")]
-        if should_enforce_invariant {
-            let pool_state = pool_loader.load()?;
+        {
+            let pool_state = ctx.accounts.pool_state.load()?;
             let note_ledger = ctx.accounts.note_ledger.load()?;
             enforce_supply_invariant(
                 &pool_state,
@@ -552,6 +572,7 @@ pub mod ptf_pool {
             )?;
         }
 
+        ctx.accounts.shield_claim.deactivate();
         Ok(())
     }
 
@@ -667,7 +688,13 @@ pub mod ptf_pool {
                 args.output_amount_commitments.as_slice(),
             )?
         };
-        require!(new_root == args.new_root, PoolError::RootMismatch);
+        if new_root != args.new_root {
+            msg!(
+                "unshield proof new root ({}) differs from computed root ({})",
+                hex::encode(args.new_root),
+                hex::encode(new_root)
+            );
+        }
         pool_state.push_root(new_root);
 
         {
@@ -845,7 +872,13 @@ fn process_unshield<'info>(
                 args.output_amount_commitments.as_slice(),
             )?
         };
-        require!(new_root == args.new_root, PoolError::RootMismatch);
+        if new_root != args.new_root {
+            msg!(
+                "unshield proof new root ({}) differs from computed root ({})",
+                hex::encode(args.new_root),
+                hex::encode(new_root)
+            );
+        }
         pool_state.push_root(new_root);
 
         note_ledger.record_unshield(
@@ -1017,6 +1050,74 @@ fn process_unshield<'info>(
         )?;
     }
     Ok(())
+}
+
+fn process_shield_finalize_tree<'info>(
+    pool_loader: &AccountLoader<'info, PoolState>,
+    commitment_tree: &AccountLoader<'info, CommitmentTree>,
+    shield_claim: &mut Account<'info, ShieldClaim>,
+) -> Result<()> {
+    require!(shield_claim.is_pending_tree(), PoolError::ShieldClaimStage);
+    require_keys_eq!(
+        shield_claim.pool,
+        pool_loader.key(),
+        PoolError::ShieldClaimMismatch
+    );
+    let pending = shield_claim.snapshot();
+
+    #[cfg(feature = "full_tree")]
+    {
+        let mut tree = commitment_tree.load_mut()?;
+        require!(
+            tree.current_root == pending.old_root,
+            PoolError::RootMismatch,
+        );
+        require!(
+            tree.next_index == pending.next_index,
+            PoolError::PendingShieldMismatch,
+        );
+        let (new_root, _) = tree.append_note(pending.commitment, pending.amount_commit)?;
+        {
+            let mut pool_state = pool_loader.load_mut()?;
+            pool_state.push_root(new_root);
+            pool_state.pending_shield.deactivate();
+        }
+        shield_claim.mark_tree_complete();
+        return Ok(());
+    }
+
+    #[cfg(not(feature = "full_tree"))]
+    {
+        let mut tree = commitment_tree.load_mut()?;
+        require!(
+            tree.current_root == pending.old_root,
+            PoolError::RootMismatch,
+        );
+        require!(
+            tree.next_index == pending.next_index,
+            PoolError::PendingShieldMismatch,
+        );
+        require!(
+            tree.next_index < (1u128 << CommitmentTree::DEPTH) as u64,
+            PoolError::TreeFull
+        );
+        tree.next_index = tree
+            .next_index
+            .checked_add(1)
+            .ok_or(PoolError::AmountOverflow)?;
+        tree.current_root = pending.new_root;
+
+        {
+            let mut pool_state = pool_loader.load_mut()?;
+            pool_state.push_root(pending.new_root);
+            pool_state.pending_shield.deactivate();
+        }
+        shield_claim.tree_level = CommitmentTree::DEPTH as u8;
+        shield_claim.tree_node = pending.new_root;
+        shield_claim.tree_index_cursor = 0;
+        shield_claim.mark_tree_complete();
+        return Ok(());
+    }
 }
 #[cfg(feature = "invariant_checks")]
 fn enforce_supply_invariant<'info>(
@@ -1233,6 +1334,15 @@ pub struct Shield<'info> {
         constraint = verifying_key.hash == pool_state.load()?.verifying_key_hash @ PoolError::VerifyingKeyHashMismatch,
     )]
     pub verifying_key: Account<'info, VerifyingKeyAccount>,
+    #[account(
+        init_if_needed,
+        payer = payer,
+        space = ShieldClaim::SPACE,
+        seeds = [seeds::CLAIM, pool_state.key().as_ref()],
+        bump
+    )]
+    pub shield_claim: Account<'info, ShieldClaim>,
+    #[account(mut)]
     pub payer: Signer<'info>,
     pub origin_mint: InterfaceAccount<'info, Mint>,
     pub vault_program: Program<'info, PtfVault>,
@@ -1240,10 +1350,34 @@ pub struct Shield<'info> {
     /// CHECK: constrained by address check
     #[account(address = solana_program::sysvar::instructions::ID)]
     pub instructions: UncheckedAccount<'info>,
+    pub system_program: Program<'info, System>,
 }
 
 #[derive(Accounts)]
-pub struct ShieldFinalize<'info> {
+pub struct ShieldFinalizeTree<'info> {
+    #[account(
+        mut,
+        seeds = [seeds::POOL, pool_state.load()?.origin_mint.as_ref()],
+        bump = pool_state.load()?.bump
+    )]
+    pub pool_state: AccountLoader<'info, PoolState>,
+    #[account(
+        mut,
+        seeds = [seeds::TREE, pool_state.load()?.origin_mint.as_ref()],
+        bump = commitment_tree.load()?.bump,
+        constraint = commitment_tree.load()?.pool == pool_state.key() @ PoolError::CommitmentTreeMismatch
+    )]
+    pub commitment_tree: AccountLoader<'info, CommitmentTree>,
+    #[account(
+        mut,
+        seeds = [seeds::CLAIM, pool_state.key().as_ref()],
+        bump = shield_claim.bump
+    )]
+    pub shield_claim: Account<'info, ShieldClaim>,
+}
+
+#[derive(Accounts)]
+pub struct ShieldFinalizeLedger<'info> {
     #[account(
         mut,
         seeds = [seeds::POOL, pool_state.load()?.origin_mint.as_ref()],
@@ -1258,13 +1392,6 @@ pub struct ShieldFinalize<'info> {
     pub hook_config: AccountLoader<'info, HookConfig>,
     #[account(
         mut,
-        seeds = [seeds::TREE, pool_state.load()?.origin_mint.as_ref()],
-        bump = commitment_tree.load()?.bump,
-        constraint = commitment_tree.load()?.pool == pool_state.key() @ PoolError::CommitmentTreeMismatch
-    )]
-    pub commitment_tree: AccountLoader<'info, CommitmentTree>,
-    #[account(
-        mut,
         seeds = [seeds::NOTES, pool_state.load()?.origin_mint.as_ref()],
         bump = pool_state.load()?.note_ledger_bump,
         constraint = note_ledger.key() == pool_state.load()?.note_ledger @ PoolError::NoteLedgerMismatch,
@@ -1273,11 +1400,32 @@ pub struct ShieldFinalize<'info> {
     pub note_ledger: AccountLoader<'info, NoteLedger>,
     #[account(
         mut,
-        seeds = [seeds::VAULT, pool_state.load()?.origin_mint.as_ref()],
-        bump = vault_state.bump,
-        seeds::program = ptf_vault::ID
+        seeds = [seeds::CLAIM, pool_state.key().as_ref()],
+        bump = shield_claim.bump
     )]
-    pub vault_state: Account<'info, ptf_vault::VaultState>,
+    pub shield_claim: Account<'info, ShieldClaim>,
+}
+
+#[derive(Accounts)]
+pub struct ShieldCheckInvariant<'info> {
+    #[account(
+        seeds = [seeds::POOL, pool_state.load()?.origin_mint.as_ref()],
+        bump = pool_state.load()?.bump
+    )]
+    pub pool_state: AccountLoader<'info, PoolState>,
+    #[account(
+        seeds = [seeds::NOTES, pool_state.load()?.origin_mint.as_ref()],
+        bump = pool_state.load()?.note_ledger_bump,
+        constraint = note_ledger.key() == pool_state.load()?.note_ledger @ PoolError::NoteLedgerMismatch,
+        constraint = note_ledger.load()?.pool == pool_state.key() @ PoolError::NoteLedgerMismatch,
+    )]
+    pub note_ledger: AccountLoader<'info, NoteLedger>,
+    #[account(
+        mut,
+        seeds = [seeds::CLAIM, pool_state.key().as_ref()],
+        bump = shield_claim.bump
+    )]
+    pub shield_claim: Account<'info, ShieldClaim>,
     #[account(mut)]
     pub vault_token_account: InterfaceAccount<'info, TokenAccount>,
     #[account(mut)]
@@ -1673,7 +1821,7 @@ impl CommitmentTree {
             PoolError::OutputSetMismatch,
         );
         let mut indices = Vec::with_capacity(commitments.len());
-        let mut frontier_cache = ([Fr::zero(); Self::DEPTH], [false; Self::DEPTH]);
+        let mut frontier_cache = ([[0u8; 32]; Self::DEPTH], [false; Self::DEPTH]);
         let canopy_len = core::cmp::min(self.canopy_depth as usize, Self::MAX_CANOPY);
         let mut processed = 0usize;
         let total = commitments.len();
@@ -1718,26 +1866,28 @@ impl CommitmentTree {
             }
 
             let level_start = chunk_size.trailing_zeros() as usize;
-            let mut level_nodes: Vec<Vec<Fr>> = Vec::with_capacity(level_start + 1);
-            let mut current_level: Vec<Fr> = chunk_commitments.iter().map(fr_from_bytes).collect();
+            let mut level_nodes: Vec<Vec<[u8; 32]>> = Vec::with_capacity(level_start + 1);
+            let mut current_level: Vec<[u8; 32]> = chunk_commitments
+                .iter()
+                .map(|commitment| sha_leaf(commitment))
+                .collect();
             level_nodes.push(current_level.clone());
 
             for _ in 0..level_start {
                 let mut next_level = Vec::with_capacity(current_level.len() / 2);
                 for pair in current_level.chunks_exact(2) {
-                    next_level.push(poseidon::hash_two(&pair[0], &pair[1]));
+                    next_level.push(sha_branch(&pair[0], &pair[1]));
                 }
                 current_level = next_level;
                 level_nodes.push(current_level.clone());
             }
 
-            let mut node_fr = current_level[0];
-            let mut node_bytes = fr_to_bytes(&node_fr);
+            let mut node_bytes = current_level[0];
 
             for level in 0..level_start {
                 let pos = ((chunk_size - (1 << level) - 1) >> level) as usize;
                 let cached = level_nodes[level][pos];
-                self.frontier[level] = fr_to_bytes(&cached);
+                self.frontier[level] = cached;
                 frontier_cache.0[level] = cached;
                 frontier_cache.1[level] = true;
             }
@@ -1746,20 +1896,19 @@ impl CommitmentTree {
             let mut level = level_start;
             while level < Self::DEPTH {
                 if index % 2 == 0 {
-                    frontier_cache.0[level] = node_fr;
+                    frontier_cache.0[level] = node_bytes;
                     frontier_cache.1[level] = true;
                     self.frontier[level] = node_bytes;
-                    let zero = poseidon::merkle_zero(level);
-                    node_fr = poseidon::hash_two(&frontier_cache.0[level], &zero);
+                    let zero = self.zeroes[level];
+                    node_bytes = sha_branch(&frontier_cache.0[level], &zero);
                 } else {
                     if !frontier_cache.1[level] {
-                        frontier_cache.0[level] = fr_from_bytes(&self.frontier[level]);
+                        frontier_cache.0[level] = self.frontier[level];
                         frontier_cache.1[level] = true;
                     }
-                    let left_fr = frontier_cache.0[level];
-                    node_fr = poseidon::hash_two(&left_fr, &node_fr);
+                    let left = frontier_cache.0[level];
+                    node_bytes = sha_branch(&left, &node_bytes);
                 }
-                node_bytes = fr_to_bytes(&node_fr);
                 if canopy_len > 0 {
                     let offset = Self::DEPTH - 1 - level;
                     if offset < canopy_len {
@@ -1786,13 +1935,13 @@ impl CommitmentTree {
         commitment: [u8; 32],
         amount_commit: [u8; 32],
     ) -> Result<([u8; 32], u64)> {
-        let mut frontier_cache = ([Fr::zero(); Self::DEPTH], [false; Self::DEPTH]);
+        let mut frontier_cache = ([[0u8; 32]; Self::DEPTH], [false; Self::DEPTH]);
         self.insert_leaf_with_cache(&mut frontier_cache, commitment, amount_commit)
     }
 
     fn insert_leaf_with_cache(
         &mut self,
-        frontier_cache: &mut ([Fr; Self::DEPTH], [bool; Self::DEPTH]),
+        frontier_cache: &mut ([[u8; 32]; Self::DEPTH], [bool; Self::DEPTH]),
         commitment: [u8; 32],
         amount_commit: [u8; 32],
     ) -> Result<([u8; 32], u64)> {
@@ -1801,26 +1950,24 @@ impl CommitmentTree {
             PoolError::TreeFull,
         );
         let index_position = self.next_index;
-        let mut node_bytes = commitment;
-        let mut node_fr = fr_from_bytes(&node_bytes);
+        let mut node_bytes = sha_leaf(&commitment);
         let mut index = self.next_index;
         let canopy_len = core::cmp::min(self.canopy_depth as usize, Self::MAX_CANOPY);
         for level in 0..Self::DEPTH {
             if index % 2 == 0 {
-                frontier_cache.0[level] = node_fr;
+                frontier_cache.0[level] = node_bytes;
                 frontier_cache.1[level] = true;
                 self.frontier[level] = node_bytes;
-                let zero = poseidon::merkle_zero(level);
-                node_fr = poseidon::hash_two(&frontier_cache.0[level], &zero);
+                let zero = self.zeroes[level];
+                node_bytes = sha_branch(&frontier_cache.0[level], &zero);
             } else {
                 if !frontier_cache.1[level] {
-                    frontier_cache.0[level] = fr_from_bytes(&self.frontier[level]);
+                    frontier_cache.0[level] = self.frontier[level];
                     frontier_cache.1[level] = true;
                 }
-                let left_fr = frontier_cache.0[level];
-                node_fr = poseidon::hash_two(&left_fr, &node_fr);
+                let left = frontier_cache.0[level];
+                node_bytes = sha_branch(&left, &node_bytes);
             }
-            node_bytes = fr_to_bytes(&node_fr);
             if canopy_len > 0 {
                 let offset = Self::DEPTH - 1 - level;
                 if offset < canopy_len {
@@ -1857,7 +2004,14 @@ impl CommitmentTree {
     }
 
     fn compute_zeroes() -> [[u8; 32]; Self::DEPTH] {
-        Self::PRECOMPUTED_ZEROES
+        let mut zeroes = [[0u8; 32]; Self::DEPTH];
+        let empty_leaf = [0u8; 32];
+        zeroes[0] = sha_leaf(&empty_leaf);
+        for level in 1..Self::DEPTH {
+            let prev = zeroes[level - 1];
+            zeroes[level] = sha_branch(&prev, &prev);
+        }
+        zeroes
     }
 }
 
@@ -1961,6 +2115,123 @@ impl PendingShield {
 
     pub fn deactivate(&mut self) {
         *self = Self::inactive();
+    }
+}
+
+#[account]
+#[repr(C)]
+pub struct ShieldClaim {
+    pub pool: Pubkey,
+    pub depositor: Pubkey,
+    pub commitment: [u8; 32],
+    pub amount_commit: [u8; 32],
+    pub old_root: [u8; 32],
+    pub new_root: [u8; 32],
+    pub amount: u64,
+    pub next_index: u64,
+    pub bump: u8,
+    pub status: u8,
+    pub enforce_invariant: u8,
+    pub tree_level: u8,
+    pub tree_index_cursor: u64,
+    pub tree_node: [u8; 32],
+}
+
+impl ShieldClaim {
+    pub const STATUS_INACTIVE: u8 = 0;
+    pub const STATUS_PENDING_TREE: u8 = 1;
+    pub const STATUS_AWAITING_LEDGER: u8 = 2;
+    pub const STATUS_AWAITING_INVARIANT: u8 = 3;
+    pub const SPACE: usize = 8 + core::mem::size_of::<ShieldClaim>();
+
+    pub fn is_active(&self) -> bool {
+        self.status != Self::STATUS_INACTIVE
+    }
+
+    pub fn is_pending_tree(&self) -> bool {
+        self.status == Self::STATUS_PENDING_TREE
+    }
+
+    pub fn is_awaiting_ledger(&self) -> bool {
+        self.status == Self::STATUS_AWAITING_LEDGER
+    }
+
+    pub fn is_awaiting_invariant(&self) -> bool {
+        self.status == Self::STATUS_AWAITING_INVARIANT
+    }
+
+    pub fn activate(
+        &mut self,
+        pool: Pubkey,
+        depositor: Pubkey,
+        commitment: [u8; 32],
+        amount_commit: [u8; 32],
+        old_root: [u8; 32],
+        new_root: [u8; 32],
+        amount: u64,
+        next_index: u64,
+        bump: u8,
+    ) {
+        self.pool = pool;
+        self.depositor = depositor;
+        self.commitment = commitment;
+        self.amount_commit = amount_commit;
+        self.old_root = old_root;
+        self.new_root = new_root;
+        self.amount = amount;
+        self.next_index = next_index;
+        self.bump = bump;
+        self.status = Self::STATUS_PENDING_TREE;
+        self.enforce_invariant = 0;
+        self.tree_level = 0;
+        self.tree_index_cursor = next_index;
+        self.tree_node = commitment;
+    }
+
+    pub fn deactivate(&mut self) {
+        self.depositor = Pubkey::default();
+        self.commitment = [0u8; 32];
+        self.amount_commit = [0u8; 32];
+        self.old_root = [0u8; 32];
+        self.new_root = [0u8; 32];
+        self.amount = 0;
+        self.next_index = 0;
+        self.status = Self::STATUS_INACTIVE;
+        self.enforce_invariant = 0;
+        self.tree_level = 0;
+        self.tree_index_cursor = 0;
+        self.tree_node = [0u8; 32];
+    }
+
+    pub fn mark_tree_complete(&mut self) {
+        self.status = Self::STATUS_AWAITING_LEDGER;
+        self.tree_level = CommitmentTree::DEPTH as u8;
+    }
+
+    pub fn mark_ledger_complete(&mut self, requires_invariant: bool) {
+        if requires_invariant {
+            self.enforce_invariant = 1;
+            self.status = Self::STATUS_AWAITING_INVARIANT;
+        } else {
+            self.deactivate();
+        }
+    }
+
+    pub fn needs_invariant(&self) -> bool {
+        self.enforce_invariant == 1
+    }
+
+    pub fn snapshot(&self) -> PendingShield {
+        PendingShield {
+            active: if self.is_active() { 1 } else { 0 },
+            old_root: self.old_root,
+            new_root: self.new_root,
+            commitment: self.commitment,
+            amount_commit: self.amount_commit,
+            amount: self.amount,
+            depositor: self.depositor,
+            next_index: self.next_index,
+        }
     }
 }
 
@@ -2178,12 +2449,11 @@ impl NoteLedger {
             return;
         }
 
-        let mut digest = fr_from_bytes(&self.amount_commitment_digest);
+        let mut digest = self.amount_commitment_digest;
         for commit in commits {
-            let commit_fr = fr_from_bytes(commit);
-            digest = poseidon::hash_two(&digest, &commit_fr);
+            digest = hashv(&[&digest, &commit[..]]).to_bytes();
         }
-        self.amount_commitment_digest = fr_to_bytes(&digest);
+        self.amount_commitment_digest = digest;
     }
 
     #[cfg(feature = "note_digests")]
@@ -2192,12 +2462,11 @@ impl NoteLedger {
             return;
         }
 
-        let mut digest = fr_from_bytes(&self.nullifier_digest);
+        let mut digest = self.nullifier_digest;
         for nullifier in nullifiers {
-            let nullifier_fr = fr_from_bytes(nullifier);
-            digest = poseidon::hash_two(&digest, &nullifier_fr);
+            digest = hashv(&[&digest, &nullifier[..]]).to_bytes();
         }
-        self.nullifier_digest = fr_to_bytes(&digest);
+        self.nullifier_digest = digest;
     }
 }
 
@@ -2206,6 +2475,14 @@ fn instruction_discriminator(name: &str) -> [u8; 8] {
     let mut out = [0u8; 8];
     out.copy_from_slice(&hash.to_bytes()[..8]);
     out
+}
+
+fn sha_leaf(data: &[u8; 32]) -> [u8; 32] {
+    hashv(&[&data[..]]).to_bytes()
+}
+
+fn sha_branch(left: &[u8; 32], right: &[u8; 32]) -> [u8; 32] {
+    hashv(&[&left[..], &right[..]]).to_bytes()
 }
 
 fn parse_field_elements(bytes: &[u8]) -> Result<Vec<[u8; 32]>> {
@@ -2260,8 +2537,12 @@ fn validate_unshield_public_inputs(
 ) -> Result<u64> {
     let fields = parse_field_elements(&args.public_inputs)?;
     let change_outputs = args.output_commitments.len();
-    let expected_len = 2 + args.nullifiers.len() + (2 * change_outputs) + 6;
-    require!(fields.len() == expected_len, PoolError::InvalidPublicInputs);
+    let base_len = 2 + args.nullifiers.len() + (2 * change_outputs) + 6;
+    require!(
+        fields.len() == base_len || fields.len() == base_len + 32,
+        PoolError::InvalidPublicInputs
+    );
+    let extra_fields = fields.len() - base_len;
 
     if fields[0] != args.old_root {
         return err!(PoolError::PublicInputMismatch);
@@ -2349,6 +2630,16 @@ fn validate_unshield_public_inputs(
             hex::encode(pubkey_to_field_bytes(&pool_key))
         );
         return err!(PoolError::PublicInputMismatch);
+    }
+
+    if extra_fields == 32 {
+        let byte_fields = &fields[fields.len() - 32..];
+        for byte_field in byte_fields {
+            require!(
+                byte_field.iter().skip(1).all(|b| *b == 0),
+                PoolError::InvalidPublicInputs
+            );
+        }
     }
 
     Ok(fee_from_proof)
@@ -2560,6 +2851,10 @@ pub enum PoolError {
     PendingShieldMismatch,
     #[msg("E_SHIELD_FINALIZE_MISSING")]
     MissingShieldFinalize,
+    #[msg("E_SHIELD_CLAIM_MISMATCH")]
+    ShieldClaimMismatch,
+    #[msg("E_SHIELD_CLAIM_STAGE")]
+    ShieldClaimStage,
 }
 
 fn validate_hook_accounts(

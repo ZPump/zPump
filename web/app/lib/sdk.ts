@@ -1,4 +1,5 @@
 import { Buffer } from 'buffer';
+import { createHash } from 'crypto';
 
 if (typeof globalThis.Buffer === 'undefined') {
   (globalThis as typeof globalThis & { Buffer: typeof Buffer }).Buffer = Buffer;
@@ -9,6 +10,7 @@ import {
   Connection,
   PublicKey,
   SYSVAR_INSTRUCTIONS_PUBKEY,
+  SystemProgram,
   Transaction,
   TransactionInstruction,
   TransactionMessage,
@@ -32,7 +34,8 @@ import {
   deriveVaultState,
   deriveVerifyingKey,
   deriveMintMapping,
-  deriveFactoryState
+  deriveFactoryState,
+  deriveShieldClaim
 } from './onchain/pdas';
 import { decodeCommitmentTree } from './onchain/commitmentTree';
 import {
@@ -53,6 +56,19 @@ import {
 
 const DEFAULT_SIGNATURE_TIMEOUT_MS = 60_000;
 const SIGNATURE_POLL_INTERVAL_MS = 500;
+
+const poolCoder = new BorshCoder(poolIdl as Idl);
+
+const SHIELD_CLAIM_STATUS = {
+  INACTIVE: 0,
+  PENDING_TREE: 1,
+  AWAITING_LEDGER: 2,
+  AWAITING_INVARIANT: 3
+} as const;
+
+type ShieldClaimAccount = {
+  status: number;
+};
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -166,6 +182,17 @@ function decodeProofPayload(payload: ProofResponse | null): DecodedProofPayload 
   };
 }
 
+async function fetchShieldClaimState(
+  connection: Connection,
+  address: PublicKey
+): Promise<ShieldClaimAccount> {
+  const accountInfo = await connection.getAccountInfo(address, 'confirmed');
+  if (!accountInfo) {
+    throw new Error('Shield claim account missing on chain');
+  }
+  return poolCoder.accounts.decode('ShieldClaim', accountInfo.data) as ShieldClaimAccount;
+}
+
 function assertWallet(wallet: WalletContextState): asserts wallet is WalletContextState & {
   publicKey: NonNullable<WalletContextState['publicKey']>;
   sendTransaction: NonNullable<WalletContextState['sendTransaction']>;
@@ -173,6 +200,26 @@ function assertWallet(wallet: WalletContextState): asserts wallet is WalletConte
   if (!wallet.publicKey || !wallet.sendTransaction) {
     throw new Error('Wallet not connected');
   }
+}
+
+function extractCommitmentByteOutputs(publicInputs: Buffer): Uint8Array | null {
+  if (publicInputs.length % 32 !== 0) {
+    return null;
+  }
+  const fieldCount = publicInputs.length / 32;
+  if (fieldCount < 35) {
+    return null;
+  }
+  const bytes = new Uint8Array(32);
+  const start = publicInputs.length - 32 * 32;
+  if (start < 0) {
+    return null;
+  }
+  for (let idx = 0; idx < 32; idx += 1) {
+    const field = publicInputs.subarray(start + idx * 32, start + (idx + 1) * 32);
+    bytes[idx] = field[0] ?? 0;
+  }
+  return bytes;
 }
 
 export async function wrap(params: WrapParams): Promise<string> {
@@ -189,6 +236,7 @@ export async function wrap(params: WrapParams): Promise<string> {
   const hookConfig = deriveHookConfig(originMintKey);
   const vaultState = deriveVaultState(originMintKey);
   const verifyingKey = deriveVerifyingKey();
+  const shieldClaim = deriveShieldClaim(poolState);
   const twinMintKey = params.twinMint ? new PublicKey(params.twinMint) : null;
 
   const commitmentTreeAccount = await connection.getAccountInfo(commitmentTreeKey);
@@ -259,7 +307,6 @@ export async function wrap(params: WrapParams): Promise<string> {
     );
   }
 
-  const poolCoder = new BorshCoder(poolIdl as Idl);
   const decodedProof = decodeProofPayload(params.proof);
   if (process.env.NEXT_PUBLIC_DEBUG_WRAP === 'true') {
     // eslint-disable-next-line no-console
@@ -281,8 +328,14 @@ export async function wrap(params: WrapParams): Promise<string> {
     proof: Buffer.from(decodedProof.proof),
     public_inputs: Buffer.from(decodedProof.publicInputs)
   };
+  const canonicalCommitmentBytes = extractCommitmentByteOutputs(shieldArgs.public_inputs);
+  const shaLeafDigest = canonicalCommitmentBytes
+    ? createHash('sha256').update(canonicalCommitmentBytes).digest()
+    : null;
   const shieldData = poolCoder.instruction.encode('shield', { args: shieldArgs });
-  const finalizeData = poolCoder.instruction.encode('shield_finalize', {});
+  const finalizeTreeData = poolCoder.instruction.encode('shield_finalize_tree', {});
+  const finalizeLedgerData = poolCoder.instruction.encode('shield_finalize_ledger', {});
+  const checkInvariantData = poolCoder.instruction.encode('shield_check_invariant', {});
   if (process.env.NEXT_PUBLIC_DEBUG_WRAP === 'true') {
     // eslint-disable-next-line no-console
     console.info('[wrap] shield arg lengths', {
@@ -294,7 +347,11 @@ export async function wrap(params: WrapParams): Promise<string> {
       vaultTokenAccount: vaultTokenAccount.toBase58(),
       depositorTokenAccount: depositorTokenAccount.toBase58(),
       proof: decodedProof.proof.length,
-      publicInputs: decodedProof.publicInputs.length
+      publicInputs: decodedProof.publicInputs.length,
+      canonicalCommitmentBytes: canonicalCommitmentBytes
+        ? Buffer.from(canonicalCommitmentBytes).toString('hex')
+        : null,
+      shaLeaf: shaLeafDigest ? shaLeafDigest.toString('hex') : null
     });
     // eslint-disable-next-line no-console
     console.info('[wrap] encoded data length', shieldData.length);
@@ -340,11 +397,13 @@ export async function wrap(params: WrapParams): Promise<string> {
   shieldKeys.push(
     { pubkey: VERIFIER_PROGRAM_ID, isSigner: false, isWritable: false },
     { pubkey: verifyingKey, isSigner: false, isWritable: false },
+    { pubkey: shieldClaim, isSigner: false, isWritable: true },
     { pubkey: wallet.publicKey, isSigner: true, isWritable: true },
     { pubkey: originMintKey, isSigner: false, isWritable: false },
     { pubkey: VAULT_PROGRAM_ID, isSigner: false, isWritable: false },
     { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
-    { pubkey: SYSVAR_INSTRUCTIONS_PUBKEY, isSigner: false, isWritable: false }
+    { pubkey: SYSVAR_INSTRUCTIONS_PUBKEY, isSigner: false, isWritable: false },
+    { pubkey: SystemProgram.programId, isSigner: false, isWritable: false }
   );
 
   const shieldInstruction = new TransactionInstruction({
@@ -353,25 +412,48 @@ export async function wrap(params: WrapParams): Promise<string> {
     data: shieldData
   });
 
-  const finalizeKeys = [
+  const finalizeTreeKeys = [
+    { pubkey: poolState, isSigner: false, isWritable: true },
+    { pubkey: commitmentTreeKey, isSigner: false, isWritable: true },
+    { pubkey: shieldClaim, isSigner: false, isWritable: true }
+  ];
+
+  const finalizeLedgerKeys = [
     { pubkey: poolState, isSigner: false, isWritable: true },
     { pubkey: hookConfig, isSigner: false, isWritable: false },
-    { pubkey: commitmentTreeKey, isSigner: false, isWritable: true },
     { pubkey: noteLedger, isSigner: false, isWritable: true },
-    { pubkey: vaultState, isSigner: false, isWritable: true },
+    { pubkey: shieldClaim, isSigner: false, isWritable: true }
+  ];
+
+  const checkInvariantKeys = [
+    { pubkey: poolState, isSigner: false, isWritable: false },
+    { pubkey: noteLedger, isSigner: false, isWritable: false },
+    { pubkey: shieldClaim, isSigner: false, isWritable: true },
     { pubkey: vaultTokenAccount, isSigner: false, isWritable: true }
   ];
 
   if (twinMintKey) {
-    finalizeKeys.push({ pubkey: twinMintKey, isSigner: false, isWritable: true });
+    checkInvariantKeys.push({ pubkey: twinMintKey, isSigner: false, isWritable: true });
   } else {
-    finalizeKeys.push({ pubkey: POOL_PROGRAM_ID, isSigner: false, isWritable: false });
+    checkInvariantKeys.push({ pubkey: POOL_PROGRAM_ID, isSigner: false, isWritable: false });
   }
 
-  const finalizeInstruction = new TransactionInstruction({
+  const finalizeTreeInstruction = new TransactionInstruction({
     programId: POOL_PROGRAM_ID,
-    keys: finalizeKeys,
-    data: finalizeData
+    keys: finalizeTreeKeys,
+    data: finalizeTreeData
+  });
+
+  const finalizeLedgerInstruction = new TransactionInstruction({
+    programId: POOL_PROGRAM_ID,
+    keys: finalizeLedgerKeys,
+    data: finalizeLedgerData
+  });
+
+  const checkInvariantInstruction = new TransactionInstruction({
+    programId: POOL_PROGRAM_ID,
+    keys: checkInvariantKeys,
+    data: checkInvariantData
   });
 
   const latestBlockhash = await connection.getLatestBlockhash('confirmed');
@@ -395,29 +477,87 @@ export async function wrap(params: WrapParams): Promise<string> {
     console.info('[wrap] shield signature confirmed', shieldSignature);
   }
 
-  const finalizeInstructions: TransactionInstruction[] = [];
+  const finalizeTreeInstructions: TransactionInstruction[] = [];
   if (resolvedComputeLimit > 0) {
-    finalizeInstructions.push(ComputeBudgetProgram.setComputeUnitLimit({ units: resolvedComputeLimit }));
+    finalizeTreeInstructions.push(ComputeBudgetProgram.setComputeUnitLimit({ units: resolvedComputeLimit }));
   }
-  finalizeInstructions.push(finalizeInstruction);
+  finalizeTreeInstructions.push(finalizeTreeInstruction);
 
-  const finalizeBlockhash = await connection.getLatestBlockhash('confirmed');
-  const finalizeTransaction = new Transaction().add(...finalizeInstructions);
-  finalizeTransaction.feePayer = wallet.publicKey;
-  finalizeTransaction.recentBlockhash = finalizeBlockhash.blockhash;
+  let claimState = await fetchShieldClaimState(connection, shieldClaim);
+  while (claimState.status === SHIELD_CLAIM_STATUS.PENDING_TREE) {
+    const treeBlockhash = await connection.getLatestBlockhash('confirmed');
+    const finalizeTreeTransaction = new Transaction().add(...finalizeTreeInstructions);
+    finalizeTreeTransaction.feePayer = wallet.publicKey;
+    finalizeTreeTransaction.recentBlockhash = treeBlockhash.blockhash;
 
-  const finalizeSignature = await wallet.sendTransaction(finalizeTransaction, connection, {
+    const finalizeTreeSignature = await wallet.sendTransaction(finalizeTreeTransaction, connection, {
+      skipPreflight: false
+    });
+
+    await waitForSignatureConfirmation(
+      connection,
+      finalizeTreeSignature,
+      treeBlockhash.blockhash,
+      treeBlockhash.lastValidBlockHeight
+    );
+
+    if (process.env.NEXT_PUBLIC_DEBUG_WRAP === 'true') {
+      console.info('[wrap] shield finalize_tree signature', finalizeTreeSignature);
+    }
+    claimState = await fetchShieldClaimState(connection, shieldClaim);
+  }
+
+  const finalizeLedgerInstructions: TransactionInstruction[] = [];
+  if (resolvedComputeLimit > 0) {
+    finalizeLedgerInstructions.push(ComputeBudgetProgram.setComputeUnitLimit({ units: resolvedComputeLimit }));
+  }
+  finalizeLedgerInstructions.push(finalizeLedgerInstruction);
+
+  const finalizeLedgerBlockhash = await connection.getLatestBlockhash('confirmed');
+  const finalizeLedgerTransaction = new Transaction().add(...finalizeLedgerInstructions);
+  finalizeLedgerTransaction.feePayer = wallet.publicKey;
+  finalizeLedgerTransaction.recentBlockhash = finalizeLedgerBlockhash.blockhash;
+
+  const finalizeLedgerSignature = await wallet.sendTransaction(finalizeLedgerTransaction, connection, {
     skipPreflight: false
   });
 
   await waitForSignatureConfirmation(
     connection,
-    finalizeSignature,
-    finalizeBlockhash.blockhash,
-    finalizeBlockhash.lastValidBlockHeight
+    finalizeLedgerSignature,
+    finalizeLedgerBlockhash.blockhash,
+    finalizeLedgerBlockhash.lastValidBlockHeight
   );
+  if (process.env.NEXT_PUBLIC_DEBUG_WRAP === 'true') {
+    console.info('[wrap] shield finalize_ledger signature', finalizeLedgerSignature);
+  }
 
-  return finalizeSignature;
+  const invariantInstructions: TransactionInstruction[] = [];
+  if (resolvedComputeLimit > 0) {
+    invariantInstructions.push(ComputeBudgetProgram.setComputeUnitLimit({ units: resolvedComputeLimit }));
+  }
+  invariantInstructions.push(checkInvariantInstruction);
+
+  const invariantBlockhash = await connection.getLatestBlockhash('confirmed');
+  const invariantTransaction = new Transaction().add(...invariantInstructions);
+  invariantTransaction.feePayer = wallet.publicKey;
+  invariantTransaction.recentBlockhash = invariantBlockhash.blockhash;
+
+  const invariantSignature = await wallet.sendTransaction(invariantTransaction, connection, {
+    skipPreflight: false
+  });
+
+  await waitForSignatureConfirmation(
+    connection,
+    invariantSignature,
+    invariantBlockhash.blockhash,
+    invariantBlockhash.lastValidBlockHeight
+  );
+  if (process.env.NEXT_PUBLIC_DEBUG_WRAP === 'true') {
+    console.info('[wrap] shield invariant signature', invariantSignature);
+  }
+
+  return invariantSignature;
 }
 
 export async function unwrap(params: UnwrapParams): Promise<string> {

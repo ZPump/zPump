@@ -23,6 +23,10 @@ export function deriveHookConfig(originMint: PublicKey): PublicKey {
   return PublicKey.findProgramAddressSync([textEncoder.encode('hooks'), originMint.toBuffer()], POOL_PROGRAM_ID)[0];
 }
 
+export function deriveShieldClaim(pool: PublicKey): PublicKey {
+  return PublicKey.findProgramAddressSync([textEncoder.encode('claim'), pool.toBuffer()], POOL_PROGRAM_ID)[0];
+}
+
 export function deriveVaultState(originMint: PublicKey): PublicKey {
   return PublicKey.findProgramAddressSync([textEncoder.encode('vault'), originMint.toBuffer()], VAULT_PROGRAM_ID)[0];
 }

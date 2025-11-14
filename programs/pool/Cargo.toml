@@ -8,7 +8,7 @@ crate-type = ["cdylib", "lib"]
 name = "ptf_pool"
 
 [dependencies]
-anchor-lang = { workspace = true }
+anchor-lang = { workspace = true, features = ["init-if-needed"] }
 anchor-spl = { workspace = true }
 ptf-common = { path = "../common" }
 ptf-factory = { path = "../factory", features = ["no-entrypoint", "cpi"] }
