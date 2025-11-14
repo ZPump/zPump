@@ -169,7 +169,7 @@ function normalizeBigInt(value: string | number | bigint): bigint {
   if (trimmed.startsWith('0x') || trimmed.startsWith('0X')) {
     return BigInt(trimmed);
   }
-  if (trimmed.startsWith('0x') || trimmed.startsWith('0X')) {
+  if (/^[0-9]+$/.test(trimmed)) {
     return BigInt(trimmed);
   }
   if (/^[0-9a-fA-F]+$/.test(trimmed)) {

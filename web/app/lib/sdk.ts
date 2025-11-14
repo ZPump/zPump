@@ -57,6 +57,12 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function pubkeyToFieldBytes(key: PublicKey): number[] {
+  const bytes = Array.from(key.toBytes());
+  bytes.reverse();
+  return bytes;
+}
+
 async function waitForSignatureConfirmation(
   connection: Connection,
   signature: string,
@@ -395,7 +401,14 @@ export async function unwrap(params: UnwrapParams): Promise<string> {
     throw new Error('Commitment tree account missing on devnet');
   }
 
-  const decodedTree = decodeCommitmentTree(new Uint8Array(commitmentTreeAccount.data));
+  const poolStateAccount = await connection.getAccountInfo(poolStateKey);
+  if (!poolStateAccount) {
+    throw new Error('Pool state account missing on devnet');
+  }
+  const poolStateData = Buffer.from(poolStateAccount.data);
+  const CURRENT_ROOT_OFFSET = 8 + 32 * 8;
+  const currentRootBytes = poolStateData.slice(CURRENT_ROOT_OFFSET, CURRENT_ROOT_OFFSET + 32);
+  const poolRootCanonical = bytesLEToCanonicalHex(currentRootBytes);
 
   const decodedProof = decodeProofPayload(params.proof);
   const ROOT_FIELD_COUNT = 2;
@@ -418,15 +431,32 @@ export async function unwrap(params: UnwrapParams): Promise<string> {
   const nullifierBytes = decodedProof.fields.slice(2, 2 + nullifierCount);
   const changeCommitmentBytes = decodedProof.fields[2 + nullifierCount];
   const changeAmountCommitmentBytes = decodedProof.fields[3 + nullifierCount];
+  const amountFieldBytes = decodedProof.fields[4 + nullifierCount];
+  const feeFieldBytes = decodedProof.fields[5 + nullifierCount];
+  const destinationFieldBytes = decodedProof.fields[6 + nullifierCount];
+  const modeFieldBytes = decodedProof.fields[7 + nullifierCount];
+  const mintFieldBytes = decodedProof.fields[8 + nullifierCount];
+  const poolFieldBytes = decodedProof.fields[9 + nullifierCount];
 
   const oldRootCanonical = bytesLEToCanonicalHex(oldRootBytes);
-  const currentRootCanonical = bytesLEToCanonicalHex(decodedTree.currentRoot);
-  if (oldRootCanonical !== currentRootCanonical) {
+  if (process.env.NEXT_PUBLIC_DEBUG_WRAP === 'true') {
+    // eslint-disable-next-line no-console
+    console.info('[unwrap] old root bytes', {
+      proof: Buffer.from(oldRootBytes).toString('hex'),
+      pool: Buffer.from(currentRootBytes).toString('hex')
+    });
+    // eslint-disable-next-line no-console
+    console.info('[unwrap] new root bytes', {
+      proof: Buffer.from(newRootBytes).toString('hex')
+    });
+  }
+
+  if (oldRootCanonical !== poolRootCanonical) {
     console.warn('[unwrap] root mismatch', {
       oldRootLe: Buffer.from(oldRootBytes).toString('hex'),
-      currentRootLe: Buffer.from(decodedTree.currentRoot).toString('hex'),
+      currentRootLe: Buffer.from(currentRootBytes).toString('hex'),
       oldRootBe: oldRootCanonical,
-      currentRootBe: currentRootCanonical
+      currentRootBe: poolRootCanonical
     });
     throw new Error('Commitment tree root mismatch. Refresh notes and try again.');
   }
@@ -482,6 +512,37 @@ export async function unwrap(params: UnwrapParams): Promise<string> {
 
   const instructions: TransactionInstruction[] = [];
 
+  const unwrapComputeLimitEnv =
+    process.env.UNWRAP_COMPUTE_UNIT_LIMIT ??
+    process.env.NEXT_PUBLIC_UNWRAP_COMPUTE_UNIT_LIMIT ??
+    process.env.WRAP_COMPUTE_UNIT_LIMIT ??
+    process.env.NEXT_PUBLIC_WRAP_COMPUTE_UNIT_LIMIT;
+  const resolvedUnwrapLimit = (() => {
+    if (unwrapComputeLimitEnv) {
+      const parsed = Number(unwrapComputeLimitEnv);
+      if (!Number.isNaN(parsed) && parsed > 0) {
+        return parsed;
+      }
+    }
+    return 1_400_000;
+  })();
+
+  if (resolvedUnwrapLimit > 0) {
+    instructions.push(ComputeBudgetProgram.setComputeUnitLimit({ units: resolvedUnwrapLimit }));
+  }
+
+  const unwrapComputePriceEnv =
+    process.env.UNWRAP_COMPUTE_UNIT_PRICE ??
+    process.env.NEXT_PUBLIC_UNWRAP_COMPUTE_UNIT_PRICE ??
+    process.env.WRAP_COMPUTE_UNIT_PRICE ??
+    process.env.NEXT_PUBLIC_WRAP_COMPUTE_UNIT_PRICE;
+  if (unwrapComputePriceEnv) {
+    const microLamports = Number(unwrapComputePriceEnv);
+    if (!Number.isNaN(microLamports) && microLamports > 0) {
+      instructions.push(ComputeBudgetProgram.setComputeUnitPrice({ microLamports }));
+    }
+  }
+
   const destinationInfo = await connection.getAccountInfo(destinationTokenAccount);
   if (!destinationInfo) {
     instructions.push(
@@ -508,6 +569,62 @@ export async function unwrap(params: UnwrapParams): Promise<string> {
     proof: decodedProof.proof,
     public_inputs: decodedProof.publicInputs
   };
+
+  if (process.env.NEXT_PUBLIC_DEBUG_WRAP === 'true') {
+    const buf = (value: ArrayLike<number>) => Buffer.from(value as Uint8Array | number[]);
+    const compare = (label: string, expected: Uint8Array | number[], actual: number[] | Uint8Array) => {
+      const exp = buf(expected);
+      const act = buf(actual);
+      if (!exp.equals(act)) {
+        // eslint-disable-next-line no-console
+        console.warn(`[unwrap-debug] mismatch ${label}`, { expected: exp.toString('hex'), actual: act.toString('hex') });
+      }
+    };
+    const amountBytes = new Uint8Array(32);
+    new DataView(amountBytes.buffer).setBigUint64(0, BigInt(params.amount), true);
+    const feeBytes = feeFieldBytes;
+    const destinationExpected = pubkeyToFieldBytes(destinationKey);
+    const mintExpected = pubkeyToFieldBytes(originMintKey);
+    const poolExpected = pubkeyToFieldBytes(poolStateKey);
+    const modeBytes = new Uint8Array(32);
+    modeBytes[0] = mode === 'ptkn' ? 1 : 0;
+
+    compare('old_root', oldRootBytes, unshieldArgs.old_root);
+    compare('new_root', newRootBytes, unshieldArgs.new_root);
+    nullifierBytes.forEach((value, idx) => compare(`nullifier[${idx}]`, value, unshieldArgs.nullifiers[idx]!));
+    compare('change_commitment', changeCommitmentBytes, unshieldArgs.output_commitments[0]!);
+    compare('change_amount_commitment', changeAmountCommitmentBytes, unshieldArgs.output_amount_commitments[0]!);
+    compare('amount_bytes', amountFieldBytes, Array.from(amountBytes));
+    compare('fee_bytes', feeFieldBytes, Array.from(feeBytes));
+    compare('destination_bytes', destinationFieldBytes, destinationExpected);
+    compare('mode_bytes', modeFieldBytes, Array.from(modeBytes));
+    compare('mint_bytes', mintFieldBytes, mintExpected);
+    compare('pool_bytes', poolFieldBytes, poolExpected);
+
+    const fieldsCanonical = decodedProof.fields.map((entry) => bytesLEToCanonicalHex(entry));
+    const destinationCanonical = bytesLEToCanonicalHex(buf(destinationExpected));
+    const originMintCanonical = bytesLEToCanonicalHex(buf(mintExpected));
+    const poolCanonical = bytesLEToCanonicalHex(buf(poolExpected));
+    const expectedCanonical: string[] = [
+      bytesLEToCanonicalHex(buf(unshieldArgs.old_root)),
+      bytesLEToCanonicalHex(buf(unshieldArgs.new_root)),
+      ...unshieldArgs.nullifiers.map((entry) => bytesLEToCanonicalHex(buf(entry))),
+      ...unshieldArgs.output_commitments.map((entry) => bytesLEToCanonicalHex(buf(entry))),
+      ...unshieldArgs.output_amount_commitments.map((entry) => bytesLEToCanonicalHex(buf(entry))),
+      bytesLEToCanonicalHex(amountBytes),
+      bytesLEToCanonicalHex(feeBytes),
+      destinationCanonical,
+      bytesLEToCanonicalHex(modeBytes),
+      originMintCanonical,
+      poolCanonical
+    ];
+    // eslint-disable-next-line no-console
+    console.info('[unwrap-debug] fields canonical', fieldsCanonical);
+    // eslint-disable-next-line no-console
+    console.info('[unwrap-debug] expected canonical', expectedCanonical);
+    // eslint-disable-next-line no-console
+    console.info('[unwrap-debug] amount', params.amount.toString(), bytesLEToCanonicalHex(amountBytes));
+  }
 
   const instructionName = mode === 'ptkn' ? 'unshield_to_ptkn' : 'unshield_to_origin';
   const unshieldData = poolCoder.instruction.encode(instructionName, { args: unshieldArgs });

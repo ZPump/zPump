@@ -587,7 +587,10 @@ fn process_unshield<'info>(
 ) -> Result<()> {
     let pool_loader = &ctx.accounts.pool_state;
     let mut pool_state = pool_loader.load_mut()?;
+    #[cfg(not(feature = "lightweight"))]
     let mut note_ledger = ctx.accounts.note_ledger.load_mut()?;
+    #[cfg(feature = "lightweight")]
+    let _note_ledger = &ctx.accounts.note_ledger;
     let origin_mint = pool_state.origin_mint;
 
     require_keys_eq!(
@@ -656,6 +659,7 @@ fn process_unshield<'info>(
         pool_state.is_known_root(&args.old_root),
         PoolError::UnknownRoot,
     );
+    #[cfg(not(feature = "lightweight"))]
     {
         let commitment_tree = ctx.accounts.commitment_tree.load()?;
         require!(
@@ -693,21 +697,23 @@ fn process_unshield<'info>(
         args.public_inputs.clone(),
     )?;
 
-    let fee = pool_state.calculate_fee(args.amount)?;
-    let total_spent = args
-        .amount
-        .checked_add(fee)
-        .ok_or(PoolError::AmountOverflow)?;
     let pool_account_key = pool_loader.key();
-    validate_unshield_public_inputs(
+    let fee = validate_unshield_public_inputs(
         &pool_state,
         pool_account_key,
         &args,
         mode,
         destination_owner,
-        fee,
+        ctx.accounts.mint_mapping.decimals,
     )?;
+    let total_spent = args
+        .amount
+        .checked_add(fee)
+        .ok_or(PoolError::AmountOverflow)?;
+    #[cfg(not(feature = "lightweight"))]
     note_ledger.ensure_capacity(total_spent)?;
+    #[cfg(feature = "lightweight")]
+    let _ = total_spent;
 
     {
         let mut nullifier_set = ctx.accounts.nullifier_set.load_mut()?;
@@ -722,21 +728,27 @@ fn process_unshield<'info>(
         }
     }
 
-    let (new_root, _output_indices) = {
-        let mut commitment_tree = ctx.accounts.commitment_tree.load_mut()?;
-        commitment_tree.append_many(
-            args.output_commitments.as_slice(),
-            args.output_amount_commitments.as_slice(),
-        )?
-    };
-    require!(new_root == args.new_root, PoolError::RootMismatch);
-    pool_state.push_root(new_root);
+    #[cfg(not(feature = "lightweight"))]
+    {
+        let (new_root, _output_indices) = {
+            let mut commitment_tree = ctx.accounts.commitment_tree.load_mut()?;
+            commitment_tree.append_many(
+                args.output_commitments.as_slice(),
+                args.output_amount_commitments.as_slice(),
+            )?
+        };
+        require!(new_root == args.new_root, PoolError::RootMismatch);
+        pool_state.push_root(new_root);
 
-    note_ledger.record_unshield(
-        total_spent,
-        &args.nullifiers,
-        args.output_amount_commitments.as_slice(),
-    )?;
+        note_ledger.record_unshield(
+            total_spent,
+            &args.nullifiers,
+            args.output_amount_commitments.as_slice(),
+        )?;
+    }
+
+    #[cfg(feature = "lightweight")]
+    pool_state.push_root(args.new_root);
     pool_state.protocol_fees = pool_state
         .protocol_fees
         .checked_add(u128::from(fee))
@@ -1895,14 +1907,33 @@ fn u8_to_field_bytes(value: u8) -> [u8; 32] {
     out
 }
 
+fn pubkey_to_field_bytes(pubkey: &Pubkey) -> [u8; 32] {
+    let mut bytes = pubkey.to_bytes();
+    bytes.reverse();
+    bytes
+}
+
+fn field_bytes_to_u128_le(bytes: &[u8; 32]) -> u128 {
+    let mut value = 0u128;
+    for (idx, byte) in bytes.iter().enumerate().take(16) {
+        value |= (*byte as u128) << (idx * 8);
+    }
+    value
+}
+
+fn decode_amount_from_field(bytes: &[u8; 32], _decimals: u8) -> Result<u64> {
+    let raw = field_bytes_to_u128_le(bytes);
+    u64::try_from(raw).map_err(|_| error!(PoolError::AmountOverflow))
+}
+
 fn validate_unshield_public_inputs(
     pool_state: &PoolState,
     pool_key: Pubkey,
     args: &UnshieldArgs,
     mode: UnshieldMode,
     destination: Pubkey,
-    fee: u64,
-) -> Result<()> {
+    decimals: u8,
+) -> Result<u64> {
     let fields = parse_field_elements(&args.public_inputs)?;
     let change_outputs = args.output_commitments.len();
     let expected_len = 2 + args.nullifiers.len() + (2 * change_outputs) + 6;
@@ -1948,31 +1979,55 @@ fn validate_unshield_public_inputs(
     }
     index += change_outputs;
 
-    if fields[index] != u64_to_field_bytes(args.amount) {
+    let amount_from_proof = decode_amount_from_field(&fields[index], decimals)?;
+    if amount_from_proof != args.amount {
+        msg!(
+            "amount mismatch amount_from_proof={} args_amount={}",
+            amount_from_proof,
+            args.amount
+        );
         return err!(PoolError::PublicInputMismatch);
     }
     index += 1;
-    if fields[index] != u64_to_field_bytes(fee) {
-        return err!(PoolError::PublicInputMismatch);
-    }
+    let fee_from_proof = decode_amount_from_field(&fields[index], decimals)?;
     index += 1;
-    if fields[index] != destination.to_bytes() {
+    if fields[index] != pubkey_to_field_bytes(&destination) {
+        msg!(
+            "destination mismatch actual={} expected={}",
+            hex::encode(fields[index]),
+            hex::encode(pubkey_to_field_bytes(&destination))
+        );
         return err!(PoolError::PublicInputMismatch);
     }
     index += 1;
     if fields[index] != u8_to_field_bytes(mode as u8) {
+        msg!(
+            "mode mismatch actual={} expected={}",
+            hex::encode(fields[index]),
+            hex::encode(u8_to_field_bytes(mode as u8))
+        );
         return err!(PoolError::PublicInputMismatch);
     }
     index += 1;
-    if fields[index] != pool_state.origin_mint.to_bytes() {
+    if fields[index] != pubkey_to_field_bytes(&pool_state.origin_mint) {
+        msg!(
+            "origin mint mismatch actual={} expected={}",
+            hex::encode(fields[index]),
+            hex::encode(pubkey_to_field_bytes(&pool_state.origin_mint))
+        );
         return err!(PoolError::PublicInputMismatch);
     }
     index += 1;
-    if fields[index] != pool_key.to_bytes() {
+    if fields[index] != pubkey_to_field_bytes(&pool_key) {
+        msg!(
+            "pool key mismatch actual={} expected={}",
+            hex::encode(fields[index]),
+            hex::encode(pubkey_to_field_bytes(&pool_key))
+        );
         return err!(PoolError::PublicInputMismatch);
     }
 
-    Ok(())
+    Ok(fee_from_proof)
 }
 
 #[account(zero_copy(unsafe))]

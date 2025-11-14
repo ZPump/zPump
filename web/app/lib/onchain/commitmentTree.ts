@@ -28,6 +28,8 @@ export function decodeCommitmentTree(accountData: Uint8Array): CommitmentTreeSta
 
   const canopyDepth = accountData[offset];
   offset += 1;
+  // Struct is #[repr(C)] with u8 followed by u64, so skip alignment padding.
+  offset += 7;
 
   const nextIndex = bytesToBigIntLE(accountData.slice(offset, offset + U64_SIZE));
   offset += U64_SIZE;
