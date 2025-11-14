@@ -78,9 +78,11 @@ export default function WhitepaperPage() {
             a program-controlled vault and receive a private note in the shielded pool. Inside the pool, movements are proven
             with zero-knowledge proofs so observers can’t learn who sent what. When you want to go public again, you unshield
             back to the original mint—or, if governance enables it, to a public twin that always stays 1:1 backed by the vault.
-            The system now runs its full security profile (Merkle digests, note digests, and invariant checks) inside Solana’s
-            1.4M compute unit budget thanks to a SHA-256 commitment tree and a staged finalize pipeline. Relayer hooks remain
-            wired in for future upgrades.
+            That twin path is our migration ramp into Token-2022 Confidential Transfer (or future wrapped rails): the vault keeps
+            custody of the origin mint while governance can mint a CT-capable twin that mirrors supply exactly. The system now
+            runs its full security profile (Merkle digests, note digests, and invariant checks) inside Solana’s 1.4M compute unit
+            budget thanks to a SHA-256 commitment tree and a staged finalize pipeline. Relayer hooks remain wired in for future
+            upgrades.
           </Text>
         </Section>
 
@@ -247,7 +249,10 @@ export default function WhitepaperPage() {
           <Heading size="md">Unshield (private → public)</Heading>
           <UnorderedList spacing={2}>
             <ListItem>To Origin: prove ownership of notes; pool instructs Vault to release M (minus fees).</ListItem>
-            <ListItem>To Twin: receive P(M) 1:1 in the public wallet for open trading.</ListItem>
+            <ListItem>
+              To Twin: receive P(M) 1:1 in the public wallet for open trading or migration into Token-2022 Confidential Transfer
+              while the origin mint stays parked in the vault.
+            </ListItem>
           </UnorderedList>
         </Section>
 
