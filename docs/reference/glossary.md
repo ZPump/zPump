@@ -22,7 +22,7 @@ A quick reference for terminology used throughout the zPump project.
 | **Proof RPC** | Service generating Groth16 proofs, canonicalising inputs, and returning base64 proof + public inputs. |
 | **ptkn (Privacy Token)** | Optional twin mint representing shielded liquidity in public form. Minted by `ptf_factory::mint_ptkn`. |
 | **Shield / Wrap** | Converting public tokens into private zTokens (deposit into vault, append commitment). |
-| **Twin Mint** | Token-2022 mint representing privacy twin; optional depending on pool configuration. |
+| **Twin Mint** | Optional Token-2022 mint that mirrors the origin supply 1:1 so governance can bridge shielded exits into features like Confidential Transfer without touching the original mint. |
 | **Unshield / Unwrap** | Converting zTokens back into public tokens (release from vault or mint ptkn). |
 | **View Tag** | Short identifier derived from view key + commitment to filter notes without downloading all ciphertexts. |
 | **zToken** | Shielded representation of an SPL token; balance tracked off-chain via notes. |

@@ -9,7 +9,9 @@ The `ptf_factory` Anchor program manages the registry of pools, origin mints, an
 ## Responsibilities
 
 - Register new mints and attach them to pool PDAs.
-- Persist whether a privacy twin mint is enabled, and if so, track the mint address.
+- Persist whether a privacy twin mint is enabled, and if so, track the mint address. The twin exists primarily as the bridge
+  into Token-2022 Confidential Transfer (or future wrapped rails): the vault keeps custody of the origin mint while governance
+  can issue a CT-capable mirror that always stays 1:1 backed.
 - Provide CPI entry points to mint `ptkn` tokens during unshield operations.
 
 ## Key Accounts & PDAs
