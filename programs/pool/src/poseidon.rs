@@ -14,7 +14,9 @@ const fn fr(limbs: [u64; 4]) -> Fr {
 
 #[inline(always)]
 pub fn hash_two(left: &Fr, right: &Fr) -> Fr {
-    let mut state = [Fr::zero(), *left, *right];
+    let mut state = [Fr::zero(); WIDTH];
+    state[1] = *left;
+    state[2] = *right;
     apply_permutation(&mut state);
     state[0]
 }
@@ -26,33 +28,32 @@ pub fn merkle_zero(level: usize) -> Fr {
 }
 
 fn apply_permutation(state: &mut [Fr; WIDTH]) {
-    let mut round = 0usize;
+    let mut arc_index = 0usize;
 
     for _ in 0..(FULL_ROUNDS / 2) {
-        add_round_constants(state, round);
+        add_round_constants(state, &mut arc_index);
         apply_full_sbox(state);
         apply_mds(state);
-        round += 1;
     }
 
     for _ in 0..PARTIAL_ROUNDS {
-        add_round_constants(state, round);
+        add_round_constants(state, &mut arc_index);
         apply_partial_sbox(state);
         apply_mds(state);
-        round += 1;
     }
 
     for _ in 0..(FULL_ROUNDS / 2) {
-        add_round_constants(state, round);
+        add_round_constants(state, &mut arc_index);
         apply_full_sbox(state);
         apply_mds(state);
-        round += 1;
     }
 }
 
-fn add_round_constants(state: &mut [Fr; WIDTH], round: usize) {
-    for i in 0..WIDTH {
-        state[i] += POSEIDON_ARC[round * WIDTH + i];
+#[inline(always)]
+fn add_round_constants(state: &mut [Fr; WIDTH], arc_index: &mut usize) {
+    for value in state.iter_mut() {
+        *value += POSEIDON_ARC[*arc_index];
+        *arc_index += 1;
     }
 }
 
@@ -66,16 +67,19 @@ fn apply_partial_sbox(state: &mut [Fr; WIDTH]) {
     quintic_pow_in_place(&mut state[0]);
 }
 
+#[inline(always)]
 fn apply_mds(state: &mut [Fr; WIDTH]) {
-    let mut next = [Fr::zero(); WIDTH];
-    for (row_index, row) in POSEIDON_MDS.iter().enumerate() {
-        let mut acc = Fr::zero();
-        for (coeff, value) in row.iter().zip(state.iter()) {
-            acc += *coeff * value;
-        }
-        next[row_index] = acc;
-    }
-    *state = next;
+    let s0 = state[0];
+    let s1 = state[1];
+    let s2 = state[2];
+
+    let row0 = &POSEIDON_MDS[0];
+    let row1 = &POSEIDON_MDS[1];
+    let row2 = &POSEIDON_MDS[2];
+
+    state[0] = row0[0] * s0 + row0[1] * s1 + row0[2] * s2;
+    state[1] = row1[0] * s0 + row1[1] * s1 + row1[2] * s2;
+    state[2] = row2[0] * s0 + row2[1] * s1 + row2[2] * s2;
 }
 
 #[inline(always)]
