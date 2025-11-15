@@ -30,6 +30,7 @@ import {
 import { AnchorProvider, BN, BorshCoder, Idl, Wallet } from '@coral-xyz/anchor';
 import { decodeCommitmentTree } from '../lib/onchain/commitmentTree';
 import { bytesLEToCanonicalHex } from '../lib/onchain/utils';
+import { resolveRepoPath } from '../lib/server/paths';
 
 const PROGRAM_IDS = {
   factory: new PublicKey('4z618BY2dXGqAUiegqDt8omo3e81TSdXRHt64ikX1bTy'),
@@ -51,13 +52,13 @@ const CIRCUIT_TAGS: Record<string, Buffer> = {
   })()
 };
 
-const DEFAULT_MINTS_PATH = path.resolve(__dirname, '..', 'config', 'mints.generated.json');
-const VERIFYING_KEY_DIR = path.resolve(__dirname, '..', '..', '..', 'circuits', 'keys');
+const DEFAULT_MINTS_PATH = resolveRepoPath('web', 'app', 'config', 'mints.generated.json');
+const VERIFYING_KEY_DIR = resolveRepoPath('circuits', 'keys');
 const VERIFYING_KEY_CONFIG: Record<string, string> = {
   shield: 'shield.json',
   unshield: 'unshield.json'
 };
-const TARGET_IDL_DIR = path.resolve(__dirname, '..', '..', '..', 'target', 'idl');
+const TARGET_IDL_DIR = resolveRepoPath('target', 'idl');
 const INDEXER_URL =
   process.env.INDEXER_INTERNAL_URL ??
   process.env.NEXT_PUBLIC_INDEXER_URL ??

@@ -3,6 +3,7 @@ import fs from 'fs/promises';
 import path from 'path';
 import type { MintConfig } from '../../../config/mints';
 import { bootstrapPrivateDevnet } from '../../../scripts/bootstrap-private-devnet';
+import { getRepoRoot, resolveRepoPath } from '../../../lib/server/paths';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -20,8 +21,8 @@ interface GeneratedMint {
   lookupTable?: string | null;
 }
 
-const PROJECT_ROOT = path.resolve(process.cwd());
-const MINTS_PATH = path.join(PROJECT_ROOT, 'config', 'mints.generated.json');
+const PROJECT_ROOT = getRepoRoot();
+const MINTS_PATH = resolveRepoPath('web', 'app', 'config', 'mints.generated.json');
 const PLACEHOLDER_ORIGIN = 'Mint111111111111111111111111111111111111111';
 const PLACEHOLDER_POOL = 'Pool111111111111111111111111111111111111111';
 
