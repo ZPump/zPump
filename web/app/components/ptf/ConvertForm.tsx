@@ -33,6 +33,7 @@ import { poseidonHashMany } from '../../lib/onchain/poseidon';
 import { formatBaseUnitsToUi } from '../../lib/format';
 import { useMintCatalog } from '../providers/MintCatalogProvider';
 import { recordWalletActivity } from '../../lib/client/activityLog';
+import { useLocalWallet } from '../wallet/LocalWalletContext';
 
 type ConvertMode = 'to-private' | 'to-public';
 
@@ -148,6 +149,7 @@ function parseOptionalUiAmountToBaseUnits(value: string, decimals: number, label
 export function ConvertForm() {
   const { connection } = useConnection();
   const wallet = useWallet();
+  const { viewingId } = useLocalWallet();
   const { mints, loading: mintCatalogLoading, error: mintCatalogError } = useMintCatalog();
 
   const [mode, setMode] = useState<ConvertMode>('to-private');
@@ -875,7 +877,7 @@ export function ConvertForm() {
             symbol: mintConfig?.symbol ?? originMint.slice(0, 6),
             amount: displayAmount,
             timestamp: Date.now()
-          });
+          }, { viewId: viewingId ?? undefined });
         }
         await refreshTokenOptions();
       } else {
@@ -1070,7 +1072,7 @@ export function ConvertForm() {
             symbol: targetSymbol,
             amount: displayAmount,
             timestamp: Date.now()
-          });
+          }, { viewId: viewingId ?? undefined });
         }
         await refreshTokenOptions();
       }

@@ -62,6 +62,21 @@ export interface IndexerSyncResult {
   };
 }
 
+export interface IndexerActivityEntry {
+  id: string;
+  type: 'wrap' | 'unwrap';
+  signature: string;
+  symbol: string;
+  amount: string;
+  timestamp: number;
+}
+
+export interface IndexerActivityResult {
+  viewId: string;
+  entries: IndexerActivityEntry[];
+  source?: string;
+}
+
 export class IndexerClient {
   private readonly baseUrl: string;
   private readonly apiKey?: string;
@@ -227,6 +242,35 @@ export class IndexerClient {
   }
 
   async adjustBalance(wallet: string, mint: string, delta: bigint): Promise<Record<string, string>> {
+  async getActivity(viewId: string): Promise<IndexerActivityResult | null> {
+    const payload = await this.request(`/activity/${viewId}`);
+    if (!payload) {
+      return null;
+    }
+    return this.parseActivity(payload, viewId);
+  }
+
+  async appendActivity(viewId: string, entry: IndexerActivityEntry): Promise<IndexerActivityResult> {
+    const url = this.buildUrl(`/activity/${viewId}`);
+    const headers: HeadersInit = {
+      Accept: 'application/json',
+      'Content-Type': 'application/json'
+    };
+    if (this.apiKey) {
+      headers['x-ptf-api-key'] = this.apiKey;
+    }
+    const response = await this.fetchImpl(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(entry)
+    });
+    const payload = await response.json().catch(() => null);
+    if (!response.ok || !payload) {
+      throw new Error(`Indexer error: ${response.status} ${response.statusText}`);
+    }
+    return this.parseActivity(payload, viewId);
+  }
+
     if (!wallet || !mint || delta === 0n) {
       return {};
     }
@@ -340,6 +384,56 @@ export class IndexerClient {
       }
     }
     throw new Error('Unexpected indexer nullifiers payload');
+  }
+
+  private parseActivity(payload: unknown, fallbackViewId: string): IndexerActivityResult {
+    if (payload && typeof payload === 'object') {
+      const entry = payload as Record<string, unknown>;
+      const entries = this.normaliseActivityEntries(entry.entries);
+      if (entries) {
+        return {
+          viewId: typeof entry.viewId === 'string' ? entry.viewId : fallbackViewId,
+          entries,
+          source: typeof entry.source === 'string' ? entry.source : undefined
+        };
+      }
+    }
+    throw new Error('Unexpected indexer activity payload');
+  }
+
+  private normaliseActivityEntries(value: unknown): IndexerActivityEntry[] | null {
+    if (!Array.isArray(value)) {
+      return null;
+    }
+    const entries: IndexerActivityEntry[] = [];
+    for (const item of value) {
+      if (!item || typeof item !== 'object') {
+        return null;
+      }
+      const entry = item as Record<string, unknown>;
+      if (
+        typeof entry.id !== 'string' ||
+        typeof entry.type !== 'string' ||
+        typeof entry.signature !== 'string' ||
+        typeof entry.symbol !== 'string' ||
+        typeof entry.amount !== 'string' ||
+        typeof entry.timestamp !== 'number'
+      ) {
+        return null;
+      }
+      if (entry.type !== 'wrap' && entry.type !== 'unwrap') {
+        return null;
+      }
+      entries.push({
+        id: entry.id,
+        type: entry.type,
+        signature: entry.signature,
+        symbol: entry.symbol,
+        amount: entry.amount,
+        timestamp: entry.timestamp
+      });
+    }
+    return entries;
   }
 
   private parseNotes(payload: unknown, fallbackViewKey: string): IndexerNoteResult {

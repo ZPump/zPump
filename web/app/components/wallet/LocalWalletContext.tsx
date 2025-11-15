@@ -17,6 +17,7 @@ import {
   WalletStorageState,
   writeWalletState
 } from '../../lib/wallet/storage';
+import { deriveViewingKey } from '../../lib/wallet/viewingKey';
 
 interface LocalWalletAccount extends StoredAccount {}
 
@@ -24,6 +25,8 @@ interface LocalWalletContextValue {
   ready: boolean;
   accounts: LocalWalletAccount[];
   activeAccount: LocalWalletAccount | null;
+  viewingKey: string | null;
+  viewingId: string | null;
   selectAccount(id: string): void;
   createAccount(label?: string): void;
   importAccount(secretKey: string, label?: string): void;
@@ -78,11 +81,24 @@ export function LocalWalletProvider({ adapter, children }: LocalWalletProviderPr
     }
   }, [activeAccount, adapter, wallet]);
 
+  const viewingInfo = useMemo(() => {
+    if (!activeAccount?.secretKey) {
+      return { viewKey: null, viewId: null };
+    }
+    const info = deriveViewingKey(activeAccount.secretKey);
+    if (!info) {
+      return { viewKey: null, viewId: null };
+    }
+    return info;
+  }, [activeAccount?.secretKey]);
+
   const value = useMemo<LocalWalletContextValue>(
     () => ({
       ready: Boolean(activeAccount),
       accounts: state.accounts,
       activeAccount,
+      viewingKey: viewingInfo.viewKey,
+      viewingId: viewingInfo.viewId,
       selectAccount: (id) => setState((prev) => setActiveAccount(prev, id)),
       createAccount: (label) => setState((prev) => addAccount(prev, label)),
       importAccount: (secretKey, label) =>
@@ -90,7 +106,7 @@ export function LocalWalletProvider({ adapter, children }: LocalWalletProviderPr
       renameAccount: (id, label) => setState((prev) => renameAccountStorage(prev, id, label)),
       deleteAccount: (id) => setState((prev) => deleteAccountStorage(prev, id))
     }),
-    [activeAccount, state.accounts]
+    [activeAccount, state.accounts, viewingInfo.viewKey, viewingInfo.viewId]
   );
 
   return <LocalWalletContext.Provider value={value}>{children}</LocalWalletContext.Provider>;

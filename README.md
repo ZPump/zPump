@@ -27,6 +27,8 @@ The README focuses on high-level onboarding. Deep dives live in [`docs/`](docs/R
 
 3. **Visit the dApp** at [http://localhost:3000/convert](http://localhost:3000/convert). Use the faucet page to mint origin tokens (e.g. USDC) and test shield/unshield flows.
 
+   Wallet activity has two modes: the default `local` helper writes events to `web/app/wallet-activity.json`, while `private` mode derives a viewing key from the wallet seed and stores activity in the Photon indexer via `/activity/:viewId`. Switch modes by exporting `NEXT_PUBLIC_WALLET_ACTIVITY_MODE` (and `WALLET_ACTIVITY_MODE` for server code) before `npm run build`. The reset script clears both storage locations so swapping modes is frictionless.
+
 > **Note:** The `ptf_pool` program now runs with all security flags enabled (`full_tree`, `note_digests`, `invariant_checks`). We replaced the on-chain Merkle tree with SHA-256 hashing and split wrap finalisation into several low-cost instructions so the entire flow fits comfortably under the 1.4 M CU limit. The legacy “lightweight” flag remains for regression testing but is no longer required for day-to-day work.
 
 ---

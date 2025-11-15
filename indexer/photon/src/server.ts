@@ -37,6 +37,10 @@ function normalizeMintKey(mint: string): string {
   return mint.trim();
 }
 
+function normalizeViewId(value: string): string {
+  return value.trim().toLowerCase();
+}
+
 function parseOptionalNumber(value: unknown): number | undefined {
   if (typeof value === 'string' && value.trim().length > 0) {
     const parsed = Number(value);
@@ -106,16 +110,29 @@ const BalanceDeltaSchema = z.object({
   delta: z.string()
 });
 
+const ActivityEntrySchema = z.object({
+  id: z.string(),
+  type: z.enum(['wrap', 'unwrap']),
+  signature: z.string(),
+  symbol: z.string(),
+  amount: z.string(),
+  timestamp: z.number()
+});
+
 const SnapshotSchema = z.object({
   roots: z.record(RootResponseSchema).default({}),
   nullifiers: z.record(z.array(z.string())).default({}),
   notes: z.record(z.array(NoteSchema)).default({}),
-  balances: z.record(z.record(z.string())).default({})
+  balances: z.record(z.record(z.string())).default({}),
+  activity: z.record(z.array(ActivityEntrySchema)).default({})
 });
 
 type RootResponse = z.infer<typeof RootResponseSchema>;
 type Note = z.infer<typeof NoteSchema>;
 type SnapshotShape = z.infer<typeof SnapshotSchema>;
+type ActivityEntry = z.infer<typeof ActivityEntrySchema>;
+
+const MAX_ACTIVITY_ENTRIES = 50;
 
 class StateStore {
   private snapshotPath: string;
@@ -185,6 +202,25 @@ class StateStore {
 
   getBalances(wallet: string): Record<string, string> {
     return { ...(this.state?.balances[wallet] ?? {}) };
+  }
+
+  getActivity(viewId: string): ActivityEntry[] {
+    const key = normalizeViewId(viewId);
+    const entries = this.state?.activity?.[key] ?? [];
+    return [...entries];
+  }
+
+  appendActivity(viewId: string, entry: ActivityEntry): ActivityEntry[] {
+    const state = this.ensureState();
+    const key = normalizeViewId(viewId);
+    const existing = state.activity[key] ?? [];
+    const deduped = existing.filter((item) => item.id !== entry.id);
+    const next = [entry, ...deduped];
+    if (next.length > MAX_ACTIVITY_ENTRIES) {
+      next.length = MAX_ACTIVITY_ENTRIES;
+    }
+    state.activity[key] = next;
+    return next;
   }
 
   upsertRoots(mint: string, payload: RootResponse): void {
@@ -288,10 +324,16 @@ class StateStore {
     for (const [viewKey, notes] of Object.entries(state.notes ?? {})) {
       canonicalNotes[viewKey] = notes.map((note) => canonicalizeNote(note));
     }
+    const canonicalActivity: Record<string, ActivityEntry[]> = {};
+    for (const [viewId, entries] of Object.entries(state.activity ?? {})) {
+      const key = normalizeViewId(viewId);
+      canonicalActivity[key] = entries.map((entry) => ActivityEntrySchema.parse(entry));
+    }
     return {
       ...state,
       roots: canonicalRoots,
-      notes: canonicalNotes
+      notes: canonicalNotes,
+      activity: canonicalActivity
     };
   }
 }
@@ -636,6 +678,41 @@ async function bootstrap() {
       }
       logger.error({ err: error, mint }, 'failed to assemble sync payload');
       res.status(502).json({ error: 'upstream_failed' });
+    }
+  });
+
+  app.get('/activity/:viewId', (req, res) => {
+    const viewId = req.params.viewId;
+    if (!viewId) {
+      res.status(400).json({ error: 'view_id_required' });
+      return;
+    }
+    try {
+      const entries = store.getActivity(viewId);
+      res.json({ viewId: normalizeViewId(viewId), entries, source: 'local' });
+    } catch (error) {
+      logger.error({ err: error, viewId }, 'failed to read activity log');
+      res.status(500).json({ error: 'internal_error' });
+    }
+  });
+
+  app.post('/activity/:viewId', (req, res) => {
+    const viewId = req.params.viewId;
+    if (!viewId) {
+      res.status(400).json({ error: 'view_id_required' });
+      return;
+    }
+    const parsed = ActivityEntrySchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: 'invalid_payload' });
+      return;
+    }
+    try {
+      const entries = store.appendActivity(viewId, parsed.data);
+      res.json({ viewId: normalizeViewId(viewId), entries, source: 'local' });
+    } catch (error) {
+      logger.error({ err: error, viewId }, 'failed to append activity entry');
+      res.status(500).json({ error: 'internal_error' });
     }
   });
 
