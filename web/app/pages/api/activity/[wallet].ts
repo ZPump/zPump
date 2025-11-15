@@ -5,6 +5,7 @@ import {
   WalletActivityRecord,
   WalletActivityType
 } from '../../../lib/server/activityLog';
+import { WALLET_ACTIVITY_MODE } from '../../../lib/env';
 
 function validateType(value: unknown): value is WalletActivityType {
   return value === 'wrap' || value === 'unwrap';
@@ -16,6 +17,11 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
   if (!wallet || typeof wallet !== 'string') {
     res.status(400).json({ error: 'wallet_required' });
+    return;
+  }
+
+  if (WALLET_ACTIVITY_MODE !== 'local') {
+    res.status(404).json({ error: 'activity_log_disabled' });
     return;
   }
 

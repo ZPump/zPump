@@ -15,6 +15,7 @@ The script performs the full reset:
 - Wipes the ledger at `~/.local/share/zpump-devnet-ledger` and resets Photon snapshots.
 - Re-establishes required symlinks (`services/circuits -> ../circuits`).
 - Restarts the validator via systemd (falling back to PM2 if the service is not installed), waits for RPC health, reinstalls Photon/Proof RPC deps, reruns the bootstrap script, relaunches `ptf-indexer`, `ptf-proof`, and `ptf-web` under PM2, and executes the wrap/unwrap smoke test (`npx tsx scripts/wrap-unwrap-local.ts`) to verify register/mint/shield/unshield flows. Export `RUN_SMOKE_TESTS=false` to skip the smoke test.
+- Clears both wallet-activity logs: the local helper file at `web/app/wallet-activity.json` and the Photon snapshot (which now stores private-mode history keyed by viewing IDs) so that switching between modes always starts from a clean slate.
 
 This one-shot reset prevents mismatched commitment tree and pool roots (see [Root Drift Playbook](../operations/root-drift.md)).
 
@@ -79,6 +80,22 @@ After the reset you can bring new test assets online directly from the faucet UI
 - Open the Convert page (default `http://localhost:3000/convert`).
 - If using the bundled simulation wallet, connect via the in-browser wallet provider.
 - For real wallets (e.g. Phantom) ensure the RPC endpoint is reachable (tunnel or LAN).
+
+### Wallet activity modes
+
+Use the `NEXT_PUBLIC_WALLET_ACTIVITY_MODE` (and matching server-side `WALLET_ACTIVITY_MODE`) env var to pick how conversion history is recorded:
+
+- `local` (default): successful wrap/unwraps are written to `web/app/wallet-activity.json` via the existing Next API, which is convenient for demos but exposes entries to anyone with access to the API route.
+- `private`: the client derives a deterministic viewing key from the wallet secret, hashes it into a viewing ID, and stores activity inside the Photon indexer (`/activity/:viewId`). Only the hashed viewing ID ever leaves the browser. The wallet drawer fetches history through `/api/indexer/activity/[viewId]` and decrypts everything client-side.
+
+Set both env vars before building/starting the app:
+
+```bash
+export NEXT_PUBLIC_WALLET_ACTIVITY_MODE=private
+export WALLET_ACTIVITY_MODE=private
+```
+
+`./scripts/reset-dev-env.sh` wipes the helper JSON file *and* the Photon snapshot, so toggling modes or re-running the smoke test won’t leak stale history between modes.
 
 ## 6. Faucet Usage
 

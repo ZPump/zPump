@@ -92,8 +92,16 @@ const TRANSACTION_LIMIT = 10;
 function WalletDrawerContent({ disclosure }: { disclosure: ReturnType<typeof useDisclosure> }) {
   const toast = useToast();
   const { connection } = useConnection();
-  const { accounts, activeAccount, selectAccount, createAccount, importAccount, renameAccount, deleteAccount } =
-    useLocalWallet();
+  const {
+    accounts,
+    activeAccount,
+    viewingId,
+    selectAccount,
+    createAccount,
+    importAccount,
+    renameAccount,
+    deleteAccount
+  } = useLocalWallet();
   const [balances, setBalances] = useState<TokenBalance[]>([]);
   const [privateBalances, setPrivateBalances] = useState<Record<string, string>>({});
   const [transactions, setTransactions] = useState<TransactionEntry[]>([]);
@@ -329,21 +337,18 @@ function WalletDrawerContent({ disclosure }: { disclosure: ReturnType<typeof use
     void loadPrivateBalances(activeAccount.publicKey);
   }, [activeAccount, loadPrivateBalances]);
 
-  const loadActivity = useCallback(
-    async () => {
-      if (!activeAccount) {
-        setActivityLog([]);
-        return;
-      }
-      try {
-        const entries = await fetchWalletActivity(activeAccount.publicKey);
-        setActivityLog(entries);
-      } catch (error) {
-        console.warn('[wallet drawer] failed to load conversion activity', error);
-      }
-    },
-    [activeAccount]
-  );
+  const loadActivity = useCallback(async () => {
+    if (!activeAccount) {
+      setActivityLog([]);
+      return;
+    }
+    try {
+      const entries = await fetchWalletActivity(activeAccount.publicKey, { viewId: viewingId ?? undefined });
+      setActivityLog(entries);
+    } catch (error) {
+      console.warn('[wallet drawer] failed to load conversion activity', error);
+    }
+  }, [activeAccount, viewingId]);
 
   useEffect(() => {
     void loadActivity();
@@ -438,7 +443,7 @@ function WalletDrawerContent({ disclosure }: { disclosure: ReturnType<typeof use
         <DrawerBody py={6}>
           <Stack spacing={8}>
             <Stack spacing={4}>
-            {activityLog.length > 0 && (
+            {usesLocalActivity && activityLog.length > 0 && (
               <Stack spacing={3}>
                 <Flex align="center" justify="space-between">
                   <Text fontSize="sm" color="whiteAlpha.600" textTransform="uppercase" letterSpacing="0.08em">
