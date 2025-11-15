@@ -83,17 +83,10 @@ After the reset you can bring new test assets online directly from the faucet UI
 
 ### Wallet activity modes
 
-Use the `NEXT_PUBLIC_WALLET_ACTIVITY_MODE` (and matching server-side `WALLET_ACTIVITY_MODE`) env var to pick how conversion history is recorded:
+Use the `NEXT_PUBLIC_WALLET_ACTIVITY_MODE` (and matching server-side `WALLET_ACTIVITY_MODE`) env var to pick how conversion history is recorded. We now default to the **private** path:
 
-- `local` (default): successful wrap/unwraps are written to `web/app/wallet-activity.json` via the existing Next API, which is convenient for demos but exposes entries to anyone with access to the API route.
-- `private`: the client derives a deterministic viewing key from the wallet secret, hashes it into a viewing ID, and stores activity inside the Photon indexer (`/activity/:viewId`). Only the hashed viewing ID ever leaves the browser. The wallet drawer fetches history through `/api/indexer/activity/[viewId]` and decrypts everything client-side.
-
-Set both env vars before building/starting the app:
-
-```bash
-export NEXT_PUBLIC_WALLET_ACTIVITY_MODE=private
-export WALLET_ACTIVITY_MODE=private
-```
+- `private` (default): the client derives a deterministic viewing key from the wallet secret, hashes it into a viewing ID, and stores activity inside the Photon indexer (`/activity/:viewId`). Only the hashed viewing ID ever leaves the browser. The wallet drawer fetches history through `/api/indexer/activity/[viewId]` and decrypts everything client-side.
+- `local`: successful wrap/unwraps are written to `web/app/wallet-activity.json` via the existing Next API, which is convenient for demos but exposes entries to anyone with filesystem/API access. Enable this only if you explicitly set both env vars to `local` before building.
 
 `./scripts/reset-dev-env.sh` wipes the helper JSON file *and* the Photon snapshot, so toggling modes or re-running the smoke test won’t leak stale history between modes.
 

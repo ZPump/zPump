@@ -443,7 +443,7 @@ function WalletDrawerContent({ disclosure }: { disclosure: ReturnType<typeof use
         <DrawerBody py={6}>
           <Stack spacing={8}>
             <Stack spacing={4}>
-            {usesLocalActivity && activityLog.length > 0 && (
+            {activityLog.length > 0 && (
               <Stack spacing={3}>
                 <Flex align="center" justify="space-between">
                   <Text fontSize="sm" color="whiteAlpha.600" textTransform="uppercase" letterSpacing="0.08em">
