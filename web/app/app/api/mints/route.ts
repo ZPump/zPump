@@ -21,11 +21,16 @@ interface GeneratedMint {
 }
 
 const PROJECT_ROOT = path.resolve(process.cwd());
-const MINTS_PATH = path.join(PROJECT_ROOT, 'web', 'app', 'config', 'mints.generated.json');
+const MINTS_PATH = path.join(PROJECT_ROOT, 'config', 'mints.generated.json');
 const PLACEHOLDER_ORIGIN = 'Mint111111111111111111111111111111111111111';
 const PLACEHOLDER_POOL = 'Pool111111111111111111111111111111111111111';
 
 let bootstrapInFlight = false;
+
+function isLocalFaucetMode(): boolean {
+  const mode = process.env.FAUCET_MODE ?? process.env.NEXT_PUBLIC_FAUCET_MODE ?? 'local';
+  return mode === 'local';
+}
 
 function mapGeneratedMint(entry: GeneratedMint): MintConfig {
   return {
@@ -69,7 +74,7 @@ interface CreateMintPayload {
 }
 
 export async function POST(request: Request) {
-  if (process.env.NEXT_PUBLIC_FAUCET_MODE !== 'local') {
+  if (!isLocalFaucetMode()) {
     return NextResponse.json({ error: 'mint_registration_disabled' }, { status: 403 });
   }
 
