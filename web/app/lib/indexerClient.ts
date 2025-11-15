@@ -242,35 +242,6 @@ export class IndexerClient {
   }
 
   async adjustBalance(wallet: string, mint: string, delta: bigint): Promise<Record<string, string>> {
-  async getActivity(viewId: string): Promise<IndexerActivityResult | null> {
-    const payload = await this.request(`/activity/${viewId}`);
-    if (!payload) {
-      return null;
-    }
-    return this.parseActivity(payload, viewId);
-  }
-
-  async appendActivity(viewId: string, entry: IndexerActivityEntry): Promise<IndexerActivityResult> {
-    const url = this.buildUrl(`/activity/${viewId}`);
-    const headers: HeadersInit = {
-      Accept: 'application/json',
-      'Content-Type': 'application/json'
-    };
-    if (this.apiKey) {
-      headers['x-ptf-api-key'] = this.apiKey;
-    }
-    const response = await this.fetchImpl(url, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(entry)
-    });
-    const payload = await response.json().catch(() => null);
-    if (!response.ok || !payload) {
-      throw new Error(`Indexer error: ${response.status} ${response.statusText}`);
-    }
-    return this.parseActivity(payload, viewId);
-  }
-
     if (!wallet || !mint || delta === 0n) {
       return {};
     }
@@ -304,6 +275,35 @@ export class IndexerClient {
     return {};
   }
 
+  async getActivity(viewId: string): Promise<IndexerActivityResult | null> {
+    const payload = await this.request(`/activity/${viewId}`);
+    if (!payload) {
+      return null;
+    }
+    return this.parseActivity(payload, viewId);
+  }
+
+  async appendActivity(viewId: string, entry: IndexerActivityEntry): Promise<IndexerActivityResult> {
+    const url = this.buildUrl(`/activity/${viewId}`);
+    const headers: HeadersInit = {
+      Accept: 'application/json',
+      'Content-Type': 'application/json'
+    };
+    if (this.apiKey) {
+      headers['x-ptf-api-key'] = this.apiKey;
+    }
+    const response = await this.fetchImpl(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(entry)
+    });
+    const payload = await response.json().catch(() => null);
+    if (!response.ok || !payload) {
+      throw new Error(`Indexer error: ${response.status} ${response.statusText}`);
+    }
+    return this.parseActivity(payload, viewId);
+  }
+
   private async request(path: string): Promise<unknown | null> {
     const url = this.buildUrl(path);
     const headers: HeadersInit = {
@@ -323,12 +323,13 @@ export class IndexerClient {
   }
 
   private buildUrl(path: string): string {
+    const normalizedPath = path.startsWith('/') ? path.slice(1) : path;
     if (this.baseUrl.startsWith('http://') || this.baseUrl.startsWith('https://')) {
-      return new URL(path, this.baseUrl).toString();
+      const normalizedBase = this.baseUrl.endsWith('/') ? this.baseUrl.slice(0, -1) : this.baseUrl;
+      return normalizedPath ? `${normalizedBase}/${normalizedPath}` : normalizedBase;
     }
     const normalizedBase = this.baseUrl.endsWith('/') ? this.baseUrl.slice(0, -1) : this.baseUrl;
-    const normalizedPath = path.startsWith('/') ? path : `/${path}`;
-    return `${normalizedBase}${normalizedPath}`;
+    return normalizedPath ? `${normalizedBase}/${normalizedPath}` : normalizedBase;
   }
 
   private parseRoots(payload: unknown, fallbackMint: string): IndexerRootResult {
