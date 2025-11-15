@@ -42,6 +42,7 @@ import { useLocalWallet } from './LocalWalletContext';
 import { formatBaseUnitsToUi } from '../../lib/format';
 import { IndexerClient } from '../../lib/indexerClient';
 import { useMintCatalog } from '../providers/MintCatalogProvider';
+import { getWalletActivity, subscribeToWalletActivity, WalletActivityEntry } from '../../lib/client/activityLog';
 
 interface TokenBalance {
   mint: string;
@@ -92,6 +93,7 @@ function WalletDrawerContent({ disclosure }: { disclosure: ReturnType<typeof use
   const [balances, setBalances] = useState<TokenBalance[]>([]);
   const [privateBalances, setPrivateBalances] = useState<Record<string, string>>({});
   const [transactions, setTransactions] = useState<TransactionEntry[]>([]);
+  const [activityLog, setActivityLog] = useState<WalletActivityEntry[]>([]);
   const [solBalance, setSolBalance] = useState<number>(0);
   const [loadingBalances, setLoadingBalances] = useBoolean(false);
   const [loadingTransactions, setLoadingTransactions] = useBoolean(false);
@@ -323,6 +325,27 @@ function WalletDrawerContent({ disclosure }: { disclosure: ReturnType<typeof use
     void loadPrivateBalances(activeAccount.publicKey);
   }, [activeAccount, loadPrivateBalances]);
 
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return;
+    }
+    const update = () => {
+      setActivityLog(getWalletActivity());
+    };
+    update();
+    const unsubscribe = subscribeToWalletActivity(update);
+    return () => {
+      unsubscribe();
+    };
+  }, []);
+
+  const renderActivityLabel = (entry: WalletActivityEntry) => {
+    if (entry.type === 'wrap') {
+      return `Shielded ${entry.amount} ${entry.symbol}`;
+    }
+    return `Unshielded ${entry.amount} ${entry.symbol}`;
+  };
+
   const privateBalanceEntries = useMemo(() => {
     return Object.entries(privateBalances)
       .map(([mint, amountString]) => {
@@ -396,6 +419,61 @@ function WalletDrawerContent({ disclosure }: { disclosure: ReturnType<typeof use
         <DrawerBody py={6}>
           <Stack spacing={8}>
             <Stack spacing={4}>
+            {activityLog.length > 0 && (
+              <Stack spacing={3}>
+                <Flex align="center" justify="space-between">
+                  <Text fontSize="sm" color="whiteAlpha.600" textTransform="uppercase" letterSpacing="0.08em">
+                    Conversion activity
+                  </Text>
+                  <Button
+                    size="xs"
+                    variant="ghost"
+                    colorScheme="brand"
+                    onClick={() => setActivityLog(getWalletActivity())}
+                  >
+                    Refresh
+                  </Button>
+                </Flex>
+                <Stack spacing={2}>
+                  {activityLog.map((entry) => (
+                    <Box
+                      key={entry.id}
+                      bg="rgba(255,255,255,0.02)"
+                      border="1px solid rgba(255,255,255,0.08)"
+                      rounded="lg"
+                      p={3}
+                    >
+                      <Flex justify="space-between" align="center">
+                        <Text fontSize="sm" fontWeight="semibold" color="whiteAlpha.900">
+                          {renderActivityLabel(entry)}
+                        </Text>
+                        <Text fontSize="xs" color="whiteAlpha.500">
+                          {new Date(entry.timestamp).toLocaleTimeString()}
+                        </Text>
+                      </Flex>
+                      <HStack spacing={2} mt={2} align="center">
+                        <Code fontSize="xs" colorScheme="yellow">
+                          {entry.signature.slice(0, 8)}…{entry.signature.slice(-6)}
+                        </Code>
+                        <Tooltip label="Copy signature">
+                          <IconButton
+                            aria-label="Copy signature"
+                            icon={<Icon as={Copy} boxSize={3} />}
+                            size="xs"
+                            variant="ghost"
+                            onClick={() => {
+                              if (typeof navigator !== 'undefined' && navigator.clipboard) {
+                                navigator.clipboard.writeText(entry.signature).catch(() => undefined);
+                              }
+                            }}
+                          />
+                        </Tooltip>
+                      </HStack>
+                    </Box>
+                  ))}
+                </Stack>
+              </Stack>
+            )}
               <Flex align="center" justify="space-between">
                 <Text fontSize="sm" color="whiteAlpha.600" textTransform="uppercase" letterSpacing="0.08em">
                   Accounts
