@@ -123,6 +123,7 @@ interface WrapParams extends BaseParams {
   commitmentHint?: string | null;
   recipient?: string;
   twinMint?: string | null;
+  lookupTable?: string;
 }
 
 interface UnwrapParams extends BaseParams {
@@ -271,10 +272,10 @@ export async function wrap(params: WrapParams): Promise<string> {
   const computeLimitEnv =
     process.env.WRAP_COMPUTE_UNIT_LIMIT ?? process.env.NEXT_PUBLIC_WRAP_COMPUTE_UNIT_LIMIT;
   const resolvedComputeLimit = (() => {
-    if (computeLimitEnv) {
+    if (computeLimitEnv !== undefined) {
       const parsed = Number(computeLimitEnv);
-      if (!Number.isNaN(parsed) && parsed > 0) {
-        return parsed;
+      if (!Number.isNaN(parsed)) {
+        return Math.max(parsed, 0);
       }
     }
     return 1_400_000;
@@ -456,14 +457,49 @@ export async function wrap(params: WrapParams): Promise<string> {
     data: checkInvariantData
   });
 
-  const latestBlockhash = await connection.getLatestBlockhash('confirmed');
-  const shieldTransaction = new Transaction().add(...instructions, shieldInstruction);
-  shieldTransaction.feePayer = wallet.publicKey;
-  shieldTransaction.recentBlockhash = latestBlockhash.blockhash;
+  const lookupTables: AddressLookupTableAccount[] = [];
+  if (params.lookupTable) {
+    try {
+      const tableKey = new PublicKey(params.lookupTable);
+      const lookupResponse = await connection.getAddressLookupTable(tableKey);
+      if (lookupResponse.value) {
+        lookupTables.push(lookupResponse.value);
+      } else {
+        console.warn(`[wrap] lookup table ${tableKey.toBase58()} not found`);
+      }
+    } catch (error) {
+      console.warn('[wrap] failed to resolve lookup table', error);
+    }
+  } else {
+    console.warn('[wrap] no lookup table provided');
+  }
 
-  const shieldSignature = await wallet.sendTransaction(shieldTransaction, connection, {
-    skipPreflight: false
-  });
+  if (lookupTables.length === 0) {
+    console.warn('[wrap] proceeding without lookup tables; transaction size may exceed limit');
+  }
+
+  const latestBlockhash = await connection.getLatestBlockhash('confirmed');
+  const shieldInstructionSet = [...instructions, shieldInstruction];
+
+  let shieldSignature: string;
+  if (lookupTables.length > 0) {
+    const shieldMessage = new TransactionMessage({
+      payerKey: wallet.publicKey,
+      recentBlockhash: latestBlockhash.blockhash,
+      instructions: shieldInstructionSet
+    }).compileToV0Message(lookupTables);
+    const shieldTransaction = new VersionedTransaction(shieldMessage);
+    shieldSignature = await wallet.sendTransaction(shieldTransaction, connection, {
+      skipPreflight: false
+    });
+  } else {
+    const shieldTransaction = new Transaction().add(...shieldInstructionSet);
+    shieldTransaction.feePayer = wallet.publicKey;
+    shieldTransaction.recentBlockhash = latestBlockhash.blockhash;
+    shieldSignature = await wallet.sendTransaction(shieldTransaction, connection, {
+      skipPreflight: false
+    });
+  }
 
   await waitForSignatureConfirmation(
     connection,
@@ -709,10 +745,10 @@ export async function unwrap(params: UnwrapParams): Promise<string> {
     process.env.WRAP_COMPUTE_UNIT_LIMIT ??
     process.env.NEXT_PUBLIC_WRAP_COMPUTE_UNIT_LIMIT;
   const resolvedUnwrapLimit = (() => {
-    if (unwrapComputeLimitEnv) {
+    if (unwrapComputeLimitEnv !== undefined) {
       const parsed = Number(unwrapComputeLimitEnv);
-      if (!Number.isNaN(parsed) && parsed > 0) {
-        return parsed;
+      if (!Number.isNaN(parsed)) {
+        return Math.max(parsed, 0);
       }
     }
     return 1_400_000;

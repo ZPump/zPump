@@ -1,0 +1,18 @@
+[Unit]
+Description=zPump Private Devnet Validator
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=LEDGER_DIR=%h/.local/share/zpump-devnet-ledger
+Environment=RPC_PORT=8899
+Environment=PATH=%h/.local/bin:%h/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+WorkingDirectory=%h/zPump
+ExecStart=/bin/bash -lc 'source ~/.cargo/env && cd %h/zPump && scripts/start-private-devnet.sh'
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+

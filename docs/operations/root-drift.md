@@ -49,20 +49,28 @@ If any of these roots differ, root drift has occurred.
 
 ## Recovery Procedure
 
-Perform a clean reset and rebuild:
+Preferred recovery:
 
 ```bash
-pkill -f solana-test-validator || true
+./scripts/reset-dev-env.sh
+```
+
+The script stops the `zpump-devnet` systemd unit (or any stray validators), wipes the ledger + Photon snapshot, reruns bootstrap, restarts PM2 services, and executes the wrap/unwrap smoke test to ensure roots stay in sync.
+
+If you cannot run the reset script, follow the manual sequence:
+
+```bash
+systemctl --user stop zpump-devnet || pkill -f solana-test-validator
 rm -rf ~/.local/share/zpump-devnet-ledger
 rm -f indexer/photon/data/state.json
-./scripts/start-private-devnet.sh
+systemctl --user start zpump-devnet || ./scripts/start-private-devnet.sh
 npx tsx web/app/scripts/bootstrap-private-devnet.ts
 cd web/app && npm run build && cd ..
 pm2 restart ptf-indexer --update-env
 pm2 restart ptf-web --update-env
 ```
 
-This redeploys programs, recreates pool + commitment tree PDAs, and repopulates Photon with fresh roots.
+Either approach redeploys programs, recreates pool + commitment tree PDAs, and repopulates Photon with fresh roots.
 
 ## Prevention Tips
 

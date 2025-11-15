@@ -4,6 +4,7 @@ import { execFile } from 'child_process';
 import path from 'path';
 import { promisify } from 'util';
 import { keccak_256 } from '@noble/hashes/sha3';
+import { ensureFetchPolyfill } from './utils/fetch-polyfill';
 import {
   AddressLookupTableProgram,
   Connection,
@@ -31,6 +32,8 @@ import { AnchorProvider, BN, BorshCoder, Idl, Wallet } from '@coral-xyz/anchor';
 import { decodeCommitmentTree } from '../lib/onchain/commitmentTree';
 import { bytesLEToCanonicalHex } from '../lib/onchain/utils';
 import { resolveRepoPath } from '../lib/server/paths';
+
+ensureFetchPolyfill();
 
 const PROGRAM_IDS = {
   factory: new PublicKey('4z618BY2dXGqAUiegqDt8omo3e81TSdXRHt64ikX1bTy'),

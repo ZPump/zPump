@@ -24,32 +24,7 @@ interface GeneratedMint {
   lookupTable?: string | null;
 }
 
-const DEFAULT_MINTS: GeneratedMint[] = [
-  {
-    symbol: 'USDC',
-    decimals: 6,
-    originMint: 'Mint111111111111111111111111111111111111111',
-    poolId: 'Pool111111111111111111111111111111111111111',
-    zTokenMint: null,
-    features: {
-      zTokenEnabled: false,
-      wrappedTransfers: false
-    },
-    lookupTable: null
-  },
-  {
-    symbol: 'SOLx',
-    decimals: 9,
-    originMint: 'Mint222222222222222222222222222222222222222',
-    poolId: 'Pool222222222222222222222222222222222222222',
-    zTokenMint: null,
-    features: {
-      zTokenEnabled: false,
-      wrappedTransfers: false
-    },
-    lookupTable: null
-  }
-];
+const DEFAULT_MINTS: GeneratedMint[] = [];
 
 let generated: GeneratedMint[] = DEFAULT_MINTS;
 try {

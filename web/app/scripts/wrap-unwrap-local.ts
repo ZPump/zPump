@@ -1,4 +1,5 @@
 import fs from 'fs';
+import path from 'path';
 import crypto from 'crypto';
 import {
   Connection,
@@ -14,22 +15,30 @@ import {
 } from '@solana/spl-token';
 import { ProofClient } from '../lib/proofClient';
 import { IndexerClient } from '../lib/indexerClient';
-import { getMintConfig } from '../config/mints';
+import type { MintConfig } from '../config/mints';
 import { wrap, unwrap } from '../lib/sdk';
 import { deriveCommitmentTree } from '../lib/onchain/pdas';
 import { decodeCommitmentTree, commitmentToHex } from '../lib/onchain/commitmentTree';
 import { bytesLEToCanonicalHex, canonicalizeHex } from '../lib/onchain/utils';
 import { poseidonHashMany } from '../lib/onchain/poseidon';
+import { ensureFetchPolyfill } from './utils/fetch-polyfill';
+
+ensureFetchPolyfill();
 
 type WalletLike = Parameters<typeof wrap>[0]['wallet'];
 
-const SECRET_PATH = process.env.ZPUMP_TEST_WALLET ?? '/tmp/zpump-test.json';
+const DEFAULT_WALLET_PATH =
+  (process.env.HOME && path.join(process.env.HOME, '.config', 'solana', 'id.json')) || '/tmp/zpump-test.json';
+const SECRET_PATH = process.env.ZPUMP_TEST_WALLET ?? DEFAULT_WALLET_PATH;
 const RPC_URL = process.env.RPC_URL ?? 'http://127.0.0.1:8899';
-const PROOF_URL = process.env.PROOF_URL ?? 'http://127.0.0.1:3000/api/proof';
-const INDEXER_URL = process.env.INDEXER_URL ?? 'http://127.0.0.1:3000/api/indexer';
+const PROOF_URL = process.env.PROOF_URL ?? 'http://127.0.0.1:8788';
+const INDEXER_URL = process.env.INDEXER_URL ?? 'http://127.0.0.1:8787';
 const FAUCET_URL = process.env.FAUCET_URL ?? 'http://127.0.0.1:3000/api/faucet';
-const ORIGIN_MINT = process.env.ORIGIN_MINT ?? 'iq8vG5SBdAZSwgCEME5b4yDqiLydbFciUZ3ZrgCSp4J';
-const WRAP_AMOUNT = BigInt(process.env.WRAP_AMOUNT ?? '1000000'); // 1 USDC (6 decimals)
+const MINTS_API_URL = process.env.MINTS_API_URL ?? 'http://127.0.0.1:3000/api/mints';
+const ORIGIN_MINT = process.env.ORIGIN_MINT;
+const TARGET_SYMBOL = process.env.MINT_SYMBOL ?? 'GOLD';
+const TARGET_DECIMALS = Number(process.env.MINT_DECIMALS ?? '6');
+const WRAP_AMOUNT = BigInt(process.env.WRAP_AMOUNT ?? '1000000'); // default assumes 6 decimals
 
 const SOL_AIRDROP_AMOUNT = 2n * 10n ** 9n;
 const MIN_SOL_BALANCE = 1n * 10n ** 9n;
@@ -133,6 +142,57 @@ async function ensureTokenBalance(
     attempts += 1;
   }
   throw new Error('Timed out waiting for faucet minting');
+}
+
+async function fetchMintCatalog(): Promise<MintConfig[]> {
+  const response = await fetch(`${MINTS_API_URL}`, { cache: 'no-store' });
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({}));
+    throw new Error(
+      `Failed to fetch mint catalogue: ${response.status} ${
+        (payload as { error?: string }).error ?? response.statusText
+      }`
+    );
+  }
+  const payload = (await response.json()) as { mints?: MintConfig[] };
+  return payload.mints ?? [];
+}
+
+async function registerMint(symbol: string, decimals: number): Promise<void> {
+  const response = await fetch(`${MINTS_API_URL}`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({ symbol, decimals })
+  });
+  if (response.status === 409) {
+    return;
+  }
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({}));
+    throw new Error(
+      `Failed to register mint: ${response.status} ${
+        (payload as { error?: string }).error ?? response.statusText
+      }`
+    );
+  }
+}
+
+async function waitForMint(
+  predicate: (mint: MintConfig) => boolean,
+  timeoutMs = 240_000
+): Promise<MintConfig> {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    const catalog = await fetchMintCatalog();
+    const match = catalog.find(predicate);
+    if (match) {
+      return match;
+    }
+    await sleep(2_000);
+  }
+  throw new Error('Timed out waiting for mint registration to complete');
 }
 
 function createWalletAdapter(payer: Keypair, connection: Connection): WalletLike {
@@ -286,15 +346,37 @@ async function publishRoot(
 }
 
 async function main() {
+  if (!fs.existsSync(SECRET_PATH)) {
+    throw new Error(
+      `[wallet] secret key not found at ${SECRET_PATH}. Set ZPUMP_TEST_WALLET or run ` +
+        '`solana-keygen new -o <path>` before executing this script.'
+    );
+  }
   const secret = JSON.parse(fs.readFileSync(SECRET_PATH, 'utf8')) as number[];
   const payer = Keypair.fromSecretKey(Uint8Array.from(secret));
 
   const connection = new Connection(RPC_URL, 'confirmed');
   const proofClient = new ProofClient({ baseUrl: PROOF_URL });
   const indexerClient = new IndexerClient({ baseUrl: INDEXER_URL });
-  const mintConfig = getMintConfig(ORIGIN_MINT);
+
+  const mintPredicate = ORIGIN_MINT
+    ? (mint: MintConfig) => mint.originMint === ORIGIN_MINT
+    : (mint: MintConfig) => mint.symbol.toUpperCase() === TARGET_SYMBOL.toUpperCase();
+
+  let mintConfig = (await fetchMintCatalog()).find(mintPredicate);
+
   if (!mintConfig) {
-    throw new Error(`Mint config not found for ${ORIGIN_MINT}`);
+    console.info('[mint] registering new mint', {
+      symbol: TARGET_SYMBOL,
+      decimals: TARGET_DECIMALS
+    });
+    await registerMint(TARGET_SYMBOL, TARGET_DECIMALS);
+    mintConfig = await waitForMint(mintPredicate);
+  } else {
+    console.info('[mint] existing mint found', {
+      symbol: mintConfig.symbol,
+      originMint: mintConfig.originMint
+    });
   }
   const originMintKey = new PublicKey(mintConfig.originMint);
 
@@ -377,7 +459,8 @@ async function main() {
     proof: wrapProof,
     commitmentHint: wrapProof.publicInputs?.[2] ?? null,
     recipient: payer.publicKey.toBase58(),
-    twinMint: mintConfig.zTokenMint ?? undefined
+    twinMint: mintConfig.zTokenMint ?? undefined,
+    lookupTable: mintConfig.lookupTable
   });
   console.info('[wrap] confirmed signature', wrapSignature);
 

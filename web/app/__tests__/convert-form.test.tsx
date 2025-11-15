@@ -1,7 +1,22 @@
 import { fireEvent, screen, waitFor } from '@testing-library/react';
 import { ConvertForm } from '../components/ptf/ConvertForm';
 import { renderWithProviders } from '../test-utils/renderWithProviders';
-import { MINTS } from '../config/mints';
+import type { MintConfig } from '../config/mints';
+
+const TEST_MINTS: MintConfig[] = [
+  {
+    symbol: 'TEST',
+    decimals: 6,
+    originMint: 'Mint111111111111111111111111111111111111111',
+    poolId: 'Pool111111111111111111111111111111111111111',
+    zTokenMint: 'zMint11111111111111111111111111111111111111',
+    features: {
+      zTokenEnabled: true,
+      wrappedTransfers: false
+    },
+    lookupTable: undefined
+  }
+];
 
 const requestProofMock = jest.fn();
 const wrapMock = jest.fn();
@@ -129,7 +144,7 @@ describe('ConvertForm', () => {
   });
 
   it('submits a wrap flow when converting to private', async () => {
-    const originMint = MINTS[0]?.originMint ?? 'OriginMint11111111111111111111111111111111111';
+    const originMint = TEST_MINTS[0]?.originMint ?? 'OriginMint11111111111111111111111111111111111';
     getParsedTokenAccountsByOwnerMock.mockResolvedValue({
       value: [
         {
@@ -146,7 +161,7 @@ describe('ConvertForm', () => {
         }
       ]
     });
-    renderWithProviders(<ConvertForm />);
+    renderWithProviders(<ConvertForm />, { mintCatalog: TEST_MINTS });
 
     await waitFor(() => expect(getRootsMock).toHaveBeenCalled());
     await waitFor(() => expect(getNullifiersMock).toHaveBeenCalled());
@@ -165,8 +180,8 @@ describe('ConvertForm', () => {
   });
 
   it('submits an unwrap flow when converting to public', async () => {
-    const originMint = MINTS[0]?.originMint ?? 'OriginMint11111111111111111111111111111111111';
-    const zTokenMint = MINTS[0]?.zTokenMint ?? 'zTokenMint111111111111111111111111111111111';
+    const originMint = TEST_MINTS[0]?.originMint ?? 'OriginMint11111111111111111111111111111111111';
+    const zTokenMint = TEST_MINTS[0]?.zTokenMint ?? 'zTokenMint111111111111111111111111111111111';
     getParsedTokenAccountsByOwnerMock.mockResolvedValue({
       value: [
         {
@@ -190,7 +205,7 @@ describe('ConvertForm', () => {
       },
       source: 'indexer'
     });
-    renderWithProviders(<ConvertForm />);
+    renderWithProviders(<ConvertForm />, { mintCatalog: TEST_MINTS });
 
     await waitFor(() => expect(getRootsMock).toHaveBeenCalled());
     await waitFor(() => expect(getNullifiersMock).toHaveBeenCalled());
