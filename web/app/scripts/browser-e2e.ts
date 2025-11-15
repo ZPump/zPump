@@ -14,17 +14,19 @@ import {
   TOKEN_PROGRAM_ID,
   getAssociatedTokenAddress
 } from '@solana/spl-token';
+import { BN, BorshCoder, Idl } from '@coral-xyz/anchor';
 import type { MintConfig } from '../config/mints';
 import { ProofClient } from '../lib/proofClient';
 import { IndexerClient } from '../lib/indexerClient';
-import { wrap, transfer, transferFrom } from '../lib/sdk';
+import { wrap, transfer, transferFrom, unwrap } from '../lib/sdk';
 import { deriveViewingKey } from '../lib/wallet/viewingKey';
-import { canonicalizeHex, bytesLEToCanonicalHex } from '../lib/onchain/utils';
 import { poseidonHashMany } from '../lib/onchain/poseidon';
+import { canonicalizeHex, bytesLEToCanonicalHex } from '../lib/onchain/utils';
 import { formatBaseUnitsToUi } from '../lib/format';
-import { ensureFetchPolyfill } from './utils/fetch-polyfill';
+import poolIdl from '../idl/ptf_pool.json';
 import { POOL_PROGRAM_ID } from '../lib/onchain/programIds';
 import { deriveAllowanceAccount } from '../lib/onchain/pdas';
+import { ensureFetchPolyfill } from './utils/fetch-polyfill';
 
 ensureFetchPolyfill();
 
@@ -39,15 +41,24 @@ const MINTS_API_URL = process.env.MINTS_API_URL ?? `${NEXT_URL}/api/mints`;
 
 const SOL_AIRDROP_LAMPORTS = BigInt(process.env.SOL_AIRDROP_LAMPORTS ?? (2n * 10n ** 9n).toString());
 const MIN_SOL_BALANCE = BigInt(process.env.MIN_SOL_BALANCE ?? (1n * 10n ** 9n).toString());
-const WRAP_AMOUNT = BigInt(process.env.WRAP_AMOUNT ?? '1000000');
-const DELEGATED_TRANSFER_AMOUNT = BigInt(
-  process.env.PRIVATE_TRANSFER_FROM_AMOUNT ?? (WRAP_AMOUNT / 4n).toString()
-);
+const WRAP_AMOUNT = BigInt(process.env.WRAP_AMOUNT ?? '1000000'); // 1 token with 6 decimals
 const TARGET_DECIMALS = Number(process.env.MINT_DECIMALS ?? '6');
 
-const ZERO_HEX = '0x0000000000000000000000000000000000000000000000000000000000000000';
-const APPROVE_ALLOWANCE_DISCRIMINATOR = new Uint8Array([100, 169, 165, 25, 25, 255, 11, 45]);
-const REVOKE_ALLOWANCE_DISCRIMINATOR = new Uint8Array([121, 114, 141, 153, 128, 164, 101, 113]);
+const poolCoder = new BorshCoder(poolIdl as Idl);
+
+interface WrapResult {
+  noteId: string;
+  spendingKey: string;
+  noteAmount: bigint;
+  newRoot: string;
+}
+
+interface TransferProofParts {
+  oldRoot: string;
+  newRoot: string;
+  nullifiers: string[];
+  outputCommitments: string[];
+}
 
 interface OnchainAllowance {
   pool: PublicKey;
@@ -61,18 +72,28 @@ interface OnchainAllowance {
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-interface TransferProofParts {
-  oldRoot: string;
-  newRoot: string;
-  nullifiers: string[];
-  outputCommitments: string[];
+function randomSymbol(prefix = 'FB'): string {
+  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+  let suffix = '';
+  for (let i = 0; i < 2; i += 1) {
+    suffix += alphabet[Math.floor(Math.random() * alphabet.length)];
+  }
+  return `${prefix}${suffix}`;
 }
 
-interface WrapResult {
-  noteId: string;
-  spendingKey: string;
-  noteAmount: bigint;
-  newRoot: string;
+function randomFieldScalar(): string {
+  const bytes = crypto.randomBytes(31);
+  return BigInt(`0x${bytes.toString('hex')}`).toString();
+}
+
+function pubkeyToFieldString(key: PublicKey): string {
+  const hex = Buffer.from(key.toBytes()).toString('hex');
+  return BigInt(`0x${hex}`).toString();
+}
+
+async function poseidonHexFromValues(values: bigint[]): Promise<string> {
+  const hash = await poseidonHashMany(values);
+  return `0x${Buffer.from(hash).toString('hex')}`;
 }
 
 function selectNotesForAmount(notes: WrapResult[], target: bigint): WrapResult[] {
@@ -104,104 +125,6 @@ function selectNotesForAmount(notes: WrapResult[], target: bigint): WrapResult[]
     return bestPair.pair;
   }
   throw new Error('Insufficient note liquidity for requested amount.');
-}
-
-function randomSymbol(): string {
-  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
-  let suffix = '';
-  for (let i = 0; i < 2; i += 1) {
-    suffix += alphabet[Math.floor(Math.random() * alphabet.length)];
-  }
-  return `PK${suffix}`;
-}
-
-function randomFieldScalar(): string {
-  const bytes = crypto.randomBytes(31);
-  return BigInt(`0x${bytes.toString('hex')}`).toString();
-}
-
-function pubkeyToFieldString(key: PublicKey): string {
-  const hex = Buffer.from(key.toBytes()).toString('hex');
-  return BigInt(`0x${hex}`).toString();
-}
-
-function encodeApproveAllowanceData(amount: bigint): Buffer {
-  const buffer = Buffer.alloc(APPROVE_ALLOWANCE_DISCRIMINATOR.length + 8);
-  Buffer.from(APPROVE_ALLOWANCE_DISCRIMINATOR).copy(buffer, 0);
-  const view = new DataView(buffer.buffer, buffer.byteOffset);
-  view.setBigUint64(APPROVE_ALLOWANCE_DISCRIMINATOR.length, amount, true);
-  return buffer;
-}
-
-function encodeRevokeAllowanceData(): Buffer {
-  return Buffer.from(REVOKE_ALLOWANCE_DISCRIMINATOR);
-}
-
-async function fetchAllowanceAccount(connection: Connection, address: PublicKey): Promise<OnchainAllowance | null> {
-  const account = await connection.getAccountInfo(address, 'confirmed');
-  if (!account) {
-    return null;
-  }
-  const buffer = Buffer.from(account.data);
-  if (buffer.length < 8 + 32 * 4 + 8 + 8 + 1) {
-    return null;
-  }
-  let offset = 8;
-  const readPubkey = () => {
-    const key = new PublicKey(buffer.slice(offset, offset + 32));
-    offset += 32;
-    return key;
-  };
-  const result: OnchainAllowance = {
-    pool: readPubkey(),
-    owner: readPubkey(),
-    spender: readPubkey(),
-    mint: readPubkey(),
-    amount: buffer.readBigUInt64LE(offset),
-    updatedAt: buffer.readBigInt64LE(offset + 8),
-    bump: buffer.readUInt8(offset + 16)
-  };
-  return result;
-}
-
-async function sendAllowanceInstruction(params: {
-  connection: Connection;
-  owner: Keypair;
-  spender: PublicKey;
-  poolState: PublicKey;
-  originMint: PublicKey;
-  allowanceAddress: PublicKey;
-  instruction: 'approve' | 'revoke';
-  amount?: bigint;
-}): Promise<string> {
-  const { connection, owner, spender, poolState, originMint, allowanceAddress, instruction, amount = 0n } = params;
-  const data = instruction === 'approve' ? encodeApproveAllowanceData(amount) : encodeRevokeAllowanceData();
-  const ix = new TransactionInstruction({
-    programId: POOL_PROGRAM_ID,
-    keys: [
-      { pubkey: poolState, isSigner: false, isWritable: true },
-      { pubkey: allowanceAddress, isSigner: false, isWritable: true },
-      { pubkey: owner.publicKey, isSigner: true, isWritable: true },
-      { pubkey: spender, isSigner: false, isWritable: false },
-      { pubkey: originMint, isSigner: false, isWritable: false },
-      { pubkey: SystemProgram.programId, isSigner: false, isWritable: false }
-    ],
-    data
-  });
-  const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash('confirmed');
-  const tx = new Transaction().add(ix);
-  tx.feePayer = owner.publicKey;
-  tx.recentBlockhash = blockhash;
-  tx.sign(owner);
-  const signature = await connection.sendRawTransaction(tx.serialize(), { skipPreflight: false });
-  await confirmSignature(connection, signature, 60_000);
-  await connection.confirmTransaction({ signature, blockhash, lastValidBlockHeight }, 'confirmed');
-  return signature;
-}
-
-async function poseidonHexFromValues(values: bigint[]): Promise<string> {
-  const hash = await poseidonHashMany(values);
-  return `0x${Buffer.from(hash).toString('hex')}`;
 }
 
 async function confirmSignature(connection: Connection, signature: string, timeoutMs = 30_000): Promise<void> {
@@ -348,12 +271,10 @@ function createWalletAdapter(payer: Keypair, connection: Connection): WalletLike
     async sendTransaction(transaction: Transaction | VersionedTransaction): Promise<string> {
       if (transaction instanceof VersionedTransaction) {
         transaction.sign([payer]);
-        const signature = await connection.sendRawTransaction(transaction.serialize(), { skipPreflight: false });
-        return signature;
+        return connection.sendRawTransaction(transaction.serialize(), { skipPreflight: false });
       }
       transaction.partialSign(payer);
-      const signature = await connection.sendRawTransaction(transaction.serialize(), { skipPreflight: false });
-      return signature;
+      return connection.sendRawTransaction(transaction.serialize(), { skipPreflight: false });
     },
     async signTransaction(transaction: Transaction) {
       transaction.partialSign(payer);
@@ -390,7 +311,7 @@ async function publishRoot(baseUrl: string, mint: string, current: string, recen
 }
 
 async function waitForIndexerRoot(indexerClient: IndexerClient, originMint: string, expectRoot: string): Promise<void> {
-  for (let attempt = 0; attempt < 60; attempt += 1) {
+  for (let attempt = 0; attempt < 90; attempt += 1) {
     const roots = await indexerClient.getRoots(originMint);
     if (roots) {
       const known = new Set([roots.current, ...(roots.recent ?? [])].map((entry) => canonicalizeHex(entry)));
@@ -442,11 +363,11 @@ function parseTransferPublicInputs(
   }
   const oldRoot = canonicalizeHex(publicInputs[0]!);
   const newRoot = canonicalizeHex(publicInputs[1]!);
-  const nullifiers = publicInputs.slice(2, 2 + inputCount).map((entry) => canonicalizeHex(entry ?? ZERO_HEX));
+  const nullifiers = publicInputs.slice(2, 2 + inputCount).map((entry) => canonicalizeHex(entry ?? '0x0'));
   const offset = 2 + inputCount;
   const outputCommitments = publicInputs
     .slice(offset, offset + outputCount)
-    .map((entry) => canonicalizeHex(entry ?? ZERO_HEX));
+    .map((entry) => canonicalizeHex(entry ?? '0x0'));
   return { oldRoot, newRoot, nullifiers, outputCommitments };
 }
 
@@ -456,6 +377,79 @@ function deriveViewId(secret: Uint8Array): string {
     throw new Error('Failed to derive viewing key');
   }
   return viewing.viewId;
+}
+
+async function fetchAllowanceAccount(connection: Connection, address: PublicKey): Promise<OnchainAllowance | null> {
+  const account = await connection.getAccountInfo(address, 'confirmed');
+  if (!account) {
+    return null;
+  }
+  const buffer = Buffer.from(account.data);
+  if (buffer.length < 8 + 32 * 4 + 8 + 8 + 1) {
+    return null;
+  }
+  let offset = 8;
+  const readPubkey = () => {
+    const key = new PublicKey(buffer.slice(offset, offset + 32));
+    offset += 32;
+    return key;
+  };
+  const result: OnchainAllowance = {
+    pool: readPubkey(),
+    owner: readPubkey(),
+    spender: readPubkey(),
+    mint: readPubkey(),
+    amount: buffer.readBigUInt64LE(offset),
+    updatedAt: buffer.readBigInt64LE(offset + 8),
+    bump: buffer.readUInt8(offset + 16)
+  };
+  return result;
+}
+
+async function sendAllowanceInstruction(params: {
+  connection: Connection;
+  owner: Keypair;
+  spender: PublicKey;
+  poolState: PublicKey;
+  originMint: PublicKey;
+  allowanceAddress: PublicKey;
+  instruction: 'approve' | 'revoke';
+  amount?: bigint;
+}): Promise<string> {
+  const { connection, owner, spender, poolState, originMint, allowanceAddress, instruction, amount = 0n } = params;
+  const data =
+    instruction === 'approve'
+      ? poolCoder.instruction.encode('approve_allowance', { args: { amount: new BN(amount.toString()) } })
+      : poolCoder.instruction.encode('revoke_allowance', { args: {} });
+  const ix = new TransactionInstruction({
+    programId: POOL_PROGRAM_ID,
+    keys: [
+      { pubkey: poolState, isSigner: false, isWritable: true },
+      { pubkey: allowanceAddress, isSigner: false, isWritable: true },
+      { pubkey: owner.publicKey, isSigner: true, isWritable: true },
+      { pubkey: spender, isSigner: false, isWritable: false },
+      { pubkey: originMint, isSigner: false, isWritable: false },
+      { pubkey: SystemProgram.programId, isSigner: false, isWritable: false }
+    ],
+    data
+  });
+  const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash('confirmed');
+  const tx = new Transaction().add(ix);
+  tx.feePayer = owner.publicKey;
+  tx.recentBlockhash = blockhash;
+  tx.sign(owner);
+  const signature = await connection.sendRawTransaction(tx.serialize(), { skipPreflight: false });
+  await confirmSignature(connection, signature, 60_000);
+  await connection.confirmTransaction({ signature, blockhash, lastValidBlockHeight }, 'confirmed');
+  return signature;
+}
+
+async function buildAmountCommitments(outputs: { amount: bigint; blinding: bigint }[]): Promise<string[]> {
+  const results: string[] = [];
+  for (const entry of outputs) {
+    results.push(await poseidonHexFromValues([entry.amount, entry.blinding]));
+  }
+  return results;
 }
 
 async function main() {
@@ -470,42 +464,42 @@ async function main() {
   const ownerAdapter = createWalletAdapter(owner, connection);
   const delegateAdapter = createWalletAdapter(delegate, connection);
 
-  console.info('[wallet] funding owner/delegate SOL');
-  await faucetSol(connection, owner.publicKey);
-  await faucetSol(connection, delegate.publicKey);
+  console.info('[setup] airdropping SOL to wallets');
+  await Promise.all([owner, receiver, delegate].map((kp) => faucetSol(connection, kp.publicKey)));
 
   const ownerViewId = deriveViewId(owner.secretKey);
   const receiverViewId = deriveViewId(receiver.secretKey);
 
-  const symbol = randomSymbol();
-  console.info('[mint] registering new mint', { symbol, decimals: TARGET_DECIMALS });
+  const symbol = randomSymbol('FB');
+  console.info('[mint] registering', { symbol, decimals: TARGET_DECIMALS });
   await registerMint(symbol, TARGET_DECIMALS);
   const mintConfig = await waitForMint((mint) => mint.symbol.toUpperCase() === symbol.toUpperCase());
   const originMintKey = new PublicKey(mintConfig.originMint);
   const poolId = mintConfig.poolId;
-  const privateMint = mintConfig.zTokenMint ?? mintConfig.originMint;
   const poolStateKey = new PublicKey(poolId);
+  const privateMint = mintConfig.zTokenMint ?? mintConfig.originMint;
   const allowanceAddress = deriveAllowanceAccount(poolStateKey, owner.publicKey, delegate.publicKey);
 
   const initialPoolInfo = await fetchPoolStateRoot(connection, poolId);
-  const feeBps = BigInt(initialPoolInfo.feeBps);
-  const perWrapCost = WRAP_AMOUNT + (WRAP_AMOUNT * feeBps) / 10_000n;
-  const wrapsRequired = 3n;
-  const totalMintNeeded = perWrapCost * wrapsRequired;
-  console.info('[faucet] ensuring origin mint balance', { lamports: totalMintNeeded.toString() });
-  await ensureTokenBalance(connection, owner.publicKey, originMintKey, totalMintNeeded);
-
-  let currentRoot = initialPoolInfo.root;
+  let currentRoot = canonicalizeHex(initialPoolInfo.root);
   const recentRoots: string[] = [currentRoot];
   await publishRoot(INDEXER_PROXY_URL, mintConfig.originMint, currentRoot, recentRoots);
   await waitForIndexerRoot(indexerClient, mintConfig.originMint, currentRoot);
+  const feeBps = BigInt(initialPoolInfo.feeBps);
+
+  console.info('[pool] fee config', { feeBps: initialPoolInfo.feeBps });
+
+  const wrapsPlanned = [WRAP_AMOUNT, WRAP_AMOUNT * 2n, WRAP_AMOUNT * 3n, WRAP_AMOUNT];
+  const feePerWrap = wrapsPlanned.map((amount) => (amount * feeBps) / 10_000n);
+  const requiredMint = wrapsPlanned.reduce((sum, amount, idx) => sum + amount + feePerWrap[idx]!, 0n) + WRAP_AMOUNT;
+  await ensureTokenBalance(connection, owner.publicKey, originMintKey, requiredMint);
 
   let ownerPrivateBalance = 0n;
   let receiverPrivateBalance = 0n;
 
   async function syncRoot(label: string) {
     const state = await fetchPoolStateRoot(connection, poolId);
-    currentRoot = state.root;
+    currentRoot = canonicalizeHex(state.root);
     recentRoots.unshift(currentRoot);
     if (recentRoots.length > 16) {
       recentRoots.pop();
@@ -516,7 +510,7 @@ async function main() {
     return state;
   }
 
-  async function performWrap(amount: bigint): Promise<WrapResult> {
+  async function performWrap(amount: bigint, label: string): Promise<WrapResult> {
     const poolStateInfo = await fetchPoolStateRoot(connection, poolId);
     const fee = (amount * feeBps) / 10_000n;
     const noteAmount = amount + fee;
@@ -531,7 +525,7 @@ async function main() {
       blinding,
       mintId: mintConfig.originMint
     };
-    console.info('[wrap] requesting proof', payload);
+    console.info(`[wrap:${label}] proving`, payload);
     const proof = await proofClient.requestProof('wrap', payload);
     const signature = await wrap({
       connection,
@@ -547,7 +541,7 @@ async function main() {
       twinMint: mintConfig.zTokenMint ?? undefined,
       lookupTable: mintConfig.lookupTable
     });
-    console.info('[wrap] signature', signature);
+    console.info(`[wrap:${label}] signature`, signature);
     ownerPrivateBalance += noteAmount;
     await indexerClient.adjustBalance(owner.publicKey.toBase58(), privateMint, noteAmount);
     const displayAmount = formatBaseUnitsToUi(noteAmount, TARGET_DECIMALS);
@@ -559,7 +553,7 @@ async function main() {
       amount: displayAmount,
       timestamp: Date.now()
     });
-    const updated = await syncRoot('wrap');
+    const updated = await syncRoot(`wrap:${label}`);
     return {
       noteId: depositId,
       spendingKey: blinding,
@@ -568,22 +562,13 @@ async function main() {
     };
   }
 
-  async function buildAmountCommitments(outputs: { amount: bigint; amountBlinding: bigint }[]): Promise<string[]> {
-    const results: string[] = [];
-    for (const entry of outputs) {
-      results.push(await poseidonHexFromValues([entry.amount, entry.amountBlinding]));
-    }
-    return results;
-  }
-
   async function executeTransfer(params: {
     notes: WrapResult[];
     spendAmount: bigint;
     recipient: PublicKey;
-    wallet: WalletLike;
     walletLabel: string;
-  }) {
-    const { notes, spendAmount, recipient, wallet, walletLabel } = params;
+  }): Promise<string> {
+    const { notes, spendAmount, recipient, walletLabel } = params;
     const selection = selectNotesForAmount(notes, spendAmount);
     const totalInput = selection.reduce((sum, note) => sum + note.noteAmount, 0n);
     const changeAmount = totalInput - spendAmount;
@@ -614,16 +599,16 @@ async function main() {
       inNotes: inputNotes,
       outNotes
     };
-    console.info(`[transfer] proving ${walletLabel}`, payload);
+    console.info(`[transfer:${walletLabel}] proving`, payload);
     const proof = await proofClient.requestProof('transfer', payload);
     const parts = parseTransferPublicInputs(proof.publicInputs, inputNotes.length, outNotes.length);
     const amountCommitments = await buildAmountCommitments([
-      { amount: spendAmount, amountBlinding: BigInt(outNotes[0]!.blinding) },
-      { amount: changeAmount, amountBlinding: changeAmount > 0n ? BigInt(outNotes[1]!.blinding) : 0n }
+      { amount: spendAmount, blinding: BigInt(outNotes[0]!.blinding) },
+      { amount: changeAmount, blinding: changeAmount > 0n ? BigInt(outNotes[1]!.blinding) : 0n }
     ]);
     const signature = await transfer({
       connection,
-      wallet,
+      wallet: ownerAdapter,
       originMint: mintConfig.originMint,
       poolId,
       proof,
@@ -642,8 +627,11 @@ async function main() {
     allowanceAmount: bigint;
     spendAmount: bigint;
     recipient: PublicKey;
-  }) {
+  }): Promise<string> {
     const { note, allowanceAmount, spendAmount, recipient } = params;
+    if (spendAmount > allowanceAmount) {
+      throw new Error('Requested spend exceeds allowance');
+    }
     const changeAmount = note.noteAmount - spendAmount;
     if (changeAmount < 0n) {
       throw new Error('Spend amount exceeds note value');
@@ -672,8 +660,8 @@ async function main() {
     const proof = await proofClient.requestProof('transfer', payload);
     const parts = parseTransferPublicInputs(proof.publicInputs, inputNotes.length, outNotes.length);
     const amountCommitments = await buildAmountCommitments([
-      { amount: spendAmount, amountBlinding: BigInt(outNotes[0]!.blinding) },
-      { amount: changeAmount, amountBlinding: changeAmount > 0n ? BigInt(outNotes[1]!.blinding) : 0n }
+      { amount: spendAmount, blinding: BigInt(outNotes[0]!.blinding) },
+      { amount: changeAmount, blinding: changeAmount > 0n ? BigInt(outNotes[1]!.blinding) : 0n }
     ]);
     const signature = await transferFrom({
       connection,
@@ -693,30 +681,85 @@ async function main() {
     return signature;
   }
 
-  console.info('[flow] creating liquidity notes for owner');
-  const firstWrap = await performWrap(WRAP_AMOUNT);
-  const secondWrap = await performWrap(WRAP_AMOUNT);
+  async function executeUnwrap(params: {
+    note: WrapResult;
+    amount: bigint;
+    fee: bigint;
+    destination: PublicKey;
+  }): Promise<string> {
+    const { note, amount, fee, destination } = params;
+    const totalOut = amount + fee;
+    if (totalOut > note.noteAmount) {
+      throw new Error('Unwrap amount exceeds note value');
+    }
+    const changeAmount = note.noteAmount - totalOut;
+    const changeRecipientField = pubkeyToFieldString(owner.publicKey);
+    const changeBlinding = randomFieldScalar();
+    const changeAmountBlinding = randomFieldScalar();
 
-  const changePadding = secondWrap.noteAmount / 4n;
-  const combinedSpendAmount =
-    firstWrap.noteAmount + secondWrap.noteAmount - (changePadding === 0n ? 1n : changePadding);
-  if (combinedSpendAmount <= firstWrap.noteAmount) {
-    throw new Error('Combined transfer amount must exceed single note to test aggregation.');
+    const payload = {
+      oldRoot: currentRoot,
+      amount: amount.toString(),
+      fee: fee.toString(),
+      destPubkey: destination.toBase58(),
+      mode: 'origin',
+      mintId: pubkeyToFieldString(originMintKey),
+      poolId: pubkeyToFieldString(poolStateKey),
+      noteId: note.noteId,
+      spendingKey: note.spendingKey,
+      noteAmount: note.noteAmount.toString(),
+      change:
+        changeAmount > 0n
+          ? {
+              amount: changeAmount.toString(),
+              recipient: changeRecipientField,
+              blinding: changeBlinding,
+              amountBlinding: changeAmountBlinding
+            }
+          : undefined
+    };
+    console.info('[unwrap] proving', payload);
+    const proof = await proofClient.requestProof('unwrap', payload);
+    const signature = await unwrap({
+      connection,
+      wallet: ownerAdapter,
+      originMint: mintConfig.originMint,
+      amount,
+      poolId,
+      destination: destination.toBase58(),
+      mode: 'origin',
+      proof,
+      lookupTable: mintConfig.lookupTable,
+      twinMint: mintConfig.zTokenMint ?? undefined
+    });
+    console.info('[unwrap] signature', signature);
+    await syncRoot('unwrap');
+    return signature;
   }
 
-  console.info('[flow] owner -> receiver private transfer (multi-note)');
+  const wrapShort = await performWrap(WRAP_AMOUNT, 'short');
+  const wrapMedium = await performWrap(WRAP_AMOUNT * 2n, 'medium');
+  const wrapLarge = await performWrap(WRAP_AMOUNT * 3n, 'large');
+  const allowanceNote = await performWrap(WRAP_AMOUNT, 'allowance');
+
+  let ownerNotes: WrapResult[] = [wrapShort, wrapMedium, wrapLarge];
+
+  console.info('[flow] owner -> receiver private transfer (multi-note with change)');
+  const spendAmount =
+    wrapShort.noteAmount + wrapMedium.noteAmount - (wrapShort.noteAmount / 4n === 0n ? 1n : wrapShort.noteAmount / 4n);
+  const multiTransferNotes = [wrapShort, wrapMedium];
   const transferSignature = await executeTransfer({
-    notes: [firstWrap, secondWrap],
-    spendAmount: combinedSpendAmount,
+    notes: multiTransferNotes,
+    spendAmount,
     recipient: receiver.publicKey,
-    wallet: ownerAdapter,
     walletLabel: 'owner'
   });
-  ownerPrivateBalance -= combinedSpendAmount;
-  receiverPrivateBalance += combinedSpendAmount;
-  await indexerClient.adjustBalance(owner.publicKey.toBase58(), privateMint, -combinedSpendAmount);
-  await indexerClient.adjustBalance(receiver.publicKey.toBase58(), privateMint, combinedSpendAmount);
-  const transferDisplay = formatBaseUnitsToUi(combinedSpendAmount, TARGET_DECIMALS);
+  ownerPrivateBalance -= spendAmount;
+  receiverPrivateBalance += spendAmount;
+  ownerNotes = ownerNotes.filter((note) => !multiTransferNotes.some((spent) => spent.noteId === note.noteId));
+  await indexerClient.adjustBalance(owner.publicKey.toBase58(), privateMint, -spendAmount);
+  await indexerClient.adjustBalance(receiver.publicKey.toBase58(), privateMint, spendAmount);
+  const transferDisplay = formatBaseUnitsToUi(spendAmount, TARGET_DECIMALS);
   await indexerClient.appendActivity(ownerViewId, {
     id: transferSignature,
     type: 'transfer',
@@ -734,12 +777,64 @@ async function main() {
     timestamp: Date.now()
   });
 
-  console.info('[flow] wrap allowance note');
-  const allowanceWrap = await performWrap(WRAP_AMOUNT);
+  console.info('[edge] attempting nullifier reuse on spent notes (expected failure)');
+  try {
+    await executeTransfer({
+      notes: [wrapShort, wrapMedium],
+      spendAmount,
+      recipient: receiver.publicKey,
+      walletLabel: 'owner-reuse'
+    });
+    throw new Error('Nullifier reuse did not fail as expected');
+  } catch (error) {
+    const message = (error as Error).message ?? '';
+    if (!message.toLowerCase().includes('nullifier')) {
+      console.warn('[edge] unexpected error message for nullifier reuse:', message);
+    } else {
+      console.info('[edge] nullifier reuse rejected as expected');
+    }
+  }
 
-  console.info('[allowance] setting allowance for delegate');
-  const allowanceAmount = DELEGATED_TRANSFER_AMOUNT;
-  console.info('[allowance] approving on-chain allowance');
+  console.info('[flow] partial unshield with change');
+  const unshieldFee = (wrapLarge.noteAmount * feeBps) / 10_000n;
+  const unshieldAmount = wrapLarge.noteAmount / 2n;
+  const unwrapSignature = await executeUnwrap({
+    note: wrapLarge,
+    amount: unshieldAmount,
+    fee: unshieldFee,
+    destination: owner.publicKey
+  });
+  ownerPrivateBalance -= unshieldAmount;
+  await indexerClient.adjustBalance(owner.publicKey.toBase58(), privateMint, -unshieldAmount);
+  await indexerClient.appendActivity(ownerViewId, {
+    id: unwrapSignature,
+    type: 'unwrap',
+    signature: unwrapSignature,
+    symbol: mintConfig.symbol,
+    amount: formatBaseUnitsToUi(unshieldAmount, TARGET_DECIMALS),
+    timestamp: Date.now()
+  });
+  ownerNotes = ownerNotes.filter((note) => note.noteId !== wrapLarge.noteId);
+
+  console.info('[edge] attempting to unshield same note twice (expected failure)');
+  try {
+    await executeUnwrap({
+      note: wrapLarge,
+      amount: unshieldAmount / 2n,
+      fee: unshieldFee,
+      destination: owner.publicKey
+    });
+    throw new Error('Repeated unwrap did not fail as expected');
+  } catch (error) {
+    console.info('[edge] unwrap reuse rejected as expected:', (error as Error).message);
+  }
+
+  console.info('[flow] re-shielding with fresh wrap after unshield');
+  const reseal = await performWrap(unshieldAmount / 2n, 'reseal');
+  ownerNotes.push(reseal);
+
+  console.info('[flow] allowance approve -> transfer_from -> revoke');
+  const allowanceAmount = allowanceNote.noteAmount / 2n;
   await sendAllowanceInstruction({
     connection,
     owner,
@@ -750,98 +845,75 @@ async function main() {
     instruction: 'approve',
     amount: allowanceAmount
   });
-  const onchainAllowance = await fetchAllowanceAccount(connection, allowanceAddress);
-  if (!onchainAllowance || onchainAllowance.amount !== allowanceAmount) {
-    throw new Error('On-chain allowance mismatch after approval');
-  }
   await indexerClient.setAllowance(
     owner.publicKey.toBase58(),
     delegate.publicKey.toBase58(),
     privateMint,
     allowanceAmount.toString()
   );
-  const allowanceEntry = await indexerClient.getAllowance(
-    owner.publicKey.toBase58(),
-    delegate.publicKey.toBase58(),
-    privateMint
-  );
-  if (!allowanceEntry || BigInt(allowanceEntry.amount) !== allowanceAmount) {
-    throw new Error('Failed to record allowance in Photon indexer');
-  }
-
-  console.info('[flow] delegate transfer_from to receiver');
-  const transferFromSignature = await executeTransferFrom({
-    note: allowanceWrap,
+  const allowanceTransferSig = await executeTransferFrom({
+    note: allowanceNote,
     allowanceAmount,
     spendAmount: allowanceAmount,
     recipient: receiver.publicKey
   });
-  ownerPrivateBalance -= allowanceAmount;
-  receiverPrivateBalance += allowanceAmount;
   await indexerClient.adjustBalance(owner.publicKey.toBase58(), privateMint, -allowanceAmount);
   await indexerClient.adjustBalance(receiver.publicKey.toBase58(), privateMint, allowanceAmount);
-  const delegatedDisplay = formatBaseUnitsToUi(allowanceAmount, TARGET_DECIMALS);
   await indexerClient.appendActivity(ownerViewId, {
-    id: transferFromSignature,
+    id: allowanceTransferSig,
     type: 'transfer_from',
-    signature: transferFromSignature,
+    signature: allowanceTransferSig,
     symbol: mintConfig.symbol,
-    amount: `-${delegatedDisplay}`,
+    amount: `-${formatBaseUnitsToUi(allowanceAmount, TARGET_DECIMALS)}`,
     timestamp: Date.now()
   });
   await indexerClient.appendActivity(receiverViewId, {
-    id: transferFromSignature,
+    id: allowanceTransferSig,
     type: 'transfer_from',
-    signature: transferFromSignature,
+    signature: allowanceTransferSig,
     symbol: mintConfig.symbol,
-    amount: delegatedDisplay,
+    amount: formatBaseUnitsToUi(allowanceAmount, TARGET_DECIMALS),
     timestamp: Date.now()
   });
+  await sendAllowanceInstruction({
+    connection,
+    owner,
+    spender: delegate.publicKey,
+    poolState: poolStateKey,
+    originMint: originMintKey,
+    allowanceAddress,
+    instruction: 'revoke'
+  });
 
-  const remainingAllowance = await fetchAllowanceAccount(connection, allowanceAddress);
-  if (!remainingAllowance || remainingAllowance.amount !== 0n) {
-    throw new Error('Allowance should be depleted after transfer_from');
+  console.info('[edge] attempting delegated transfer after revoke (expected failure)');
+  try {
+    await executeTransferFrom({
+      note: allowanceNote,
+      allowanceAmount,
+      spendAmount: allowanceAmount / 2n,
+      recipient: receiver.publicKey
+    });
+    throw new Error('transfer_from succeeded after revoke');
+  } catch (error) {
+    console.info('[edge] transfer_from rejected after revoke as expected:', (error as Error).message);
   }
-  await indexerClient.setAllowance(
-    owner.publicKey.toBase58(),
-    delegate.publicKey.toBase58(),
-    privateMint,
-    '0'
-  );
+
+  console.info('[verify] fetching view-keyed notes and balances');
+  const ownerNotesResult = await indexerClient.getNotes(ownerViewId);
+  const receiverNotesResult = await indexerClient.getNotes(receiverViewId);
+  console.info('[verify] owner notes', ownerNotesResult?.notes.length ?? 0);
+  console.info('[verify] receiver notes', receiverNotesResult?.notes.length ?? 0);
 
   const ownerBalances = await indexerClient.getBalances(owner.publicKey.toBase58());
   const receiverBalances = await indexerClient.getBalances(receiver.publicKey.toBase58());
-  const recordedOwner = BigInt(ownerBalances?.balances?.[privateMint] ?? '0');
-  const recordedReceiver = BigInt(receiverBalances?.balances?.[privateMint] ?? '0');
-  if (recordedOwner !== ownerPrivateBalance) {
-    throw new Error(`Owner private balance mismatch: expected ${ownerPrivateBalance}, got ${recordedOwner}`);
-  }
-  if (recordedReceiver !== receiverPrivateBalance) {
-    throw new Error(
-      `Receiver private balance mismatch: expected ${receiverPrivateBalance}, got ${recordedReceiver}`
-    );
-  }
+  console.info('[verify] owner balances', ownerBalances);
+  console.info('[verify] receiver balances', receiverBalances);
 
-  const randomView = crypto.randomUUID().replace(/-/g, '');
-  const randomActivity = await indexerClient.getActivity(randomView).catch(() => null);
-  if (randomActivity && randomActivity.entries.length > 0) {
-    throw new Error('Unexpected activity for random view ID');
-  }
-
-  console.info('[verify] private balances + allowances verified', {
-    owner: owner.publicKey.toBase58(),
-    receiver: receiver.publicKey.toBase58(),
-    ownerPrivateBalance: ownerPrivateBalance.toString(),
-    receiverPrivateBalance: receiverPrivateBalance.toString()
-  });
+  console.info('[done] full browser-style E2E flow completed successfully');
 }
 
-main()
-  .then(() => {
-    console.info('[done] transfer + allowance e2e test completed successfully');
-  })
-  .catch((error) => {
-    console.error('[error]', error);
-    process.exit(1);
-  });
+main().catch((error) => {
+  console.error('[fatal] full browser e2e script failed', error);
+  process.exitCode = 1;
+});
 

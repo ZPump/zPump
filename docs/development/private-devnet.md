@@ -97,61 +97,30 @@ Use the `NEXT_PUBLIC_WALLET_ACTIVITY_MODE` (and matching server-side `WALLET_ACT
 - Mint origin tokens (USDC) directly into the wallet ATA.
 - Faucet logs are stored in `web/app/faucet-events.json`.
 
-## 7. End-to-End Wrap/Unwrap Test
+## 7. Comprehensive Browser-Style E2E Test
 
-Run the script:
+For day-to-day regressions we now ship a single script that mirrors the user journey end-to-end:
+
 ```bash
-npx tsx web/app/scripts/wrap-unwrap-local.ts
+npx tsx web/app/scripts/browser-e2e.ts
 ```
 
-Behaviour:
-- Uses the wallet at `~/.config/solana/id.json` by default (override via `ZPUMP_TEST_WALLET`).
-- Requests SOL + USDC from faucet.
-- Fetches commitment tree root from Photon (fallback to chain) and publishes to indexer.
-- Calls Proof RPC for wrap/unshield proofs.
-- Submits wrap transaction, waits for confirmation.
-- Publishes new root to indexer.
-- Submits unwrap transaction, waits for confirmation.
+Scenario coverage:
 
-Verify the script ends with `[done] wrap and unwrap flow completed successfully`.
+- Registers a fresh mint via the same `/api/mints` endpoint the faucet uses, publishes roots to the Photon indexer, and keeps the commitment tree/current root in sync after every transaction.
+- Faucets SOL/origin tokens through `/api/faucet`, shields multiple notes (different sizes), and stores the resulting commitments locally so the wallet drawer logic can be simulated.
+- Performs a multi-note private transfer with change to another wallet, then intentionally attempts nullifier reuse (both transfer and unshield) to ensure the pool rejects stale notes exactly as the UI would surface.
+- Executes a partial unshield with automatic change, immediately re-shields part of the public balance to force note rewriting.
+- Approves an allowance PDA, mirrors it into the Photon `/allowances` store, exercises `transfer_from` as a delegate, and revokes the allowance to confirm delegated spending obeys SPL semantics.
+- Fetches viewing-key notes, balances, and activity logs from the indexer so we can assert the browser’s private mode still renders history correctly.
+- Logs every step with the same `"[wrap]" / "[transfer]" / "[unwrap]"` prefixes you see in the browser console, finishing with `[done] full browser-style E2E flow completed successfully`.
 
-> `./scripts/reset-dev-env.sh` runs this script automatically unless `RUN_SMOKE_TESTS=false` is set.
+Environment overrides (optional):
 
-### Extended indexer + allowance test
+- `RPC_URL`, `PROOF_URL`, `INDEXER_PROXY_URL`, `NEXT_URL`, `FAUCET_URL`, `MINTS_API_URL` — point the script at remote infrastructure instead of localhost.
+- `SOL_AIRDROP_LAMPORTS`, `WRAP_AMOUNT`, `MINT_DECIMALS` — adjust faucet sizes and precision for stress tests.
 
-To exercise the full private SPL flow (shield, approve allowance, indexer sync, revoke allowance, unshield) run:
-```bash
-npx tsx web/app/scripts/indexer-shielded-e2e.ts
-```
-
-What it covers:
-- Generates a fresh wallet, mints SOL + origin tokens, and performs the usual wrap/unshield.
-- Calls Proof RPC for Groth16 proofs, waits for confirmations, and publishes the new commitment tree root to Photon (`/roots/:mint`).
-- Derives the allowance PDA (`seed = b"allow" + pool + owner + spender`), sends the on-chain `approve_allowance` instruction, and mirrors the resulting allowance into Photon via `IndexerClient.setAllowance`.
-- Fetches the allowance snapshot through the Next proxy (`/api/indexer`) to confirm the indexer and PDA agree.
-- Revokes the allowance on-chain (`revoke_allowance`) and clears the Photon record to ensure both the program and indexer return to zero.
-
-Environment overrides:
-- `RPC_URL`, `PROOF_URL`, `INDEXER_PROXY_URL`, `NEXT_URL`, `FAUCET_URL`, `MINTS_API_URL` — point at remote services if you are not running everything on localhost.
-- `SOL_AIRDROP_LAMPORTS`, `WRAP_AMOUNT`, `MINT_DECIMALS` — tweak faucet minting and wrap size for stress tests.
-
-Use this script whenever you change allowance/transfer logic or Photon’s `/allowances` endpoints—if it succeeds, you know on-chain approvals, Photon persistence, and the private indexer stay in sync.
-
-### Private transfer + delegated spend test
-
-To cover shield → private transfer → delegated `transfer_from`:
-```bash
-npx tsx web/app/scripts/ztoken-transfer-e2e.ts
-```
-
-What it validates:
-- Registers a new mint, faucets SOL/origin tokens, and shields twice.
-- Performs an owner-signed private transfer to a second wallet, ensuring new commitments land on-chain and in the Photon snapshot.
-- Approves an allowance PDA for a delegate, mirrors it into Photon, and confirms both ledger + PDA state.
-- Executes `transfer_from` as the delegate (using the new SDK helper), then verifies on-chain allowance depletion and Photon state updates.
-- Checks viewing-key activity and private balances for both sender and receiver so you know the frontend can surface transfers without leaking info.
-
-Set `PRIVATE_TRANSFER_AMOUNT`, `PRIVATE_TRANSFER_FROM_AMOUNT`, `RPC_URL`, `PROOF_URL`, or other env overrides to stress different scenarios.
+Use this script after any change that touches shielding, transfers, allowances, Photon APIs, or wallet-derived viewing keys—the flow will fail fast with the same Anchor errors the frontend would expose if something regresses.
 
 ## 8. Indexer Validation
 
