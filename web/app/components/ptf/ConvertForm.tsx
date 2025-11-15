@@ -850,7 +850,8 @@ export function ConvertForm() {
           proof: wrapAdvanced.useProofRpc ? proofResponse : null,
           commitmentHint: proofResponse?.publicInputs?.[2] ?? null,
           recipient: wallet.publicKey.toBase58(),
-          twinMint: mintConfig.zTokenMint ?? null
+          twinMint: mintConfig.zTokenMint ?? null,
+          lookupTable: mintConfig.lookupTable
         });
 
         try {
