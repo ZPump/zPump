@@ -1,6 +1,6 @@
 use anchor_lang::prelude::*;
 #[cfg(feature = "idl-build")]
-use anchor_lang::IdlBuild;
+use anchor_lang::idl::IdlBuild;
 use anchor_lang::solana_program::instruction::{AccountMeta, Instruction};
 use anchor_lang::solana_program::program::invoke_signed;
 use anchor_lang::solana_program::program_option::COption;
@@ -2306,6 +2306,7 @@ impl PoolState {
 
 #[repr(C)]
 #[derive(Clone, Copy)]
+#[cfg_attr(feature = "idl-build", derive(IdlBuild))]
 pub struct PendingShield {
     pub active: u8,
     pub old_root: [u8; 32],

@@ -91,10 +91,42 @@ async function publishRoot(indexerUrl: string, mint: string, current: string, re
 }
 
 
+function ensurePendingShieldType(idl: Idl, programName: string): Idl {
+  if (programName !== 'ptf_pool') {
+    return idl;
+  }
+  const hasType = Array.isArray(idl.types) && idl.types.some((entry) => entry.name === 'PendingShield');
+  if (hasType) {
+    return idl;
+  }
+  const pendingShieldDef: NonNullable<Idl['types']>[number] = {
+    name: 'PendingShield',
+    type: {
+      kind: 'struct',
+      fields: [
+        { name: 'active', type: 'u8' },
+        { name: 'old_root', type: { array: ['u8', 32] } },
+        { name: 'new_root', type: { array: ['u8', 32] } },
+        { name: 'commitment', type: { array: ['u8', 32] } },
+        { name: 'amount_commit', type: { array: ['u8', 32] } },
+        { name: 'amount', type: 'u64' },
+        { name: 'depositor', type: 'pubkey' },
+        { name: 'next_index', type: 'u64' }
+      ]
+    }
+  };
+  const types = Array.isArray(idl.types) ? idl.types : [];
+  return {
+    ...idl,
+    types: [...types, pendingShieldDef]
+  };
+}
+
 async function loadIdl(name: string): Promise<Idl> {
   const target = path.join(TARGET_IDL_DIR, `${name}.json`);
   const payload = await fs.readFile(target, 'utf8');
-  return JSON.parse(payload) as Idl;
+  const parsed = JSON.parse(payload) as Idl;
+  return ensurePendingShieldType(parsed, name);
 }
 
 async function loadKeypair(filePath: string): Promise<Keypair> {

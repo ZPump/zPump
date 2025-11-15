@@ -49,9 +49,29 @@ import {
   useDisclosure,
   useToast
 } from '@chakra-ui/react';
-import { useConnection } from '@solana/wallet-adapter-react';
-import { LAMPORTS_PER_SOL, PublicKey } from '@solana/web3.js';
-import { TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID } from '@solana/spl-token';
+import { useConnection, useWallet } from '@solana/wallet-adapter-react';
+import {
+  LAMPORTS_PER_SOL,
+  PublicKey,
+  SystemProgram,
+  Transaction,
+  TransactionInstruction
+} from '@solana/web3.js';
+import {
+  ASSOCIATED_TOKEN_PROGRAM_ID,
+  TOKEN_2022_PROGRAM_ID,
+  TOKEN_PROGRAM_ID,
+  createAssociatedTokenAccountInstruction,
+  createTransferInstruction,
+  getAssociatedTokenAddress
+} from '@solana/spl-token';
+import { Buffer } from 'buffer';
+import { ProofClient } from '../../lib/proofClient';
+import { transfer } from '../../lib/sdk';
+import { canonicalizeHex } from '../../lib/onchain/utils';
+import { poseidonHashMany } from '../../lib/onchain/poseidon';
+import type { StoredNoteRecord } from '../../lib/notes/storage';
+import { readStoredNotes, writeStoredNotes } from '../../lib/notes/storage';
 import { Coins, Copy, Plus, Trash2, Wallet } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useLocalWallet } from './LocalWalletContext';
@@ -61,7 +81,8 @@ import { useMintCatalog } from '../providers/MintCatalogProvider';
 import {
   fetchWalletActivity,
   subscribeToWalletActivity,
-  WalletActivityEntry
+  WalletActivityEntry,
+  recordWalletActivity
 } from '../../lib/client/activityLog';
 
 interface TokenBalance {
@@ -70,6 +91,7 @@ interface TokenBalance {
   amount: number;
   decimals: number;
   rawAmount: string;
+  program: 'token' | 'token2022';
 }
 
 interface TransactionEntry {
@@ -92,6 +114,7 @@ interface SendAssetContext {
   availableUiAmount: string;
   availableAmount: number | bigint;
   isPrivate: boolean;
+  program?: 'token' | 'token2022';
 }
 
 interface SendAssetInput {
@@ -103,6 +126,23 @@ interface SendAssetInput {
 
 function formatAddress(address: string) {
   return `${address.slice(0, 4)}…${address.slice(-4)}`;
+}
+
+function parseAmountToBaseUnits(value: string, decimals: number): bigint {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    throw new Error('Enter an amount to send.');
+  }
+  if (!/^\d+(\.\d+)?$/.test(trimmed)) {
+    throw new Error('Amount must be numeric.');
+  }
+  const [whole, fraction = ''] = trimmed.split('.');
+  if (fraction.length > decimals) {
+    throw new Error(`Amount supports up to ${decimals} decimal places.`);
+  }
+  const normalizedFraction = fraction.padEnd(decimals, '0');
+  const unitsString = `${whole}${normalizedFraction}`.replace(/^0+/, '') || '0';
+  return BigInt(unitsString);
 }
 
 function CopyAddressButton({
@@ -134,6 +174,17 @@ function CopyAddressButton({
   );
 }
 
+function createMemoInstruction(memo?: string) {
+  if (!memo || memo.trim().length === 0) {
+    return null;
+  }
+  return new TransactionInstruction({
+    programId: MEMO_PROGRAM_ID,
+    keys: [],
+    data: Buffer.from(memo, 'utf8')
+  });
+}
+
 export function WalletDrawerLauncher() {
   const disclosure = useDisclosure();
 
@@ -154,10 +205,119 @@ export function WalletDrawerLauncher() {
 
 const BALANCE_REFRESH_INTERVAL = 10_000;
 const TRANSACTION_LIMIT = 10;
+const MEMO_PROGRAM_ID = new PublicKey('MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr');
+const ZERO_HEX = '0x0';
+
+function randomFieldScalar(): bigint {
+  if (typeof window !== 'undefined' && window.crypto?.getRandomValues) {
+    const bytes = new Uint8Array(31);
+    window.crypto.getRandomValues(bytes);
+    return BigInt(`0x${Buffer.from(bytes).toString('hex')}`);
+  }
+  const fallback = Math.floor(Math.random() * Number.MAX_SAFE_INTEGER) || 1;
+  return BigInt(fallback);
+}
+
+function bytesToHex(bytes: Uint8Array): string {
+  return `0x${Buffer.from(bytes).toString('hex')}`;
+}
+
+function pubkeyToFieldString(key: PublicKey): string {
+  const hex = Buffer.from(key.toBytes()).toString('hex');
+  return BigInt(`0x${hex}`).toString();
+}
+
+interface StoredNoteWithAmount extends StoredNoteRecord {
+  rawAmount: string;
+}
+
+function normaliseStoredNoteAmount(
+  note: StoredNoteRecord,
+  fallbackDecimals: number
+): StoredNoteWithAmount | null {
+  if (note.rawAmount) {
+    return { ...note, rawAmount: note.rawAmount };
+  }
+  const decimals = note.decimals ?? fallbackDecimals;
+  try {
+    const parsed = parseAmountToBaseUnits(note.amount, decimals);
+    return { ...note, rawAmount: parsed.toString() };
+  } catch {
+    return null;
+  }
+}
+
+function selectNotesForAmount(notes: StoredNoteWithAmount[], target: bigint): StoredNoteWithAmount[] {
+  if (!notes.length) {
+    throw new Error('No shielded notes available.');
+  }
+  const sorted = [...notes].sort((a, b) => {
+    const diff = BigInt(a.rawAmount) - BigInt(b.rawAmount);
+    if (diff === 0n) {
+      return 0;
+    }
+    return diff > 0n ? 1 : -1;
+  });
+  const single = sorted.find((entry) => BigInt(entry.rawAmount) >= target);
+  if (single) {
+    return [single];
+  }
+  let bestPair: { total: bigint; notes: [StoredNoteWithAmount, StoredNoteWithAmount] } | null = null;
+  for (let i = sorted.length - 1; i >= 0; i -= 1) {
+    for (let j = i - 1; j >= 0; j -= 1) {
+      const total = BigInt(sorted[i].rawAmount) + BigInt(sorted[j].rawAmount);
+      if (total >= target) {
+        if (!bestPair || total < bestPair.total) {
+          bestPair = { total, notes: [sorted[i]!, sorted[j]!] };
+        }
+      }
+    }
+  }
+  if (bestPair) {
+    return bestPair.notes;
+  }
+  throw new Error('Not enough shielded note liquidity to cover this amount.');
+}
+
+async function buildAmountCommitments(entries: { amount: bigint; blinding: bigint }[]): Promise<string[]> {
+  const commitments: string[] = [];
+  for (const entry of entries) {
+    if (entry.amount === 0n) {
+      commitments.push(ZERO_HEX);
+      continue;
+    }
+    const hash = await poseidonHashMany([entry.amount, entry.blinding]);
+    commitments.push(bytesToHex(hash));
+  }
+  return commitments;
+}
+
+function parseTransferPublicInputs(
+  publicInputs: string[] | undefined,
+  inputCount: number,
+  outputCount: number
+) {
+  if (!publicInputs) {
+    throw new Error('Transfer proof missing public inputs.');
+  }
+  const expected = 2 + inputCount + outputCount + 2;
+  if (publicInputs.length !== expected) {
+    throw new Error(`Unexpected transfer public inputs: expected ${expected}, received ${publicInputs.length}`);
+  }
+  const oldRoot = canonicalizeHex(publicInputs[0]!);
+  const newRoot = canonicalizeHex(publicInputs[1]!);
+  const nullifiers = publicInputs.slice(2, 2 + inputCount).map((entry) => canonicalizeHex(entry ?? ZERO_HEX));
+  const offset = 2 + inputCount;
+  const outputCommitments = publicInputs
+    .slice(offset, offset + outputCount)
+    .map((entry) => canonicalizeHex(entry ?? ZERO_HEX));
+  return { oldRoot, newRoot, nullifiers, outputCommitments };
+}
 
 function WalletDrawerContent({ disclosure }: { disclosure: ReturnType<typeof useDisclosure> }) {
   const toast = useToast();
   const { connection } = useConnection();
+  const wallet = useWallet();
   const {
     accounts,
     activeAccount,
@@ -200,6 +360,7 @@ function WalletDrawerContent({ disclosure }: { disclosure: ReturnType<typeof use
   }, [mints]);
 
   const indexerClient = useMemo(() => new IndexerClient(), []);
+  const proofClient = useMemo(() => new ProofClient(), []);
 
   const openSendDialog = useCallback(
     (context: SendAssetContext) => {
@@ -207,30 +368,6 @@ function WalletDrawerContent({ disclosure }: { disclosure: ReturnType<typeof use
       sendModal.onOpen();
     },
     [sendModal]
-  );
-
-  const handleSendAsset = useCallback(
-    async (input: SendAssetInput) => {
-      setIsSending(true);
-      try {
-        console.info('[wallet drawer] send asset request', input);
-        toast({
-          title: 'Send flow coming soon',
-          description: 'Shielded transfers will be wired up after the SDK update.',
-          status: 'info'
-        });
-      } catch (error) {
-        toast({
-          title: 'Unable to send asset',
-          description: (error as Error).message,
-          status: 'error'
-        });
-      } finally {
-        setIsSending(false);
-        sendModal.onClose();
-      }
-    },
-    [sendModal, toast]
   );
 
   const loadPrivateBalances = useCallback(
@@ -368,10 +505,13 @@ function WalletDrawerContent({ disclosure }: { disclosure: ReturnType<typeof use
         setSolLamports(lamports);
         setSolBalance(lamports / LAMPORTS_PER_SOL);
 
-        const combinedAccounts = [...tokenAccountsLegacy.value, ...tokenAccounts2022.value];
+        const combinedAccounts = [
+          ...tokenAccountsLegacy.value.map((entry) => ({ entry, program: 'token' as const })),
+          ...tokenAccounts2022.value.map((entry) => ({ entry, program: 'token2022' as const }))
+        ];
 
         const rows: TokenBalance[] = combinedAccounts
-          .map((entry) => {
+          .map(({ entry, program }) => {
             const info = entry.account.data.parsed.info;
             const mint = info.mint as string;
             const tokenAmount = info.tokenAmount;
@@ -384,7 +524,8 @@ function WalletDrawerContent({ disclosure }: { disclosure: ReturnType<typeof use
               symbol: metadata?.symbol ?? mint.slice(0, 8),
               amount,
               decimals,
-              rawAmount
+              rawAmount,
+              program
             };
           })
           .filter((entry) => entry.amount > 0);
@@ -409,6 +550,296 @@ function WalletDrawerContent({ disclosure }: { disclosure: ReturnType<typeof use
       }
     },
     [activeAccount, connection, mintMap, refreshTransactions, setLoadingBalances, toast, loadPrivateBalances]
+  );
+
+  const sendSolAsset = useCallback(
+    async (input: SendAssetInput) => {
+      if (!wallet.publicKey || !wallet.sendTransaction) {
+        throw new Error('Wallet not connected');
+      }
+      const recipientAddress = input.recipient.trim();
+      if (!recipientAddress) {
+        throw new Error('Enter a recipient address.');
+      }
+      const amountLamports = parseAmountToBaseUnits(input.amount, 9);
+      if (amountLamports <= 0n) {
+        throw new Error('Amount must be greater than zero.');
+      }
+      const available = typeof input.context.availableAmount === 'bigint'
+        ? input.context.availableAmount
+        : BigInt(input.context.availableAmount);
+      if (amountLamports > available) {
+        throw new Error('Insufficient SOL balance.');
+      }
+      const lamportsNumber = Number(amountLamports);
+      if (!Number.isSafeInteger(lamportsNumber)) {
+        throw new Error('Amount exceeds supported transfer size.');
+      }
+      const recipientKey = new PublicKey(recipientAddress);
+      const tx = new Transaction().add(
+        SystemProgram.transfer({
+          fromPubkey: wallet.publicKey,
+          toPubkey: recipientKey,
+          lamports: lamportsNumber
+        })
+      );
+      const memoIx = createMemoInstruction(input.memo);
+      if (memoIx) {
+        tx.add(memoIx);
+      }
+      const signature = await wallet.sendTransaction(tx, connection);
+      await connection.confirmTransaction(signature, 'confirmed');
+      return signature;
+    },
+    [wallet, connection]
+  );
+
+  const sendSplAsset = useCallback(
+    async (input: SendAssetInput) => {
+      if (!wallet.publicKey || !wallet.sendTransaction) {
+        throw new Error('Wallet not connected');
+      }
+      if (!input.context.mint) {
+        throw new Error('Missing token mint.');
+      }
+      const program = input.context.program ?? 'token';
+      const programId = program === 'token2022' ? TOKEN_2022_PROGRAM_ID : TOKEN_PROGRAM_ID;
+      const recipientAddress = input.recipient.trim();
+      if (!recipientAddress) {
+        throw new Error('Enter a recipient address.');
+      }
+      const amountRaw = parseAmountToBaseUnits(input.amount, input.context.decimals);
+      if (amountRaw <= 0n) {
+        throw new Error('Amount must be greater than zero.');
+      }
+      const available = typeof input.context.availableAmount === 'bigint'
+        ? input.context.availableAmount
+        : BigInt(input.context.availableAmount);
+      if (amountRaw > available) {
+        throw new Error('Insufficient token balance.');
+      }
+      const owner = wallet.publicKey;
+      const mintKey = new PublicKey(input.context.mint);
+      const recipientKey = new PublicKey(recipientAddress);
+      const sourceAta = await getAssociatedTokenAddress(
+        mintKey,
+        owner,
+        false,
+        programId,
+        ASSOCIATED_TOKEN_PROGRAM_ID
+      );
+      const destinationAta = await getAssociatedTokenAddress(
+        mintKey,
+        recipientKey,
+        false,
+        programId,
+        ASSOCIATED_TOKEN_PROGRAM_ID
+      );
+      const instructions: TransactionInstruction[] = [];
+      const destinationInfo = await connection.getAccountInfo(destinationAta);
+      if (!destinationInfo) {
+        instructions.push(
+          createAssociatedTokenAccountInstruction(
+            owner,
+            destinationAta,
+            recipientKey,
+            mintKey,
+            programId,
+            ASSOCIATED_TOKEN_PROGRAM_ID
+          )
+        );
+      }
+      instructions.push(
+        createTransferInstruction(
+          sourceAta,
+          destinationAta,
+          owner,
+          amountRaw,
+          [],
+          programId
+        )
+      );
+      const memoIx = createMemoInstruction(input.memo);
+      if (memoIx) {
+        instructions.push(memoIx);
+      }
+      const tx = new Transaction().add(...instructions);
+      const signature = await wallet.sendTransaction(tx, connection);
+      await connection.confirmTransaction(signature, 'confirmed');
+      return signature;
+    },
+    [wallet, connection]
+  );
+
+  const sendShieldedAsset = useCallback(
+    async (input: SendAssetInput) => {
+      if (!wallet.publicKey || !wallet.sendTransaction) {
+        throw new Error('Wallet not connected');
+      }
+      if (!activeAccount) {
+        throw new Error('Select an account to continue.');
+      }
+      const targetMint = input.context.mint;
+      if (!targetMint) {
+        throw new Error('Missing shielded mint.');
+      }
+      const mintConfig = mints.find(
+        (mint) => mint.zTokenMint === targetMint || (!mint.zTokenMint && mint.originMint === targetMint)
+      );
+      if (!mintConfig || !mintConfig.zTokenMint) {
+        throw new Error('This asset is not configured for shielded transfers.');
+      }
+      const recipientAddress = input.recipient.trim();
+      if (!recipientAddress) {
+        throw new Error('Enter a recipient address.');
+      }
+      const amountRaw = parseAmountToBaseUnits(input.amount, input.context.decimals);
+      if (amountRaw <= 0n) {
+        throw new Error('Amount must be greater than zero.');
+      }
+      const available =
+        typeof input.context.availableAmount === 'bigint'
+          ? input.context.availableAmount
+          : BigInt(input.context.availableAmount);
+      if (amountRaw > available) {
+        throw new Error('Insufficient shielded balance.');
+      }
+      const storedNotes = readStoredNotes();
+      const ownerKey = activeAccount.publicKey;
+      const candidateNotes = storedNotes
+        .filter((note) => (!note.owner || note.owner === ownerKey) && (!note.mint || note.mint === targetMint))
+        .map((note) => normaliseStoredNoteAmount(note, input.context.decimals))
+        .filter((note): note is StoredNoteWithAmount => Boolean(note));
+      if (!candidateNotes.length) {
+        throw new Error('No stored shielded notes available for this token.');
+      }
+      const selection = selectNotesForAmount(candidateNotes, amountRaw);
+      if (selection.length > 2) {
+        throw new Error('Shielded transfers currently support up to two notes.');
+      }
+      const totalInput = selection.reduce((sum, note) => sum + BigInt(note.rawAmount), 0n);
+      const changeAmount = totalInput - amountRaw;
+      if (changeAmount < 0n) {
+        throw new Error('Selected notes do not cover the requested amount.');
+      }
+      const roots = await indexerClient.getRoots(mintConfig.originMint);
+      const oldRoot = roots ? canonicalizeHex(roots.current) : null;
+      if (!oldRoot) {
+        throw new Error('Unable to fetch shielded pool root from indexer.');
+      }
+      const recipientKey = new PublicKey(recipientAddress);
+      const ownerField = pubkeyToFieldString(wallet.publicKey);
+      const inputNotes = selection.map((note) => ({
+        noteId: note.noteId,
+        spendingKey: note.spendingKey,
+        amount: note.rawAmount
+      }));
+      const recipientField = pubkeyToFieldString(recipientKey);
+      const recipientBlinding = randomFieldScalar();
+      const changeBlinding = changeAmount > 0n ? randomFieldScalar() : 0n;
+      const outNotes = [
+        {
+          amount: amountRaw.toString(),
+          recipient: recipientField,
+          blinding: recipientBlinding.toString()
+        },
+        {
+          amount: changeAmount.toString(),
+          recipient: ownerField,
+          blinding: changeAmount > 0n ? changeBlinding.toString() : '0'
+        }
+      ];
+      const payload = {
+        oldRoot,
+        mintId: mintConfig.originMint,
+        poolId: mintConfig.poolId,
+        inNotes: inputNotes,
+        outNotes
+      };
+      const proof = await proofClient.requestProof('transfer', payload);
+      const parts = parseTransferPublicInputs(proof.publicInputs, inputNotes.length, outNotes.length);
+      const amountCommitments = await buildAmountCommitments([
+        { amount: amountRaw, blinding: randomFieldScalar() },
+        { amount: changeAmount, blinding: changeAmount > 0n ? randomFieldScalar() : 0n }
+      ]);
+      const signature = await transfer({
+        connection,
+        wallet,
+        originMint: mintConfig.originMint,
+        poolId: mintConfig.poolId,
+        proof,
+        nullifiers: parts.nullifiers,
+        outputCommitments: parts.outputCommitments,
+        outputAmountCommitments: amountCommitments,
+        lookupTable: mintConfig.lookupTable
+      });
+      const spentNoteIds = new Set(selection.map((note) => note.id));
+      const remainingNotes = readStoredNotes().filter((note) => !spentNoteIds.has(note.id));
+      writeStoredNotes(remainingNotes);
+      const ownerAddress = wallet.publicKey.toBase58();
+      const recipientBase58 = recipientKey.toBase58();
+      try {
+        await indexerClient.adjustBalance(ownerAddress, targetMint, -amountRaw);
+      } catch (error) {
+        console.warn('[wallet drawer] failed to decrement owner balance', error);
+      }
+      try {
+        await indexerClient.adjustBalance(recipientBase58, targetMint, amountRaw);
+      } catch (error) {
+        console.warn('[wallet drawer] failed to increment recipient balance', error);
+      }
+      if (viewingId) {
+        const displayAmount = formatBaseUnitsToUi(amountRaw, input.context.decimals);
+        void recordWalletActivity(
+          {
+            wallet: ownerAddress,
+            id: signature,
+            signature,
+            type: 'transfer',
+            symbol: input.context.symbol,
+            amount: `-${displayAmount}`,
+            timestamp: Date.now()
+          },
+          { viewId: viewingId }
+        );
+      }
+      return signature;
+    },
+    [wallet, activeAccount, mints, indexerClient, connection, proofClient, viewingId]
+  );
+
+  const handleSendAsset = useCallback(
+    async (input: SendAssetInput) => {
+      setIsSending(true);
+      try {
+        let signature: string;
+        if (input.context.kind === 'sol') {
+          signature = await sendSolAsset(input);
+        } else if (input.context.kind === 'spl') {
+          signature = await sendSplAsset(input);
+        } else if (input.context.kind === 'ztoken') {
+          signature = await sendShieldedAsset(input);
+        } else {
+          throw new Error('Unsupported asset type.');
+        }
+        toast({
+          title: `Sent ${input.amount} ${input.context.symbol}`,
+          description: `Signature ${signature}`,
+          status: 'success'
+        });
+        await refreshBalances(false);
+        sendModal.onClose();
+      } catch (error) {
+        toast({
+          title: 'Unable to send asset',
+          description: (error as Error).message,
+          status: 'error'
+        });
+      } finally {
+        setIsSending(false);
+      }
+    },
+    [sendSolAsset, sendSplAsset, sendShieldedAsset, toast, refreshBalances, sendModal]
   );
 
   useEffect(() => {
@@ -805,7 +1236,8 @@ function WalletDrawerContent({ disclosure }: { disclosure: ReturnType<typeof use
                                       return BigInt(0);
                                     }
                                   })(),
-                                  isPrivate: false
+                                  isPrivate: false,
+                                  program: token.program
                                 })
                               }
                               isDisabled={!activeAccount}

@@ -23,13 +23,22 @@ import {
 } from '@chakra-ui/react';
 import { useConnection, useWallet } from '@solana/wallet-adapter-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID } from '@solana/spl-token';
+import {
+  ASSOCIATED_TOKEN_PROGRAM_ID,
+  AccountLayout,
+  TOKEN_PROGRAM_ID,
+  TOKEN_2022_PROGRAM_ID,
+  getAssociatedTokenAddress
+} from '@solana/spl-token';
+import { LAMPORTS_PER_SOL, PublicKey, SendTransactionError } from '@solana/web3.js';
 import type { MintConfig } from '../../config/mints';
 import { ProofClient, ProofResponse } from '../../lib/proofClient';
 import { wrap as wrapSdk, unwrap as unwrapSdk, resolvePublicKey } from '../../lib/sdk';
 import { IndexerClient, IndexerNote } from '../../lib/indexerClient';
 import { getCachedRoots, setCachedRoots, getCachedNullifiers, setCachedNullifiers } from '../../lib/indexerCache';
 import { poseidonHashMany } from '../../lib/onchain/poseidon';
+import type { StoredNoteRecord } from '../../lib/notes/storage';
+import { readStoredNotes, writeStoredNotes } from '../../lib/notes/storage';
 import { formatBaseUnitsToUi } from '../../lib/format';
 import { useMintCatalog } from '../providers/MintCatalogProvider';
 import { recordWalletActivity } from '../../lib/client/activityLog';
@@ -71,17 +80,6 @@ interface TokenOption {
 }
 
 const createRandomSeed = () => Math.floor(Math.random() * 1_000_000).toString();
-
-interface StoredNoteEntry {
-  id: string;
-  label: string;
-  noteId: string;
-  spendingKey: string;
-  amount: string;
-  changeRecipient?: string;
-}
-
-const SAVED_NOTES_KEY = 'ptf.savedNotes';
 
 const bytesToHex = (bytes: Uint8Array): string =>
   `0x${Array.from(bytes)
@@ -133,6 +131,22 @@ function parseUiAmountToBaseUnits(value: string, decimals: number, label = 'amou
   const fractionPart = fractionRaw.padEnd(decimals, '0');
   const combined = `${wholePart}${fractionPart}`.replace(/^0+(?=\d)/, '') || '0';
   return BigInt(combined);
+}
+
+function normaliseSendError(error: unknown): string {
+  const message = (error as Error)?.message ?? 'Transaction failed';
+  if (error instanceof SendTransactionError) {
+    const debitLog = error.logs?.find((entry) =>
+      entry.includes('Attempt to debit an account but found no record of a prior credit')
+    );
+    if (debitLog) {
+      return 'Destination wallet needs SOL to create its public token account. Fund it via the Faucet, then retry.';
+    }
+  }
+  if (message.includes('Attempt to debit an account but found no record of a prior credit')) {
+    return 'Destination wallet needs SOL to create its public token account. Fund it via the Faucet, then retry.';
+  }
+  return message;
 }
 
 function parseOptionalUiAmountToBaseUnits(value: string, decimals: number, label = 'amount'): bigint {
@@ -197,7 +211,7 @@ export function ConvertForm() {
   );
   const [notesError, setNotesError] = useState<string | null>(null);
   const [isLoadingNotes, setLoadingNotes] = useState<boolean>(false);
-  const [storedNotes, setStoredNotes] = useState<StoredNoteEntry[]>([]);
+  const [storedNotes, setStoredNotes] = useState<StoredNoteRecord[]>(() => readStoredNotes());
   const [selectedStoredNoteId, setSelectedStoredNoteId] = useState<string | null>(null);
   const [noteLabelDraft, setNoteLabelDraft] = useState<string>('');
   const [nullifierPreview, setNullifierPreview] = useState<string | null>(null);
@@ -212,6 +226,8 @@ export function ConvertForm() {
     [mints, originMint]
   );
 
+  const decimals = mintConfig?.decimals ?? 0;
+
   const zTokenSymbol = useMemo(() => `z${mintConfig?.symbol ?? 'TOKEN'}`, [mintConfig?.symbol]);
   const redeemDisplaySymbol = useMemo(
     () => (mode === 'to-private' ? zTokenSymbol : mintConfig?.symbol ?? 'TOKEN'),
@@ -221,6 +237,89 @@ export function ConvertForm() {
   const proofClient = useMemo(() => new ProofClient(), []);
   const indexerClient = useMemo(() => new IndexerClient(), []);
   const mountedRef = useRef(true);
+
+  const requestAutoSolAirdrop = useCallback(async () => {
+    if (!wallet.publicKey) {
+      throw new Error('Connect your wallet before requesting SOL.');
+    }
+    const response = await fetch('/api/faucet/sol', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ recipient: wallet.publicKey.toBase58() })
+    });
+    if (!response.ok) {
+      let errorText: string | null = null;
+      try {
+        const payload = (await response.json()) as { error?: string };
+        errorText = payload.error ?? null;
+      } catch {
+        errorText = await response.text().catch(() => null);
+      }
+      throw new Error(
+        `Unable to automatically fund SOL for unwrap. ${
+          errorText ?? response.statusText ?? 'Use the Faucet tab to airdrop SOL, then retry.'
+        }`
+      );
+    }
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+  }, [wallet.publicKey]);
+
+  const ensureWalletFeeBalance = useCallback(async () => {
+    if (!wallet.publicKey) {
+      return;
+    }
+    const MIN_FEE_BALANCE = 0.02 * LAMPORTS_PER_SOL;
+    let balance = await connection.getBalance(wallet.publicKey);
+    if (balance >= MIN_FEE_BALANCE) {
+      return;
+    }
+    await requestAutoSolAirdrop();
+    balance = await connection.getBalance(wallet.publicKey);
+    if (balance < MIN_FEE_BALANCE) {
+      throw new Error('Unable to fund SOL for transaction fees. Use the Faucet tab to airdrop SOL, then retry.');
+    }
+  }, [wallet.publicKey, connection, requestAutoSolAirdrop]);
+
+  const ensureDestinationAccountFunding = useCallback(
+    async ({
+      owner,
+      mint,
+      tokenProgram
+    }: {
+      owner: PublicKey;
+      mint: string;
+      tokenProgram: PublicKey;
+    }) => {
+      if (!wallet.publicKey) {
+        return;
+      }
+      const destinationMintKey = new PublicKey(mint);
+      const destinationAta = await getAssociatedTokenAddress(
+        destinationMintKey,
+        owner,
+        false,
+        tokenProgram,
+        ASSOCIATED_TOKEN_PROGRAM_ID
+      );
+      const destinationInfo = await connection.getAccountInfo(destinationAta);
+      if (destinationInfo) {
+        return;
+      }
+      const rentLamports = await connection.getMinimumBalanceForRentExemption(AccountLayout.span);
+      const MIN_FEE_BUFFER = 150_000;
+      const requiredLamports = rentLamports + MIN_FEE_BUFFER;
+      let currentBalance = await connection.getBalance(wallet.publicKey);
+      if (currentBalance >= requiredLamports) {
+        return;
+      }
+      await requestAutoSolAirdrop();
+      currentBalance = await connection.getBalance(wallet.publicKey);
+      if (currentBalance < requiredLamports) {
+        throw new Error('Insufficient SOL to create the destination token account. Use the Faucet tab, then retry.');
+      }
+    },
+    [wallet.publicKey, connection, requestAutoSolAirdrop]
+  );
 
   const refreshTokenOptions = useCallback(async () => {
     const walletKey = wallet.publicKey;
@@ -405,31 +504,11 @@ export function ConvertForm() {
   }, []);
 
   useEffect(() => {
-    if (typeof window === 'undefined') {
-      return;
-    }
-    try {
-      const raw = window.localStorage.getItem(SAVED_NOTES_KEY);
-      if (raw) {
-        const parsed = JSON.parse(raw) as StoredNoteEntry[];
-        if (Array.isArray(parsed)) {
-          setStoredNotes(parsed);
-        }
-      }
-    } catch (error) {
-      console.warn('Failed to load saved notes', error);
-    }
+    setStoredNotes(readStoredNotes());
   }, []);
 
   useEffect(() => {
-    if (typeof window === 'undefined') {
-      return;
-    }
-    try {
-      window.localStorage.setItem(SAVED_NOTES_KEY, JSON.stringify(storedNotes));
-    } catch (error) {
-      console.warn('Failed to persist saved notes', error);
-    }
+    writeStoredNotes(storedNotes);
   }, [storedNotes]);
 
   const normaliseField = (value: string) => {
@@ -702,13 +781,26 @@ export function ConvertForm() {
     }
     const id = typeof crypto !== 'undefined' && 'randomUUID' in crypto ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`;
     const label = noteLabelDraft.trim() || `Note ${storedNotes.length + 1}`;
-    const entry: StoredNoteEntry = {
+    const noteMint = mintConfig?.zTokenMint ?? mintConfig?.originMint ?? '';
+    let rawAmount: string | undefined;
+    try {
+      const parsed = parseUiAmountToBaseUnits(unwrapAdvanced.noteAmount.trim() || amount || '0', decimals, 'note amount');
+      rawAmount = parsed.toString();
+    } catch {
+      rawAmount = undefined;
+    }
+    const entry: StoredNoteRecord = {
       id,
       label,
       noteId,
       spendingKey,
       amount: unwrapAdvanced.noteAmount.trim() || amount || '0',
-      changeRecipient: unwrapAdvanced.changeRecipient.trim() || undefined
+      rawAmount,
+      decimals,
+      mint: noteMint || undefined,
+      owner: wallet.publicKey?.toBase58(),
+      changeRecipient: unwrapAdvanced.changeRecipient.trim() || undefined,
+      createdAt: Date.now()
     };
     setStoredNotes((prev) => {
       const filtered = prev.filter((item) => item.noteId !== entry.noteId || item.spendingKey !== entry.spendingKey);
@@ -869,6 +961,29 @@ export function ConvertForm() {
         const displayAmount = formatBaseUnitsToUi(baseAmount, decimals);
         setResult(`Shielded ${displayAmount} into ${zTokenSymbol}. Signature: ${signature}`);
         if (wallet.publicKey) {
+          const autoStoredNote: StoredNoteRecord = {
+            id:
+              typeof crypto !== 'undefined' && 'randomUUID' in crypto
+                ? crypto.randomUUID()
+                : `${Date.now()}-${Math.random()}`,
+            label: `Wrap ${new Date().toLocaleTimeString()}`,
+            noteId: wrapAdvanced.depositId,
+            spendingKey: wrapAdvanced.blinding,
+            amount: displayAmount,
+            rawAmount: baseAmount.toString(),
+            decimals,
+            mint: mintConfig.zTokenMint ?? mintConfig.originMint,
+            owner: wallet.publicKey.toBase58(),
+            createdAt: Date.now()
+          };
+          setStoredNotes((prev) => {
+            const filtered = prev.filter(
+              (entry) => entry.noteId !== autoStoredNote.noteId || entry.spendingKey !== autoStoredNote.spendingKey
+            );
+            return [...filtered, autoStoredNote];
+          });
+        }
+        if (wallet.publicKey) {
           void recordWalletActivity({
             wallet: wallet.publicKey.toBase58(),
             id: signature,
@@ -887,7 +1002,13 @@ export function ConvertForm() {
         if (!mintConfig.zTokenMint) {
           throw new Error('This token does not support private redemptions.');
         }
+        await ensureWalletFeeBalance();
         const destinationKey = await resolvePublicKey(unwrapAdvanced.destination, wallet.publicKey);
+        await ensureDestinationAccountFunding({
+          owner: destinationKey,
+          mint: mintId,
+          tokenProgram: TOKEN_PROGRAM_ID
+        });
 
         const amountValue = parseUiAmountToBaseUnits(amount, decimals, 'amount');
         if (amountValue <= 0n) {
@@ -1023,7 +1144,12 @@ export function ConvertForm() {
           console.info('[convert] unwrap params', unwrapParams);
         }
 
-        const unwrapSignature = await unwrapSdk(unwrapParams);
+        let unwrapSignature: string;
+        try {
+          unwrapSignature = await unwrapSdk(unwrapParams);
+        } catch (caught) {
+          throw new Error(normaliseSendError(caught));
+        }
 
         try {
           await indexerClient.adjustBalance(wallet.publicKey.toBase58(), privateMint, -amountValue);

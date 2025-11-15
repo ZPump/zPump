@@ -40,7 +40,6 @@ const MINTS_API_URL = process.env.MINTS_API_URL ?? `${NEXT_URL}/api/mints`;
 const SOL_AIRDROP_LAMPORTS = BigInt(process.env.SOL_AIRDROP_LAMPORTS ?? (2n * 10n ** 9n).toString());
 const MIN_SOL_BALANCE = BigInt(process.env.MIN_SOL_BALANCE ?? (1n * 10n ** 9n).toString());
 const WRAP_AMOUNT = BigInt(process.env.WRAP_AMOUNT ?? '1000000');
-const TRANSFER_AMOUNT = BigInt(process.env.PRIVATE_TRANSFER_AMOUNT ?? (WRAP_AMOUNT / 2n).toString());
 const DELEGATED_TRANSFER_AMOUNT = BigInt(
   process.env.PRIVATE_TRANSFER_FROM_AMOUNT ?? (WRAP_AMOUNT / 4n).toString()
 );
@@ -74,6 +73,37 @@ interface WrapResult {
   spendingKey: string;
   noteAmount: bigint;
   newRoot: string;
+}
+
+function selectNotesForAmount(notes: WrapResult[], target: bigint): WrapResult[] {
+  if (!notes.length) {
+    throw new Error('No available notes to cover transfer.');
+  }
+  const sorted = [...notes].sort((a, b) => {
+    if (a.noteAmount === b.noteAmount) {
+      return 0;
+    }
+    return a.noteAmount > b.noteAmount ? 1 : -1;
+  });
+  const single = sorted.find((note) => note.noteAmount >= target);
+  if (single) {
+    return [single];
+  }
+  let bestPair: { total: bigint; pair: [WrapResult, WrapResult] } | null = null;
+  for (let i = sorted.length - 1; i >= 0; i -= 1) {
+    for (let j = i - 1; j >= 0; j -= 1) {
+      const total = sorted[i]!.noteAmount + sorted[j]!.noteAmount;
+      if (total >= target) {
+        if (!bestPair || total < bestPair.total) {
+          bestPair = { total, pair: [sorted[i]!, sorted[j]!] };
+        }
+      }
+    }
+  }
+  if (bestPair) {
+    return bestPair.pair;
+  }
+  throw new Error('Insufficient note liquidity for requested amount.');
 }
 
 function randomSymbol(): string {
@@ -459,11 +489,9 @@ async function main() {
 
   const initialPoolInfo = await fetchPoolStateRoot(connection, poolId);
   const feeBps = BigInt(initialPoolInfo.feeBps);
-  const wrapOneFee = (WRAP_AMOUNT * feeBps) / 10_000n;
-  const wrapTwoFee = (WRAP_AMOUNT * feeBps) / 10_000n;
-  const wrapOneNoteAmount = WRAP_AMOUNT + wrapOneFee;
-  const wrapTwoNoteAmount = WRAP_AMOUNT + wrapTwoFee;
-  const totalMintNeeded = wrapOneNoteAmount + wrapTwoNoteAmount;
+  const perWrapCost = WRAP_AMOUNT + (WRAP_AMOUNT * feeBps) / 10_000n;
+  const wrapsRequired = 3n;
+  const totalMintNeeded = perWrapCost * wrapsRequired;
   console.info('[faucet] ensuring origin mint balance', { lamports: totalMintNeeded.toString() });
   await ensureTokenBalance(connection, owner.publicKey, originMintKey, totalMintNeeded);
 
@@ -549,18 +577,24 @@ async function main() {
   }
 
   async function executeTransfer(params: {
-    note: WrapResult;
+    notes: WrapResult[];
     spendAmount: bigint;
     recipient: PublicKey;
     wallet: WalletLike;
     walletLabel: string;
   }) {
-    const { note, spendAmount, recipient, wallet, walletLabel } = params;
-    const changeAmount = note.noteAmount - spendAmount;
+    const { notes, spendAmount, recipient, wallet, walletLabel } = params;
+    const selection = selectNotesForAmount(notes, spendAmount);
+    const totalInput = selection.reduce((sum, note) => sum + note.noteAmount, 0n);
+    const changeAmount = totalInput - spendAmount;
     if (changeAmount < 0n) {
       throw new Error('Spend amount exceeds note value');
     }
-    const inputNotes = [{ noteId: note.noteId, spendingKey: note.spendingKey, amount: note.noteAmount.toString() }];
+    const inputNotes = selection.map((note) => ({
+      noteId: note.noteId,
+      spendingKey: note.spendingKey,
+      amount: note.noteAmount.toString()
+    }));
     const outNotes = [
       {
         amount: spendAmount.toString(),
@@ -659,22 +693,30 @@ async function main() {
     return signature;
   }
 
-  console.info('[flow] wrap note for owner');
+  console.info('[flow] creating liquidity notes for owner');
   const firstWrap = await performWrap(WRAP_AMOUNT);
+  const secondWrap = await performWrap(WRAP_AMOUNT);
 
-  console.info('[flow] owner -> receiver private transfer');
+  const changePadding = secondWrap.noteAmount / 4n;
+  const combinedSpendAmount =
+    firstWrap.noteAmount + secondWrap.noteAmount - (changePadding === 0n ? 1n : changePadding);
+  if (combinedSpendAmount <= firstWrap.noteAmount) {
+    throw new Error('Combined transfer amount must exceed single note to test aggregation.');
+  }
+
+  console.info('[flow] owner -> receiver private transfer (multi-note)');
   const transferSignature = await executeTransfer({
-    note: firstWrap,
-    spendAmount: TRANSFER_AMOUNT,
+    notes: [firstWrap, secondWrap],
+    spendAmount: combinedSpendAmount,
     recipient: receiver.publicKey,
     wallet: ownerAdapter,
     walletLabel: 'owner'
   });
-  ownerPrivateBalance -= TRANSFER_AMOUNT;
-  receiverPrivateBalance += TRANSFER_AMOUNT;
-  await indexerClient.adjustBalance(owner.publicKey.toBase58(), privateMint, -TRANSFER_AMOUNT);
-  await indexerClient.adjustBalance(receiver.publicKey.toBase58(), privateMint, TRANSFER_AMOUNT);
-  const transferDisplay = formatBaseUnitsToUi(TRANSFER_AMOUNT, TARGET_DECIMALS);
+  ownerPrivateBalance -= combinedSpendAmount;
+  receiverPrivateBalance += combinedSpendAmount;
+  await indexerClient.adjustBalance(owner.publicKey.toBase58(), privateMint, -combinedSpendAmount);
+  await indexerClient.adjustBalance(receiver.publicKey.toBase58(), privateMint, combinedSpendAmount);
+  const transferDisplay = formatBaseUnitsToUi(combinedSpendAmount, TARGET_DECIMALS);
   await indexerClient.appendActivity(ownerViewId, {
     id: transferSignature,
     type: 'transfer',
@@ -693,7 +735,7 @@ async function main() {
   });
 
   console.info('[flow] wrap allowance note');
-  const secondWrap = await performWrap(WRAP_AMOUNT);
+  const allowanceWrap = await performWrap(WRAP_AMOUNT);
 
   console.info('[allowance] setting allowance for delegate');
   const allowanceAmount = DELEGATED_TRANSFER_AMOUNT;
@@ -729,7 +771,7 @@ async function main() {
 
   console.info('[flow] delegate transfer_from to receiver');
   const transferFromSignature = await executeTransferFrom({
-    note: secondWrap,
+    note: allowanceWrap,
     allowanceAmount,
     spendAmount: allowanceAmount,
     recipient: receiver.publicKey
