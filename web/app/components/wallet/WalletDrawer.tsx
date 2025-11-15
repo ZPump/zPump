@@ -45,6 +45,7 @@ import {
   Textarea,
   Tooltip,
   useBoolean,
+  useClipboard,
   useDisclosure,
   useToast
 } from '@chakra-ui/react';
@@ -102,6 +103,35 @@ interface SendAssetInput {
 
 function formatAddress(address: string) {
   return `${address.slice(0, 4)}…${address.slice(-4)}`;
+}
+
+function CopyAddressButton({
+  value,
+  ariaLabel = 'Copy address',
+  stopPropagation = false
+}: {
+  value: string;
+  ariaLabel?: string;
+  stopPropagation?: boolean;
+}) {
+  const { hasCopied, onCopy } = useClipboard(value);
+
+  return (
+    <Tooltip label={hasCopied ? 'Copied' : 'Copy address'}>
+      <IconButton
+        icon={<Icon as={Copy} boxSize={3} />}
+        aria-label={ariaLabel}
+        variant="ghost"
+        size="xs"
+        onClick={(event) => {
+          if (stopPropagation) {
+            event.stopPropagation();
+          }
+          onCopy();
+        }}
+      />
+    </Tooltip>
+  );
 }
 
 export function WalletDrawerLauncher() {
@@ -514,9 +544,12 @@ function WalletDrawerContent({ disclosure }: { disclosure: ReturnType<typeof use
                 Devnet
               </Badge>
               {activeAccount && (
-                <Text fontWeight="medium" color="whiteAlpha.800">
-                  {activeAccount.label} · {formatAddress(activeAccount.publicKey)}
-                </Text>
+                <HStack spacing={2}>
+                  <Text fontWeight="medium" color="whiteAlpha.800">
+                    {activeAccount.label} · {formatAddress(activeAccount.publicKey)}
+                  </Text>
+                  <CopyAddressButton value={activeAccount.publicKey} ariaLabel="Copy active account address" />
+                </HStack>
               )}
             </HStack>
           </Stack>
@@ -628,16 +661,10 @@ function WalletDrawerContent({ disclosure }: { disclosure: ReturnType<typeof use
                       </Editable>
                       <HStack spacing={2} color="whiteAlpha.500" fontSize="xs">
                         <Text>{formatAddress(account.publicKey)}</Text>
-                        <IconButton
-                          icon={<Icon as={Copy} fontSize="xs" />}
-                          aria-label="Copy address"
-                          variant="ghost"
-                          size="xs"
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            navigator.clipboard.writeText(account.publicKey);
-                            toast({ title: 'Address copied', status: 'success', duration: 1500, isClosable: true });
-                          }}
+                        <CopyAddressButton
+                          value={account.publicKey}
+                          ariaLabel="Copy account address"
+                          stopPropagation
                         />
                       </HStack>
                     </Stack>
