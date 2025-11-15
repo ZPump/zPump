@@ -17,15 +17,13 @@ The README focuses on high-level onboarding. Deep dives live in [`docs/`](docs/R
    cd ../..
    ```
 
-2. **Start the private devnet**
+2. **Bootstrap + smoke test**
    ```bash
-   ./scripts/start-private-devnet.sh
-   npx tsx web/app/scripts/bootstrap-private-devnet.ts
-   cd web/app && npm run build && cd ..
-   pm2 restart ptf-proof --update-env
-   pm2 restart ptf-indexer --update-env
-  pm2 restart ptf-web --update-env
+   ./scripts/reset-dev-env.sh
    ```
+   The reset script stops all PM2 apps, coordinates the user-level `zpump-devnet` systemd service (or falls back to PM2 if not installed), rebuilds dependencies, runs `bootstrap-private-devnet.ts`, restarts `ptf-indexer`, `ptf-proof`, and `ptf-web`, and finally executes `npx tsx scripts/wrap-unwrap-local.ts` to register a mint, request faucet funds, shield, and unshield. Set `RUN_SMOKE_TESTS=false` if you need to skip the wrap/unshield check.
+
+   > The validator now runs under `systemctl --user`. Copy `scripts/systemd/zpump-devnet.service` into `~/.config/systemd/user/`, then inspect it with `systemctl --user status zpump-devnet` or stream logs via `journalctl --user -u zpump-devnet -f`.
 
 3. **Visit the dApp** at [http://localhost:3000/convert](http://localhost:3000/convert). Use the faucet page to mint origin tokens (e.g. USDC) and test shield/unshield flows.
 

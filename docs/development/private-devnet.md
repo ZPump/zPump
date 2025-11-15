@@ -11,24 +11,26 @@ If you previously ran the devnet, stop and clean up to avoid root drift:
 ```
 
 The script performs the full reset:
-- Stops all PM2 services, terminates any stray validators.
+- Stops all PM2 services and the `zpump-devnet` systemd unit if it is active.
 - Wipes the ledger at `~/.local/share/zpump-devnet-ledger` and resets Photon snapshots.
 - Re-establishes required symlinks (`services/circuits -> ../circuits`).
-- Restarts the validator, waits for RPC health, reinstalls Photon/Proof RPC deps, reruns the bootstrap script, and relaunches `ptf-indexer`, `ptf-proof`, and `ptf-web` under PM2.
+- Restarts the validator via systemd (falling back to PM2 if the service is not installed), waits for RPC health, reinstalls Photon/Proof RPC deps, reruns the bootstrap script, relaunches `ptf-indexer`, `ptf-proof`, and `ptf-web` under PM2, and executes the wrap/unwrap smoke test (`npx tsx scripts/wrap-unwrap-local.ts`) to verify register/mint/shield/unshield flows. Export `RUN_SMOKE_TESTS=false` to skip the smoke test.
 
 This one-shot reset prevents mismatched commitment tree and pool roots (see [Root Drift Playbook](../operations/root-drift.md)).
 
 ## 2. Launch Local Validator
 
+The repo ships a user-level systemd unit (`scripts/systemd/zpump-devnet.service`) that keeps `solana-test-validator` online. Install/enable it once:
+
 ```bash
-./scripts/start-private-devnet.sh
+mkdir -p ~/.config/systemd/user
+cp scripts/systemd/zpump-devnet.service ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now zpump-devnet
+journalctl --user -u zpump-devnet -f    # tail validator logs
 ```
 
-Script behaviour:
-- Kills any lingering validator.
-- Ensures faucet port is free.
-- Starts `solana-test-validator` with the program binaries and accounts specified in `Anchor.toml`.
-- Runs in foreground; leave it running. For PM2 integration, wrap the script or use a custom service definition.
+`./scripts/reset-dev-env.sh` will stop/start this unit automatically. If you prefer to run the validator manually (e.g. for CI), invoke `./scripts/start-private-devnet.sh` which terminates lingering validators, frees the faucet port, and execs `solana-test-validator` with the Anchor program IDs.
 
 ## 3. Bootstrap On-chain State
 
@@ -65,7 +67,7 @@ pm2 restart ptf-proof --update-env
 Ensure pm2 processes exist; if not, start them:
 
 ```bash
-pm2 start ecosystem.config.cjs   # example, adjust when config is defined
+pm2 start ecosystem.config.js
 ```
 
 ### Registering additional mints
@@ -93,7 +95,7 @@ npx tsx web/app/scripts/wrap-unwrap-local.ts
 ```
 
 Behaviour:
-- Generates a new keypair (or reuses one at `/tmp/zpump-test.json`).
+- Uses the wallet at `~/.config/solana/id.json` by default (override via `ZPUMP_TEST_WALLET`).
 - Requests SOL + USDC from faucet.
 - Fetches commitment tree root from Photon (fallback to chain) and publishes to indexer.
 - Calls Proof RPC for wrap/unshield proofs.
@@ -102,6 +104,8 @@ Behaviour:
 - Submits unwrap transaction, waits for confirmation.
 
 Verify the script ends with `[done] wrap and unwrap flow completed successfully`.
+
+> `./scripts/reset-dev-env.sh` runs this script automatically unless `RUN_SMOKE_TESTS=false` is set.
 
 ## 8. Indexer Validation
 
@@ -118,7 +122,7 @@ To stop services cleanly:
 
 ```bash
 pm2 stop ptf-web ptf-indexer ptf-proof
-pkill -f solana-test-validator
+systemctl --user stop zpump-devnet  # or pkill -f solana-test-validator
 ```
 
 Consider persisting PM2 state (`pm2 save`) if using system startup.

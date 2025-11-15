@@ -1,12 +1,9 @@
-import { NextResponse } from 'next/server';
+import type { NextApiRequest, NextApiResponse } from 'next';
 import fs from 'fs/promises';
 import path from 'path';
-import type { MintConfig } from '../../../config/mints';
-import { bootstrapPrivateDevnet } from '../../../scripts/bootstrap-private-devnet';
-import { getRepoRoot, resolveRepoPath } from '../../../lib/server/paths';
-
-export const runtime = 'nodejs';
-export const dynamic = 'force-dynamic';
+import type { MintConfig } from '../../config/mints';
+import { bootstrapPrivateDevnet } from '../../scripts/bootstrap-private-devnet';
+import { getRepoRoot, resolveRepoPath } from '../../lib/server/paths';
 
 interface GeneratedMint {
   symbol: string;
@@ -63,50 +60,49 @@ async function writeMintCatalog(entries: GeneratedMint[]) {
   await fs.writeFile(MINTS_PATH, JSON.stringify(entries, null, 2));
 }
 
-export async function GET() {
-  const catalog = await readMintCatalog();
+async function handleGet(res: NextApiResponse) {
+  const catalog = (await readMintCatalog()).filter(
+    (entry) =>
+      entry.originMint !== PLACEHOLDER_ORIGIN && entry.poolId !== PLACEHOLDER_POOL
+  );
   const mints = catalog.map(mapGeneratedMint);
-  return NextResponse.json({ mints });
+  res.status(200).json({ mints });
 }
 
-interface CreateMintPayload {
-  symbol?: string;
-  decimals?: number;
-}
-
-export async function POST(request: Request) {
+async function handlePost(req: NextApiRequest, res: NextApiResponse) {
   if (!isLocalFaucetMode()) {
-    return NextResponse.json({ error: 'mint_registration_disabled' }, { status: 403 });
+    res.status(403).json({ error: 'mint_registration_disabled' });
+    return;
   }
-
   if (bootstrapInFlight) {
-    return NextResponse.json({ error: 'mint_registration_in_progress' }, { status: 429 });
+    res.status(429).json({ error: 'mint_registration_in_progress' });
+    return;
   }
-
-  let payload: CreateMintPayload;
+  let payload: { symbol?: string; decimals?: number };
   try {
-    payload = (await request.json()) as CreateMintPayload;
+    payload = req.body as { symbol?: string; decimals?: number };
   } catch {
-    return NextResponse.json({ error: 'invalid_payload' }, { status: 400 });
+    res.status(400).json({ error: 'invalid_payload' });
+    return;
   }
-
   const symbol = payload.symbol?.trim().toUpperCase();
   const decimals = Number(payload.decimals);
-
   if (!symbol || symbol.length < 2 || symbol.length > 6) {
-    return NextResponse.json({ error: 'invalid_symbol' }, { status: 400 });
+    res.status(400).json({ error: 'invalid_symbol' });
+    return;
   }
   if (!Number.isInteger(decimals) || decimals < 0 || decimals > 9) {
-    return NextResponse.json({ error: 'invalid_decimals' }, { status: 400 });
+    res.status(400).json({ error: 'invalid_decimals' });
+    return;
   }
 
   bootstrapInFlight = true;
   try {
     const existing = await readMintCatalog();
     if (existing.some((entry) => entry.symbol.toUpperCase() === symbol)) {
-      return NextResponse.json({ error: 'symbol_exists' }, { status: 409 });
+      res.status(409).json({ error: 'symbol_exists' });
+      return;
     }
-
     existing.push({
       symbol,
       decimals,
@@ -126,19 +122,35 @@ export async function POST(request: Request) {
     const refreshed = await readMintCatalog();
     const created = refreshed.find((entry) => entry.symbol.toUpperCase() === symbol);
     if (!created) {
-      return NextResponse.json({ error: 'mint_creation_failed' }, { status: 500 });
+      res.status(500).json({ error: 'mint_creation_failed' });
+      return;
     }
-
-    return NextResponse.json({ mint: mapGeneratedMint(created) });
+    res.status(200).json({ mint: mapGeneratedMint(created) });
   } catch (error) {
     console.error('[api/mints] mint registration failed', error);
-    return NextResponse.json(
-      { error: (error as Error).message ?? 'mint_registration_failed' },
-      { status: 500 }
-    );
+    res.status(500).json({
+      error: (error as Error).message ?? 'mint_registration_failed'
+    });
   } finally {
     bootstrapInFlight = false;
   }
 }
 
+export default async function handler(req: NextApiRequest, res: NextApiResponse) {
+  try {
+    if (req.method === 'GET') {
+      await handleGet(res);
+      return;
+    }
+    if (req.method === 'POST') {
+      await handlePost(req, res);
+      return;
+    }
+    res.setHeader('Allow', ['GET', 'POST']);
+    res.status(405).end('Method Not Allowed');
+  } catch (error) {
+    console.error('[api/mints] unexpected failure', error);
+    res.status(500).json({ error: 'internal_error' });
+  }
+}
 

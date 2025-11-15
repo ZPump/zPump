@@ -95,9 +95,12 @@ solana config set --keypair ~/.config/solana/id.json
 
 Ensure the keypair exists (`solana-keygen new` if not).
 
+`./scripts/reset-dev-env.sh` will automatically create this keypair at `~/.config/solana/id.json` when missing and use it for smoke tests.
+
 ## Scripts & Tooling
 
 - `scripts/start-private-devnet.sh` – launches `solana-test-validator` with correct program IDs (kills existing instances first).
+- `scripts/reset-dev-env.sh` – orchestrates validator/systemd, dependency installs, bootstrap, PM2 restarts, and the wrap/unwrap smoke test.
 - `web/app/scripts/bootstrap-private-devnet.ts` – initialises programs, verifying keys, mints, and writes `mints.generated.json`.
 - `web/app/scripts/wrap-unwrap-local.ts` – end-to-end shield/unshield test.
 
@@ -105,9 +108,25 @@ Install `tsx` locally (`npm install -g tsx` or rely on project `npx tsx`).
 
 ## Process Management
 
-Recommended PM2 commands (after running bootstrap):
+### Validator via systemd
+
+The repo ships `scripts/systemd/zpump-devnet.service`. Install it once and keep the validator running with systemd:
+
 ```bash
-pm2 start pm2.config.cjs          # Example, adjust once config is added
+mkdir -p ~/.config/systemd/user
+cp scripts/systemd/zpump-devnet.service ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now zpump-devnet
+systemctl --user status zpump-devnet
+journalctl --user -u zpump-devnet -f   # tail validator logs
+```
+
+`./scripts/reset-dev-env.sh` automatically stops/starts this unit (and falls back to PM2 if the service is absent).
+
+### Application processes via PM2
+
+```bash
+pm2 start ecosystem.config.js
 pm2 restart ptf-web --update-env
 pm2 restart ptf-indexer --update-env
 pm2 restart ptf-proof --update-env

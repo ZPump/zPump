@@ -21,7 +21,33 @@ PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PROGRAM_DIR="${PROGRAM_DIR:-$PROJECT_ROOT/target/deploy}"
 LEDGER_DIR="${LEDGER_DIR:-$HOME/.local/share/zpump-devnet-ledger}"
 RPC_PORT="${RPC_PORT:-8899}"
-FAUCET_PORT="${FAUCET_PORT:-$((RPC_PORT + 1))}"
+# Use an offset to avoid collisions with other local services that might recycle RPC+1.
+FAUCET_PORT="${FAUCET_PORT:-$((RPC_PORT + 101))}"
+FAUCET_PORT_WAS_SET=false
+if [[ -n "${FAUCET_PORT+x}" ]]; then
+  FAUCET_PORT_WAS_SET=true
+fi
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --rpc-port)
+      RPC_PORT="$2"
+      shift 2
+      if [[ "$FAUCET_PORT_WAS_SET" = false ]]; then
+        FAUCET_PORT=$((RPC_PORT + 101))
+      fi
+      ;;
+    --faucet-port)
+      FAUCET_PORT="$2"
+      FAUCET_PORT_WAS_SET=true
+      shift 2
+      ;;
+    *)
+      echo "error: unknown argument $1" >&2
+      exit 1
+      ;;
+  esac
+done
 
 PROGRAM_FACTORY_PUBKEY="4z618BY2dXGqAUiegqDt8omo3e81TSdXRHt64ikX1bTy"
 PROGRAM_VAULT_PUBKEY="9g6ZodQwxK8MN6MX3dbvFC3E7vGVqFtKZEHY7PByRAuh"
@@ -41,6 +67,7 @@ for program in \
 done
 
 mkdir -p "$LEDGER_DIR"
+mkdir -p "$LEDGER_DIR/rocksdb"
 
 if pgrep -f solana-test-validator >/dev/null; then
   echo "==> Detected running solana-test-validator instances. Terminating..."
