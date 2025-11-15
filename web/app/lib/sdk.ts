@@ -21,12 +21,14 @@ import { BorshCoder, BN, Idl } from '@coral-xyz/anchor';
 import {
   ASSOCIATED_TOKEN_PROGRAM_ID,
   TOKEN_PROGRAM_ID,
+  TOKEN_2022_PROGRAM_ID,
   POOL_PROGRAM_ID,
   VAULT_PROGRAM_ID,
   VERIFIER_PROGRAM_ID,
   FACTORY_PROGRAM_ID
 } from './onchain/programIds';
 import {
+  deriveAllowanceAccount,
   deriveCommitmentTree,
   deriveHookConfig,
   deriveNullifierSet,
@@ -49,9 +51,10 @@ import { ProofResponse } from './proofClient';
 import poolIdl from '../idl/ptf_pool.json';
 import factoryIdl from '../idl/ptf_factory.json';
 import {
-  TOKEN_2022_PROGRAM_ID,
   getAssociatedTokenAddress,
-  createAssociatedTokenAccountInstruction
+  createAssociatedTokenAccountInstruction,
+  createApproveInstruction,
+  createRevokeInstruction
 } from '@solana/spl-token';
 
 const DEFAULT_SIGNATURE_TIMEOUT_MS = 60_000;
@@ -134,10 +137,68 @@ interface UnwrapParams extends BaseParams {
   twinMint?: string;
 }
 
+interface TransferParams {
+  connection: Connection;
+  wallet: WalletContextState;
+  originMint: string;
+  poolId: string;
+  proof: ProofResponse;
+  nullifiers: readonly string[];
+  outputCommitments: readonly string[];
+  outputAmountCommitments: readonly string[];
+  lookupTable?: string;
+}
+
+interface TransferFromParams extends TransferParams {
+  allowanceOwner: string;
+  allowanceAmount: bigint | number | string;
+}
+
+type SplTokenProgramKind = 'token' | 'token-2022';
+
+interface ApproveSplTokenParams {
+  connection: Connection;
+  wallet: WalletContextState;
+  mint: string;
+  delegate: string;
+  amount: bigint | number | string;
+  ownerTokenAccount?: string;
+  program?: SplTokenProgramKind;
+}
+
+interface RevokeSplTokenParams {
+  connection: Connection;
+  wallet: WalletContextState;
+  mint: string;
+  ownerTokenAccount?: string;
+  program?: SplTokenProgramKind;
+}
+
 interface DecodedProofPayload {
   proof: Buffer;
   publicInputs: Buffer;
   fields: Uint8Array[];
+}
+
+function toFixedArray(value: Uint8Array, label: string): number[] {
+  if (value.length !== 32) {
+    throw new Error(`${label} must be 32 bytes`);
+  }
+  return Array.from(value);
+}
+
+function encodeFieldElementHex(value: string, label: string): number[] {
+  const canonical = canonicalizeHex(value);
+  const bytes = canonicalHexToBytesLE(canonical, 32);
+  return Array.from(bytes);
+}
+
+function encodeFieldVector(values: readonly string[], label: string): number[][] {
+  return values.map((entry, index) => encodeFieldElementHex(entry, `${label}[${index}]`));
+}
+
+function resolveSplProgram(kind: SplTokenProgramKind = 'token'): PublicKey {
+  return kind === 'token-2022' ? TOKEN_2022_PROGRAM_ID : TOKEN_PROGRAM_ID;
 }
 
 function decodeProofPayload(payload: ProofResponse | null): DecodedProofPayload {
@@ -939,6 +1000,346 @@ export async function unwrap(params: UnwrapParams): Promise<string> {
     latestBlockhash.lastValidBlockHeight
   );
 
+  return signature;
+}
+
+export async function transfer(params: TransferParams): Promise<string> {
+  assertWallet(params.wallet);
+  const wallet = params.wallet;
+  const connection = params.connection;
+  const payer = wallet.publicKey;
+
+  if (params.outputCommitments.length !== params.outputAmountCommitments.length) {
+    throw new Error('Output commitment set mismatch');
+  }
+
+  const decodedProof = decodeProofPayload(params.proof);
+  if (decodedProof.fields.length < 4) {
+    throw new Error('Transfer proof missing public inputs');
+  }
+
+  const poolStateKey = new PublicKey(params.poolId);
+  const originMintKey = new PublicKey(params.originMint);
+  const commitmentTreeKey = deriveCommitmentTree(originMintKey);
+  const nullifierSetKey = deriveNullifierSet(originMintKey);
+  const noteLedgerKey = deriveNoteLedger(originMintKey);
+  const verifyingKey = deriveVerifyingKey();
+
+  const expectedFieldCount =
+    2 + params.nullifiers.length + params.outputCommitments.length + 2;
+  if (decodedProof.fields.length !== expectedFieldCount) {
+    console.warn('[transfer] unexpected public input count', {
+      expectedFieldCount,
+      actual: decodedProof.fields.length
+    });
+  }
+
+  const transferArgs = {
+    old_root: toFixedArray(decodedProof.fields[0]!, 'old_root'),
+    new_root: toFixedArray(decodedProof.fields[1]!, 'new_root'),
+    nullifiers: encodeFieldVector(params.nullifiers, 'nullifiers'),
+    output_commitments: encodeFieldVector(params.outputCommitments, 'output_commitments'),
+    output_amount_commitments: encodeFieldVector(
+      params.outputAmountCommitments,
+      'output_amount_commitments'
+    ),
+    proof: Buffer.from(decodedProof.proof),
+    public_inputs: Buffer.from(decodedProof.publicInputs)
+  };
+
+  const instructions: TransactionInstruction[] = [];
+  const computeLimitEnv =
+    process.env.TRANSFER_COMPUTE_UNIT_LIMIT ??
+    process.env.WRAP_COMPUTE_UNIT_LIMIT ??
+    process.env.NEXT_PUBLIC_WRAP_COMPUTE_UNIT_LIMIT;
+  const resolvedLimit = (() => {
+    if (computeLimitEnv !== undefined) {
+      const parsed = Number(computeLimitEnv);
+      if (!Number.isNaN(parsed)) {
+        return Math.max(parsed, 0);
+      }
+    }
+    return 800_000;
+  })();
+  if (resolvedLimit > 0) {
+    instructions.push(ComputeBudgetProgram.setComputeUnitLimit({ units: resolvedLimit }));
+  }
+
+  const computePriceEnv =
+    process.env.TRANSFER_COMPUTE_UNIT_PRICE ??
+    process.env.WRAP_COMPUTE_UNIT_PRICE ??
+    process.env.NEXT_PUBLIC_WRAP_COMPUTE_UNIT_PRICE;
+  if (computePriceEnv) {
+    const microLamports = Number(computePriceEnv);
+    if (!Number.isNaN(microLamports) && microLamports > 0) {
+      instructions.push(ComputeBudgetProgram.setComputeUnitPrice({ microLamports }));
+    }
+  }
+
+  instructions.push(
+    new TransactionInstruction({
+      programId: POOL_PROGRAM_ID,
+      keys: [
+        { pubkey: poolStateKey, isSigner: false, isWritable: true },
+        { pubkey: nullifierSetKey, isSigner: false, isWritable: true },
+        { pubkey: commitmentTreeKey, isSigner: false, isWritable: true },
+        { pubkey: noteLedgerKey, isSigner: false, isWritable: true },
+        { pubkey: VERIFIER_PROGRAM_ID, isSigner: false, isWritable: false },
+        { pubkey: verifyingKey, isSigner: false, isWritable: false }
+      ],
+      data: poolCoder.instruction.encode('private_transfer', { args: transferArgs })
+    })
+  );
+
+  const lookupTables: AddressLookupTableAccount[] = [];
+  if (params.lookupTable) {
+    try {
+      const tableKey = new PublicKey(params.lookupTable);
+      const response = await connection.getAddressLookupTable(tableKey);
+      if (response.value) {
+        lookupTables.push(response.value);
+      }
+    } catch (error) {
+      console.warn('[transfer] failed to load lookup table', error);
+    }
+  }
+
+  const latestBlockhash = await connection.getLatestBlockhash('confirmed');
+  let signature: string;
+
+  if (lookupTables.length > 0) {
+    const message = new TransactionMessage({
+      payerKey: payer,
+      recentBlockhash: latestBlockhash.blockhash,
+      instructions
+    }).compileToV0Message(lookupTables);
+    const tx = new VersionedTransaction(message);
+    signature = await wallet.sendTransaction(tx, connection, { skipPreflight: false });
+  } else {
+    const tx = new Transaction().add(...instructions);
+    tx.feePayer = payer;
+    tx.recentBlockhash = latestBlockhash.blockhash;
+    signature = await wallet.sendTransaction(tx, connection, { skipPreflight: false });
+  }
+
+  await waitForSignatureConfirmation(
+    connection,
+    signature,
+    latestBlockhash.blockhash,
+    latestBlockhash.lastValidBlockHeight
+  );
+
+  return signature;
+}
+
+export async function transferFrom(params: TransferFromParams): Promise<string> {
+  assertWallet(params.wallet);
+  const wallet = params.wallet;
+  const connection = params.connection;
+  const spender = wallet.publicKey;
+  if (!spender) {
+    throw new Error('Wallet public key missing');
+  }
+
+  if (params.outputCommitments.length !== params.outputAmountCommitments.length) {
+    throw new Error('Output commitment set mismatch');
+  }
+
+  const allowanceAmount = BigInt(params.allowanceAmount);
+  if (allowanceAmount <= 0n) {
+    throw new Error('Allowance amount must be positive');
+  }
+
+  const decodedProof = decodeProofPayload(params.proof);
+  if (decodedProof.fields.length < 4) {
+    throw new Error('Transfer proof missing public inputs');
+  }
+
+  const poolStateKey = new PublicKey(params.poolId);
+  const originMintKey = new PublicKey(params.originMint);
+  const allowanceOwnerKey = new PublicKey(params.allowanceOwner);
+  const allowanceKey = deriveAllowanceAccount(poolStateKey, allowanceOwnerKey, spender);
+  const commitmentTreeKey = deriveCommitmentTree(originMintKey);
+  const nullifierSetKey = deriveNullifierSet(originMintKey);
+  const noteLedgerKey = deriveNoteLedger(originMintKey);
+  const verifyingKey = deriveVerifyingKey();
+
+  const expectedFieldCount =
+    2 + params.nullifiers.length + params.outputCommitments.length + 2;
+  if (decodedProof.fields.length !== expectedFieldCount) {
+    console.warn('[transfer_from] unexpected public input count', {
+      expectedFieldCount,
+      actual: decodedProof.fields.length
+    });
+  }
+
+  const transferArgs = {
+    old_root: toFixedArray(decodedProof.fields[0]!, 'old_root'),
+    new_root: toFixedArray(decodedProof.fields[1]!, 'new_root'),
+    nullifiers: encodeFieldVector(params.nullifiers, 'nullifiers'),
+    output_commitments: encodeFieldVector(params.outputCommitments, 'output_commitments'),
+    output_amount_commitments: encodeFieldVector(
+      params.outputAmountCommitments,
+      'output_amount_commitments'
+    ),
+    proof: Buffer.from(decodedProof.proof),
+    public_inputs: Buffer.from(decodedProof.publicInputs)
+  };
+
+  const transferFromArgs = {
+    transfer: transferArgs,
+    allowance_amount: new BN(allowanceAmount.toString())
+  };
+
+  const instructions: TransactionInstruction[] = [];
+  const computeLimitEnv =
+    process.env.TRANSFER_COMPUTE_UNIT_LIMIT ??
+    process.env.WRAP_COMPUTE_UNIT_LIMIT ??
+    process.env.NEXT_PUBLIC_WRAP_COMPUTE_UNIT_LIMIT;
+  const resolvedLimit = (() => {
+    if (computeLimitEnv !== undefined) {
+      const parsed = Number(computeLimitEnv);
+      if (!Number.isNaN(parsed)) {
+        return Math.max(parsed, 0);
+      }
+    }
+    return 800_000;
+  })();
+  if (resolvedLimit > 0) {
+    instructions.push(ComputeBudgetProgram.setComputeUnitLimit({ units: resolvedLimit }));
+  }
+
+  const computePriceEnv =
+    process.env.TRANSFER_COMPUTE_UNIT_PRICE ??
+    process.env.WRAP_COMPUTE_UNIT_PRICE ??
+    process.env.NEXT_PUBLIC_WRAP_COMPUTE_UNIT_PRICE;
+  if (computePriceEnv) {
+    const microLamports = Number(computePriceEnv);
+    if (!Number.isNaN(microLamports) && microLamports > 0) {
+      instructions.push(ComputeBudgetProgram.setComputeUnitPrice({ microLamports }));
+    }
+  }
+
+  instructions.push(
+    new TransactionInstruction({
+      programId: POOL_PROGRAM_ID,
+      keys: [
+        { pubkey: poolStateKey, isSigner: false, isWritable: true },
+        { pubkey: nullifierSetKey, isSigner: false, isWritable: true },
+        { pubkey: commitmentTreeKey, isSigner: false, isWritable: true },
+        { pubkey: noteLedgerKey, isSigner: false, isWritable: true },
+        { pubkey: VERIFIER_PROGRAM_ID, isSigner: false, isWritable: false },
+        { pubkey: verifyingKey, isSigner: false, isWritable: false },
+        { pubkey: allowanceKey, isSigner: false, isWritable: true },
+        { pubkey: allowanceOwnerKey, isSigner: false, isWritable: false },
+        { pubkey: spender, isSigner: true, isWritable: false }
+      ],
+      data: poolCoder.instruction.encode('transfer_from', { args: transferFromArgs })
+    })
+  );
+
+  const lookupTables: AddressLookupTableAccount[] = [];
+  if (params.lookupTable) {
+    try {
+      const tableKey = new PublicKey(params.lookupTable);
+      const response = await connection.getAddressLookupTable(tableKey);
+      if (response.value) {
+        lookupTables.push(response.value);
+      }
+    } catch (error) {
+      console.warn('[transfer_from] failed to load lookup table', error);
+    }
+  }
+
+  const latestBlockhash = await connection.getLatestBlockhash('confirmed');
+  let signature: string;
+
+  if (lookupTables.length > 0) {
+    const message = new TransactionMessage({
+      payerKey: spender,
+      recentBlockhash: latestBlockhash.blockhash,
+      instructions
+    }).compileToV0Message(lookupTables);
+    const tx = new VersionedTransaction(message);
+    signature = await wallet.sendTransaction(tx, connection, { skipPreflight: false });
+  } else {
+    const tx = new Transaction().add(...instructions);
+    tx.feePayer = spender;
+    tx.recentBlockhash = latestBlockhash.blockhash;
+    signature = await wallet.sendTransaction(tx, connection, { skipPreflight: false });
+  }
+
+  await waitForSignatureConfirmation(
+    connection,
+    signature,
+    latestBlockhash.blockhash,
+    latestBlockhash.lastValidBlockHeight
+  );
+
+  return signature;
+}
+
+export async function approveSplToken(params: ApproveSplTokenParams): Promise<string> {
+  assertWallet(params.wallet);
+  const wallet = params.wallet;
+  const connection = params.connection;
+  const owner = wallet.publicKey;
+  const programId = resolveSplProgram(params.program);
+  const mintKey = new PublicKey(params.mint);
+  const delegateKey = new PublicKey(params.delegate);
+  const sourceAccount = params.ownerTokenAccount
+    ? new PublicKey(params.ownerTokenAccount)
+    : await getAssociatedTokenAddress(mintKey, owner, false, programId, ASSOCIATED_TOKEN_PROGRAM_ID);
+  const amount = BigInt(params.amount);
+
+  const instruction = createApproveInstruction(
+    sourceAccount,
+    delegateKey,
+    owner,
+    amount,
+    [],
+    programId
+  );
+
+  const latestBlockhash = await connection.getLatestBlockhash('confirmed');
+  const transaction = new Transaction().add(instruction);
+  transaction.feePayer = owner;
+  transaction.recentBlockhash = latestBlockhash.blockhash;
+
+  const signature = await wallet.sendTransaction(transaction, connection, { skipPreflight: false });
+  await waitForSignatureConfirmation(
+    connection,
+    signature,
+    latestBlockhash.blockhash,
+    latestBlockhash.lastValidBlockHeight
+  );
+  return signature;
+}
+
+export async function revokeSplTokenApproval(params: RevokeSplTokenParams): Promise<string> {
+  assertWallet(params.wallet);
+  const wallet = params.wallet;
+  const connection = params.connection;
+  const owner = wallet.publicKey;
+  const programId = resolveSplProgram(params.program);
+  const mintKey = new PublicKey(params.mint);
+  const sourceAccount = params.ownerTokenAccount
+    ? new PublicKey(params.ownerTokenAccount)
+    : await getAssociatedTokenAddress(mintKey, owner, false, programId, ASSOCIATED_TOKEN_PROGRAM_ID);
+  const instruction = createRevokeInstruction(sourceAccount, owner, [], programId);
+
+  const latestBlockhash = await connection.getLatestBlockhash('confirmed');
+  const transaction = new Transaction().add(instruction);
+  transaction.feePayer = owner;
+  transaction.recentBlockhash = latestBlockhash.blockhash;
+
+  const signature = await wallet.sendTransaction(transaction, connection, { skipPreflight: false });
+  await waitForSignatureConfirmation(
+    connection,
+    signature,
+    latestBlockhash.blockhash,
+    latestBlockhash.lastValidBlockHeight
+  );
   return signature;
 }
 

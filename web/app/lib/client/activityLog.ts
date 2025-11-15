@@ -1,6 +1,6 @@
 import { WALLET_ACTIVITY_MODE } from '../env';
 
-export type WalletActivityType = 'wrap' | 'unwrap';
+export type WalletActivityType = 'wrap' | 'unwrap' | 'transfer' | 'transfer_from';
 
 export interface WalletActivityEntry {
   id: string;

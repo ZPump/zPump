@@ -1,1 +1,50 @@
-[]
+[
+  {
+    "symbol": "IDXPY",
+    "decimals": 6,
+    "originMint": "9xarzNnfFvSo8g9jZUrv6J6qYxuEr5XBMiMMZccYjT9r",
+    "poolId": "6dVpMXjsJGs6izjKeHxdtcTGKTfn4iUys2mxgV1fG6SL",
+    "zTokenMint": "7NrZ8evWDq3HapaPnPmaSYAE3GxYXNvWirqEqyHPuYiu",
+    "features": {
+      "zTokenEnabled": true,
+      "wrappedTransfers": false
+    },
+    "lookupTable": "C8sYZ2Fn5Y2QJszeH2fMyFuShsKJmAWhbUVqh3SuTMFU"
+  },
+  {
+    "symbol": "PKVX",
+    "decimals": 6,
+    "originMint": "GFvQ3j7AZefumNqH9tvvX7T6SGUCpqoFHDLaYurWidD5",
+    "poolId": "7FpYDAjRgVkj2mBM9SJNRUfXsZqH8yuoxHHcGq33449Z",
+    "zTokenMint": "FFEbnkELFkRKsEbSmcY3GFFJnXXPsr7rfFnyTf1uZq5R",
+    "features": {
+      "zTokenEnabled": true,
+      "wrappedTransfers": false
+    },
+    "lookupTable": "889xWzxibtXzjmdQWpbJnQgM7waBwFX9Wwqryf9GHhLr"
+  },
+  {
+    "symbol": "PKNR",
+    "decimals": 6,
+    "originMint": "4iwWJgcQtfCqbaGGcrnEip8ufAJ43JfheNK8aHHi98YR",
+    "poolId": "3u9uEGQm4kjRDi49KNPcH3c8sdCpNrLEVnx7MeBM2Kp3",
+    "zTokenMint": "DDzir7vhHLg6BnLM3jxvkYaJeLDnwdbv9YwtUzuGhpjj",
+    "features": {
+      "zTokenEnabled": true,
+      "wrappedTransfers": false
+    },
+    "lookupTable": "9wLmMVqdzfDYAYSgXy3emY5oYLNDtTRFHp4Yoh9T2RCN"
+  },
+  {
+    "symbol": "PKKZ",
+    "decimals": 6,
+    "originMint": "A3dnjLjkx9ZrNMM7j19C7ZNBkizQ6P1vvAu3xzf7RC2P",
+    "poolId": "Cy9vDViGFiTzkDNQNy19heiyypfbF59LE1RwuXLztEfo",
+    "zTokenMint": "4y1y3YBr5iRRDE6oD68PLffnYpLncAbfkSztHve11ivb",
+    "features": {
+      "zTokenEnabled": true,
+      "wrappedTransfers": false
+    },
+    "lookupTable": "5z2nv239EWH6m5P6SPGZau35ES1btym35JWPrk51EyGW"
+  }
+]

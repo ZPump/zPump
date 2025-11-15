@@ -1,4 +1,6 @@
 use anchor_lang::prelude::*;
+#[cfg(feature = "idl-build")]
+use anchor_lang::IdlBuild;
 use anchor_lang::solana_program::instruction::{AccountMeta, Instruction};
 use anchor_lang::solana_program::program::invoke_signed;
 use anchor_lang::solana_program::program_option::COption;
@@ -612,105 +614,232 @@ pub mod ptf_pool {
     }
 
     pub fn private_transfer(ctx: Context<PrivateTransfer>, args: TransferArgs) -> Result<()> {
-        let pool_loader = &ctx.accounts.pool_state;
-        let mut pool_state = pool_loader.load_mut()?;
-        require_keys_eq!(
-            ctx.accounts.verifier_program.key(),
-            pool_state.verifier_program,
-            PoolError::VerifierMismatch,
-        );
-        require_keys_eq!(
-            ctx.accounts.verifying_key.key(),
-            pool_state.verifying_key,
-            PoolError::VerifierMismatch,
-        );
-        require!(
-            ctx.accounts.verifying_key.verifying_key_id == pool_state.verifying_key_id,
-            PoolError::VerifierMismatch,
-        );
-        require!(
-            ctx.accounts.verifying_key.hash == pool_state.verifying_key_hash,
-            PoolError::VerifyingKeyHashMismatch,
-        );
-        require!(
-            pool_state
-                .features
-                .contains(FeatureFlags::from(FEATURE_PRIVATE_TRANSFER_ENABLED)),
-            PoolError::FeatureDisabled,
-        );
-        require!(
-            pool_state.is_known_root(&args.old_root),
-            PoolError::UnknownRoot,
-        );
-        {
-            let commitment_tree = ctx.accounts.commitment_tree.load()?;
-            require!(
-                commitment_tree.current_root == args.old_root,
-                PoolError::RootMismatch,
-            );
-        }
-
-        let cpi_accounts = ptf_verifier_groth16::cpi::accounts::VerifyGroth16 {
-            verifier_state: ctx.accounts.verifying_key.to_account_info(),
-        };
-        let cpi_ctx = CpiContext::new(
-            ctx.accounts.verifier_program.to_account_info(),
-            cpi_accounts,
-        );
-        ptf_verifier_groth16::cpi::verify_groth16(
-            cpi_ctx,
-            pool_state.verifying_key_id,
-            args.proof.clone(),
-            args.public_inputs.clone(),
-        )?;
-
-        let origin_mint = pool_state.origin_mint;
-        {
-            let mut nullifier_set = ctx.accounts.nullifier_set.load_mut()?;
-            for nullifier in &args.nullifiers {
-                nullifier_set
-                    .insert(*nullifier)
-                    .map_err(|_| PoolError::NullifierReuse)?;
-                emit!(PTFNullifierUsed {
-                    mint: origin_mint,
-                    nullifier: *nullifier,
-                });
-            }
-        }
-        require!(
-            args.output_commitments.len() == args.output_amount_commitments.len(),
-            PoolError::OutputSetMismatch,
-        );
-        let (new_root, _output_indices) = {
-            let mut commitment_tree = ctx.accounts.commitment_tree.load_mut()?;
-            commitment_tree.append_many(
-                args.output_commitments.as_slice(),
-                args.output_amount_commitments.as_slice(),
-            )?
-        };
-        if new_root != args.new_root {
-            msg!(
-                "unshield proof new root ({}) differs from computed root ({})",
-                hex::encode(args.new_root),
-                hex::encode(new_root)
-            );
-        }
-        pool_state.push_root(new_root);
-
-        {
-            let mut note_ledger = ctx.accounts.note_ledger.load_mut()?;
-            note_ledger
-                .record_transfer(&args.nullifiers, args.output_amount_commitments.as_slice())?;
-        }
-
-        emit!(PTFTransferred {
-            mint: pool_state.origin_mint,
-            inputs: args.nullifiers.clone(),
-            outputs: args.output_commitments.clone(),
-            root: new_root,
-        });
-        Ok(())
+        execute_private_transfer(
+            &ctx.accounts.pool_state,
+            &ctx.accounts.nullifier_set,
+            &ctx.accounts.commitment_tree,
+            &ctx.accounts.note_ledger,
+            &ctx.accounts.verifier_program,
+            &ctx.accounts.verifying_key,
+            &args,
+        )
     }
+
+    pub fn approve_allowance(ctx: Context<ManageAllowance>, args: ApproveAllowanceArgs) -> Result<()> {
+        write_allowance(
+            &ctx.accounts.pool_state,
+            &mut ctx.accounts.allowance,
+            ctx.accounts.owner.key(),
+            ctx.accounts.spender.key(),
+            ctx.accounts.origin_mint.key(),
+            ctx.bumps.allowance,
+            args.amount,
+        )
+    }
+
+    pub fn revoke_allowance(ctx: Context<ManageAllowance>) -> Result<()> {
+        write_allowance(
+            &ctx.accounts.pool_state,
+            &mut ctx.accounts.allowance,
+            ctx.accounts.owner.key(),
+            ctx.accounts.spender.key(),
+            ctx.accounts.origin_mint.key(),
+            ctx.bumps.allowance,
+            0,
+        )
+    }
+
+    pub fn transfer_from(ctx: Context<TransferFrom>, args: TransferFromArgs) -> Result<()> {
+        require!(args.allowance_amount > 0, PoolError::AllowanceAmountInvalid);
+
+        {
+            let allowance = &mut ctx.accounts.allowance;
+            require_keys_eq!(
+                allowance.pool,
+                ctx.accounts.pool_state.key(),
+                PoolError::AllowancePoolMismatch
+            );
+            require_keys_eq!(
+                allowance.owner,
+                ctx.accounts.allowance_owner.key(),
+                PoolError::AllowanceOwnerMismatch
+            );
+            require_keys_eq!(
+                allowance.spender,
+                ctx.accounts.spender.key(),
+                PoolError::AllowanceSpenderMismatch
+            );
+            let pool_state = ctx.accounts.pool_state.load()?;
+            require_keys_eq!(allowance.mint, pool_state.origin_mint, PoolError::AllowanceMintMismatch);
+            require!(
+                allowance.amount >= args.allowance_amount,
+                PoolError::AllowanceInsufficient
+            );
+            allowance.amount = allowance
+                .amount
+                .checked_sub(args.allowance_amount)
+                .ok_or(PoolError::AllowanceInsufficient)?;
+            allowance.updated_at = Clock::get()?.unix_timestamp;
+            emit!(PTFAllowanceUpdated {
+                mint: allowance.mint,
+                owner: allowance.owner,
+                spender: allowance.spender,
+                amount: allowance.amount,
+            });
+        }
+
+        execute_private_transfer(
+            &ctx.accounts.pool_state,
+            &ctx.accounts.nullifier_set,
+            &ctx.accounts.commitment_tree,
+            &ctx.accounts.note_ledger,
+            &ctx.accounts.verifier_program,
+            &ctx.accounts.verifying_key,
+            &args.transfer,
+        )
+    }
+}
+
+fn execute_private_transfer<'info>(
+    pool_loader: &AccountLoader<'info, PoolState>,
+    nullifier_set_loader: &AccountLoader<'info, NullifierSet>,
+    commitment_tree_loader: &AccountLoader<'info, CommitmentTree>,
+    note_ledger_loader: &AccountLoader<'info, NoteLedger>,
+    verifier_program: &Program<'info, PtfVerifierGroth16>,
+    verifying_key: &Account<'info, VerifyingKeyAccount>,
+    args: &TransferArgs,
+) -> Result<()> {
+    let mut pool_state = pool_loader.load_mut()?;
+    require_keys_eq!(
+        verifier_program.key(),
+        pool_state.verifier_program,
+        PoolError::VerifierMismatch,
+    );
+    require_keys_eq!(
+        verifying_key.key(),
+        pool_state.verifying_key,
+        PoolError::VerifierMismatch,
+    );
+    require!(
+        verifying_key.verifying_key_id == pool_state.verifying_key_id,
+        PoolError::VerifierMismatch,
+    );
+    require!(
+        verifying_key.hash == pool_state.verifying_key_hash,
+        PoolError::VerifyingKeyHashMismatch,
+    );
+    require!(
+        pool_state
+            .features
+            .contains(FeatureFlags::from(FEATURE_PRIVATE_TRANSFER_ENABLED)),
+        PoolError::FeatureDisabled,
+    );
+    require!(
+        pool_state.is_known_root(&args.old_root),
+        PoolError::UnknownRoot,
+    );
+    {
+        let commitment_tree = commitment_tree_loader.load()?;
+        require!(
+            commitment_tree.current_root == args.old_root,
+            PoolError::RootMismatch,
+        );
+    }
+
+    let cpi_accounts = ptf_verifier_groth16::cpi::accounts::VerifyGroth16 {
+        verifier_state: verifying_key.to_account_info(),
+    };
+    let cpi_ctx = CpiContext::new(verifier_program.to_account_info(), cpi_accounts);
+    ptf_verifier_groth16::cpi::verify_groth16(
+        cpi_ctx,
+        pool_state.verifying_key_id,
+        args.proof.clone(),
+        args.public_inputs.clone(),
+    )?;
+
+    let origin_mint = pool_state.origin_mint;
+    {
+        let mut nullifier_set = nullifier_set_loader.load_mut()?;
+        for nullifier in &args.nullifiers {
+            nullifier_set
+                .insert(*nullifier)
+                .map_err(|_| PoolError::NullifierReuse)?;
+            emit!(PTFNullifierUsed {
+                mint: origin_mint,
+                nullifier: *nullifier,
+            });
+        }
+    }
+    require!(
+        args.output_commitments.len() == args.output_amount_commitments.len(),
+        PoolError::OutputSetMismatch,
+    );
+    let (new_root, _output_indices) = {
+        let mut commitment_tree = commitment_tree_loader.load_mut()?;
+        commitment_tree.append_many(
+            args.output_commitments.as_slice(),
+            args.output_amount_commitments.as_slice(),
+        )?
+    };
+    if new_root != args.new_root {
+        msg!(
+            "unshield proof new root ({}) differs from computed root ({})",
+            hex::encode(args.new_root),
+            hex::encode(new_root)
+        );
+    }
+    pool_state.push_root(new_root);
+
+    {
+        let mut note_ledger = note_ledger_loader.load_mut()?;
+        note_ledger.record_transfer(&args.nullifiers, args.output_amount_commitments.as_slice())?;
+    }
+
+    emit!(PTFTransferred {
+        mint: pool_state.origin_mint,
+        inputs: args.nullifiers.clone(),
+        outputs: args.output_commitments.clone(),
+        root: new_root,
+    });
+    Ok(())
+}
+
+fn write_allowance(
+    pool_loader: &AccountLoader<PoolState>,
+    allowance_account: &mut Account<AllowanceAccount>,
+    owner: Pubkey,
+    spender: Pubkey,
+    mint: Pubkey,
+    bump: u8,
+    amount: u64,
+) -> Result<()> {
+    let pool_state = pool_loader.load()?;
+    let origin_mint = pool_state.origin_mint;
+    let pool_key = pool_loader.key();
+    require_keys_eq!(origin_mint, mint, PoolError::OriginMintMismatch);
+    drop(pool_state);
+
+    if allowance_account.pool == Pubkey::default() {
+        allowance_account.pool = pool_key;
+        allowance_account.owner = owner;
+        allowance_account.spender = spender;
+        allowance_account.mint = mint;
+        allowance_account.bump = bump;
+    } else {
+        require_keys_eq!(allowance_account.pool, pool_key, PoolError::AllowancePoolMismatch);
+        require_keys_eq!(allowance_account.owner, owner, PoolError::AllowanceOwnerMismatch);
+        require_keys_eq!(allowance_account.spender, spender, PoolError::AllowanceSpenderMismatch);
+        require_keys_eq!(allowance_account.mint, mint, PoolError::AllowanceMintMismatch);
+    }
+    allowance_account.amount = amount;
+    allowance_account.updated_at = Clock::get()?.unix_timestamp;
+    emit!(PTFAllowanceUpdated {
+        mint,
+        owner,
+        spender,
+        amount,
+    });
+    Ok(())
 }
 
 fn process_unshield<'info>(
@@ -1594,6 +1723,99 @@ pub struct HookConfigArgs {
     pub post_unshield_enabled: bool,
     pub required_accounts: Vec<Pubkey>,
     pub mode: HookAccountMode,
+}
+
+#[derive(AnchorSerialize, AnchorDeserialize, Clone)]
+pub struct ApproveAllowanceArgs {
+    pub amount: u64,
+}
+
+#[derive(AnchorSerialize, AnchorDeserialize, Clone)]
+pub struct TransferFromArgs {
+    pub transfer: TransferArgs,
+    pub allowance_amount: u64,
+}
+
+#[derive(Accounts)]
+pub struct ManageAllowance<'info> {
+    #[account(
+        mut,
+        seeds = [seeds::POOL, pool_state.load()?.origin_mint.as_ref()],
+        bump = pool_state.load()?.bump
+    )]
+    pub pool_state: AccountLoader<'info, PoolState>,
+    #[account(
+        init_if_needed,
+        payer = owner,
+        space = AllowanceAccount::SPACE,
+        seeds = [
+            seeds::ALLOWANCE,
+            pool_state.key().as_ref(),
+            owner.key().as_ref(),
+            spender.key().as_ref()
+        ],
+        bump
+    )]
+    pub allowance: Account<'info, AllowanceAccount>,
+    #[account(mut)]
+    pub owner: Signer<'info>,
+    /// CHECK: spender authority
+    pub spender: AccountInfo<'info>,
+    #[account(address = pool_state.load()?.origin_mint)]
+    /// CHECK: origin mint is constrained by address equality
+    pub origin_mint: UncheckedAccount<'info>,
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct TransferFrom<'info> {
+    #[account(
+        mut,
+        seeds = [seeds::POOL, pool_state.load()?.origin_mint.as_ref()],
+        bump = pool_state.load()?.bump
+    )]
+    pub pool_state: AccountLoader<'info, PoolState>,
+    #[account(
+        mut,
+        seeds = [seeds::NULLIFIERS, pool_state.load()?.origin_mint.as_ref()],
+        bump = nullifier_set.load()?.bump
+    )]
+    pub nullifier_set: AccountLoader<'info, NullifierSet>,
+    #[account(
+        mut,
+        seeds = [seeds::TREE, pool_state.load()?.origin_mint.as_ref()],
+        bump = commitment_tree.load()?.bump,
+        constraint = commitment_tree.load()?.pool == pool_state.key() @ PoolError::CommitmentTreeMismatch
+    )]
+    pub commitment_tree: AccountLoader<'info, CommitmentTree>,
+    #[account(
+        mut,
+        seeds = [seeds::NOTES, pool_state.load()?.origin_mint.as_ref()],
+        bump = pool_state.load()?.note_ledger_bump,
+        constraint = note_ledger.key() == pool_state.load()?.note_ledger @ PoolError::NoteLedgerMismatch,
+        constraint = note_ledger.load()?.pool == pool_state.key() @ PoolError::NoteLedgerMismatch,
+    )]
+    pub note_ledger: AccountLoader<'info, NoteLedger>,
+    pub verifier_program: Program<'info, PtfVerifierGroth16>,
+    #[account(
+        address = pool_state.load()?.verifying_key,
+        constraint = verifying_key.hash == pool_state.load()?.verifying_key_hash @ PoolError::VerifyingKeyHashMismatch,
+    )]
+    pub verifying_key: Account<'info, VerifyingKeyAccount>,
+    #[account(
+        mut,
+        seeds = [
+            seeds::ALLOWANCE,
+            pool_state.key().as_ref(),
+            allowance_owner.key().as_ref(),
+            spender.key().as_ref()
+        ],
+        bump = allowance.bump
+    )]
+    pub allowance: Account<'info, AllowanceAccount>,
+    /// CHECK: allowance owner reference
+    pub allowance_owner: AccountInfo<'info>,
+    pub spender: Signer<'info>,
 }
 
 #[account(zero_copy(unsafe))]
@@ -2671,6 +2893,29 @@ impl HookConfig {
     }
 }
 
+#[account]
+pub struct AllowanceAccount {
+    pub pool: Pubkey,
+    pub owner: Pubkey,
+    pub spender: Pubkey,
+    pub mint: Pubkey,
+    pub amount: u64,
+    pub updated_at: i64,
+    pub bump: u8,
+    pub _reserved: [u8; 7],
+}
+
+impl AllowanceAccount {
+    pub const SPACE: usize = 8 + 32 * 4 + 8 + 8 + 1 + 7;
+}
+
+#[cfg(feature = "idl-build")]
+mod idl_build_impls {
+    use super::*;
+
+    impl IdlBuild for PendingShield {}
+}
+
 #[event]
 pub struct PoolInitialized {
     pub origin_mint: Pubkey,
@@ -2723,6 +2968,14 @@ pub struct PTFTransferred {
     pub inputs: Vec<[u8; 32]>,
     pub outputs: Vec<[u8; 32]>,
     pub root: [u8; 32],
+}
+
+#[event]
+pub struct PTFAllowanceUpdated {
+    pub mint: Pubkey,
+    pub owner: Pubkey,
+    pub spender: Pubkey,
+    pub amount: u64,
 }
 
 #[event]
@@ -2855,6 +3108,18 @@ pub enum PoolError {
     ShieldClaimMismatch,
     #[msg("E_SHIELD_CLAIM_STAGE")]
     ShieldClaimStage,
+    #[msg("E_ALLOWANCE_POOL_MISMATCH")]
+    AllowancePoolMismatch,
+    #[msg("E_ALLOWANCE_OWNER_MISMATCH")]
+    AllowanceOwnerMismatch,
+    #[msg("E_ALLOWANCE_SPENDER_MISMATCH")]
+    AllowanceSpenderMismatch,
+    #[msg("E_ALLOWANCE_MINT_MISMATCH")]
+    AllowanceMintMismatch,
+    #[msg("E_ALLOWANCE_INSUFFICIENT")]
+    AllowanceInsufficient,
+    #[msg("E_ALLOWANCE_AMOUNT_INVALID")]
+    AllowanceAmountInvalid,
 }
 
 fn validate_hook_accounts(

@@ -64,7 +64,7 @@ export interface IndexerSyncResult {
 
 export interface IndexerActivityEntry {
   id: string;
-  type: 'wrap' | 'unwrap';
+  type: 'wrap' | 'unwrap' | 'transfer' | 'transfer_from';
   signature: string;
   symbol: string;
   amount: string;
@@ -75,6 +75,34 @@ export interface IndexerActivityResult {
   viewId: string;
   entries: IndexerActivityEntry[];
   source?: string;
+}
+
+export interface IndexerTransferValidationRequest {
+  mint: string;
+  poolId?: string;
+  oldRoot: string;
+  nullifiers: string[];
+  outputCommitments: string[];
+  outputAmountCommitments: string[];
+}
+
+export interface IndexerTransferValidationResult {
+  mint: string;
+  poolId: string | null;
+  oldRoot: string;
+  currentRoot: string;
+  nullifiers: string[];
+  outputCommitments: string[];
+  outputAmountCommitments: string[];
+  source?: string;
+}
+
+export interface IndexerAllowanceEntry {
+  owner: string;
+  spender: string;
+  mint: string;
+  amount: string;
+  timestamp: number;
 }
 
 export class IndexerClient {
@@ -304,6 +332,64 @@ export class IndexerClient {
     return this.parseActivity(payload, viewId);
   }
 
+  async validateTransfer(
+    payload: IndexerTransferValidationRequest
+  ): Promise<IndexerTransferValidationResult> {
+    const url = this.buildUrl('/transfers/validate');
+    const headers: HeadersInit = {
+      Accept: 'application/json',
+      'Content-Type': 'application/json'
+    };
+    if (this.apiKey) {
+      headers['x-ptf-api-key'] = this.apiKey;
+    }
+
+    const response = await this.fetchImpl(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(payload)
+    });
+    const body = await response.json().catch(() => null);
+    if (!response.ok || !body) {
+      throw new Error(`Indexer error: ${response.status} ${response.statusText}`);
+    }
+    return this.parseTransferValidation(body);
+  }
+
+  async getAllowance(owner: string, spender: string, mint: string): Promise<IndexerAllowanceEntry | null> {
+    const payload = await this.request(`/allowances/${owner}/${spender}/${mint}`);
+    if (!payload) {
+      return null;
+    }
+    return this.parseAllowance(payload);
+  }
+
+  async setAllowance(
+    owner: string,
+    spender: string,
+    mint: string,
+    amount: string
+  ): Promise<IndexerAllowanceEntry> {
+    const url = this.buildUrl(`/allowances/${owner}/${spender}/${mint}`);
+    const headers: HeadersInit = {
+      Accept: 'application/json',
+      'Content-Type': 'application/json'
+    };
+    if (this.apiKey) {
+      headers['x-ptf-api-key'] = this.apiKey;
+    }
+    const response = await this.fetchImpl(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ amount })
+    });
+    const payload = await response.json().catch(() => null);
+    if (!response.ok || !payload) {
+      throw new Error(`Indexer error: ${response.status} ${response.statusText}`);
+    }
+    return this.parseAllowance(payload);
+  }
+
   private async request(path: string): Promise<unknown | null> {
     const url = this.buildUrl(path);
     const headers: HeadersInit = {
@@ -402,6 +488,62 @@ export class IndexerClient {
     throw new Error('Unexpected indexer activity payload');
   }
 
+  private parseTransferValidation(payload: unknown): IndexerTransferValidationResult {
+    if (payload && typeof payload === 'object') {
+      const entry = payload as Record<string, unknown>;
+      const mint =
+        typeof entry.mint === 'string' ? entry.mint : (payload as { mint?: string }).mint ?? '';
+      const poolId =
+        typeof entry.poolId === 'string'
+          ? entry.poolId
+          : typeof entry.pool_id === 'string'
+            ? entry.pool_id
+            : null;
+      const oldRoot = this.asCanonicalHex(entry.oldRoot) ?? this.asCanonicalHex(entry.old_root);
+      const currentRoot =
+        this.asCanonicalHex(entry.currentRoot) ?? this.asCanonicalHex(entry.current_root);
+      const nullifiers = this.asHexArray(entry.nullifiers);
+      const outputCommitments = this.asHexArray(entry.outputCommitments);
+      const outputAmountCommitments = this.asHexArray(entry.outputAmountCommitments);
+
+      if (mint && oldRoot && currentRoot) {
+        return {
+          mint,
+          poolId: poolId ?? null,
+          oldRoot,
+          currentRoot,
+          nullifiers,
+          outputCommitments,
+          outputAmountCommitments,
+          source: typeof entry.source === 'string' ? entry.source : undefined
+        };
+      }
+    }
+    throw new Error('Unexpected transfer validation payload');
+  }
+
+  private parseAllowance(payload: unknown): IndexerAllowanceEntry {
+    if (payload && typeof payload === 'object') {
+      const entry = payload as Record<string, unknown>;
+      if (
+        typeof entry.owner === 'string' &&
+        typeof entry.spender === 'string' &&
+        typeof entry.mint === 'string' &&
+        typeof entry.amount === 'string' &&
+        typeof entry.timestamp === 'number'
+      ) {
+        return {
+          owner: entry.owner,
+          spender: entry.spender,
+          mint: entry.mint,
+          amount: entry.amount,
+          timestamp: entry.timestamp
+        };
+      }
+    }
+    throw new Error('Unexpected allowance payload');
+  }
+
   private normaliseActivityEntries(value: unknown): IndexerActivityEntry[] | null {
     if (!Array.isArray(value)) {
       return null;
@@ -422,7 +564,12 @@ export class IndexerClient {
       ) {
         return null;
       }
-      if (entry.type !== 'wrap' && entry.type !== 'unwrap') {
+      if (
+        entry.type !== 'wrap' &&
+        entry.type !== 'unwrap' &&
+        entry.type !== 'transfer' &&
+        entry.type !== 'transfer_from'
+      ) {
         return null;
       }
       entries.push({
