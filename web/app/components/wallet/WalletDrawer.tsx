@@ -154,7 +154,8 @@ function WalletDrawerContent({ disclosure }: { disclosure: ReturnType<typeof use
         if (signatureInfos.length > 0) {
           const signatures = signatureInfos.map((info) => info.signature);
           const parsedTransactions = await connection.getParsedTransactions(signatures, {
-            commitment: 'confirmed'
+            commitment: 'confirmed',
+            maxSupportedTransactionVersion: 0
           });
 
           entries = signatureInfos.map((info, index) => {
