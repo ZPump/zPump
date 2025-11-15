@@ -1966,6 +1966,334 @@
           }
         }
       ]
+    },
+    {
+      "name": "approve_allowance",
+      "discriminator": [
+        100,
+        169,
+        165,
+        25,
+        25,
+        255,
+        11,
+        45
+      ],
+      "accounts": [
+        {
+          "name": "pool_state",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  111,
+                  111,
+                  108
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "pool_state"
+              }
+            ]
+          }
+        },
+        {
+          "name": "allowance",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  97,
+                  108,
+                  108,
+                  111,
+                  119
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "pool_state"
+              },
+              {
+                "kind": "account",
+                "path": "owner"
+              },
+              {
+                "kind": "account",
+                "path": "spender"
+              }
+            ]
+          }
+        },
+        {
+          "name": "owner",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "spender"
+        },
+        {
+          "name": "origin_mint"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "args",
+          "type": {
+            "defined": {
+              "name": "ApproveAllowanceArgs"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "revoke_allowance",
+      "discriminator": [
+        121,
+        114,
+        141,
+        153,
+        128,
+        164,
+        101,
+        113
+      ],
+      "accounts": [
+        {
+          "name": "pool_state",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  111,
+                  111,
+                  108
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "pool_state"
+              }
+            ]
+          }
+        },
+        {
+          "name": "allowance",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  97,
+                  108,
+                  108,
+                  111,
+                  119
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "pool_state"
+              },
+              {
+                "kind": "account",
+                "path": "owner"
+              },
+              {
+                "kind": "account",
+                "path": "spender"
+              }
+            ]
+          }
+        },
+        {
+          "name": "owner",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "spender"
+        },
+        {
+          "name": "origin_mint"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "transfer_from",
+      "discriminator": [
+        230,
+        255,
+        130,
+        7,
+        220,
+        247,
+        122,
+        0
+      ],
+      "accounts": [
+        {
+          "name": "pool_state",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  111,
+                  111,
+                  108
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "pool_state"
+              }
+            ]
+          }
+        },
+        {
+          "name": "nullifier_set",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  110,
+                  117,
+                  108,
+                  108,
+                  115
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "pool_state"
+              }
+            ]
+          }
+        },
+        {
+          "name": "commitment_tree",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  114,
+                  101,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "pool_state"
+              }
+            ]
+          }
+        },
+        {
+          "name": "note_ledger",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  110,
+                  111,
+                  116,
+                  101,
+                  115
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "pool_state"
+              }
+            ]
+          }
+        },
+        {
+          "name": "verifier_program",
+          "address": "3aCv39mCRFH9BGJskfXqwQoWzW1ULq2yXEbEwGgKtLgg"
+        },
+        {
+          "name": "verifying_key"
+        },
+        {
+          "name": "allowance",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  97,
+                  108,
+                  108,
+                  111,
+                  119
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "pool_state"
+              },
+              {
+                "kind": "account",
+                "path": "allowance_owner"
+              },
+              {
+                "kind": "account",
+                "path": "spender"
+              }
+            ]
+          }
+        },
+        {
+          "name": "allowance_owner"
+        },
+        {
+          "name": "spender",
+          "signer": true
+        }
+      ],
+      "args": [
+        {
+          "name": "args",
+          "type": {
+            "defined": {
+              "name": "TransferFromArgs"
+            }
+          }
+        }
+      ]
     }
   ],
   "accounts": [
@@ -2184,6 +2512,19 @@
         17,
         168
       ]
+    },
+    {
+      "name": "AllowanceAccount",
+      "discriminator": [
+        179,
+        205,
+        71,
+        104,
+        34,
+        14,
+        237,
+        22
+      ]
     }
   ],
   "events": [
@@ -2341,6 +2682,41 @@
         198,
         254,
         229
+      ]
+    },
+    {
+      "name": "PTFAllowanceUpdated",
+      "discriminator": [
+        121,
+        182,
+        64,
+        215,
+        140,
+        128,
+        180,
+        81
+      ],
+      "fields": [
+        {
+          "name": "mint",
+          "type": "pubkey",
+          "index": false
+        },
+        {
+          "name": "owner",
+          "type": "pubkey",
+          "index": false
+        },
+        {
+          "name": "spender",
+          "type": "pubkey",
+          "index": false
+        },
+        {
+          "name": "amount",
+          "type": "u64",
+          "index": false
+        }
       ]
     }
   ],
@@ -3396,6 +3772,78 @@
           {
             "name": "twin_mint_enabled",
             "type": "bool"
+          },
+          {
+            "name": "pending_shield",
+            "type": {
+              "defined": {
+                "name": "pending_shield"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "pending_shield",
+      "repr": {
+        "kind": "c"
+      },
+      "serialization": "bytemuckunsafe",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "active",
+            "type": "u8"
+          },
+          {
+            "name": "old_root",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "new_root",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "commitment",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "amount_commit",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "amount",
+            "type": "u64"
+          },
+          {
+            "name": "depositor",
+            "type": "pubkey"
+          },
+          {
+            "name": "next_index",
+            "type": "u64"
           }
         ]
       }
@@ -3723,6 +4171,111 @@
           {
             "name": "verifying_key",
             "type": "bytes"
+          }
+        ]
+      }
+    },
+    {
+      "name": "AllowanceAccount",
+      "repr": {
+        "kind": "c"
+      },
+      "serialization": "bytemuckunsafe",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "pool",
+            "type": "pubkey"
+          },
+          {
+            "name": "owner",
+            "type": "pubkey"
+          },
+          {
+            "name": "spender",
+            "type": "pubkey"
+          },
+          {
+            "name": "mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "amount",
+            "type": "u64"
+          },
+          {
+            "name": "updated_at",
+            "type": "i64"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          },
+          {
+            "name": "_reserved",
+            "type": {
+              "array": [
+                "u8",
+                7
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "ApproveAllowanceArgs",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "amount",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "TransferFromArgs",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "transfer",
+            "type": {
+              "defined": {
+                "name": "TransferArgs"
+              }
+            }
+          },
+          {
+            "name": "allowance_amount",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "PTFAllowanceUpdated",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "owner",
+            "type": "pubkey"
+          },
+          {
+            "name": "spender",
+            "type": "pubkey"
+          },
+          {
+            "name": "amount",
+            "type": "u64"
           }
         ]
       }

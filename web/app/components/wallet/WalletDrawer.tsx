@@ -1,9 +1,13 @@
 'use client';
 
 import {
+  Alert,
+  AlertDescription,
+  AlertIcon,
   Badge,
   Box,
   Button,
+  Code,
   Drawer,
   DrawerBody,
   DrawerCloseButton,
@@ -15,23 +19,34 @@ import {
   EditableInput,
   EditablePreview,
   Flex,
+  FormControl,
+  FormLabel,
   HStack,
   Icon,
   IconButton,
   Input,
+  InputGroup,
+  InputRightElement,
   Menu,
   MenuButton,
   MenuItem,
   MenuList,
+  Modal,
+  ModalBody,
+  ModalCloseButton,
+  ModalContent,
+  ModalFooter,
+  ModalHeader,
+  ModalOverlay,
   SimpleGrid,
   Spinner,
   Stack,
   Text,
+  Textarea,
   Tooltip,
   useBoolean,
   useDisclosure,
-  useToast,
-  Code
+  useToast
 } from '@chakra-ui/react';
 import { useConnection } from '@solana/wallet-adapter-react';
 import { LAMPORTS_PER_SOL, PublicKey } from '@solana/web3.js';
@@ -53,6 +68,7 @@ interface TokenBalance {
   symbol: string;
   amount: number;
   decimals: number;
+  rawAmount: string;
 }
 
 interface TransactionEntry {
@@ -62,6 +78,26 @@ interface TransactionEntry {
   changeSol: number;
   description: string;
   status: 'success' | 'failed';
+}
+
+type AssetKind = 'sol' | 'spl' | 'ztoken';
+
+interface SendAssetContext {
+  kind: AssetKind;
+  mint: string | null;
+  symbol: string;
+  decimals: number;
+  availableDisplay: string;
+  availableUiAmount: string;
+  availableAmount: number | bigint;
+  isPrivate: boolean;
+}
+
+interface SendAssetInput {
+  recipient: string;
+  amount: string;
+  memo?: string;
+  context: SendAssetContext;
 }
 
 function formatAddress(address: string) {
@@ -107,6 +143,7 @@ function WalletDrawerContent({ disclosure }: { disclosure: ReturnType<typeof use
   const [transactions, setTransactions] = useState<TransactionEntry[]>([]);
   const [activityLog, setActivityLog] = useState<WalletActivityEntry[]>([]);
   const [solBalance, setSolBalance] = useState<number>(0);
+  const [solLamports, setSolLamports] = useState<number>(0);
   const [loadingBalances, setLoadingBalances] = useBoolean(false);
   const [loadingTransactions, setLoadingTransactions] = useBoolean(false);
   const [createOpen, setCreateOpen] = useBoolean(false);
@@ -114,6 +151,9 @@ function WalletDrawerContent({ disclosure }: { disclosure: ReturnType<typeof use
   const [newLabel, setNewLabel] = useState('');
   const [importSecret, setImportSecret] = useState('');
   const [importLabel, setImportLabel] = useState('');
+  const sendModal = useDisclosure();
+  const [sendContext, setSendContext] = useState<SendAssetContext | null>(null);
+  const [isSending, setIsSending] = useState(false);
   const refreshingRef = useRef(false);
 
   const { mints } = useMintCatalog();
@@ -130,6 +170,38 @@ function WalletDrawerContent({ disclosure }: { disclosure: ReturnType<typeof use
   }, [mints]);
 
   const indexerClient = useMemo(() => new IndexerClient(), []);
+
+  const openSendDialog = useCallback(
+    (context: SendAssetContext) => {
+      setSendContext(context);
+      sendModal.onOpen();
+    },
+    [sendModal]
+  );
+
+  const handleSendAsset = useCallback(
+    async (input: SendAssetInput) => {
+      setIsSending(true);
+      try {
+        console.info('[wallet drawer] send asset request', input);
+        toast({
+          title: 'Send flow coming soon',
+          description: 'Shielded transfers will be wired up after the SDK update.',
+          status: 'info'
+        });
+      } catch (error) {
+        toast({
+          title: 'Unable to send asset',
+          description: (error as Error).message,
+          status: 'error'
+        });
+      } finally {
+        setIsSending(false);
+        sendModal.onClose();
+      }
+    },
+    [sendModal, toast]
+  );
 
   const loadPrivateBalances = useCallback(
     async (walletAddress: string) => {
@@ -263,6 +335,7 @@ function WalletDrawerContent({ disclosure }: { disclosure: ReturnType<typeof use
           lamports,
           endpoint: connection.rpcEndpoint
         });
+        setSolLamports(lamports);
         setSolBalance(lamports / LAMPORTS_PER_SOL);
 
         const combinedAccounts = [...tokenAccountsLegacy.value, ...tokenAccounts2022.value];
@@ -272,14 +345,16 @@ function WalletDrawerContent({ disclosure }: { disclosure: ReturnType<typeof use
             const info = entry.account.data.parsed.info;
             const mint = info.mint as string;
             const tokenAmount = info.tokenAmount;
-            const amount = Number(tokenAmount.uiAmountString ?? tokenAmount.uiAmount ?? '0');
-            const decimals = Number(tokenAmount.decimals ?? 0);
+            const amount = Number(tokenAmount?.uiAmountString ?? tokenAmount?.uiAmount ?? '0');
+            const decimals = Number(tokenAmount?.decimals ?? 0);
+            const rawAmount = tokenAmount?.amount ?? '0';
             const metadata = mintMap.get(mint);
             return {
               mint,
               symbol: metadata?.symbol ?? mint.slice(0, 8),
               amount,
-              decimals
+              decimals,
+              rawAmount
             };
           })
           .filter((entry) => entry.amount > 0);
@@ -390,11 +465,17 @@ function WalletDrawerContent({ disclosure }: { disclosure: ReturnType<typeof use
         return {
           mint,
           symbol,
-          formatted
+          formatted,
+          decimals,
+          amount
         };
       })
-      .filter((entry): entry is { mint: string; symbol: string; formatted: string } => Boolean(entry));
+      .filter(
+        (entry): entry is { mint: string; symbol: string; formatted: string; decimals: number; amount: bigint } =>
+          Boolean(entry)
+      );
   }, [mintMap, privateBalances]);
+  const canSendShielded = Boolean(viewingId);
 
   const handleCreateAccount = () => {
     createAccount(newLabel.trim() || undefined);
@@ -418,11 +499,12 @@ function WalletDrawerContent({ disclosure }: { disclosure: ReturnType<typeof use
   };
 
   return (
-    <Drawer isOpen placement="right" size="sm" onClose={disclosure.onClose}>
-      <DrawerOverlay />
-      <DrawerContent bg="rgba(18, 16, 14, 0.96)" borderLeft="1px solid rgba(245,178,27,0.24)">
-        <DrawerCloseButton />
-        <DrawerHeader borderBottomWidth="1px" borderColor="whiteAlpha.200">
+    <>
+      <Drawer isOpen placement="right" size="sm" onClose={disclosure.onClose}>
+        <DrawerOverlay />
+        <DrawerContent bg="rgba(18, 16, 14, 0.96)" borderLeft="1px solid rgba(245,178,27,0.24)">
+          <DrawerCloseButton />
+          <DrawerHeader borderBottomWidth="1px" borderColor="whiteAlpha.200">
           <Stack spacing={2}>
             <Text fontSize="sm" color="whiteAlpha.600">
               Connected wallet
@@ -440,7 +522,7 @@ function WalletDrawerContent({ disclosure }: { disclosure: ReturnType<typeof use
           </Stack>
         </DrawerHeader>
 
-        <DrawerBody py={6}>
+          <DrawerBody py={6}>
           <Stack spacing={8}>
             <Stack spacing={4}>
             {activityLog.length > 0 && (
@@ -630,17 +712,39 @@ function WalletDrawerContent({ disclosure }: { disclosure: ReturnType<typeof use
                   </Flex>
                 ) : (
                   <Stack spacing={4}>
-                    <Stack spacing={1}>
-                      <Text color="whiteAlpha.700" fontSize="sm">
-                        SOL
-                      </Text>
-                      <Text fontSize="2xl" fontWeight="semibold">
-                        {solBalance.toLocaleString()}
-                      </Text>
-                    </Stack>
+                    <Flex align="center" justify="space-between" gap={4} wrap="wrap">
+                      <Stack spacing={1}>
+                        <Text color="whiteAlpha.700" fontSize="sm">
+                          SOL
+                        </Text>
+                        <Text fontSize="2xl" fontWeight="semibold">
+                          {solBalance.toLocaleString()}
+                        </Text>
+                      </Stack>
+                      <Button
+                        size="sm"
+                        colorScheme="brand"
+                        variant="outline"
+                        onClick={() =>
+                          openSendDialog({
+                            kind: 'sol',
+                            mint: null,
+                            symbol: 'SOL',
+                            decimals: 9,
+                            availableDisplay: `${solBalance.toLocaleString()} SOL`,
+                            availableUiAmount: solBalance.toString(),
+                            availableAmount: BigInt(solLamports),
+                            isPrivate: false
+                          })
+                        }
+                        isDisabled={!activeAccount}
+                      >
+                        Send
+                      </Button>
+                    </Flex>
                     <SimpleGrid columns={1} spacing={3}>
                       {balances.map((token) => (
-                        <Flex key={token.mint} align="center" justify="space-between">
+                        <Flex key={token.mint} align="center" justify="space-between" gap={3} wrap="wrap">
                           <Stack spacing={0}>
                             <Text fontWeight="medium" color="whiteAlpha.800">
                               {token.symbol}
@@ -649,12 +753,39 @@ function WalletDrawerContent({ disclosure }: { disclosure: ReturnType<typeof use
                               {formatAddress(token.mint)}
                             </Text>
                           </Stack>
-                          <Text fontWeight="semibold" color="whiteAlpha.900">
-                            {token.amount.toLocaleString(undefined, {
-                              minimumFractionDigits: 0,
-                              maximumFractionDigits: Math.min(6, token.decimals)
-                            })}
-                          </Text>
+                          <HStack spacing={2}>
+                            <Text fontWeight="semibold" color="whiteAlpha.900">
+                              {token.amount.toLocaleString(undefined, {
+                                minimumFractionDigits: 0,
+                                maximumFractionDigits: Math.min(6, token.decimals)
+                              })}
+                            </Text>
+                            <Button
+                              size="xs"
+                              variant="outline"
+                              onClick={() =>
+                                openSendDialog({
+                                  kind: 'spl',
+                                  mint: token.mint,
+                                  symbol: token.symbol,
+                                  decimals: token.decimals,
+                                  availableDisplay: `${token.amount.toLocaleString()} ${token.symbol}`,
+                                  availableUiAmount: token.amount.toString(),
+                                  availableAmount: (() => {
+                                    try {
+                                      return BigInt(token.rawAmount);
+                                    } catch {
+                                      return BigInt(0);
+                                    }
+                                  })(),
+                                  isPrivate: false
+                                })
+                              }
+                              isDisabled={!activeAccount}
+                            >
+                              Send
+                            </Button>
+                          </HStack>
                         </Flex>
                       ))}
                     </SimpleGrid>
@@ -665,7 +796,7 @@ function WalletDrawerContent({ disclosure }: { disclosure: ReturnType<typeof use
                         </Text>
                         <SimpleGrid columns={1} spacing={3}>
                           {privateBalanceEntries.map((entry) => (
-                            <Flex key={`private-${entry.mint}`} align="center" justify="space-between">
+                            <Flex key={`private-${entry.mint}`} align="center" justify="space-between" gap={3} wrap="wrap">
                               <Stack spacing={0}>
                                 <Text fontWeight="medium" color="whiteAlpha.800">
                                   {entry.symbol}
@@ -674,9 +805,35 @@ function WalletDrawerContent({ disclosure }: { disclosure: ReturnType<typeof use
                                   {formatAddress(entry.mint)}
                                 </Text>
                               </Stack>
-                              <Text fontWeight="semibold" color="whiteAlpha.900">
-                                {entry.formatted}
-                              </Text>
+                              <HStack spacing={2}>
+                                <Text fontWeight="semibold" color="whiteAlpha.900">
+                                  {entry.formatted}
+                                </Text>
+                                <Tooltip
+                                  label="Shielded transfers require a viewing key"
+                                  isDisabled={canSendShielded}
+                                >
+                                  <Button
+                                    size="xs"
+                                    variant="outline"
+                                    onClick={() =>
+                                      openSendDialog({
+                                        kind: 'ztoken',
+                                        mint: entry.mint,
+                                        symbol: entry.symbol,
+                                        decimals: entry.decimals,
+                                        availableDisplay: `${entry.formatted}`,
+                                        availableUiAmount: entry.formatted,
+                                        availableAmount: entry.amount,
+                                        isPrivate: true
+                                      })
+                                    }
+                                    isDisabled={!activeAccount || !canSendShielded}
+                                  >
+                                    Send
+                                  </Button>
+                                </Tooltip>
+                              </HStack>
                             </Flex>
                           ))}
                         </SimpleGrid>
@@ -775,14 +932,131 @@ function WalletDrawerContent({ disclosure }: { disclosure: ReturnType<typeof use
               </Box>
             </Stack>
           </Stack>
-        </DrawerBody>
-        <DrawerFooter borderTopWidth="1px" borderColor="whiteAlpha.200">
-          <Text fontSize="xs" color="whiteAlpha.500">
-            Managed wallet keys are stored locally on this device for the private devnet only.
-          </Text>
-        </DrawerFooter>
-      </DrawerContent>
-    </Drawer>
+          </DrawerBody>
+          <DrawerFooter borderTopWidth="1px" borderColor="whiteAlpha.200">
+            <Text fontSize="xs" color="whiteAlpha.500">
+              Managed wallet keys are stored locally on this device for the private devnet only.
+            </Text>
+          </DrawerFooter>
+        </DrawerContent>
+      </Drawer>
+      <SendAssetModal
+        isOpen={sendModal.isOpen}
+        onClose={sendModal.onClose}
+        context={sendContext}
+        viewingId={viewingId}
+        onSubmit={handleSendAsset}
+        isSubmitting={isSending}
+      />
+    </>
+  );
+}
+
+interface SendAssetModalProps {
+  isOpen: boolean;
+  onClose: () => void;
+  context: SendAssetContext | null;
+  viewingId: string | null;
+  onSubmit: (input: SendAssetInput) => Promise<void>;
+  isSubmitting: boolean;
+}
+
+function SendAssetModal({ isOpen, onClose, context, viewingId, onSubmit, isSubmitting }: SendAssetModalProps) {
+  const [recipient, setRecipient] = useState('');
+  const [amount, setAmount] = useState('');
+  const [memo, setMemo] = useState('');
+
+  useEffect(() => {
+    if (!isOpen) {
+      setRecipient('');
+      setAmount('');
+      setMemo('');
+    }
+  }, [isOpen, context]);
+
+  if (!context) {
+    return null;
+  }
+
+  const isShieldedBlocked = context.isPrivate && !viewingId;
+  const disableSubmit = !recipient || !amount || isShieldedBlocked || isSubmitting;
+
+  return (
+    <Modal isOpen={isOpen} onClose={onClose} size="lg" isCentered>
+      <ModalOverlay />
+      <ModalContent bg="rgba(18,16,14,0.98)" border="1px solid rgba(245,178,27,0.24)">
+        <ModalHeader>Send {context.symbol}</ModalHeader>
+        <ModalCloseButton />
+        <ModalBody>
+          <Stack spacing={4}>
+            <Text fontSize="sm" color="whiteAlpha.600">
+              Available: {context.availableDisplay}
+            </Text>
+            <FormControl>
+              <FormLabel>Recipient</FormLabel>
+              <Input
+                placeholder="Enter Solana address"
+                value={recipient}
+                onChange={(event) => setRecipient(event.target.value)}
+              />
+            </FormControl>
+            <FormControl>
+              <FormLabel>Amount</FormLabel>
+              <InputGroup>
+                <Input
+                  type="number"
+                  min="0"
+                  step="any"
+                  placeholder="0.00"
+                  value={amount}
+                  onChange={(event) => setAmount(event.target.value)}
+                />
+                <InputRightElement width="auto" pr={3}>
+                  <Button
+                    size="xs"
+                    variant="ghost"
+                    onClick={() => setAmount(context.availableUiAmount)}
+                  >
+                    Max
+                  </Button>
+                </InputRightElement>
+              </InputGroup>
+            </FormControl>
+            <FormControl>
+              <FormLabel>Memo (optional)</FormLabel>
+              <Textarea
+                placeholder="Add a note for your records"
+                value={memo}
+                onChange={(event) => setMemo(event.target.value)}
+                resize="vertical"
+              />
+            </FormControl>
+            {isShieldedBlocked && (
+              <Alert status="warning" variant="left-accent">
+                <AlertIcon />
+                <AlertDescription fontSize="sm">
+                  Shielded transfers require a viewing key. Please switch to a locally managed wallet with a derived
+                  viewing key.
+                </AlertDescription>
+              </Alert>
+            )}
+          </Stack>
+        </ModalBody>
+        <ModalFooter gap={3}>
+          <Button variant="ghost" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button
+            colorScheme="brand"
+            onClick={() => onSubmit({ recipient, amount, memo: memo || undefined, context })}
+            isDisabled={disableSubmit}
+            isLoading={isSubmitting}
+          >
+            Send
+          </Button>
+        </ModalFooter>
+      </ModalContent>
+    </Modal>
   );
 }
 

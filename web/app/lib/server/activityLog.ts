@@ -2,7 +2,7 @@ import fs from 'fs/promises';
 import path from 'path';
 import { resolveRepoPath } from './paths';
 
-export type WalletActivityType = 'wrap' | 'unwrap';
+export type WalletActivityType = 'wrap' | 'unwrap' | 'transfer' | 'transfer_from';
 
 export interface WalletActivityEntry {
   id: string;

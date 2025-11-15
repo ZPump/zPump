@@ -112,9 +112,17 @@ const BalanceDeltaSchema = z.object({
 
 const ActivityEntrySchema = z.object({
   id: z.string(),
-  type: z.enum(['wrap', 'unwrap']),
+  type: z.enum(['wrap', 'unwrap', 'transfer', 'transfer_from']),
   signature: z.string(),
   symbol: z.string(),
+  amount: z.string(),
+  timestamp: z.number()
+});
+
+const AllowanceEntrySchema = z.object({
+  owner: z.string(),
+  spender: z.string(),
+  mint: z.string(),
   amount: z.string(),
   timestamp: z.number()
 });
@@ -124,13 +132,35 @@ const SnapshotSchema = z.object({
   nullifiers: z.record(z.array(z.string())).default({}),
   notes: z.record(z.array(NoteSchema)).default({}),
   balances: z.record(z.record(z.string())).default({}),
-  activity: z.record(z.array(ActivityEntrySchema)).default({})
+  activity: z.record(z.array(ActivityEntrySchema)).default({}),
+  allowances: z
+    .record(
+      z.record(
+        z.record(
+          z.object({
+            amount: z.string(),
+            updated: z.number()
+          })
+        )
+      )
+    )
+    .default({})
+});
+
+const TransferValidationSchema = z.object({
+  mint: z.string(),
+  poolId: z.string().optional(),
+  oldRoot: z.string(),
+  nullifiers: z.array(z.string()).default([]),
+  outputCommitments: z.array(z.string()).default([]),
+  outputAmountCommitments: z.array(z.string()).default([])
 });
 
 type RootResponse = z.infer<typeof RootResponseSchema>;
 type Note = z.infer<typeof NoteSchema>;
 type SnapshotShape = z.infer<typeof SnapshotSchema>;
 type ActivityEntry = z.infer<typeof ActivityEntrySchema>;
+type AllowanceEntry = z.infer<typeof AllowanceEntrySchema>;
 
 const MAX_ACTIVITY_ENTRIES = 50;
 
@@ -221,6 +251,45 @@ class StateStore {
     }
     state.activity[key] = next;
     return next;
+  }
+
+  getAllowance(owner: string, spender: string, mint: string): AllowanceEntry | null {
+    const allowances = this.state?.allowances ?? {};
+    const ownerEntry = allowances[owner];
+    const spenderEntry = ownerEntry?.[spender];
+    const mintEntry = spenderEntry?.[normalizeMintKey(mint)];
+    if (!mintEntry) {
+      return null;
+    }
+    return {
+      owner,
+      spender,
+      mint: normalizeMintKey(mint),
+      amount: mintEntry.amount,
+      timestamp: mintEntry.updated
+    };
+  }
+
+  setAllowance(owner: string, spender: string, mint: string, amount: string): AllowanceEntry {
+    const state = this.ensureState();
+    const normalizedOwner = owner;
+    const normalizedSpender = spender;
+    const normalizedMint = normalizeMintKey(mint);
+    const allowOwner = (state.allowances[normalizedOwner] =
+      state.allowances[normalizedOwner] ?? {});
+    const allowSpender = (allowOwner[normalizedSpender] = allowOwner[normalizedSpender] ?? {});
+    const entry = {
+      amount,
+      updated: Date.now()
+    };
+    allowSpender[normalizedMint] = entry;
+    return {
+      owner: normalizedOwner,
+      spender: normalizedSpender,
+      mint: normalizedMint,
+      amount: entry.amount,
+      timestamp: entry.updated
+    };
   }
 
   upsertRoots(mint: string, payload: RootResponse): void {
@@ -712,6 +781,118 @@ async function bootstrap() {
       res.json({ viewId: normalizeViewId(viewId), entries, source: 'local' });
     } catch (error) {
       logger.error({ err: error, viewId }, 'failed to append activity entry');
+      res.status(500).json({ error: 'internal_error' });
+    }
+  });
+
+  app.post('/transfers/validate', (req, res) => {
+    const parsed = TransferValidationSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: 'invalid_payload', details: parsed.error.flatten() });
+      return;
+    }
+    const { mint, poolId, oldRoot, nullifiers, outputCommitments, outputAmountCommitments } =
+      parsed.data;
+
+    if (outputCommitments.length !== outputAmountCommitments.length) {
+      res.status(400).json({ error: 'output_set_mismatch' });
+      return;
+    }
+
+    try {
+      const canonicalMint = normalizeMintKey(mint);
+      const canonicalOldRoot = canonicalizeHex(oldRoot);
+      const roots = store.getRoots(canonicalMint);
+      if (!roots) {
+        res.status(404).json({ error: 'mint_not_found' });
+        return;
+      }
+      const currentRoot = canonicalizeHex(roots.current);
+      const recentRoots = (roots.recent ?? []).map((entry) => canonicalizeHex(entry));
+      const rootMatched =
+        canonicalOldRoot === currentRoot || recentRoots.includes(canonicalOldRoot);
+      if (!rootMatched) {
+        res.status(409).json({
+          error: 'root_mismatch',
+          provided: canonicalOldRoot,
+          expected: currentRoot,
+          recent: recentRoots
+        });
+        return;
+      }
+
+      const canonicalNullifiers = nullifiers.map((entry) => canonicalizeHex(entry));
+      const knownNullifiers = new Set(
+        store.getNullifiers(canonicalMint).map((entry) => canonicalizeHex(entry))
+      );
+      const duplicates = canonicalNullifiers.filter((entry) => knownNullifiers.has(entry));
+      if (duplicates.length > 0) {
+        res.status(409).json({ error: 'nullifier_conflict', duplicates });
+        return;
+      }
+
+      const canonicalOutputs = outputCommitments.map((entry) => canonicalizeHex(entry));
+      const canonicalAmountCommitments = outputAmountCommitments.map((entry) =>
+        canonicalizeHex(entry)
+      );
+
+      res.json({
+        mint: canonicalMint,
+        poolId: poolId ?? null,
+        oldRoot: canonicalOldRoot,
+        currentRoot,
+        nullifiers: canonicalNullifiers,
+        outputCommitments: canonicalOutputs,
+        outputAmountCommitments: canonicalAmountCommitments,
+        source: 'local'
+      });
+    } catch (error) {
+      logger.error({ err: error }, 'failed to validate transfer payload');
+      res.status(500).json({ error: 'internal_error' });
+    }
+  });
+
+  app.get('/allowances/:owner/:spender/:mint', (req, res) => {
+    const { owner, spender, mint } = req.params;
+    if (!owner || !spender || !mint) {
+      res.status(400).json({ error: 'allowance_params_required' });
+      return;
+    }
+    try {
+      const entry = store.getAllowance(owner, spender, mint);
+      if (!entry) {
+        res.status(404).json({ error: 'allowance_not_found' });
+        return;
+      }
+      res.json(entry);
+    } catch (error) {
+      logger.error({ err: error, owner, spender, mint }, 'failed to read allowance');
+      res.status(500).json({ error: 'internal_error' });
+    }
+  });
+
+  app.post('/allowances/:owner/:spender/:mint', (req, res) => {
+    const { owner, spender, mint } = req.params;
+    if (!owner || !spender || !mint) {
+      res.status(400).json({ error: 'allowance_params_required' });
+      return;
+    }
+    const parsed = AllowanceEntrySchema.safeParse({
+      owner,
+      spender,
+      mint,
+      amount: req.body?.amount ?? req.body?.value ?? req.body?.quantity ?? req.body?.allowance ?? '0',
+      timestamp: Date.now()
+    });
+    if (!parsed.success) {
+      res.status(400).json({ error: 'invalid_payload', details: parsed.error.flatten() });
+      return;
+    }
+    try {
+      const next = store.setAllowance(owner, spender, mint, parsed.data.amount);
+      res.json(next);
+    } catch (error) {
+      logger.error({ err: error, owner, spender, mint }, 'failed to persist allowance');
       res.status(500).json({ error: 'internal_error' });
     }
   });

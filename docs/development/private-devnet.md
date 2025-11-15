@@ -117,6 +117,42 @@ Verify the script ends with `[done] wrap and unwrap flow completed successfully`
 
 > `./scripts/reset-dev-env.sh` runs this script automatically unless `RUN_SMOKE_TESTS=false` is set.
 
+### Extended indexer + allowance test
+
+To exercise the full private SPL flow (shield, approve allowance, indexer sync, revoke allowance, unshield) run:
+```bash
+npx tsx web/app/scripts/indexer-shielded-e2e.ts
+```
+
+What it covers:
+- Generates a fresh wallet, mints SOL + origin tokens, and performs the usual wrap/unshield.
+- Calls Proof RPC for Groth16 proofs, waits for confirmations, and publishes the new commitment tree root to Photon (`/roots/:mint`).
+- Derives the allowance PDA (`seed = b"allow" + pool + owner + spender`), sends the on-chain `approve_allowance` instruction, and mirrors the resulting allowance into Photon via `IndexerClient.setAllowance`.
+- Fetches the allowance snapshot through the Next proxy (`/api/indexer`) to confirm the indexer and PDA agree.
+- Revokes the allowance on-chain (`revoke_allowance`) and clears the Photon record to ensure both the program and indexer return to zero.
+
+Environment overrides:
+- `RPC_URL`, `PROOF_URL`, `INDEXER_PROXY_URL`, `NEXT_URL`, `FAUCET_URL`, `MINTS_API_URL` — point at remote services if you are not running everything on localhost.
+- `SOL_AIRDROP_LAMPORTS`, `WRAP_AMOUNT`, `MINT_DECIMALS` — tweak faucet minting and wrap size for stress tests.
+
+Use this script whenever you change allowance/transfer logic or Photon’s `/allowances` endpoints—if it succeeds, you know on-chain approvals, Photon persistence, and the private indexer stay in sync.
+
+### Private transfer + delegated spend test
+
+To cover shield → private transfer → delegated `transfer_from`:
+```bash
+npx tsx web/app/scripts/ztoken-transfer-e2e.ts
+```
+
+What it validates:
+- Registers a new mint, faucets SOL/origin tokens, and shields twice.
+- Performs an owner-signed private transfer to a second wallet, ensuring new commitments land on-chain and in the Photon snapshot.
+- Approves an allowance PDA for a delegate, mirrors it into Photon, and confirms both ledger + PDA state.
+- Executes `transfer_from` as the delegate (using the new SDK helper), then verifies on-chain allowance depletion and Photon state updates.
+- Checks viewing-key activity and private balances for both sender and receiver so you know the frontend can surface transfers without leaking info.
+
+Set `PRIVATE_TRANSFER_AMOUNT`, `PRIVATE_TRANSFER_FROM_AMOUNT`, `RPC_URL`, `PROOF_URL`, or other env overrides to stress different scenarios.
+
 ## 8. Indexer Validation
 
 Check Photon root endpoint:

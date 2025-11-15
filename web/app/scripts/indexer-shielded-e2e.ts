@@ -4,7 +4,9 @@ import {
   Connection,
   Keypair,
   PublicKey,
+  SystemProgram,
   Transaction,
+  TransactionInstruction,
   VersionedTransaction
 } from '@solana/web3.js';
 import {
@@ -12,17 +14,20 @@ import {
   TOKEN_PROGRAM_ID,
   getAssociatedTokenAddress
 } from '@solana/spl-token';
+import { BN, BorshCoder, Idl } from '@coral-xyz/anchor';
 import type { MintConfig } from '../config/mints';
 import { ProofClient } from '../lib/proofClient';
 import { IndexerClient } from '../lib/indexerClient';
 import { wrap, unwrap } from '../lib/sdk';
-import { deriveCommitmentTree } from '../lib/onchain/pdas';
+import { deriveCommitmentTree, deriveAllowanceAccount } from '../lib/onchain/pdas';
+import { POOL_PROGRAM_ID } from '../lib/onchain/programIds';
 import { decodeCommitmentTree, commitmentToHex } from '../lib/onchain/commitmentTree';
 import { bytesLEToCanonicalHex, canonicalizeHex } from '../lib/onchain/utils';
 import { poseidonHashMany } from '../lib/onchain/poseidon';
 import { ensureFetchPolyfill } from './utils/fetch-polyfill';
 import { deriveViewingKey } from '../lib/wallet/viewingKey';
 import { formatBaseUnitsToUi } from '../lib/format';
+import poolIdl from '../idl/ptf_pool.json';
 
 ensureFetchPolyfill();
 
@@ -41,6 +46,18 @@ const WRAP_AMOUNT = BigInt(process.env.WRAP_AMOUNT ?? '1000000'); // default ass
 const TARGET_DECIMALS = Number(process.env.MINT_DECIMALS ?? '6');
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const poolCoder = new BorshCoder(poolIdl as Idl);
+
+interface OnchainAllowance {
+  pool: PublicKey;
+  owner: PublicKey;
+  spender: PublicKey;
+  mint: PublicKey;
+  amount: bigint;
+  updatedAt: bigint;
+  bump: number;
+}
 
 function randomSymbol(): string {
   const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
@@ -71,6 +88,71 @@ async function confirmSignature(connection: Connection, signature: string, timeo
     }
     await sleep(500);
   }
+}
+
+async function fetchAllowanceAccount(connection: Connection, address: PublicKey): Promise<OnchainAllowance | null> {
+  const account = await connection.getAccountInfo(address, 'confirmed');
+  if (!account) {
+    return null;
+  }
+  const buffer = Buffer.from(account.data);
+  if (buffer.length < 8 + 32 * 4 + 8 + 8 + 1) {
+    return null;
+  }
+  let offset = 8; // skip discriminator
+  const readPubkey = () => {
+    const key = new PublicKey(buffer.slice(offset, offset + 32));
+    offset += 32;
+    return key;
+  };
+  const result: OnchainAllowance = {
+    pool: readPubkey(),
+    owner: readPubkey(),
+    spender: readPubkey(),
+    mint: readPubkey(),
+    amount: buffer.readBigUInt64LE(offset),
+    updatedAt: buffer.readBigInt64LE(offset + 8),
+    bump: buffer.readUInt8(offset + 16)
+  };
+  return result;
+}
+
+async function sendAllowanceInstruction(params: {
+  connection: Connection;
+  owner: Keypair;
+  spender: PublicKey;
+  poolState: PublicKey;
+  originMint: PublicKey;
+  allowanceAddress: PublicKey;
+  instruction: 'approve' | 'revoke';
+  amount?: bigint;
+}): Promise<string> {
+  const { connection, owner, spender, poolState, originMint, allowanceAddress, instruction, amount = 0n } = params;
+  const data =
+    instruction === 'approve'
+      ? poolCoder.instruction.encode('approve_allowance', { args: { amount: new BN(amount.toString()) } })
+      : poolCoder.instruction.encode('revoke_allowance', { args: {} });
+  const ix = new TransactionInstruction({
+    programId: POOL_PROGRAM_ID,
+    keys: [
+      { pubkey: poolState, isSigner: false, isWritable: true },
+      { pubkey: allowanceAddress, isSigner: false, isWritable: true },
+      { pubkey: owner.publicKey, isSigner: true, isWritable: true },
+      { pubkey: spender, isSigner: false, isWritable: false },
+      { pubkey: originMint, isSigner: false, isWritable: false },
+      { pubkey: SystemProgram.programId, isSigner: false, isWritable: false }
+    ],
+    data
+  });
+  const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash('confirmed');
+  const tx = new Transaction().add(ix);
+  tx.feePayer = owner.publicKey;
+  tx.recentBlockhash = blockhash;
+  tx.sign(owner);
+  const signature = await connection.sendRawTransaction(tx.serialize(), { skipPreflight: false });
+  await confirmSignature(connection, signature, 60_000);
+  await connection.confirmTransaction({ signature, blockhash, lastValidBlockHeight }, 'confirmed');
+  return signature;
 }
 
 async function faucetSol(connection: Connection, recipient: PublicKey): Promise<void> {
@@ -315,6 +397,7 @@ async function main() {
   console.info('[faucet] funding origin mint balance', { noteAmount: noteAmount.toString() });
   await ensureTokenBalance(connection, payer.publicKey, originMintKey, noteAmount);
 
+  const poolStateKey = new PublicKey(mintConfig.poolId);
   const roots = await indexerClient.getRoots(mintConfig.originMint);
   const poolRootCanonical = poolStateInfo.root;
   const storedRootCanonical =
@@ -375,6 +458,50 @@ async function main() {
   const updatedRecent = [oldRootCanonical, ...previousRoots.filter((root) => root !== oldRootCanonical)].slice(0, 16);
   await publishRoot(INDEXER_PROXY_URL, mintConfig.originMint, newRootCanonical, updatedRecent);
   await waitForIndexerRoot(indexerClient, mintConfig.originMint, newRootCanonical);
+
+  const allowanceSpender = Keypair.generate();
+  const allowanceAddress = deriveAllowanceAccount(poolStateKey, payer.publicKey, allowanceSpender.publicKey);
+  const allowanceAmount = WRAP_AMOUNT;
+  console.info('[allowance] approving on-chain allowance', {
+    owner: payer.publicKey.toBase58(),
+    spender: allowanceSpender.publicKey.toBase58(),
+    amount: allowanceAmount.toString(),
+    address: allowanceAddress.toBase58()
+  });
+  await sendAllowanceInstruction({
+    connection,
+    owner: payer,
+    spender: allowanceSpender.publicKey,
+    poolState: poolStateKey,
+    originMint: originMintKey,
+    allowanceAddress,
+    instruction: 'approve',
+    amount: allowanceAmount
+  });
+  const onchainAllowance = await fetchAllowanceAccount(connection, allowanceAddress);
+  if (!onchainAllowance || onchainAllowance.amount !== allowanceAmount) {
+    throw new Error('On-chain allowance amount mismatch');
+  }
+  console.info('[allowance] on-chain allowance account', {
+    address: allowanceAddress.toBase58(),
+    amount: onchainAllowance.amount.toString()
+  });
+
+  await indexerClient.setAllowance(
+    payer.publicKey.toBase58(),
+    allowanceSpender.publicKey.toBase58(),
+    mintConfig.zTokenMint ?? mintConfig.originMint,
+    allowanceAmount.toString()
+  );
+  const allowanceSnapshot = await indexerClient.getAllowance(
+    payer.publicKey.toBase58(),
+    allowanceSpender.publicKey.toBase58(),
+    mintConfig.zTokenMint ?? mintConfig.originMint
+  );
+  if (!allowanceSnapshot || allowanceSnapshot.amount !== allowanceAmount.toString()) {
+    throw new Error('Indexer allowance record mismatch');
+  }
+  console.info('[allowance] indexer allowance stored', allowanceSnapshot);
 
   const latestTreeAccount = await connection.getAccountInfo(deriveCommitmentTree(originMintKey), 'confirmed');
   if (!latestTreeAccount) {
@@ -450,6 +577,27 @@ async function main() {
   if (!signatures.has(wrapSignature) || !signatures.has(unwrapSignature)) {
     throw new Error('Indexer activity log missing wrap or unwrap entries');
   }
+
+  console.info('[allowance] revoking on-chain allowance after transfer simulation');
+  await sendAllowanceInstruction({
+    connection,
+    owner: payer,
+    spender: allowanceSpender.publicKey,
+    poolState: poolStateKey,
+    originMint: originMintKey,
+    allowanceAddress,
+    instruction: 'revoke'
+  });
+  const revokedAllowance = await fetchAllowanceAccount(connection, allowanceAddress);
+  if (!revokedAllowance || revokedAllowance.amount !== 0n) {
+    throw new Error('Allowance revoke failed on-chain');
+  }
+  await indexerClient.setAllowance(
+    payer.publicKey.toBase58(),
+    allowanceSpender.publicKey.toBase58(),
+    mintConfig.zTokenMint ?? mintConfig.originMint,
+    '0'
+  );
 
   console.info('[verify] indexer balances and history verified', {
     wallet: payer.publicKey.toBase58(),

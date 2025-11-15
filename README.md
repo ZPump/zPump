@@ -23,6 +23,18 @@ The README focuses on high-level onboarding. Deep dives live in [`docs/`](docs/R
    ```
    The reset script stops all PM2 apps, coordinates the user-level `zpump-devnet` systemd service (or falls back to PM2 if not installed), rebuilds dependencies, runs `bootstrap-private-devnet.ts`, restarts `ptf-indexer`, `ptf-proof`, and `ptf-web`, and finally executes `npx tsx scripts/wrap-unwrap-local.ts` to register a mint, request faucet funds, shield, and unshield. Set `RUN_SMOKE_TESTS=false` if you need to skip the wrap/unshield check.
 
+   After bootstrap you can run the richer indexer test:
+   ```bash
+   npx tsx web/app/scripts/indexer-shielded-e2e.ts
+   ```
+   This script performs the full wrap/unshield flow, approves a spender allowance, verifies the allowance PDA on-chain, mirrors that state into Photon via the indexer API, and then revokes the allowance to ensure both the indexer and program return to zero before exiting. Override `RPC_URL`, `PROOF_URL`, or `INDEXER_PROXY_URL` if your services run on non-default ports.
+
+   Need to exercise SPL-style transfers and delegated spends? Run:
+   ```bash
+   npx tsx web/app/scripts/ztoken-transfer-e2e.ts
+   ```
+   It registers a fresh mint, mints/airs SOL to two wallets, shields twice, performs a private transfer to another user, approves a delegate, executes `transfer_from`, and checks Photon balances/activity so you know the frontend flows (send, approve, transferFrom) stay in sync with on-chain allowances.
+
    > The validator now runs under `systemctl --user`. Copy `scripts/systemd/zpump-devnet.service` into `~/.config/systemd/user/`, then inspect it with `systemctl --user status zpump-devnet` or stream logs via `journalctl --user -u zpump-devnet -f`.
 
 3. **Visit the dApp** at [http://localhost:3000/convert](http://localhost:3000/convert). Use the faucet page to mint origin tokens (e.g. USDC) and test shield/unshield flows.

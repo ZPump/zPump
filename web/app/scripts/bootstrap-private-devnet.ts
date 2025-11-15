@@ -42,6 +42,9 @@ const PROGRAM_IDS = {
   verifier: new PublicKey('3aCv39mCRFH9BGJskfXqwQoWzW1ULq2yXEbEwGgKtLgg')
 } as const;
 
+const FEATURE_PRIVATE_TRANSFER_ENABLED = 0x01;
+const FEATURE_ALLOWANCES_ENABLED = 0x04;
+
 const CIRCUIT_TAGS: Record<string, Buffer> = {
   shield: (() => {
     const buffer = Buffer.alloc(32);
@@ -651,7 +654,7 @@ async function ensureMint(
       poolAccounts,
       {
         fee_bps: new BN(5),
-        features: 0
+        features: FEATURE_PRIVATE_TRANSFER_ENABLED | FEATURE_ALLOWANCES_ENABLED
       },
       [],
       computeBudgetIxs
