@@ -46,5 +46,17 @@
       "wrappedTransfers": false
     },
     "lookupTable": "5z2nv239EWH6m5P6SPGZau35ES1btym35JWPrk51EyGW"
+  },
+  {
+    "symbol": "GOLD",
+    "decimals": 6,
+    "originMint": "9iKbn95W6C8gA4uVUSBgS8QaNvu9LWgwoJTeAUXneHbN",
+    "poolId": "2FKEAaCpSMDvrg4SNLndQwwDmpYAmNYFkBF3Mj6XkPgu",
+    "zTokenMint": "5BE99SqiX3Y9wHs9EAXfqyAzfR1ynB2odnGc7MKjtCGv",
+    "features": {
+      "zTokenEnabled": true,
+      "wrappedTransfers": false
+    },
+    "lookupTable": "EW63EF7DVkdGCyzixQpeaAbXNeEn7KWLSaswPQP1jAAL"
   }
 ]
