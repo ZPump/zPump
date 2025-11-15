@@ -866,14 +866,17 @@ export function ConvertForm() {
         }
         const displayAmount = formatBaseUnitsToUi(baseAmount, decimals);
         setResult(`Shielded ${displayAmount} into ${zTokenSymbol}. Signature: ${signature}`);
-        recordWalletActivity({
-          id: signature,
-          signature,
-          type: 'wrap',
-          symbol: mintConfig?.symbol ?? originMint.slice(0, 6),
-          amount: displayAmount,
-          timestamp: Date.now()
-        });
+        if (wallet.publicKey) {
+          void recordWalletActivity({
+            wallet: wallet.publicKey.toBase58(),
+            id: signature,
+            signature,
+            type: 'wrap',
+            symbol: mintConfig?.symbol ?? originMint.slice(0, 6),
+            amount: displayAmount,
+            timestamp: Date.now()
+          });
+        }
         await refreshTokenOptions();
       } else {
         if (tokenVariant !== 'private') {
@@ -1058,14 +1061,17 @@ export function ConvertForm() {
         const displayAmount = formatBaseUnitsToUi(amountValue, decimals);
         const targetSymbol = mintConfig?.symbol ?? 'TOKEN';
         setResult(`Redeemed ${displayAmount} ${targetSymbol}. Signature: ${unwrapSignature}`);
-        recordWalletActivity({
-          id: unwrapSignature,
-          signature: unwrapSignature,
-          type: 'unwrap',
-          symbol: targetSymbol,
-          amount: displayAmount,
-          timestamp: Date.now()
-        });
+        if (wallet.publicKey) {
+          void recordWalletActivity({
+            wallet: wallet.publicKey.toBase58(),
+            id: unwrapSignature,
+            signature: unwrapSignature,
+            type: 'unwrap',
+            symbol: targetSymbol,
+            amount: displayAmount,
+            timestamp: Date.now()
+          });
+        }
         await refreshTokenOptions();
       }
       void refreshRoots();

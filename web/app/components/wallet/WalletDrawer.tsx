@@ -42,7 +42,11 @@ import { useLocalWallet } from './LocalWalletContext';
 import { formatBaseUnitsToUi } from '../../lib/format';
 import { IndexerClient } from '../../lib/indexerClient';
 import { useMintCatalog } from '../providers/MintCatalogProvider';
-import { getWalletActivity, subscribeToWalletActivity, WalletActivityEntry } from '../../lib/client/activityLog';
+import {
+  fetchWalletActivity,
+  subscribeToWalletActivity,
+  WalletActivityEntry
+} from '../../lib/client/activityLog';
 
 interface TokenBalance {
   mint: string;
@@ -325,19 +329,34 @@ function WalletDrawerContent({ disclosure }: { disclosure: ReturnType<typeof use
     void loadPrivateBalances(activeAccount.publicKey);
   }, [activeAccount, loadPrivateBalances]);
 
+  const loadActivity = useCallback(
+    async () => {
+      if (!activeAccount) {
+        setActivityLog([]);
+        return;
+      }
+      try {
+        const entries = await fetchWalletActivity(activeAccount.publicKey);
+        setActivityLog(entries);
+      } catch (error) {
+        console.warn('[wallet drawer] failed to load conversion activity', error);
+      }
+    },
+    [activeAccount]
+  );
+
   useEffect(() => {
-    if (typeof window === 'undefined') {
-      return;
-    }
-    const update = () => {
-      setActivityLog(getWalletActivity());
-    };
-    update();
-    const unsubscribe = subscribeToWalletActivity(update);
+    void loadActivity();
+  }, [loadActivity]);
+
+  useEffect(() => {
+    const unsubscribe = subscribeToWalletActivity(() => {
+      void loadActivity();
+    });
     return () => {
       unsubscribe();
     };
-  }, []);
+  }, [loadActivity]);
 
   const renderActivityLabel = (entry: WalletActivityEntry) => {
     if (entry.type === 'wrap') {
@@ -429,7 +448,9 @@ function WalletDrawerContent({ disclosure }: { disclosure: ReturnType<typeof use
                     size="xs"
                     variant="ghost"
                     colorScheme="brand"
-                    onClick={() => setActivityLog(getWalletActivity())}
+                    onClick={() => {
+                      void loadActivity();
+                    }}
                   >
                     Refresh
                   </Button>

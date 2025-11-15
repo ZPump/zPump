@@ -9,6 +9,7 @@ PHOTON_STATE_FILE="$PHOTON_STATE_DIR/state.json"
 MINT_CATALOG_PATH="${MINT_CATALOG_PATH:-$PROJECT_ROOT/web/app/config/mints.generated.json}"
 FAUCET_LOG_DEFAULT="$PROJECT_ROOT/web/app/faucet-events.json"
 FAUCET_LOG_LEGACY="$PROJECT_ROOT/faucet-events.json"
+WALLET_ACTIVITY_PATH="$PROJECT_ROOT/web/app/wallet-activity.json"
 PM2_BIN="${PM2_BIN:-pm2}"
 RPC_URL="${RPC_URL:-http://127.0.0.1:8899}"
 VALIDATOR_APP="ptf-validator"
@@ -124,8 +125,15 @@ reset_faucet_logs() {
   printf '[]\n' >"${FAUCET_LOG_LEGACY}"
 }
 
+reset_wallet_activity() {
+  log "Resetting wallet activity log at ${WALLET_ACTIVITY_PATH}"
+  mkdir -p "$(dirname "${WALLET_ACTIVITY_PATH}")"
+  printf '{}\n' >"${WALLET_ACTIVITY_PATH}"
+}
+
 reset_mint_catalog
 reset_faucet_logs
+reset_wallet_activity
 
 log "Ensuring Proof RPC circuits symlink exists"
 ln -snf ../circuits "${PROJECT_ROOT}/services/circuits"
@@ -182,6 +190,7 @@ fi
 
 reset_mint_catalog
 reset_faucet_logs
+reset_wallet_activity
 
 log "Reset complete."
 
