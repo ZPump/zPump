@@ -188,9 +188,10 @@ if [[ "${RUN_SMOKE_TESTS}" == true ]]; then
   )
 fi
 
-reset_mint_catalog
-reset_faucet_logs
-reset_wallet_activity
+# Don't reset mints/faucet/wallet activity after bootstrap - they're needed for tests
+# reset_mint_catalog
+# reset_faucet_logs
+# reset_wallet_activity
 
 log "Reset complete."
 
