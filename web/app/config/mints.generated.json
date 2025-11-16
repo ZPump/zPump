@@ -1,1 +1,14 @@
-[]
+[
+  {
+    "symbol": "FBVI",
+    "decimals": 6,
+    "originMint": "2VXBZN7vcwN61RBNgmQjdqMFLvMCGDLsQxjvJxsnxmTE",
+    "poolId": "CPNxTeuXPkNYBn8fkFQci5HTn6rE1iaVijougMXtQEKt",
+    "zTokenMint": "FzaR7BjjQAZyZh5jd3nKpt96zA48hFsZEH5WiHn9sfE3",
+    "features": {
+      "zTokenEnabled": true,
+      "wrappedTransfers": false
+    },
+    "lookupTable": "HdUwTdKLBVN9UmVGMJNGDNeLgUqBrtt2jvZDDQReonmE"
+  }
+]

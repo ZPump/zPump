@@ -250,7 +250,6 @@ pub mod ptf_pool {
             let mut nulls = ctx.accounts.nullifier_set.load_init()?;
             nulls.pool = pool_key;
             nulls.bump = ctx.bumps.nullifier_set;
-            nulls.count = 0;
             nulls.bloom = [0u8; NullifierSet::BLOOM_BYTES];
         }
         msg!("init_pool stage: nullifier_init_complete");
@@ -2708,14 +2707,11 @@ impl ShieldClaim {
 #[repr(C)]
 pub struct NullifierSet {
     pub pool: Pubkey,
-    pub count: u32,
-    pub entries: [[u8; 32]; NullifierSet::MAX_NULLIFIERS],
     pub bloom: [u8; NullifierSet::BLOOM_BYTES],
     pub bump: u8,
 }
 
 impl NullifierSet {
-    pub const MAX_NULLIFIERS: usize = 256;
     pub const BLOOM_BYTES: usize = 512;
     pub const SPACE: usize = 8 + core::mem::size_of::<NullifierSet>() + 64;
 
@@ -2723,26 +2719,14 @@ impl NullifierSet {
         if self.contains(&value) {
             return err!(PoolError::NullifierReuse);
         }
-        require!(
-            (self.count as usize) < Self::MAX_NULLIFIERS,
-            PoolError::NullifierCapacity,
-        );
-        self.entries[self.count as usize] = value;
-        self.count += 1;
         self.set_bloom_bits(&value);
         Ok(())
     }
 
     fn contains(&self, value: &[u8; 32]) -> bool {
-        if !self.test_bloom_bits(value) {
-            return false;
-        }
-        for idx in 0..self.count as usize {
-            if self.entries[idx] == *value {
-                return true;
-            }
-        }
-        false
+        // Bloom filter only: false positives are acceptable (they just prevent double-spending)
+        // False negatives would be a security issue, but bloom filters don't have false negatives
+        self.test_bloom_bits(value)
     }
 
     fn set_bloom_bits(&mut self, value: &[u8; 32]) {

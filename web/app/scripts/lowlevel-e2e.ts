@@ -354,9 +354,24 @@ async function main() {
   await Promise.all([owner, receiver, delegate].map((kp) => faucetSol(connection, kp.publicKey)));
   await faucetSol(connection, adminAuthority.publicKey);
 
-  const catalog = await fetchMintCatalog();
+  let catalog = await fetchMintCatalog();
   if (!catalog.length) {
-    throw new Error('No mints available. Run bootstrap script first.');
+    console.info('[setup] No mints found, creating a test mint via API...');
+    // Create a mint via the API (similar to browser-e2e)
+    const registerResponse = await fetch(MINTS_API_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ symbol: 'TEST', decimals: TARGET_DECIMALS })
+    });
+    if (!registerResponse.ok) {
+      throw new Error(`Failed to register mint: ${registerResponse.status} ${await registerResponse.text()}`);
+    }
+    // Fetch again to get the created mint
+    catalog = await fetchMintCatalog();
+    if (!catalog.length) {
+      throw new Error('Failed to create mint via API. Run bootstrap script first.');
+    }
+    console.info('[setup] Test mint created successfully');
   }
   const mintConfig = catalog[0]!;
   
@@ -392,6 +407,10 @@ async function main() {
   const shieldClaimStatus = await fetchShieldClaimStatus(connection, shieldClaimKey);
   if (shieldClaimStatus !== 0) {
     console.info('[setup] Found pending shield claim, attempting to finalize...');
+    // After finalizing, refresh the root as it may have changed
+    await waitForShieldClaimCleared(connection, shieldClaimKey);
+    const refreshedPoolInfo = await fetchPoolStateRoot(connection, mintConfig.poolId);
+    currentRoot = canonicalizeHex(refreshedPoolInfo.root);
     try {
       const finalizeTreeIx = new TransactionInstruction({
         programId: POOL_PROGRAM_ID,
@@ -462,6 +481,11 @@ async function main() {
   }
   await faucetToken(connection, originMintKey, owner.publicKey, WRAP_AMOUNT * 10n);
 
+  // Ensure shield claim is cleared and root is current before generating proof
+  await waitForShieldClaimCleared(connection, shieldClaimKey);
+  const rootBeforeProof = await fetchPoolStateRoot(connection, mintConfig.poolId);
+  currentRoot = canonicalizeHex(rootBeforeProof.root);
+  
   const depositId1 = generateUniqueDepositId();
   const blinding1 = crypto.randomInt(1_000_000, 9_000_000).toString();
   const noteAmount1 = WRAP_AMOUNT + (WRAP_AMOUNT * feeBps) / 10_000n;
@@ -1169,18 +1193,15 @@ async function main() {
 
   const unshieldProof = await proofClient.requestProof('unwrap', {
     oldRoot: currentRoot,
+    amount: unshieldAmount.toString(),
+    fee: ((wrap4.noteAmount * feeBps) / 10_000n).toString(),
+    destPubkey: receiver.publicKey.toBase58(),
+    mode: 'origin',
     mintId: mintConfig.originMint,
     poolId: mintConfig.poolId,
-    inNotes: [
-      {
-        noteId: wrap4.noteId,
-        spendingKey: wrap4.spendingKey,
-        amount: wrap4.noteAmount.toString()
-      }
-    ],
-    outAmount: unshieldAmount.toString(),
-    recipient: receiver.publicKey.toBase58(),
-    blinding: unshieldBlinding
+    noteId: wrap4.noteId,
+    spendingKey: wrap4.spendingKey,
+    noteAmount: wrap4.noteAmount.toString()
   });
 
   const decodedUnshieldProof = decodeProofPayload(unshieldProof);
@@ -1230,7 +1251,7 @@ async function main() {
       { pubkey: vaultStateKey, isSigner: false, isWritable: true },
       { pubkey: vaultTokenAccount, isSigner: false, isWritable: true },
       { pubkey: destinationTokenAccount, isSigner: false, isWritable: true },
-      { pubkey: mintConfig.zTokenMint ? new PublicKey(mintConfig.zTokenMint) : originMintKey, isSigner: false, isWritable: false },
+      { pubkey: mintConfig.zTokenMint ? new PublicKey(mintConfig.zTokenMint) : originMintKey, isSigner: false, isWritable: mintConfig.zTokenMint ? true : false },
       { pubkey: VAULT_PROGRAM_ID, isSigner: false, isWritable: false },
       { pubkey: factoryStateKey, isSigner: false, isWritable: false },
       { pubkey: FACTORY_PROGRAM_ID, isSigner: false, isWritable: false },
@@ -1260,7 +1281,8 @@ async function main() {
     keys: [
       { pubkey: adminAuthority.publicKey, isSigner: true, isWritable: true },
       { pubkey: poolStateKey, isSigner: false, isWritable: true },
-      { pubkey: nullifierSetKey, isSigner: false, isWritable: true }
+      { pubkey: nullifierSetKey, isSigner: false, isWritable: true },
+      { pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false }
     ],
     data: writeNullifierData
   });
