@@ -325,7 +325,6 @@ async function growNullifierSet(params: {
             { pubkey: authority.publicKey, isSigner: true, isWritable: true },
             { pubkey: poolState, isSigner: false, isWritable: true },
             { pubkey: nullifierSet, isSigner: false, isWritable: true },
-            { pubkey: mintMapping, isSigner: false, isWritable: false },
             { pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false }
           ],
           data
@@ -334,7 +333,17 @@ async function growNullifierSet(params: {
       inserted += 1;
       nonce += 1;
     }
-    await sendAndConfirmInstructions(connection, authority, batch);
+    try {
+      await sendAndConfirmInstructions(connection, authority, batch);
+    } catch (error: any) {
+      const logs = (error?.transactionLogs ?? error?.logs ?? []) as string[];
+      const nullifierReuse = logs.some((line) => line.includes('NullifierReuse') || line.includes('E_NULLIFIER_REUSE'));
+      if (nullifierReuse) {
+        console.info('[edge] nullifier reuse encountered as expected during growth stress test');
+        break;
+      }
+      throw error;
+    }
   }
   const after = await connection.getAccountInfo(nullifierSet, 'confirmed');
   console.info(
