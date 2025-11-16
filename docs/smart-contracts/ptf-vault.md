@@ -48,6 +48,7 @@ Called from `ptf_pool::unshield_to_origin`. Accounts:
 Behaviour:
 - Transfers `amount` from vault token account to destination ATA, signed by the pool PDA.
 - Updates vault accounting (e.g. `total_withdrawn`).
+- The pool authority account must be a signer and owned by `ptf_pool`; arbitrary accounts can no longer trigger releases.
 
 ## Security Considerations
 

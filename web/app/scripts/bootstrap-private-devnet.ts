@@ -643,10 +643,16 @@ async function ensureMint(
     throw new Error(`Mint mapping account missing after registration for ${mintConfig.symbol}`);
   }
   const decodedMintMapping = ctx.coders.factory.accounts.decode('MintMapping', mintMappingInfo.data) as {
+    origin_mint: PublicKey;
     ptkn_mint: Uint8Array;
     has_ptkn: boolean;
     features: { bits?: number } | number;
   };
+  if (!decodedMintMapping.origin_mint.equals(originMintKey)) {
+    throw new Error(
+      `Mint mapping origin mismatch for ${mintConfig.symbol}: mapping=${decodedMintMapping.origin_mint.toBase58()} expected=${originMintKey.toBase58()}`
+    );
+  }
 
   const twinMintKey = decodedMintMapping.has_ptkn ? new PublicKey(decodedMintMapping.ptkn_mint) : null;
 
@@ -818,6 +824,13 @@ export async function bootstrapPrivateDevnet() {
   const shieldVerifyingKey = verifyingKeyMap.get('shield');
   if (!shieldVerifyingKey) {
     throw new Error('Shield verifying key must be available before mint bootstrap.');
+  }
+
+  const seedMintsEnv = process.env.SEED_MINTS ?? 'true';
+  const shouldSeedMints = seedMintsEnv.toLowerCase() !== 'false';
+  if (!shouldSeedMints) {
+    console.info('[bootstrap] SEED_MINTS disabled, skipping mint provisioning');
+    return;
   }
 
   const mintsPath = process.env.MINTS_PATH ? path.resolve(process.env.MINTS_PATH) : DEFAULT_MINTS_PATH;

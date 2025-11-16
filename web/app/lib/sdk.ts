@@ -10,6 +10,7 @@ import {
   Connection,
   PublicKey,
   SYSVAR_INSTRUCTIONS_PUBKEY,
+  SYSVAR_RENT_PUBKEY,
   SystemProgram,
   Transaction,
   TransactionInstruction,
@@ -61,6 +62,13 @@ const DEFAULT_SIGNATURE_TIMEOUT_MS = 60_000;
 const SIGNATURE_POLL_INTERVAL_MS = 500;
 
 const poolCoder = new BorshCoder(poolIdl as Idl);
+const factoryCoder = new BorshCoder(factoryIdl as Idl);
+
+export const MINT_STATUS = {
+  UNKNOWN: 0,
+  ACTIVE: 1,
+  FROZEN: 2
+} as const;
 
 const SHIELD_CLAIM_STATUS = {
   INACTIVE: 0,
@@ -244,6 +252,29 @@ function decodeProofPayload(payload: ProofResponse | null): DecodedProofPayload 
   };
 }
 
+export async function fetchMintMappingAccount(
+  connection: Connection,
+  originMint: PublicKey
+): Promise<{ key: PublicKey; decoded: any }> {
+  const key = deriveMintMapping(originMint);
+  const account = await connection.getAccountInfo(key, 'confirmed');
+  if (!account) {
+    throw new Error('Mint mapping account missing on chain');
+  }
+  const decoded = factoryCoder.accounts.decode('MintMapping', account.data);
+  return { key, decoded };
+}
+
+function ensureMintActive(mapping: { status?: number }): void {
+  if (mapping.status !== MINT_STATUS.ACTIVE) {
+    const label =
+      mapping.status === MINT_STATUS.FROZEN
+        ? 'frozen by governance'
+        : 'inactive or unregistered';
+    throw new Error(`Mint is currently ${label}. Please select a supported asset or wait until it is thawed.`);
+  }
+}
+
 async function fetchShieldClaimState(
   connection: Connection,
   address: PublicKey
@@ -300,6 +331,11 @@ export async function wrap(params: WrapParams): Promise<string> {
   const verifyingKey = deriveVerifyingKey();
   const shieldClaim = deriveShieldClaim(poolState);
   const twinMintKey = params.twinMint ? new PublicKey(params.twinMint) : null;
+  const { key: mintMappingKey, decoded: mintMapping } = await fetchMintMappingAccount(
+    connection,
+    originMintKey
+  );
+  ensureMintActive(mintMapping);
 
   const commitmentTreeAccount = await connection.getAccountInfo(commitmentTreeKey);
   if (!commitmentTreeAccount) {
@@ -465,7 +501,8 @@ export async function wrap(params: WrapParams): Promise<string> {
     { pubkey: VAULT_PROGRAM_ID, isSigner: false, isWritable: false },
     { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
     { pubkey: SYSVAR_INSTRUCTIONS_PUBKEY, isSigner: false, isWritable: false },
-    { pubkey: SystemProgram.programId, isSigner: false, isWritable: false }
+    { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+    { pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false }
   );
 
   const shieldInstruction = new TransactionInstruction({
@@ -680,7 +717,6 @@ export async function unwrap(params: UnwrapParams): Promise<string> {
   const noteLedgerKey = deriveNoteLedger(originMintKey);
   const hookConfigKey = deriveHookConfig(originMintKey);
   const vaultStateKey = deriveVaultState(originMintKey);
-  const mintMappingKey = deriveMintMapping(originMintKey);
   const factoryStateKey = deriveFactoryState();
   const verifyingKey = deriveVerifyingKey();
 
@@ -757,16 +793,14 @@ export async function unwrap(params: UnwrapParams): Promise<string> {
     ASSOCIATED_TOKEN_PROGRAM_ID
   );
 
-  const factoryCoder = new BorshCoder(factoryIdl as Idl);
-
   let twinMintKey: PublicKey | null = params.twinMint ? new PublicKey(params.twinMint) : null;
-  const mintMappingAccount = await connection.getAccountInfo(mintMappingKey);
-  if (!mintMappingAccount) {
-    throw new Error('Mint mapping account missing on devnet');
-  }
-  const decodedMintMapping = factoryCoder.accounts.decode('MintMapping', mintMappingAccount.data);
-  if (decodedMintMapping.hasPtkn) {
-    const candidate = new PublicKey(decodedMintMapping.ptknMint);
+  const { key: mintMappingKey, decoded: mintMapping } = await fetchMintMappingAccount(
+    connection,
+    originMintKey
+  );
+  ensureMintActive(mintMapping);
+  if (mintMapping.hasPtkn) {
+    const candidate = new PublicKey(mintMapping.ptknMint);
     if (candidate.equals(PublicKey.default)) {
       throw new Error('Twin mint address missing from mint mapping.');
     }
@@ -779,7 +813,7 @@ export async function unwrap(params: UnwrapParams): Promise<string> {
     twinMintKey = candidate;
   }
 
-  if (mode === 'ptkn' && !decodedMintMapping.hasPtkn) {
+  if (mode === 'ptkn' && !mintMapping.hasPtkn) {
     throw new Error('Twin mint is not enabled for this origin mint.');
   }
 
@@ -949,7 +983,9 @@ export async function unwrap(params: UnwrapParams): Promise<string> {
     { pubkey: VAULT_PROGRAM_ID, isSigner: false, isWritable: false },
     { pubkey: factoryStateKey, isSigner: false, isWritable: false },
     { pubkey: FACTORY_PROGRAM_ID, isSigner: false, isWritable: false },
-    { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false }
+    { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
+    { pubkey: wallet.publicKey, isSigner: true, isWritable: true },
+    { pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false }
   );
 
   instructions.push(
@@ -1024,6 +1060,11 @@ export async function transfer(params: TransferParams): Promise<string> {
   const nullifierSetKey = deriveNullifierSet(originMintKey);
   const noteLedgerKey = deriveNoteLedger(originMintKey);
   const verifyingKey = deriveVerifyingKey();
+  const { key: mintMappingKey, decoded: mintMapping } = await fetchMintMappingAccount(
+    connection,
+    originMintKey
+  );
+  ensureMintActive(mintMapping);
 
   const expectedFieldCount =
     2 + params.nullifiers.length + params.outputCommitments.length + 2;
@@ -1084,8 +1125,11 @@ export async function transfer(params: TransferParams): Promise<string> {
         { pubkey: nullifierSetKey, isSigner: false, isWritable: true },
         { pubkey: commitmentTreeKey, isSigner: false, isWritable: true },
         { pubkey: noteLedgerKey, isSigner: false, isWritable: true },
+        { pubkey: mintMappingKey, isSigner: false, isWritable: false },
         { pubkey: VERIFIER_PROGRAM_ID, isSigner: false, isWritable: false },
-        { pubkey: verifyingKey, isSigner: false, isWritable: false }
+        { pubkey: verifyingKey, isSigner: false, isWritable: false },
+        { pubkey: wallet.publicKey, isSigner: true, isWritable: true },
+        { pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false }
       ],
       data: poolCoder.instruction.encode('private_transfer', { args: transferArgs })
     })
@@ -1163,6 +1207,11 @@ export async function transferFrom(params: TransferFromParams): Promise<string> 
   const nullifierSetKey = deriveNullifierSet(originMintKey);
   const noteLedgerKey = deriveNoteLedger(originMintKey);
   const verifyingKey = deriveVerifyingKey();
+  const { key: mintMappingKey, decoded: mintMapping } = await fetchMintMappingAccount(
+    connection,
+    originMintKey
+  );
+  ensureMintActive(mintMapping);
 
   const expectedFieldCount =
     2 + params.nullifiers.length + params.outputCommitments.length + 2;
@@ -1230,9 +1279,12 @@ export async function transferFrom(params: TransferFromParams): Promise<string> 
         { pubkey: noteLedgerKey, isSigner: false, isWritable: true },
         { pubkey: VERIFIER_PROGRAM_ID, isSigner: false, isWritable: false },
         { pubkey: verifyingKey, isSigner: false, isWritable: false },
+        { pubkey: mintMappingKey, isSigner: false, isWritable: false },
         { pubkey: allowanceKey, isSigner: false, isWritable: true },
         { pubkey: allowanceOwnerKey, isSigner: false, isWritable: false },
-        { pubkey: spender, isSigner: true, isWritable: false }
+        { pubkey: spender, isSigner: true, isWritable: false },
+        { pubkey: wallet.publicKey, isSigner: true, isWritable: true },
+        { pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false }
       ],
       data: poolCoder.instruction.encode('transfer_from', { args: transferFromArgs })
     })

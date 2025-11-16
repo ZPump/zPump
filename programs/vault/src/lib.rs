@@ -2,10 +2,13 @@ use anchor_lang::prelude::*;
 use anchor_spl::token_interface::{
     self as token_interface, Mint, TokenAccount, TokenInterface, Transfer,
 };
+use solana_program::pubkey;
 
 use ptf_common::seeds;
 
 declare_id!("9g6ZodQwxK8MN6MX3dbvFC3E7vGVqFtKZEHY7PByRAuh");
+
+const PTF_POOL_PROGRAM_ID: Pubkey = pubkey!("7kbUWzeTPY6qb1mFJC1ZMRmTZAdaHC27yukc3Czj7fKh");
 
 #[program]
 pub mod ptf_vault {
@@ -49,11 +52,7 @@ pub mod ptf_vault {
     pub fn release(ctx: Context<Release>, amount: u64) -> Result<()> {
         require!(amount > 0, VaultError::InvalidReleaseAmount);
         let vault_state = &ctx.accounts.vault_state;
-        require_keys_eq!(
-            ctx.accounts.pool_authority.key(),
-            vault_state.pool_authority,
-            VaultError::UnauthorizedCaller,
-        );
+        validate_pool_authority(&ctx.accounts.pool_authority, &vault_state.pool_authority)?;
 
         let seeds = &[
             seeds::VAULT,
@@ -137,6 +136,11 @@ pub struct Release<'info> {
     #[account(mut)]
     pub destination_token_account: InterfaceAccount<'info, TokenAccount>,
     /// CHECK: Pool authority must be provided by the caller program.
+    #[account(
+        signer,
+        constraint = pool_authority.key() == vault_state.pool_authority @ VaultError::UnauthorizedCaller,
+        constraint = pool_authority.owner == &PTF_POOL_PROGRAM_ID @ VaultError::UnauthorizedCaller,
+    )]
     pub pool_authority: AccountInfo<'info>,
     pub token_program: Interface<'info, TokenInterface>,
 }
@@ -174,6 +178,21 @@ pub struct VaultRelease {
     pub amount: u64,
 }
 
+fn validate_pool_authority(pool_authority: &AccountInfo<'_>, expected: &Pubkey) -> Result<()> {
+    require!(pool_authority.is_signer, VaultError::UnauthorizedCaller);
+    require_keys_eq!(
+        pool_authority.key(),
+        *expected,
+        VaultError::UnauthorizedCaller
+    );
+    require_keys_eq!(
+        *pool_authority.owner,
+        PTF_POOL_PROGRAM_ID,
+        VaultError::UnauthorizedCaller
+    );
+    Ok(())
+}
+
 #[error_code]
 pub enum VaultError {
     #[msg("E_UNAUTHORIZED_CALLER")]
@@ -184,4 +203,52 @@ pub enum VaultError {
     InvalidDepositAmount,
     #[msg("E_INVALID_RELEASE_AMOUNT")]
     InvalidReleaseAmount,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use anchor_lang::solana_program::account_info::AccountInfo;
+
+    fn build_pool_authority_info(
+        key: Pubkey,
+        owner: Pubkey,
+        is_signer: bool,
+    ) -> AccountInfo<'static> {
+        let leaked_key = Box::leak(Box::new(key));
+        let leaked_owner = Box::leak(Box::new(owner));
+        let lamports = Box::leak(Box::new(0u64));
+        let data: &'static mut [u8] = Box::leak(Vec::new().into_boxed_slice());
+        AccountInfo::new(
+            leaked_key,
+            is_signer,
+            false,
+            lamports,
+            data,
+            leaked_owner,
+            false,
+            0,
+        )
+    }
+
+    #[test]
+    fn pool_authority_must_be_signer() {
+        let expected = Pubkey::new_unique();
+        let info = build_pool_authority_info(expected, PTF_POOL_PROGRAM_ID, false);
+        assert!(validate_pool_authority(&info, &expected).is_err());
+    }
+
+    #[test]
+    fn pool_authority_must_have_pool_owner() {
+        let expected = Pubkey::new_unique();
+        let info = build_pool_authority_info(expected, Pubkey::new_unique(), true);
+        assert!(validate_pool_authority(&info, &expected).is_err());
+    }
+
+    #[test]
+    fn valid_pool_authority_passes() {
+        let expected = Pubkey::new_unique();
+        let info = build_pool_authority_info(expected, PTF_POOL_PROGRAM_ID, true);
+        assert!(validate_pool_authority(&info, &expected).is_ok());
+    }
 }

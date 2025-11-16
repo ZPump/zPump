@@ -32,7 +32,8 @@ Accounts:
 
 Behaviour:
 - Loads verifying key bytes from PDA data.
-- Calls the Groth16 syscall with provided proof/public inputs.
+- On-chain (BPF/SBF) builds invoke Solana’s `sol_groth16_verify` syscall directly; there is no longer a stub that can be bypassed.
+- Host builds (used for unit tests) fall back to Arkworks and include regression tests that ensure tampered proofs fail.
 - Returns `Ok(())` if the proof is valid; errors bubble up to the caller.
 
 ## Integration with `ptf_pool`

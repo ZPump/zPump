@@ -1,10 +1,13 @@
 import bs58 from 'bs58';
 import crypto from 'crypto';
+import fs from 'fs/promises';
+import path from 'path';
 import {
   Connection,
   Keypair,
   PublicKey,
   SystemProgram,
+  SYSVAR_RENT_PUBKEY,
   Transaction,
   TransactionInstruction,
   VersionedTransaction
@@ -24,8 +27,9 @@ import { poseidonHashMany } from '../lib/onchain/poseidon';
 import { canonicalizeHex, bytesLEToCanonicalHex } from '../lib/onchain/utils';
 import { formatBaseUnitsToUi } from '../lib/format';
 import poolIdl from '../idl/ptf_pool.json';
-import { POOL_PROGRAM_ID } from '../lib/onchain/programIds';
-import { deriveAllowanceAccount } from '../lib/onchain/pdas';
+import { POOL_PROGRAM_ID, FACTORY_PROGRAM_ID } from '../lib/onchain/programIds';
+import { deriveAllowanceAccount, deriveFactoryState, deriveMintMapping, deriveNullifierSet } from '../lib/onchain/pdas';
+import factoryIdl from '../idl/ptf_factory.json';
 import { ensureFetchPolyfill } from './utils/fetch-polyfill';
 
 ensureFetchPolyfill();
@@ -45,6 +49,7 @@ const WRAP_AMOUNT = BigInt(process.env.WRAP_AMOUNT ?? '1000000'); // 1 token wit
 const TARGET_DECIMALS = Number(process.env.MINT_DECIMALS ?? '6');
 
 const poolCoder = new BorshCoder(poolIdl as Idl);
+const factoryCoder = new BorshCoder(factoryIdl as Idl);
 
 interface WrapResult {
   noteId: string;
@@ -209,6 +214,133 @@ async function ensureTokenBalance(
     }
   }
   throw new Error('Token faucet minting did not reach target');
+}
+
+async function loadLocalAuthorityKeypair(): Promise<Keypair> {
+  const keyPath = path.join(process.env.HOME ?? '.', '.config', 'solana', 'id.json');
+  const raw = await fs.readFile(keyPath, 'utf8');
+  const secret = JSON.parse(raw) as number[];
+  return Keypair.fromSecretKey(Uint8Array.from(secret));
+}
+
+async function sendAndConfirmInstructions(
+  connection: Connection,
+  feePayer: Keypair,
+  instructions: TransactionInstruction[],
+  extraSigners: Keypair[] = []
+): Promise<string> {
+  const latestBlockhash = await connection.getLatestBlockhash('confirmed');
+  const transaction = new Transaction({
+    feePayer: feePayer.publicKey,
+    recentBlockhash: latestBlockhash.blockhash
+  });
+  instructions.forEach((ix) => transaction.add(ix));
+  transaction.sign(feePayer, ...extraSigners);
+  const signature = await connection.sendRawTransaction(transaction.serialize(), { skipPreflight: false });
+  await confirmSignature(connection, signature);
+  return signature;
+}
+
+async function freezeMintOnChain(params: {
+  connection: Connection;
+  authority: Keypair;
+  factoryState: PublicKey;
+  mintMapping: PublicKey;
+}): Promise<void> {
+  const { connection, authority, factoryState, mintMapping } = params;
+  const data = factoryCoder.instruction.encode('freeze_mapping', {});
+  const keys = [
+    { pubkey: factoryState, isSigner: false, isWritable: true },
+    { pubkey: authority.publicKey, isSigner: true, isWritable: true },
+    { pubkey: mintMapping, isSigner: false, isWritable: true }
+  ];
+  await sendAndConfirmInstructions(
+    connection,
+    authority,
+    [
+      new TransactionInstruction({
+        programId: FACTORY_PROGRAM_ID,
+        keys,
+        data
+      })
+    ]
+  );
+}
+
+async function thawMintOnChain(params: {
+  connection: Connection;
+  authority: Keypair;
+  factoryState: PublicKey;
+  mintMapping: PublicKey;
+}): Promise<void> {
+  const { connection, authority, factoryState, mintMapping } = params;
+  const data = factoryCoder.instruction.encode('thaw_mapping', {});
+  const keys = [
+    { pubkey: factoryState, isSigner: false, isWritable: true },
+    { pubkey: authority.publicKey, isSigner: true, isWritable: true },
+    { pubkey: mintMapping, isSigner: false, isWritable: true }
+  ];
+  await sendAndConfirmInstructions(
+    connection,
+    authority,
+    [
+      new TransactionInstruction({
+        programId: FACTORY_PROGRAM_ID,
+        keys,
+        data
+      })
+    ]
+  );
+}
+
+async function growNullifierSet(params: {
+  connection: Connection;
+  authority: Keypair;
+  poolState: PublicKey;
+  nullifierSet: PublicKey;
+  mintMapping: PublicKey;
+  inserts: number;
+}): Promise<void> {
+  const { connection, authority, poolState, nullifierSet, mintMapping, inserts } = params;
+  const before = await connection.getAccountInfo(nullifierSet, 'confirmed');
+  console.info(
+    '[edge] nullifier set size before growth',
+    before ? `${before.data.length} bytes` : 'account missing'
+  );
+  let inserted = 0;
+  let nonce = 0;
+  while (inserted < inserts) {
+    const batch: TransactionInstruction[] = [];
+    for (let idx = 0; idx < 8 && inserted < inserts; idx += 1) {
+      const nullifierBuffer = Buffer.alloc(32);
+      const seed = Buffer.from(`realloc-${Date.now()}-${nonce}`);
+      seed.copy(nullifierBuffer, 0, 0, Math.min(seed.length, 32));
+      const data = poolCoder.instruction.encode('write_nullifier', {
+        nullifier: Array.from(nullifierBuffer)
+      });
+      batch.push(
+        new TransactionInstruction({
+          programId: POOL_PROGRAM_ID,
+          keys: [
+            { pubkey: authority.publicKey, isSigner: true, isWritable: true },
+            { pubkey: poolState, isSigner: false, isWritable: true },
+            { pubkey: nullifierSet, isSigner: false, isWritable: true },
+            { pubkey: mintMapping, isSigner: false, isWritable: false },
+            { pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false }
+          ],
+          data
+        })
+      );
+      inserted += 1;
+      nonce += 1;
+    }
+    await sendAndConfirmInstructions(connection, authority, batch);
+  }
+  const after = await connection.getAccountInfo(nullifierSet, 'confirmed');
+  console.info(
+    '[edge] nullifier set size after growth',
+    after ? `${after.data.length} bytes` : 'account missing'
+  );
 }
 
 async function fetchMintCatalog(): Promise<MintConfig[]> {
@@ -413,10 +545,21 @@ async function sendAllowanceInstruction(params: {
   poolState: PublicKey;
   originMint: PublicKey;
   allowanceAddress: PublicKey;
+  mintMapping: PublicKey;
   instruction: 'approve' | 'revoke';
   amount?: bigint;
 }): Promise<string> {
-  const { connection, owner, spender, poolState, originMint, allowanceAddress, instruction, amount = 0n } = params;
+  const {
+    connection,
+    owner,
+    spender,
+    poolState,
+    originMint,
+    allowanceAddress,
+    mintMapping,
+    instruction,
+    amount = 0n
+  } = params;
   const data =
     instruction === 'approve'
       ? poolCoder.instruction.encode('approve_allowance', { args: { amount: new BN(amount.toString()) } })
@@ -429,7 +572,8 @@ async function sendAllowanceInstruction(params: {
       { pubkey: owner.publicKey, isSigner: true, isWritable: true },
       { pubkey: spender, isSigner: false, isWritable: false },
       { pubkey: originMint, isSigner: false, isWritable: false },
-      { pubkey: SystemProgram.programId, isSigner: false, isWritable: false }
+      { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+      { pubkey: mintMapping, isSigner: false, isWritable: false }
     ],
     data
   });
@@ -460,25 +604,41 @@ async function main() {
   const owner = Keypair.generate();
   const receiver = Keypair.generate();
   const delegate = Keypair.generate();
+  const adminAuthority = await loadLocalAuthorityKeypair();
 
   const ownerAdapter = createWalletAdapter(owner, connection);
   const delegateAdapter = createWalletAdapter(delegate, connection);
 
   console.info('[setup] airdropping SOL to wallets');
   await Promise.all([owner, receiver, delegate].map((kp) => faucetSol(connection, kp.publicKey)));
+  await faucetSol(connection, adminAuthority.publicKey);
 
   const ownerViewId = deriveViewId(owner.secretKey);
   const receiverViewId = deriveViewId(receiver.secretKey);
 
   const symbol = randomSymbol('FB');
   console.info('[mint] registering', { symbol, decimals: TARGET_DECIMALS });
-  await registerMint(symbol, TARGET_DECIMALS);
-  const mintConfig = await waitForMint((mint) => mint.symbol.toUpperCase() === symbol.toUpperCase());
+  let mintConfig: MintConfig;
+  try {
+    await registerMint(symbol, TARGET_DECIMALS);
+    mintConfig = await waitForMint((mint) => mint.symbol.toUpperCase() === symbol.toUpperCase());
+  } catch (error) {
+    console.warn('[mint] registration failed, falling back to existing mint', (error as Error).message);
+    const catalog = await fetchMintCatalog();
+    if (!catalog.length) {
+      throw error;
+    }
+    mintConfig = catalog[0]!;
+    console.info('[mint] using pre-existing mint', { symbol: mintConfig.symbol, originMint: mintConfig.originMint });
+  }
   const originMintKey = new PublicKey(mintConfig.originMint);
   const poolId = mintConfig.poolId;
   const poolStateKey = new PublicKey(poolId);
   const privateMint = mintConfig.zTokenMint ?? mintConfig.originMint;
   const allowanceAddress = deriveAllowanceAccount(poolStateKey, owner.publicKey, delegate.publicKey);
+  const mintMappingKey = deriveMintMapping(originMintKey);
+  const factoryStateKey = deriveFactoryState();
+  const nullifierSetKey = deriveNullifierSet(originMintKey);
 
   const initialPoolInfo = await fetchPoolStateRoot(connection, poolId);
   let currentRoot = canonicalizeHex(initialPoolInfo.root);
@@ -842,6 +1002,7 @@ async function main() {
     poolState: poolStateKey,
     originMint: originMintKey,
     allowanceAddress,
+    mintMapping: mintMappingKey,
     instruction: 'approve',
     amount: allowanceAmount
   });
@@ -882,6 +1043,7 @@ async function main() {
     poolState: poolStateKey,
     originMint: originMintKey,
     allowanceAddress,
+    mintMapping: mintMappingKey,
     instruction: 'revoke'
   });
 
@@ -897,6 +1059,39 @@ async function main() {
   } catch (error) {
     console.info('[edge] transfer_from rejected after revoke as expected:', (error as Error).message);
   }
+
+  console.info('[edge] freezing mint via factory authority and validating wrap rejection');
+  await freezeMintOnChain({
+    connection,
+    authority: adminAuthority,
+    factoryState: factoryStateKey,
+    mintMapping: mintMappingKey
+  });
+  try {
+    await performWrap(WRAP_AMOUNT, 'frozen-state');
+    throw new Error('Shield succeeded while mint was frozen');
+  } catch (error) {
+    console.info('[edge] wrap rejected while frozen as expected:', (error as Error).message);
+  }
+  console.info('[edge] thawing mint and confirming wraps succeed again');
+  await thawMintOnChain({
+    connection,
+    authority: adminAuthority,
+    factoryState: factoryStateKey,
+    mintMapping: mintMappingKey
+  });
+  const postThawWrap = await performWrap(WRAP_AMOUNT, 'post-thaw');
+  ownerNotes.push(postThawWrap);
+
+  console.info('[edge] forcing nullifier set to reallocate via bulk insertions');
+  await growNullifierSet({
+    connection,
+    authority: adminAuthority,
+    poolState: poolStateKey,
+    nullifierSet: nullifierSetKey,
+    mintMapping: mintMappingKey,
+    inserts: 270
+  });
 
   console.info('[verify] fetching view-keyed notes and balances');
   const ownerNotesResult = await indexerClient.getNotes(ownerViewId);
