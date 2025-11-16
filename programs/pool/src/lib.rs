@@ -1,12 +1,12 @@
 use anchor_lang::prelude::*;
-#[cfg(feature = "idl-build")]
-use anchor_lang::idl::IdlBuild;
+use anchor_lang::InstructionData;
 use anchor_lang::solana_program::instruction::{AccountMeta, Instruction};
 use anchor_lang::solana_program::program::invoke_signed;
 use anchor_lang::solana_program::program_option::COption;
 use anchor_lang::solana_program::sysvar::instructions::{
     load_current_index_checked, load_instruction_at_checked,
 };
+use borsh::BorshDeserialize;
 use anchor_spl::token_interface::{Mint, TokenAccount, TokenInterface};
 use ark_bn254::Fr;
 use ark_ff::{BigInteger256, PrimeField};
@@ -20,7 +20,7 @@ use ptf_common::hooks::{HookInstruction, PostShieldHook, PostUnshieldHook};
 use ptf_common::{
     seeds, FeatureFlags, FEATURE_HOOKS_ENABLED, FEATURE_PRIVATE_TRANSFER_ENABLED, MAX_BPS,
 };
-use ptf_factory::{program::PtfFactory, MintMapping};
+use ptf_factory::{program::PtfFactory, MintMapping, MintStatus};
 use ptf_vault::program::PtfVault;
 use ptf_vault::{self};
 use ptf_verifier_groth16::program::PtfVerifierGroth16;
@@ -39,25 +39,117 @@ pub mod ptf_pool {
     pub fn initialize_pool(ctx: Context<InitializePool>, fee_bps: u16, features: u8) -> Result<()> {
         require!(fee_bps <= MAX_BPS, PoolError::InvalidFeeBps);
 
-        require_keys_eq!(
-            ctx.accounts.vault_state.origin_mint,
-            ctx.accounts.origin_mint.key(),
-            PoolError::OriginMintMismatch,
+        // Manually validate unchecked accounts to reduce stack usage
+        let expected_origin = ctx.accounts.origin_mint.key();
+        
+        // Validate mint_mapping PDA
+        let (expected_mapping, _) = Pubkey::find_program_address(
+            &[seeds::MINT_MAPPING, expected_origin.as_ref()],
+            &ptf_factory::ID,
         );
         require_keys_eq!(
-            ctx.accounts.mint_mapping.origin_mint,
-            ctx.accounts.origin_mint.key(),
+            ctx.accounts.mint_mapping.key(),
+            expected_mapping,
             PoolError::OriginMintMismatch,
+        );
+        
+        // Validate factory_state PDA
+        let (expected_factory, _) = Pubkey::find_program_address(
+            &[seeds::FACTORY, ptf_factory::ID.as_ref()],
+            &ptf_factory::ID,
+        );
+        require_keys_eq!(
+            ctx.accounts.factory_state.key(),
+            expected_factory,
+            PoolError::OriginMintMismatch,
+        );
+        
+        // Read vault_state.origin_mint directly from bytes (offset 8 + 0 = 8)
+        let vault_data = ctx.accounts.vault_state.try_borrow_data()?;
+        if vault_data.len() < 8 + 32 {
+            return err!(PoolError::MintMappingCorrupt);
+        }
+        let vault_origin_bytes: [u8; 32] = vault_data[8..40].try_into().map_err(|_| PoolError::MintMappingCorrupt)?;
+        let vault_origin = Pubkey::new_from_array(vault_origin_bytes);
+        drop(vault_data);
+        
+        // Read pool_authority from vault_state (offset 8 + 32 = 40)
+        let vault_data2 = ctx.accounts.vault_state.try_borrow_data()?;
+        if vault_data2.len() < 8 + 64 {
+            return err!(PoolError::MintMappingCorrupt);
+        }
+        let pool_authority_bytes: [u8; 32] = vault_data2[40..72].try_into().map_err(|_| PoolError::MintMappingCorrupt)?;
+        let vault_pool_authority = Pubkey::new_from_array(pool_authority_bytes);
+        drop(vault_data2);
+        
+        msg!(
+            "init_pool vault_origin={} origin_account={}",
+            vault_origin,
+            expected_origin
+        );
+        require_keys_eq!(
+            vault_origin,
+            expected_origin,
+            PoolError::OriginMintMismatch,
+        );
+        
+        // Manually decode mint mapping
+        // MintMapping::SPACE = 8 + 32 + 32 + 1 + 1 + 1 + 1 + 2 + 1 + 1 + 4 = 84 bytes
+        msg!("init_pool mapping_data_len={}", ctx.accounts.mint_mapping.data_len());
+        let mapping_data = ctx.accounts.mint_mapping.try_borrow_data()?;
+        msg!("init_pool mapping_data_borrowed len={}", mapping_data.len());
+        if mapping_data.len() < 84 {
+            msg!("init_pool mapping_too_short len={} min=84", mapping_data.len());
+            return err!(PoolError::MintMappingCorrupt);
+        }
+        // Manually read fields from MintMapping (C struct layout, not Borsh)
+        // Layout: origin_mint[32] + ptkn_mint[32] + has_ptkn[1] + status[1] + decimals[1] + features[1] + fee_bps_override[2] + has_fee_override[1] + bump[1] + padding[4]
+        let body = &mapping_data[8..];
+        let raw_origin_bytes: [u8; 32] = body[0..32].try_into().map_err(|_| PoolError::MintMappingCorrupt)?;
+        let raw_origin = Pubkey::new_from_array(raw_origin_bytes);
+        let raw_ptkn_bytes: [u8; 32] = body[32..64].try_into().map_err(|_| PoolError::MintMappingCorrupt)?;
+        let raw_ptkn_mint = Pubkey::new_from_array(raw_ptkn_bytes);
+        let raw_has_ptkn = body[64] != 0;
+        let raw_status = body[65];
+        drop(mapping_data);
+        
+        msg!(
+            "init_pool mapping_decoded_origin={} expected={} has_ptkn={}",
+            raw_origin,
+            expected_origin,
+            raw_has_ptkn
+        );
+        require_keys_eq!(
+            raw_origin,
+            expected_origin,
+            PoolError::OriginMintMismatch,
+        );
+        
+        // Read verifying key fields directly
+        let vk_data = ctx.accounts.verifying_key.try_borrow_data()?;
+        if vk_data.len() < 8 + 32 + 32 {
+            return err!(PoolError::MintMappingCorrupt);
+        }
+        let verifying_key_id: [u8; 32] = vk_data[8..40].try_into().map_err(|_| PoolError::MintMappingCorrupt)?;
+        let verifying_key_hash: [u8; 32] = vk_data[40..72].try_into().map_err(|_| PoolError::MintMappingCorrupt)?;
+        drop(vk_data);
+        
+        require_keys_eq!(
+            ctx.accounts.verifier_program.key(),
+            ptf_verifier_groth16::ID,
+            PoolError::VerifierMismatch,
         );
 
+        msg!("init_pool stage: before_pool_state_load");
         let pool_key = ctx.accounts.pool_state.key();
         let mut pool_state = ctx.accounts.pool_state.load_init()?;
-        pool_state.origin_mint = ctx.accounts.vault_state.origin_mint;
+        msg!("init_pool stage: after_pool_state_load");
+        pool_state.origin_mint = vault_origin;
         pool_state.vault = ctx.accounts.vault_state.key();
         pool_state.verifier_program = ctx.accounts.verifier_program.key();
         pool_state.verifying_key = ctx.accounts.verifying_key.key();
-        pool_state.verifying_key_id = ctx.accounts.verifying_key.verifying_key_id;
-        pool_state.verifying_key_hash = ctx.accounts.verifying_key.hash;
+        pool_state.verifying_key_id = verifying_key_id;
+        pool_state.verifying_key_hash = verifying_key_hash;
         pool_state.authority = ctx.accounts.authority.key();
         pool_state.fee_bps = fee_bps;
         pool_state.features = FeatureFlags::from(features);
@@ -71,32 +163,54 @@ pub mod ptf_pool {
         pool_state.hook_config = ctx.accounts.hook_config.key();
         pool_state.hook_config_present = false;
         pool_state.hook_config_bump = ctx.bumps.hook_config;
-        if ctx.accounts.mint_mapping.has_ptkn {
-            let twin_mint = ctx
+        if raw_has_ptkn {
+            let twin_mint_info = ctx
                 .accounts
                 .twin_mint
                 .as_ref()
                 .ok_or(PoolError::TwinMintNotConfigured)?;
             require_keys_eq!(
-                twin_mint.key(),
-                ctx.accounts.mint_mapping.ptkn_mint,
+                twin_mint_info.key(),
+                raw_ptkn_mint,
                 PoolError::TwinMintMismatch,
             );
+            // Read decimals from mint (offset 44 for Token-2022, or 44 for standard)
+            let twin_data = twin_mint_info.try_borrow_data()?;
+            if twin_data.len() < 44 {
+                return err!(PoolError::TwinMintDecimalsMismatch);
+            }
+            let twin_decimals = twin_data[44];
+            // Read mint_authority (offset 0-36, COption<Pubkey>)
+            let mint_auth_bytes: [u8; 36] = twin_data[0..36].try_into().map_err(|_| PoolError::TwinMintDecimalsMismatch)?;
+            drop(twin_data);
+            
+            // Read origin_mint decimals
+            let origin_data = ctx.accounts.origin_mint.try_borrow_data()?;
+            if origin_data.len() < 44 {
+                return err!(PoolError::TwinMintDecimalsMismatch);
+            }
+            let origin_decimals = origin_data[44];
+            drop(origin_data);
+            
             require!(
-                twin_mint.decimals == ctx.accounts.origin_mint.decimals,
+                twin_decimals == origin_decimals,
                 PoolError::TwinMintDecimalsMismatch,
             );
-            match twin_mint.mint_authority {
-                COption::Some(authority) => {
-                    require_keys_eq!(
-                        authority,
-                        ctx.accounts.factory_state.key(),
-                        PoolError::TwinMintAuthorityMismatch,
-                    );
-                }
-                COption::None => return err!(PoolError::TwinMintAuthorityMismatch),
+            
+            // Check mint_authority (first 4 bytes are the COption tag)
+            if mint_auth_bytes[0] != 0 {
+                // Some variant - extract Pubkey from bytes 4-36
+                let auth_bytes: [u8; 32] = mint_auth_bytes[4..36].try_into().map_err(|_| PoolError::TwinMintAuthorityMismatch)?;
+                let auth = Pubkey::new_from_array(auth_bytes);
+                require_keys_eq!(
+                    auth,
+                    ctx.accounts.factory_state.key(),
+                    PoolError::TwinMintAuthorityMismatch,
+                );
+            } else {
+                return err!(PoolError::TwinMintAuthorityMismatch);
             }
-            pool_state.twin_mint = twin_mint.key();
+            pool_state.twin_mint = twin_mint_info.key();
             pool_state.twin_mint_enabled = true;
         } else {
             require!(
@@ -107,13 +221,15 @@ pub mod ptf_pool {
             pool_state.twin_mint_enabled = false;
         }
         pool_state.pending_shield = PendingShield::inactive();
+        msg!("init_pool stage: pool_state_init_complete");
 
         require_keys_eq!(
-            ctx.accounts.vault_state.pool_authority,
+            vault_pool_authority,
             pool_key,
             PoolError::MismatchedVaultAuthority,
         );
 
+        msg!("init_pool stage: entering_hook_config_init");
         {
             let mut hook_config = ctx.accounts.hook_config.load_init()?;
             hook_config.pool = pool_key;
@@ -121,19 +237,19 @@ pub mod ptf_pool {
             hook_config.post_shield_enabled = false;
             hook_config.post_unshield_program_id = Pubkey::default();
             hook_config.post_unshield_enabled = false;
-            hook_config.required_accounts = [[0u8; 32]; HookConfig::MAX_REQUIRED_ACCOUNTS];
+            zero_hook_required_accounts(&mut hook_config.required_accounts);
             hook_config.required_accounts_len = 0;
             hook_config.mode = HookAccountMode::Strict;
             hook_config.bump = ctx.bumps.hook_config;
         }
+        msg!("init_pool stage: hook_config_init_complete");
 
+        msg!("init_pool stage: entering_nullifier_init");
         {
-            let mut nulls = ctx.accounts.nullifier_set.load_init()?;
-            nulls.pool = pool_key;
-            nulls.bump = ctx.bumps.nullifier_set;
-            nulls.count = 0;
-            nulls.bloom = [0u8; NullifierSet::BLOOM_BYTES];
+            let nulls = &mut ctx.accounts.nullifier_set;
+            nulls.init(pool_key, ctx.bumps.nullifier_set);
         }
+        msg!("init_pool stage: nullifier_init_complete");
 
         {
             let mut tree = ctx.accounts.commitment_tree.load_init()?;
@@ -142,11 +258,13 @@ pub mod ptf_pool {
             pool_state.roots_len = 1;
             pool_state.recent_roots[0] = tree.current_root;
         }
+        msg!("init_pool stage: commitment_tree_init_complete");
 
         {
             let mut ledger = ctx.accounts.note_ledger.load_init()?;
             ledger.init(pool_key, ctx.bumps.note_ledger);
         }
+        msg!("init_pool stage: note_ledger_init_complete");
 
         emit!(PoolInitialized {
             origin_mint: pool_state.origin_mint,
@@ -194,7 +312,7 @@ pub mod ptf_pool {
         hook_config.post_unshield_enabled = args.post_unshield_enabled;
         hook_config.mode = args.mode;
         hook_config.required_accounts_len = 0;
-        hook_config.required_accounts = [[0u8; 32]; HookConfig::MAX_REQUIRED_ACCOUNTS];
+        zero_hook_required_accounts(&mut hook_config.required_accounts);
         for (idx, key) in args.required_accounts.iter().enumerate() {
             require!(
                 idx < HookConfig::MAX_REQUIRED_ACCOUNTS,
@@ -600,10 +718,13 @@ pub mod ptf_pool {
 
     pub fn write_nullifier(ctx: Context<UpdateAuthority>, nullifier: [u8; 32]) -> Result<()> {
         {
-            let mut nullifier_set = ctx.accounts.nullifier_set.load_mut()?;
-            nullifier_set
-                .insert(nullifier)
-                .map_err(|_| PoolError::NullifierReuse)?;
+            let nullifier_account = ctx.accounts.nullifier_set.to_account_info();
+            ctx.accounts.nullifier_set.insert(
+                &nullifier_account,
+                nullifier,
+                &ctx.accounts.authority,
+                &ctx.accounts.rent,
+            )?;
         }
         let pool_state = ctx.accounts.pool_state.load()?;
         emit!(PTFNullifierUsed {
@@ -614,14 +735,17 @@ pub mod ptf_pool {
     }
 
     pub fn private_transfer(ctx: Context<PrivateTransfer>, args: TransferArgs) -> Result<()> {
+        ensure_mint_active(&ctx.accounts.mint_mapping)?;
         execute_private_transfer(
             &ctx.accounts.pool_state,
-            &ctx.accounts.nullifier_set,
+            &mut ctx.accounts.nullifier_set,
             &ctx.accounts.commitment_tree,
             &ctx.accounts.note_ledger,
             &ctx.accounts.verifier_program,
             &ctx.accounts.verifying_key,
             &args,
+            &ctx.accounts.payer,
+            &ctx.accounts.rent,
         )
     }
 
@@ -651,6 +775,7 @@ pub mod ptf_pool {
 
     pub fn transfer_from(ctx: Context<TransferFrom>, args: TransferFromArgs) -> Result<()> {
         require!(args.allowance_amount > 0, PoolError::AllowanceAmountInvalid);
+        ensure_mint_active(&ctx.accounts.mint_mapping)?;
 
         {
             let allowance = &mut ctx.accounts.allowance;
@@ -690,24 +815,28 @@ pub mod ptf_pool {
 
         execute_private_transfer(
             &ctx.accounts.pool_state,
-            &ctx.accounts.nullifier_set,
+            &mut ctx.accounts.nullifier_set,
             &ctx.accounts.commitment_tree,
             &ctx.accounts.note_ledger,
             &ctx.accounts.verifier_program,
             &ctx.accounts.verifying_key,
             &args.transfer,
+            &ctx.accounts.spender,
+            &ctx.accounts.rent,
         )
     }
 }
 
 fn execute_private_transfer<'info>(
     pool_loader: &AccountLoader<'info, PoolState>,
-    nullifier_set_loader: &AccountLoader<'info, NullifierSet>,
+    nullifier_set: &mut Account<'info, NullifierSet>,
     commitment_tree_loader: &AccountLoader<'info, CommitmentTree>,
     note_ledger_loader: &AccountLoader<'info, NoteLedger>,
     verifier_program: &Program<'info, PtfVerifierGroth16>,
     verifying_key: &Account<'info, VerifyingKeyAccount>,
     args: &TransferArgs,
+    payer: &Signer<'info>,
+    rent: &Sysvar<'info, Rent>,
 ) -> Result<()> {
     let mut pool_state = pool_loader.load_mut()?;
     require_keys_eq!(
@@ -759,11 +888,9 @@ fn execute_private_transfer<'info>(
 
     let origin_mint = pool_state.origin_mint;
     {
-        let mut nullifier_set = nullifier_set_loader.load_mut()?;
+        let nullifier_account = nullifier_set.to_account_info();
         for nullifier in &args.nullifiers {
-            nullifier_set
-                .insert(*nullifier)
-                .map_err(|_| PoolError::NullifierReuse)?;
+            nullifier_set.insert(&nullifier_account, *nullifier, payer, rent)?;
             emit!(PTFNullifierUsed {
                 mint: origin_mint,
                 nullifier: *nullifier,
@@ -980,11 +1107,11 @@ fn process_unshield<'info>(
     let _ = total_spent;
 
     {
-        let mut nullifier_set = ctx.accounts.nullifier_set.load_mut()?;
+        let nullifier_account = ctx.accounts.nullifier_set.to_account_info();
         for nullifier in &args.nullifiers {
-            nullifier_set
-                .insert(*nullifier)
-                .map_err(|_| PoolError::NullifierReuse)?;
+            ctx.accounts
+                .nullifier_set
+                .insert(&nullifier_account, *nullifier, &ctx.accounts.payer, &ctx.accounts.rent)?;
             emit!(PTFNullifierUsed {
                 mint: origin_mint,
                 nullifier: *nullifier,
@@ -1044,20 +1171,26 @@ fn process_unshield<'info>(
                 PoolError::OriginMintMismatch,
             );
             let signer_seeds: [&[u8]; 3] = [seeds::POOL, origin_mint.as_ref(), &[pool_bump]];
-            let cpi_accounts = ptf_vault::cpi::accounts::Release {
-                vault_state: ctx.accounts.vault_state.to_account_info(),
-                vault_token_account: ctx.accounts.vault_token_account.to_account_info(),
-                destination_token_account: ctx.accounts.destination_token_account.to_account_info(),
-                pool_authority: ctx.accounts.pool_state.to_account_info(),
-                token_program: ctx.accounts.token_program.to_account_info(),
-            };
             let signer = &[&signer_seeds[..]];
-            let cpi_ctx = CpiContext::new_with_signer(
-                ctx.accounts.vault_program.to_account_info(),
-                cpi_accounts,
-                signer,
-            );
-            ptf_vault::cpi::release(cpi_ctx, args.amount)?;
+            let release_ix = Instruction {
+                program_id: ctx.accounts.vault_program.key(),
+                accounts: vec![
+                    AccountMeta::new(ctx.accounts.vault_state.key(), false),
+                    AccountMeta::new(ctx.accounts.vault_token_account.key(), false),
+                    AccountMeta::new(ctx.accounts.destination_token_account.key(), false),
+                    AccountMeta::new(ctx.accounts.pool_state.key(), true),
+                    AccountMeta::new_readonly(ctx.accounts.token_program.key(), false),
+                ],
+                data: ptf_vault::instruction::Release { amount: args.amount }.data(),
+            };
+            let account_infos = [
+                ctx.accounts.vault_state.to_account_info(),
+                ctx.accounts.vault_token_account.to_account_info(),
+                ctx.accounts.destination_token_account.to_account_info(),
+                ctx.accounts.pool_state.to_account_info(),
+                ctx.accounts.token_program.to_account_info(),
+            ];
+            invoke_signed(&release_ix, &account_infos, signer)?;
             emit!(PTFUnshieldOrigin {
                 mint: origin_mint,
                 destination: destination_owner,
@@ -1341,7 +1474,7 @@ pub struct InitializePool<'info> {
         bump,
         space = NullifierSet::SPACE,
     )]
-    pub nullifier_set: AccountLoader<'info, NullifierSet>,
+    pub nullifier_set: Account<'info, NullifierSet>,
     #[account(
         init,
         payer = payer,
@@ -1366,25 +1499,22 @@ pub struct InitializePool<'info> {
         space = HookConfig::SPACE,
     )]
     pub hook_config: AccountLoader<'info, HookConfig>,
+    /// CHECK: Validated in instruction
     #[account(mut)]
-    pub vault_state: Account<'info, ptf_vault::VaultState>,
-    pub origin_mint: InterfaceAccount<'info, Mint>,
-    #[account(
-        seeds = [seeds::MINT_MAPPING, origin_mint.key().as_ref()],
-        bump = mint_mapping.bump,
-        seeds::program = ptf_factory::ID
-    )]
-    pub mint_mapping: Account<'info, MintMapping>,
-    #[account(
-        seeds = [seeds::FACTORY, ptf_factory::ID.as_ref()],
-        bump = factory_state.bump,
-        seeds::program = ptf_factory::ID
-    )]
-    pub factory_state: Account<'info, ptf_factory::FactoryState>,
+    pub vault_state: UncheckedAccount<'info>,
+    /// CHECK: Validated in instruction
+    pub origin_mint: UncheckedAccount<'info>,
+    /// CHECK: Validated in instruction
+    pub mint_mapping: UncheckedAccount<'info>,
+    /// CHECK: Validated in instruction
+    pub factory_state: UncheckedAccount<'info>,
+    /// CHECK: Validated in instruction if present
     #[account(mut)]
-    pub twin_mint: Option<InterfaceAccount<'info, Mint>>,
-    pub verifier_program: Program<'info, PtfVerifierGroth16>,
-    pub verifying_key: Account<'info, VerifyingKeyAccount>,
+    pub twin_mint: Option<UncheckedAccount<'info>>,
+    /// CHECK: Validated in instruction
+    pub verifier_program: UncheckedAccount<'info>,
+    /// CHECK: Validated in instruction
+    pub verifying_key: UncheckedAccount<'info>,
     #[account(mut)]
     pub payer: Signer<'info>,
     pub system_program: Program<'info, System>,
@@ -1404,9 +1534,10 @@ pub struct UpdateAuthority<'info> {
     #[account(
         mut,
         seeds = [seeds::NULLIFIERS, pool_state.load()?.origin_mint.as_ref()],
-        bump = nullifier_set.load()?.bump
+        bump
     )]
-    pub nullifier_set: AccountLoader<'info, NullifierSet>,
+    pub nullifier_set: Account<'info, NullifierSet>,
+    pub rent: Sysvar<'info, Rent>,
 }
 
 #[derive(Accounts)]
@@ -1426,9 +1557,9 @@ pub struct Shield<'info> {
     #[account(
         mut,
         seeds = [seeds::NULLIFIERS, pool_state.load()?.origin_mint.as_ref()],
-        bump = nullifier_set.load()?.bump
+        bump
     )]
-    pub nullifier_set: AccountLoader<'info, NullifierSet>,
+    pub nullifier_set: Account<'info, NullifierSet>,
     #[account(
         mut,
         seeds = [seeds::TREE, pool_state.load()?.origin_mint.as_ref()],
@@ -1480,6 +1611,7 @@ pub struct Shield<'info> {
     #[account(address = solana_program::sysvar::instructions::ID)]
     pub instructions: UncheckedAccount<'info>,
     pub system_program: Program<'info, System>,
+    pub rent: Sysvar<'info, Rent>,
 }
 
 #[derive(Accounts)]
@@ -1578,9 +1710,9 @@ pub struct Unshield<'info> {
     #[account(
         mut,
         seeds = [seeds::NULLIFIERS, pool_state.load()?.origin_mint.as_ref()],
-        bump = nullifier_set.load()?.bump
+        bump
     )]
-    pub nullifier_set: AccountLoader<'info, NullifierSet>,
+    pub nullifier_set: Account<'info, NullifierSet>,
     #[account(
         mut,
         seeds = [seeds::TREE, pool_state.load()?.origin_mint.as_ref()],
@@ -1626,6 +1758,9 @@ pub struct Unshield<'info> {
     pub factory_state: Account<'info, ptf_factory::FactoryState>,
     pub factory_program: Program<'info, PtfFactory>,
     pub token_program: Interface<'info, TokenInterface>,
+    #[account(mut)]
+    pub payer: Signer<'info>,
+    pub rent: Sysvar<'info, Rent>,
 }
 
 #[derive(Accounts)]
@@ -1658,9 +1793,9 @@ pub struct PrivateTransfer<'info> {
     #[account(
         mut,
         seeds = [seeds::NULLIFIERS, pool_state.load()?.origin_mint.as_ref()],
-        bump = nullifier_set.load()?.bump
+        bump
     )]
-    pub nullifier_set: AccountLoader<'info, NullifierSet>,
+    pub nullifier_set: Account<'info, NullifierSet>,
     #[account(
         mut,
         seeds = [seeds::TREE, pool_state.load()?.origin_mint.as_ref()],
@@ -1676,12 +1811,22 @@ pub struct PrivateTransfer<'info> {
         constraint = note_ledger.load()?.pool == pool_state.key() @ PoolError::NoteLedgerMismatch,
     )]
     pub note_ledger: AccountLoader<'info, NoteLedger>,
+    #[account(
+        seeds = [seeds::MINT_MAPPING, pool_state.load()?.origin_mint.as_ref()],
+        bump = mint_mapping.bump,
+        seeds::program = ptf_factory::ID,
+        constraint = mint_mapping.origin_mint == pool_state.load()?.origin_mint @ PoolError::OriginMintMismatch,
+    )]
+    pub mint_mapping: Account<'info, MintMapping>,
     pub verifier_program: Program<'info, PtfVerifierGroth16>,
     #[account(
         address = pool_state.load()?.verifying_key,
         constraint = verifying_key.hash == pool_state.load()?.verifying_key_hash @ PoolError::VerifyingKeyHashMismatch,
     )]
     pub verifying_key: Account<'info, VerifyingKeyAccount>,
+    #[account(mut)]
+    pub payer: Signer<'info>,
+    pub rent: Sysvar<'info, Rent>,
 }
 
 #[derive(AnchorSerialize, AnchorDeserialize, Clone)]
@@ -1778,9 +1923,9 @@ pub struct TransferFrom<'info> {
     #[account(
         mut,
         seeds = [seeds::NULLIFIERS, pool_state.load()?.origin_mint.as_ref()],
-        bump = nullifier_set.load()?.bump
+        bump
     )]
-    pub nullifier_set: AccountLoader<'info, NullifierSet>,
+    pub nullifier_set: Account<'info, NullifierSet>,
     #[account(
         mut,
         seeds = [seeds::TREE, pool_state.load()?.origin_mint.as_ref()],
@@ -1803,6 +1948,13 @@ pub struct TransferFrom<'info> {
     )]
     pub verifying_key: Account<'info, VerifyingKeyAccount>,
     #[account(
+        seeds = [seeds::MINT_MAPPING, pool_state.load()?.origin_mint.as_ref()],
+        bump = mint_mapping.bump,
+        seeds::program = ptf_factory::ID,
+        constraint = mint_mapping.origin_mint == pool_state.load()?.origin_mint @ PoolError::OriginMintMismatch,
+    )]
+    pub mint_mapping: Account<'info, MintMapping>,
+    #[account(
         mut,
         seeds = [
             seeds::ALLOWANCE,
@@ -1816,6 +1968,7 @@ pub struct TransferFrom<'info> {
     /// CHECK: allowance owner reference
     pub allowance_owner: AccountInfo<'info>,
     pub spender: Signer<'info>,
+    pub rent: Sysvar<'info, Rent>,
 }
 
 #[account(zero_copy(unsafe))]
@@ -2306,7 +2459,6 @@ impl PoolState {
 
 #[repr(C)]
 #[derive(Clone, Copy)]
-#[cfg_attr(feature = "idl-build", derive(IdlBuild))]
 pub struct PendingShield {
     pub active: u8,
     pub old_root: [u8; 32],
@@ -2458,45 +2610,93 @@ impl ShieldClaim {
     }
 }
 
-#[account(zero_copy(unsafe))]
-#[repr(C)]
+#[account]
 pub struct NullifierSet {
     pub pool: Pubkey,
-    pub count: u32,
-    pub entries: [[u8; 32]; NullifierSet::MAX_NULLIFIERS],
     pub bloom: [u8; NullifierSet::BLOOM_BYTES],
     pub bump: u8,
+    pub reserved: [u8; 3],
+    pub allocated_entries: u32,
+    pub entries: Vec<[u8; 32]>,
 }
 
 impl NullifierSet {
-    pub const MAX_NULLIFIERS: usize = 256;
     pub const BLOOM_BYTES: usize = 512;
-    pub const SPACE: usize = 8 + core::mem::size_of::<NullifierSet>() + 64;
+    pub const INITIAL_CAPACITY: u32 = 256;
+    pub const GROWTH_STEP: u32 = 256;
+    pub const BASE_SIZE: usize = 8 + 32 + Self::BLOOM_BYTES + 1 + 3 + 4 + 4;
+    pub const SPACE: usize = Self::space_for_capacity(Self::INITIAL_CAPACITY as usize);
 
-    pub fn insert(&mut self, value: [u8; 32]) -> Result<()> {
-        if self.contains(&value) {
+    pub const fn space_for_capacity(capacity: usize) -> usize {
+        Self::BASE_SIZE + capacity * 32
+    }
+
+    pub fn init(&mut self, pool: Pubkey, bump: u8) {
+        self.pool = pool;
+        self.bump = bump;
+        self.bloom = [0u8; Self::BLOOM_BYTES];
+        self.reserved = [0u8; 3];
+        self.allocated_entries = Self::INITIAL_CAPACITY;
+        self.entries = Vec::with_capacity(Self::INITIAL_CAPACITY as usize);
+        self.entries.clear();
+    }
+
+    pub fn insert(
+        &mut self,
+        account_info: &AccountInfo<'_>,
+        value: [u8; 32],
+        payer: &Signer<'_>,
+        rent: &Rent,
+    ) -> Result<()> {
+        if self.contains(account_info, &value)? {
             return err!(PoolError::NullifierReuse);
         }
-        require!(
-            (self.count as usize) < Self::MAX_NULLIFIERS,
-            PoolError::NullifierCapacity,
-        );
-        self.entries[self.count as usize] = value;
-        self.count += 1;
+        if self.entries.len() as u32 == self.allocated_entries {
+            self.grow(account_info, payer, rent)?;
+        }
+        self.entries.push(value);
         self.set_bloom_bits(&value);
         Ok(())
     }
 
-    fn contains(&self, value: &[u8; 32]) -> bool {
-        if !self.test_bloom_bits(value) {
-            return false;
-        }
-        for idx in 0..self.count as usize {
-            if self.entries[idx] == *value {
-                return true;
+    fn grow(
+        &mut self,
+        account_info: &AccountInfo<'_>,
+        payer: &Signer<'_>,
+        rent: &Rent,
+    ) -> Result<()> {
+        let new_capacity = self
+            .allocated_entries
+            .checked_add(Self::GROWTH_STEP)
+            .ok_or(PoolError::NullifierCapacity)?;
+        let new_len = Self::space_for_capacity(new_capacity as usize);
+        let current_len = account_info.data_len();
+        if new_len > current_len {
+            let required_lamports = rent.minimum_balance(new_len);
+            let current_lamports = account_info.lamports();
+            if current_lamports < required_lamports {
+                let diff = required_lamports
+                    .checked_sub(current_lamports)
+                    .ok_or(PoolError::AmountOverflow)?;
+                let payer_info = payer.to_account_info();
+                require!(
+                    payer_info.lamports() >= diff,
+                    PoolError::InsufficientLiquidity
+                );
+                **payer_info.try_borrow_mut_lamports()? -= diff;
+                **account_info.try_borrow_mut_lamports()? += diff;
             }
+            account_info.realloc(new_len, false)?;
         }
-        false
+        self.allocated_entries = new_capacity;
+        Ok(())
+    }
+
+    fn contains(&self, _account_info: &AccountInfo<'_>, value: &[u8; 32]) -> Result<bool> {
+        if !self.test_bloom_bits(value) {
+            return Ok(false);
+        }
+        Ok(self.entries.iter().any(|entry| entry == value))
     }
 
     fn set_bloom_bits(&mut self, value: &[u8; 32]) {
@@ -3053,10 +3253,14 @@ pub enum PoolError {
     InsufficientLiquidity,
     #[msg("E_FEATURE_DISABLED")]
     FeatureDisabled,
+    #[msg("E_MINT_FROZEN")]
+    MintFrozen,
     #[msg("E_VAULT_AUTHORITY_MISMATCH")]
     MismatchedVaultAuthority,
     #[msg("E_ORIGIN_MINT_MISMATCH")]
     OriginMintMismatch,
+    #[msg("E_MINT_MAPPING_CORRUPT")]
+    MintMappingCorrupt,
     #[msg("E_VAULT_TOKEN_ACCOUNT_MISMATCH")]
     VaultTokenAccountMismatch,
     #[msg("E_INVALID_DEPOSITOR_ACCOUNT")]
@@ -3121,6 +3325,33 @@ pub enum PoolError {
     AllowanceInsufficient,
     #[msg("E_ALLOWANCE_AMOUNT_INVALID")]
     AllowanceAmountInvalid,
+}
+
+fn ensure_mint_active(mapping: &Account<MintMapping>) -> Result<()> {
+    require!(
+        mapping.status == MintStatus::Active as u8,
+        PoolError::MintFrozen
+    );
+    Ok(())
+}
+
+fn zero_hook_required_accounts(target: &mut [[u8; 32]; HookConfig::MAX_REQUIRED_ACCOUNTS]) {
+    for entry in target.iter_mut() {
+        *entry = [0u8; 32];
+    }
+}
+
+#[derive(BorshDeserialize, Debug)]
+struct MintMappingRaw {
+    origin_mint: Pubkey,
+    ptkn_mint: Pubkey,
+    has_ptkn: bool,
+    status: u8,
+    decimals: u8,
+    features: u8,
+    fee_bps_override: u16,
+    has_fee_override: bool,
+    bump: u8,
 }
 
 fn validate_hook_accounts(
@@ -3196,6 +3427,11 @@ mod tests {
 
     #[test]
     fn pool_state_space_matches_struct_size() {
+        println!(
+            "PoolState::SPACE={} struct_size={}",
+            PoolState::SPACE,
+            core::mem::size_of::<PoolState>()
+        );
         assert!(
             PoolState::SPACE >= core::mem::size_of::<PoolState>(),
             "SPACE {} must accomodate struct size {}",

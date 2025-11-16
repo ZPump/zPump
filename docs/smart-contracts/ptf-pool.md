@@ -62,6 +62,7 @@ Performs wrap (public → private). The work is split across several instruction
 
 1. **`shield`**
    - Validates accounts, verifying key, vault ownership, and the `ShieldClaim` PDA (initialised lazily via `init_if_needed`).
+   - Requires the factory mint mapping for this origin mint to be in the `Active` state; frozen assets can no longer wrap.
    - Parses Groth16 inputs (old root, new root, note commitment bytes, amount, recipient, etc.) and ensures `old_root == pool_state.current_root`.
    - Calls `ptf_verifier_groth16::verify_groth16`.
    - CPIs into `ptf_vault::deposit` to transfer tokens from the depositor ATA.
@@ -76,7 +77,7 @@ Performs wrap (public → private). The work is split across several instruction
    - Enforces the vault/twin mint invariant only when flagged by the ledger step.
    - Clears the `ShieldClaim`.
 
-The frontend SDK monitors the claim PDA between each step to ensure it has progressed before submitting the next transaction.
+The frontend SDK monitors the claim PDA between each step to ensure it has progressed before submitting the next transaction. If the transaction does not contain the matching `shield_finalize_ledger` instruction, `shield` now aborts with `E_SHIELD_FINALIZE_MISSING`.
 
 ### `unshield_to_origin` / `unshield_to_ptkn`
 
@@ -99,6 +100,8 @@ Redeems zTokens back to public form or the private twin mint:
 6. **Commitment tree**
    - Full mode recomputes the SHA tree via `append_many`, emitting a log if the proof-supplied root differs from the computed one (for diagnostics). Lightweight mode, if compiled, still trusts the proof root.
 
+All spend paths (`unshield_*`, `private_transfer`, `transfer_from`, `approve_allowance`, `revoke_allowance`) now enforce that the mint mapping is Active. Governance can freeze a mint at the factory level and pool entrypoints will reject new activity for that asset until thawed.
+
 ### `set_fee`, `toggle_features`, `update_hook_config`
 
 Administrative instructions (authority-gated). In devnet they are primarily used during bootstrap to configure fees and hook settings.
@@ -116,6 +119,7 @@ Administrative instructions (authority-gated). In devnet they are primarily used
 - Maintains `recent_commitments` (leaf index, commitment, amount commitment).
 - Optional digest updates if `note_digests` feature is enabled.
 - Nullifier set enforces one-time spend constraints; additional digest maintained by `note_digests`.
+- The nullifier PDA now grows in-place via reallocation (in 256-entry “pages”) rather than bricking at 256 spends. When the account needs more space the caller must provide a payer signer and Rent sysvar so the excess lamports can be funded.
 
 ## Compute Budget
 

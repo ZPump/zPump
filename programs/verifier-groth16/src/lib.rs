@@ -3,6 +3,9 @@ use sha3::{Digest, Keccak256};
 
 declare_id!("3aCv39mCRFH9BGJskfXqwQoWzW1ULq2yXEbEwGgKtLgg");
 
+#[cfg(all(feature = "groth16-syscall", feature = "groth16-dev-skip"))]
+compile_error!("groth16-syscall and groth16-dev-skip cannot be enabled together");
+
 #[program]
 pub mod ptf_verifier_groth16 {
     use super::*;
@@ -191,10 +194,31 @@ fn verify_account_hash(account: &VerifyingKeyAccount) -> bool {
     computed == account.hash
 }
 
-#[cfg(any(target_arch = "bpf", target_arch = "sbf"))]
+#[cfg(all(
+    feature = "groth16-syscall",
+    any(target_arch = "bpf", target_arch = "sbf")
+))]
+fn groth16_verify(verifying_key: &[u8], proof: &[u8], public_inputs: &[u8]) -> bool {
+    unsafe { groth16_verify_syscall(verifying_key, proof, public_inputs) }
+}
+
+#[cfg(all(
+    feature = "groth16-dev-skip",
+    not(feature = "groth16-syscall"),
+    any(target_arch = "bpf", target_arch = "sbf")
+))]
 fn groth16_verify(_verifying_key: &[u8], _proof: &[u8], _public_inputs: &[u8]) -> bool {
     true
 }
+
+#[cfg(all(
+    any(target_arch = "bpf", target_arch = "sbf"),
+    not(feature = "groth16-syscall"),
+    not(feature = "groth16-dev-skip")
+))]
+compile_error!(
+    "Enable either `groth16-syscall` or `groth16-dev-skip` features for BPF/SBF builds."
+);
 
 #[cfg(not(any(target_arch = "bpf", target_arch = "sbf")))]
 fn groth16_verify(verifying_key: &[u8], proof: &[u8], public_inputs: &[u8]) -> bool {
@@ -483,6 +507,33 @@ mod tests {
         tampered_inputs[0] = Fr::from(99u64);
         let tampered_bytes = serialize_public_inputs(&tampered_inputs);
         assert!(!groth16_verify(&vk_bytes, &proof_bytes, &tampered_bytes));
+    }
+
+    #[test]
+    fn groth16_host_fallback_rejects_zeroed_proof() {
+        let mut rng = StdRng::seed_from_u64(48);
+        let params = Groth16::<ark_bn254::Bn254>::generate_random_parameters_with_reduction(
+            IdentityCircuit {
+                public: vec![Fr::from(0u64); IDENTITY_PUBLIC_INPUTS],
+            },
+            &mut rng,
+        )
+        .expect("identity params");
+
+        let mut vk_bytes = Vec::new();
+        params
+            .vk
+            .serialize_uncompressed(&mut vk_bytes)
+            .expect("serialize vk");
+
+        let public_inputs = vec![Fr::from(42u64)];
+        let mut public_bytes = Vec::new();
+        public_inputs
+            .serialize_uncompressed(&mut public_bytes)
+            .expect("serialize inputs");
+
+        let zero_proof = vec![0u8; 192];
+        assert!(!groth16_verify(&vk_bytes, &zero_proof, &public_bytes));
     }
 
     #[test]

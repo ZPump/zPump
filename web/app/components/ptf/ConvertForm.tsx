@@ -33,7 +33,13 @@ import {
 import { LAMPORTS_PER_SOL, PublicKey, SendTransactionError } from '@solana/web3.js';
 import type { MintConfig } from '../../config/mints';
 import { ProofClient, ProofResponse } from '../../lib/proofClient';
-import { wrap as wrapSdk, unwrap as unwrapSdk, resolvePublicKey } from '../../lib/sdk';
+import {
+  wrap as wrapSdk,
+  unwrap as unwrapSdk,
+  resolvePublicKey,
+  fetchMintMappingAccount,
+  MINT_STATUS
+} from '../../lib/sdk';
 import { IndexerClient, IndexerNote } from '../../lib/indexerClient';
 import { getCachedRoots, setCachedRoots, getCachedNullifiers, setCachedNullifiers } from '../../lib/indexerCache';
 import { poseidonHashMany } from '../../lib/onchain/poseidon';
@@ -77,6 +83,7 @@ interface TokenOption {
   decimals: number;
   disabled: boolean;
   zTokenMint?: string;
+  isFrozen: boolean;
 }
 
 const createRandomSeed = () => Math.floor(Math.random() * 1_000_000).toString();
@@ -216,6 +223,9 @@ export function ConvertForm() {
   const [noteLabelDraft, setNoteLabelDraft] = useState<string>('');
   const [nullifierPreview, setNullifierPreview] = useState<string | null>(null);
   const [nullifierPreviewError, setNullifierPreviewError] = useState<string | null>(null);
+  const [mintStatuses, setMintStatuses] = useState<Record<string, number>>({});
+  const [mintStatusLoading, setMintStatusLoading] = useState(false);
+  const [mintStatusError, setMintStatusError] = useState<string | null>(null);
 
   const [tokenOptions, setTokenOptions] = useState<TokenOption[]>([]);
   const originMint = tokenSelection.originMint;
@@ -333,18 +343,22 @@ export function ConvertForm() {
       const walletConnected = Boolean(walletKey);
       const options: TokenOption[] = [];
       mints.forEach((mint) => {
+        const status = mintStatuses[mint.originMint];
+        const isMintFrozen = status === MINT_STATUS.FROZEN;
+        const freezeSuffix = isMintFrozen ? ' — Frozen by governance' : '';
         const publicBalance = publicBalances.get(mint.originMint) ?? 0n;
         const publicDisplay = formatBaseUnitsToUi(publicBalance, mint.decimals);
         options.push({
           originMint: mint.originMint,
           variant: 'public',
-          label: `${mint.symbol} (public) — ${publicDisplay}`,
+          label: `${mint.symbol} (public) — ${publicDisplay}${freezeSuffix}`,
           balance: publicBalance,
           displayBalance: publicDisplay,
           symbol: mint.symbol,
           decimals: mint.decimals,
-          disabled: !walletConnected || publicBalance === 0n,
-          zTokenMint: mint.zTokenMint
+          disabled: !walletConnected || publicBalance === 0n || isMintFrozen,
+          zTokenMint: mint.zTokenMint,
+          isFrozen: isMintFrozen
         });
         if (mint.zTokenMint) {
           const privateBalance = privateBalances.get(mint.zTokenMint) ?? 0n;
@@ -352,13 +366,14 @@ export function ConvertForm() {
           options.push({
             originMint: mint.originMint,
             variant: 'private',
-            label: `z${mint.symbol} (private) — ${privateDisplay}`,
+            label: `z${mint.symbol} (private) — ${privateDisplay}${freezeSuffix}`,
             balance: privateBalance,
             displayBalance: privateDisplay,
             symbol: `z${mint.symbol}`,
             decimals: mint.decimals,
-            disabled: !walletConnected || privateBalance === 0n,
-            zTokenMint: mint.zTokenMint
+            disabled: !walletConnected || privateBalance === 0n || isMintFrozen,
+            zTokenMint: mint.zTokenMint,
+            isFrozen: isMintFrozen
           });
         }
       });
@@ -426,11 +441,52 @@ export function ConvertForm() {
       setTokenOptions(options);
       return options;
     }
-  }, [wallet.publicKey, connection, indexerClient, mints]);
+  }, [wallet.publicKey, connection, indexerClient, mints, mintStatuses]);
 
   useEffect(() => {
     void refreshTokenOptions();
   }, [refreshTokenOptions]);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!mints.length) {
+      setMintStatuses({});
+      return;
+    }
+    const loadStatuses = async () => {
+      setMintStatusLoading(true);
+      setMintStatusError(null);
+      try {
+        const entries = await Promise.all(
+          mints.map(async (mint) => {
+            try {
+              const { decoded } = await fetchMintMappingAccount(connection, new PublicKey(mint.originMint));
+              const status = typeof decoded.status === 'number' ? decoded.status : MINT_STATUS.UNKNOWN;
+              return [mint.originMint, status] as const;
+            } catch (error) {
+              console.warn('[convert-form] failed to fetch mint status', mint.originMint, error);
+              return [mint.originMint, MINT_STATUS.UNKNOWN] as const;
+            }
+          })
+        );
+        if (!cancelled) {
+          setMintStatuses(Object.fromEntries(entries));
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setMintStatusError((error as Error).message ?? 'mint_status_error');
+        }
+      } finally {
+        if (!cancelled) {
+          setMintStatusLoading(false);
+        }
+      }
+    };
+    void loadStatuses();
+    return () => {
+      cancelled = true;
+    };
+  }, [connection, mints]);
 
   const allowedVariant: 'public' | 'private' = mode === 'to-private' ? 'public' : 'private';
   const filteredTokenOptions = useMemo(
@@ -443,6 +499,8 @@ export function ConvertForm() {
     () => tokenOptions.find((option) => option.originMint === originMint && option.variant === tokenVariant) ?? null,
     [tokenOptions, originMint, tokenVariant]
   );
+  const selectedMintStatus = mintStatuses[originMint];
+  const mintIsFrozen = selectedMintStatus === MINT_STATUS.FROZEN;
 
   useEffect(() => {
     if (!mints.length) {
@@ -876,6 +934,10 @@ export function ConvertForm() {
 
   const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    if (mintIsFrozen) {
+      setError('This mint is currently frozen by governance. Wait until it is thawed before converting.');
+      return;
+    }
     setSubmitting.on();
     setResult(null);
     setProofPreview(null);
@@ -1265,6 +1327,15 @@ export function ConvertForm() {
           </Text>
         </Stack>
 
+        {mintStatusError && (
+          <Alert status="warning" variant="left-accent">
+            <AlertIcon />
+            <AlertDescription>
+              Unable to refresh mint status. Transactions may fail if the selected mint is frozen. {mintStatusError}
+            </AlertDescription>
+          </Alert>
+        )}
+
         <FormControl>
           <FormLabel color="whiteAlpha.700">Mode</FormLabel>
           <Select value={mode} onChange={handleModeChange} bg="rgba(18, 16, 14, 0.78)">
@@ -1316,7 +1387,25 @@ export function ConvertForm() {
               Available: {selectedTokenOption.displayBalance} {selectedTokenOption.symbol}
             </FormHelperText>
           )}
+          {mintStatusLoading && <FormHelperText color="whiteAlpha.500">Checking mint status…</FormHelperText>}
+          {typeof selectedMintStatus === 'number' && !mintStatusLoading && (
+            <FormHelperText color={mintIsFrozen ? 'orange.300' : 'green.300'}>
+              {mintIsFrozen
+                ? 'This mint is currently frozen by governance. Shielding and redeeming are paused.'
+                : 'Mint is active.'}
+            </FormHelperText>
+          )}
         </FormControl>
+
+        {mintIsFrozen && (
+          <Alert status="warning" variant="left-accent">
+            <AlertIcon />
+            <AlertDescription>
+              Governance has frozen this mint. You can view balances but must wait for it to be thawed before shielding or
+              redeeming.
+            </AlertDescription>
+          </Alert>
+        )}
 
         <FormControl>
           <FormLabel color="whiteAlpha.700">Commitment tree root</FormLabel>
@@ -1686,7 +1775,9 @@ export function ConvertForm() {
           variant="glow"
           isLoading={isSubmitting}
           loadingText={mode === 'to-private' ? 'Shielding' : 'Redeeming'}
-          isDisabled={!amount}
+          isDisabled={
+            !amount || !wallet.publicKey || mintIsFrozen || mintStatusLoading || !selectedTokenOption || mintCatalogLoading
+          }
         >
           {wallet.publicKey ? 'Submit conversion' : 'Connect wallet to proceed'}
         </Button>
