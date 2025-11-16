@@ -3275,8 +3275,8 @@ pub enum PoolError {
     UnknownRoot,
     #[msg("E_NULLIFIER_REUSE")]
     NullifierReuse,
-    #[msg("E_NULLIFIER_CAPACITY")]
-    NullifierCapacity,
+    // REMOVED: NullifierCapacity - no longer needed with bloom-filter-only approach
+    // The bloom filter has no capacity limit, so this error is obsolete
     #[msg("E_AMOUNT_OVERFLOW")]
     AmountOverflow,
     #[msg("E_INSUFFICIENT_LIQUIDITY")]

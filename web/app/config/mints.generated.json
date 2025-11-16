@@ -1,1 +1,14 @@
-[]
+[
+  {
+    "symbol": "FBUK",
+    "decimals": 6,
+    "originMint": "BxGyyZgvs1yKuPhWugxBgCdPZKm4Pwf6SQqhRkvfv4UU",
+    "poolId": "7rBLtJ8zHvy3Z31Uw7kDyMU8MKqbYYSjCvTBV6kDMYLK",
+    "zTokenMint": "F8neCapqiu3pyxma1zB88Y21AvM7iDRw2EpDUckJiN49",
+    "features": {
+      "zTokenEnabled": true,
+      "wrappedTransfers": false
+    },
+    "lookupTable": "2ntFaYKroeTdidP7HiKNBsfUMhSjJ3p7DWp4aRD5x83Q"
+  }
+]
