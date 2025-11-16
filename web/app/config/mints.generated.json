@@ -1,14 +1,1 @@
-[
-  {
-    "symbol": "TEST",
-    "decimals": 6,
-    "originMint": "245ErNwSsRLD3MYPfHSmtCWNjyZ7PfhHci2aozEo7xRg",
-    "poolId": "6VEFCX7onFGeParfDPyheNgwXfMJUQLkDPcGX4YfWH7w",
-    "zTokenMint": "d6CG1tzWd6iZ5MUjWHEMbrJvSx7MDztZQ44xWwQKeyV",
-    "features": {
-      "zTokenEnabled": true,
-      "wrappedTransfers": false
-    },
-    "lookupTable": "EYExyRJPuBkBmYCtjEwZ9Y2VN3jPvRfVhp1BC4F2roPY"
-  }
-]
+[]
