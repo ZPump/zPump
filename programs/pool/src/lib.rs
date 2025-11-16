@@ -126,12 +126,13 @@ pub mod ptf_pool {
         );
         
         // Read verifying key fields directly
+        // VerifyingKeyAccount layout: discriminator[8] + authority[32] + circuit_tag[32] + verifying_key_id[32] + hash[32] + bump[1] + version[1] + verifying_key[Vec]
         let vk_data = ctx.accounts.verifying_key.try_borrow_data()?;
-        if vk_data.len() < 8 + 32 + 32 {
+        if vk_data.len() < 8 + 32 + 32 + 32 + 32 {
             return err!(PoolError::MintMappingCorrupt);
         }
-        let verifying_key_id: [u8; 32] = vk_data[8..40].try_into().map_err(|_| PoolError::MintMappingCorrupt)?;
-        let verifying_key_hash: [u8; 32] = vk_data[40..72].try_into().map_err(|_| PoolError::MintMappingCorrupt)?;
+        let verifying_key_id: [u8; 32] = vk_data[72..104].try_into().map_err(|_| PoolError::MintMappingCorrupt)?; // offset 8+32+32 = 72
+        let verifying_key_hash: [u8; 32] = vk_data[104..136].try_into().map_err(|_| PoolError::MintMappingCorrupt)?; // offset 8+32+32+32 = 104
         drop(vk_data);
         
         require_keys_eq!(
@@ -349,18 +350,20 @@ pub mod ptf_pool {
             PoolError::PendingShieldInFlight
         );
         let claim_bump = ctx.bumps.shield_claim;
+        let expected_pool = pool_loader.key();
         {
             let shield_claim = &mut ctx.accounts.shield_claim;
+            // Initialize if new account
             if shield_claim.pool == Pubkey::default() {
-                shield_claim.pool = pool_loader.key();
+                shield_claim.pool = expected_pool;
                 shield_claim.bump = claim_bump;
-            } else {
-                require_keys_eq!(
-                    shield_claim.pool,
-                    pool_loader.key(),
-                    PoolError::ShieldClaimMismatch
-                );
             }
+            // For existing accounts, require pool matches (stale accounts from different pools should not exist due to PDA derivation)
+            require_keys_eq!(
+                shield_claim.pool,
+                expected_pool,
+                PoolError::ShieldClaimMismatch
+            );
             require!(!shield_claim.is_active(), PoolError::PendingShieldInFlight);
         }
         require_keys_eq!(
