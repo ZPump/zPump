@@ -343,32 +343,39 @@ pub mod ptf_pool {
         ctx: Context<'_, '_, '_, 'info, Shield<'info>>,
         args: ShieldArgs,
     ) -> Result<()> {
+        msg!("shield: entry");
         let pool_loader = &ctx.accounts.pool_state;
+        msg!("shield: got pool_loader");
         let mut pool_state = pool_loader.load_mut()?;
+        msg!("shield: loaded pool_state");
         require!(
             pool_state.pending_shield.is_inactive(),
             PoolError::PendingShieldInFlight
         );
-        let claim_bump = ctx.bumps.shield_claim;
         let expected_pool = pool_loader.key();
-        {
+        let claim_bump = {
             let shield_claim = &mut ctx.accounts.shield_claim;
-            // Initialize if new account
+            // Initialize if new account (pool is default/uninitialized)
             if shield_claim.pool == Pubkey::default() {
                 shield_claim.pool = expected_pool;
-                shield_claim.bump = claim_bump;
+                // Bump is set automatically by Anchor's init_if_needed constraint
+                // Store it for later use
+                shield_claim.bump
+            } else {
+                // For existing accounts, require pool matches
+                require_keys_eq!(
+                    shield_claim.pool,
+                    expected_pool,
+                    PoolError::ShieldClaimMismatch
+                );
+                shield_claim.bump
             }
-            // For existing accounts, require pool matches (stale accounts from different pools should not exist due to PDA derivation)
-            require_keys_eq!(
-                shield_claim.pool,
-                expected_pool,
-                PoolError::ShieldClaimMismatch
-            );
-            require!(!shield_claim.is_active(), PoolError::PendingShieldInFlight);
-        }
+        };
+        require!(!ctx.accounts.shield_claim.is_active(), PoolError::PendingShieldInFlight);
+        // Validate unchecked accounts
         require_keys_eq!(
             ctx.accounts.verifier_program.key(),
-            pool_state.verifier_program,
+            ptf_verifier_groth16::ID,
             PoolError::VerifierMismatch,
         );
         require_keys_eq!(
@@ -376,24 +383,57 @@ pub mod ptf_pool {
             pool_state.verifying_key,
             PoolError::VerifierMismatch,
         );
+        
+        // Read verifying key fields from bytes
+        let vk_data = ctx.accounts.verifying_key.try_borrow_data()?;
+        if vk_data.len() < 8 + 32 + 32 + 32 + 32 {
+            return err!(PoolError::MintMappingCorrupt);
+        }
+        let vk_id: [u8; 32] = vk_data[72..104].try_into().map_err(|_| PoolError::MintMappingCorrupt)?;
+        let vk_hash: [u8; 32] = vk_data[104..136].try_into().map_err(|_| PoolError::MintMappingCorrupt)?;
+        drop(vk_data);
+        
         require!(
-            ctx.accounts.verifying_key.verifying_key_id == pool_state.verifying_key_id,
+            vk_id == pool_state.verifying_key_id,
             PoolError::VerifierMismatch,
         );
         require!(
-            ctx.accounts.verifying_key.hash == pool_state.verifying_key_hash,
+            vk_hash == pool_state.verifying_key_hash,
             PoolError::VerifyingKeyHashMismatch,
+        );
+        
+        // Validate vault_state PDA
+        let (expected_vault, _) = Pubkey::find_program_address(
+            &[seeds::VAULT, pool_state.origin_mint.as_ref()],
+            &ptf_vault::ID,
+        );
+        require_keys_eq!(
+            ctx.accounts.vault_state.key(),
+            expected_vault,
+            PoolError::VaultTokenAccountMismatch,
         );
         require_keys_eq!(
             ctx.accounts.vault_state.key(),
             pool_state.vault,
             PoolError::MismatchedVaultAuthority,
         );
+        
+        // Read vault_state.pool_authority from bytes (offset 8 + 32 = 40)
+        let vault_data = ctx.accounts.vault_state.try_borrow_data()?;
+        if vault_data.len() < 8 + 64 {
+            return err!(PoolError::MintMappingCorrupt);
+        }
+        let vault_pool_auth_bytes: [u8; 32] = vault_data[40..72].try_into().map_err(|_| PoolError::MintMappingCorrupt)?;
+        let vault_pool_authority = Pubkey::new_from_array(vault_pool_auth_bytes);
+        drop(vault_data);
+        
         require_keys_eq!(
-            ctx.accounts.vault_state.pool_authority,
+            vault_pool_authority,
             pool_loader.key(),
             PoolError::MismatchedVaultAuthority,
         );
+        
+        // Validate token accounts
         require_keys_eq!(
             ctx.accounts.vault_token_account.owner,
             pool_state.vault,
@@ -1578,25 +1618,20 @@ pub struct Shield<'info> {
         constraint = note_ledger.load()?.pool == pool_state.key() @ PoolError::NoteLedgerMismatch,
     )]
     pub note_ledger: AccountLoader<'info, NoteLedger>,
-    #[account(
-        mut,
-        seeds = [seeds::VAULT, pool_state.load()?.origin_mint.as_ref()],
-        bump = vault_state.bump,
-        seeds::program = ptf_vault::ID
-    )]
-    pub vault_state: Account<'info, ptf_vault::VaultState>,
+    /// CHECK: Validated in instruction (PDA derived from origin_mint)
+    #[account(mut)]
+    pub vault_state: UncheckedAccount<'info>,
     #[account(mut)]
     pub vault_token_account: InterfaceAccount<'info, TokenAccount>,
     #[account(mut)]
     pub depositor_token_account: InterfaceAccount<'info, TokenAccount>,
+    /// CHECK: Validated in instruction if present
     #[account(mut)]
-    pub twin_mint: Option<InterfaceAccount<'info, Mint>>,
-    pub verifier_program: Program<'info, PtfVerifierGroth16>,
-    #[account(
-        address = pool_state.load()?.verifying_key,
-        constraint = verifying_key.hash == pool_state.load()?.verifying_key_hash @ PoolError::VerifyingKeyHashMismatch,
-    )]
-    pub verifying_key: Account<'info, VerifyingKeyAccount>,
+    pub twin_mint: Option<UncheckedAccount<'info>>,
+    /// CHECK: Validated in instruction
+    pub verifier_program: UncheckedAccount<'info>,
+    /// CHECK: Validated in instruction
+    pub verifying_key: UncheckedAccount<'info>,
     #[account(
         init_if_needed,
         payer = payer,
