@@ -20,7 +20,7 @@ cd "${PROJECT_ROOT}"
 
 log "Building Anchor programs with groth16-syscall feature for production..."
 
-if anchor build --features groth16-syscall 2>&1 | tee "${PROJECT_ROOT}/.anchor-build-production.log; then
+if anchor build --features groth16-syscall 2>&1 | tee "${PROJECT_ROOT}/.anchor-build-production.log"; then
   log_success "Production build completed successfully"
   log "Programs built with groth16-syscall feature - ready for mainnet deployment"
   log "Binary location: ${PROJECT_ROOT}/target/deploy/"
