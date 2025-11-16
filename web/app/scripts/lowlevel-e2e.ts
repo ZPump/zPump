@@ -1,6 +1,8 @@
 import bs58 from 'bs58';
 import crypto from 'crypto';
 import {
+  AddressLookupTableAccount,
+  ComputeBudgetProgram,
   Connection,
   Keypair,
   PublicKey,
@@ -9,15 +11,14 @@ import {
   SYSVAR_RENT_PUBKEY,
   Transaction,
   TransactionInstruction,
+  TransactionMessage,
   VersionedTransaction
 } from '@solana/web3.js';
 import {
   ASSOCIATED_TOKEN_PROGRAM_ID,
   TOKEN_PROGRAM_ID,
   createAssociatedTokenAccountInstruction,
-  getAssociatedTokenAddress,
-  getAccount,
-  getMint
+  getAssociatedTokenAddress
 } from '@solana/spl-token';
 import { BN, BorshCoder, Idl } from '@coral-xyz/anchor';
 import { ProofClient, ProofResponse } from '../lib/proofClient';
@@ -72,6 +73,21 @@ interface MintConfig {
   lookupTable?: string;
 }
 
+interface DecodedProofPayload {
+  proof: Buffer;
+  publicInputs: Buffer;
+  fields: Uint8Array[];
+}
+
+interface WrapResult {
+  noteId: string;
+  spendingKey: string;
+  noteAmount: bigint;
+  newRoot: string;
+  commitment: string;
+  nullifier: string;
+}
+
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function randomFieldScalar(): string {
@@ -79,24 +95,73 @@ function randomFieldScalar(): string {
   return BigInt(`0x${bytes.toString('hex')}`).toString();
 }
 
+let depositIdCounter = 0;
+function generateUniqueDepositId(): string {
+  // Use timestamp + counter + random to ensure uniqueness across test runs and within the same run
+  // Format: timestamp (13 digits) + counter (6 digits) + random (7 digits) = 26 digit number
+  const timestamp = Date.now();
+  depositIdCounter += 1;
+  const random = crypto.randomInt(1_000_000, 9_999_999);
+  // Pad counter to 6 digits to ensure consistent length
+  const counterStr = depositIdCounter.toString().padStart(6, '0');
+  return `${timestamp}${counterStr}${random}`;
+}
+
 function pubkeyToFieldString(key: PublicKey): string {
   const hex = Buffer.from(key.toBytes()).toString('hex');
   return BigInt(`0x${hex}`).toString();
 }
 
-async function poseidonHexFromValues(values: bigint[]): Promise<string> {
-  const hash = await poseidonHashMany(values);
-  return canonicalizeHex(`0x${hash.toString(16).padStart(64, '0')}`);
+function toFixedArray(value: Uint8Array, label: string): number[] {
+  if (value.length !== 32) {
+    throw new Error(`${label} must be 32 bytes`);
+  }
+  return Array.from(value);
 }
 
-function decodeProof(proofResponse: ProofResponse) {
-  const proofBytes = Buffer.from(proofResponse.proof, 'base64');
-  const fieldBytes = proofResponse.publicInputs.map((input) => {
+function encodeFieldElementHex(value: string, label: string): number[] {
+  const canonical = canonicalizeHex(value);
+  const bytes = canonicalHexToBytesLE(canonical, 32);
+  return Array.from(bytes);
+}
+
+function encodeFieldVector(values: readonly string[], label: string): number[][] {
+  return values.map((entry, index) => encodeFieldElementHex(entry, `${label}[${index}]`));
+}
+
+function decodeProofPayload(payload: ProofResponse | null): DecodedProofPayload {
+  if (!payload) {
+    return {
+      proof: Buffer.alloc(0),
+      publicInputs: Buffer.alloc(0),
+      fields: []
+    };
+  }
+
+  if (typeof payload.proof !== 'string') {
+    throw new Error('Proof payload missing base64 proof data');
+  }
+  const proofBytes = Buffer.from(payload.proof, 'base64');
+
+  const fieldBytes = payload.publicInputs.map((input, index) => {
+    if (typeof input !== 'string') {
+      throw new Error(`Public input at index ${index} is not a string`);
+    }
     const canonical = canonicalizeHex(input);
-    return canonicalHexToBytesLE(canonical, 32);
+    const bytes = canonicalHexToBytesLE(canonical, 32);
+    if (bytes.length !== 32) {
+      throw new Error(`Public input at index ${index} must be 32 bytes`);
+    }
+    return bytes;
   });
-  const publicInputsBytes = Buffer.concat(fieldBytes.map((entry) => Buffer.from(entry)));
-  return { proofBytes, publicInputsBytes, fieldBytes };
+
+  const flattened = Buffer.concat(fieldBytes.map((entry) => Buffer.from(entry)));
+
+  return {
+    proof: proofBytes,
+    publicInputs: flattened,
+    fields: fieldBytes
+  };
 }
 
 async function faucetSol(connection: Connection, recipient: PublicKey): Promise<void> {
@@ -148,17 +213,93 @@ async function fetchMintCatalog(): Promise<MintConfig[]> {
 async function sendAndConfirmInstructions(
   connection: Connection,
   payer: Keypair,
-  instructions: TransactionInstruction[]
+  instructions: TransactionInstruction[],
+  lookupTable?: string
 ): Promise<string> {
-  const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash('confirmed');
-  const tx = new Transaction();
-  tx.feePayer = payer.publicKey;
-  tx.recentBlockhash = blockhash;
-  tx.add(...instructions);
-  tx.sign(payer);
-  const signature = await connection.sendRawTransaction(tx.serialize(), { skipPreflight: false });
-  await connection.confirmTransaction({ signature, blockhash, lastValidBlockHeight }, 'confirmed');
+  const latestBlockhash = await connection.getLatestBlockhash('confirmed');
+  const lookupTables: AddressLookupTableAccount[] = [];
+
+  if (lookupTable) {
+    try {
+      const tableKey = new PublicKey(lookupTable);
+      const response = await connection.getAddressLookupTable(tableKey);
+      if (response.value) {
+        lookupTables.push(response.value);
+      }
+    } catch (error) {
+      console.warn('[lowlevel-e2e] failed to load lookup table', error);
+    }
+  }
+
+  let signature: string;
+  if (lookupTables.length > 0) {
+    const message = new TransactionMessage({
+      payerKey: payer.publicKey,
+      recentBlockhash: latestBlockhash.blockhash,
+      instructions
+    }).compileToV0Message(lookupTables);
+    const tx = new VersionedTransaction(message);
+    tx.sign([payer]);
+    signature = await connection.sendRawTransaction(tx.serialize(), { skipPreflight: false });
+  } else {
+    const tx = new Transaction();
+    tx.feePayer = payer.publicKey;
+    tx.recentBlockhash = latestBlockhash.blockhash;
+    tx.add(...instructions);
+    tx.sign(payer);
+    signature = await connection.sendRawTransaction(tx.serialize(), { skipPreflight: false });
+  }
+
+  await connection.confirmTransaction(
+    { signature, blockhash: latestBlockhash.blockhash, lastValidBlockHeight: latestBlockhash.lastValidBlockHeight },
+    'confirmed'
+  );
   return signature;
+}
+
+async function fetchShieldClaimStatus(connection: Connection, shieldClaimKey: PublicKey): Promise<number> {
+  const account = await connection.getAccountInfo(shieldClaimKey, 'confirmed');
+  if (!account) {
+    return 0; // INACTIVE
+  }
+  try {
+    const decoded = poolCoder.accounts.decode('ShieldClaim', account.data) as { status?: number };
+    return decoded.status ?? 0;
+  } catch {
+    // If decoding fails, try manual reading
+    const buffer = Buffer.from(account.data);
+    if (buffer.length < 8 + 1) {
+      return 0;
+    }
+    // ShieldClaim struct: discriminator (8) + pool (32) + depositor (32) + commitment (32) + amount_commit (32) + old_root (32) + new_root (32) + next_index (8) + status (1)
+    // Status is at offset 8 + 32 + 32 + 32 + 32 + 32 + 32 + 8 = 208
+    if (buffer.length >= 209) {
+      return buffer.readUInt8(208);
+    }
+    return 0;
+  }
+}
+
+async function waitForShieldClaimCleared(
+  connection: Connection,
+  shieldClaimKey: PublicKey,
+  maxAttempts = 60
+): Promise<void> {
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    const status = await fetchShieldClaimStatus(connection, shieldClaimKey);
+    if (status === 0) {
+      if (attempt > 0) {
+        console.info(`[waitForShieldClaimCleared] Shield claim cleared after ${attempt} attempts`);
+      }
+      return;
+    }
+    if (attempt % 10 === 0 && attempt > 0) {
+      console.info(`[waitForShieldClaimCleared] Still waiting, status=${status}, attempt=${attempt}/${maxAttempts}`);
+    }
+    await sleep(1000);
+  }
+  const finalStatus = await fetchShieldClaimStatus(connection, shieldClaimKey);
+  throw new Error(`Shield claim did not clear in time. Final status: ${finalStatus}`);
 }
 
 async function fetchPoolStateRoot(connection: Connection, poolId: string): Promise<{ root: string; feeBps: number }> {
@@ -198,15 +339,6 @@ async function loadLocalAuthorityKeypair(): Promise<Keypair> {
   return Keypair.fromSecretKey(Uint8Array.from(secret));
 }
 
-interface WrapResult {
-  noteId: string;
-  spendingKey: string;
-  noteAmount: bigint;
-  newRoot: string;
-  commitment: string;
-  nullifier: string;
-}
-
 async function main() {
   console.info('[lowlevel-e2e] Starting comprehensive low-level E2E test suite');
   const connection = new Connection(RPC_URL, 'confirmed');
@@ -227,7 +359,11 @@ async function main() {
     throw new Error('No mints available. Run bootstrap script first.');
   }
   const mintConfig = catalog[0]!;
+  
+  console.info('[setup] Funding wallets with tokens');
   const originMintKey = new PublicKey(mintConfig.originMint);
+  await faucetToken(connection, originMintKey, owner.publicKey, WRAP_AMOUNT * 5n);
+  await faucetToken(connection, originMintKey, receiver.publicKey, WRAP_AMOUNT * 5n);
   const poolStateKey = new PublicKey(mintConfig.poolId);
   const nullifierSetKey = deriveNullifierSet(originMintKey);
   const noteLedgerKey = deriveNoteLedger(originMintKey);
@@ -237,10 +373,72 @@ async function main() {
   const mintMappingKey = deriveMintMapping(originMintKey);
   const factoryStateKey = deriveFactoryState();
   const allowanceAddress = deriveAllowanceAccount(poolStateKey, owner.publicKey, delegate.publicKey);
+  const verifyingKey = deriveVerifyingKey();
+  
+  // Check if hook_config exists
+  const hookConfigAccount = await connection.getAccountInfo(hookConfigKey, 'confirmed');
+  const hookConfigExists = hookConfigAccount !== null;
+  if (!hookConfigExists) {
+    console.warn('[setup] hook_config account does not exist - some tests may fail');
+  }
 
   const initialPoolInfo = await fetchPoolStateRoot(connection, mintConfig.poolId);
   let currentRoot = canonicalizeHex(initialPoolInfo.root);
   const feeBps = BigInt(initialPoolInfo.feeBps);
+
+  // Clear any pending shield claims from previous runs
+  console.info('[setup] Checking for pending shield claims...');
+  const shieldClaimKey = deriveShieldClaim(poolStateKey);
+  const shieldClaimStatus = await fetchShieldClaimStatus(connection, shieldClaimKey);
+  if (shieldClaimStatus !== 0) {
+    console.info('[setup] Found pending shield claim, attempting to finalize...');
+    try {
+      const finalizeTreeIx = new TransactionInstruction({
+        programId: POOL_PROGRAM_ID,
+        keys: [
+          { pubkey: poolStateKey, isSigner: false, isWritable: true },
+          { pubkey: commitmentTreeKey, isSigner: false, isWritable: true },
+          { pubkey: shieldClaimKey, isSigner: false, isWritable: true }
+        ],
+        data: poolCoder.instruction.encode('shield_finalize_tree', {})
+      });
+      await sendAndConfirmInstructions(connection, adminAuthority, [finalizeTreeIx], mintConfig.lookupTable);
+    } catch (e) {
+      console.warn('[setup] Could not finalize tree, trying ledger...', (e as Error).message);
+    }
+    try {
+      const finalizeLedgerIx = new TransactionInstruction({
+        programId: POOL_PROGRAM_ID,
+        keys: [
+          { pubkey: poolStateKey, isSigner: false, isWritable: true },
+          { pubkey: hookConfigKey, isSigner: false, isWritable: false },
+          { pubkey: noteLedgerKey, isSigner: false, isWritable: true },
+          { pubkey: shieldClaimKey, isSigner: false, isWritable: true }
+        ],
+        data: poolCoder.instruction.encode('shield_finalize_ledger', {})
+      });
+      await sendAndConfirmInstructions(connection, adminAuthority, [finalizeLedgerIx], mintConfig.lookupTable);
+    } catch (e) {
+      console.warn('[setup] Could not finalize ledger...', (e as Error).message);
+    }
+    try {
+      const checkInvariantIx = new TransactionInstruction({
+        programId: POOL_PROGRAM_ID,
+        keys: [
+          { pubkey: poolStateKey, isSigner: false, isWritable: false },
+          { pubkey: noteLedgerKey, isSigner: false, isWritable: false },
+          { pubkey: shieldClaimKey, isSigner: false, isWritable: true },
+          { pubkey: await getAssociatedTokenAddress(originMintKey, vaultStateKey, true, TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID), isSigner: false, isWritable: true },
+          { pubkey: mintConfig.zTokenMint ? new PublicKey(mintConfig.zTokenMint) : POOL_PROGRAM_ID, isSigner: false, isWritable: mintConfig.zTokenMint ? true : false }
+        ],
+        data: poolCoder.instruction.encode('shield_check_invariant', {})
+      });
+      await sendAndConfirmInstructions(connection, adminAuthority, [checkInvariantIx], mintConfig.lookupTable);
+      await waitForShieldClaimCleared(connection, shieldClaimKey);
+    } catch (e) {
+      console.warn('[setup] Could not check invariant...', (e as Error).message);
+    }
+  }
 
   console.info('[test-01] Testing shield instruction (low-level)');
   const depositorTokenAccount = await getAssociatedTokenAddress(
@@ -262,9 +460,9 @@ async function main() {
     );
     await sendAndConfirmInstructions(connection, owner, [ix]);
   }
-  await faucetToken(connection, originMintKey, owner.publicKey, WRAP_AMOUNT * 5n);
+  await faucetToken(connection, originMintKey, owner.publicKey, WRAP_AMOUNT * 10n);
 
-  const depositId1 = crypto.randomInt(1_000_000, 9_000_000).toString();
+  const depositId1 = generateUniqueDepositId();
   const blinding1 = crypto.randomInt(1_000_000, 9_000_000).toString();
   const noteAmount1 = WRAP_AMOUNT + (WRAP_AMOUNT * feeBps) / 10_000n;
   const proof1 = await proofClient.requestProof('wrap', {
@@ -277,7 +475,8 @@ async function main() {
     mintId: mintConfig.originMint
   });
 
-  const shieldClaimKey = deriveShieldClaim(poolStateKey);
+  const decodedProof1 = decodeProofPayload(proof1);
+  const amountCommitmentBytes = await poseidonHashMany([noteAmount1, BigInt(blinding1)]);
   const vaultTokenAccount = await getAssociatedTokenAddress(
     originMintKey,
     vaultStateKey,
@@ -285,25 +484,15 @@ async function main() {
     TOKEN_PROGRAM_ID,
     ASSOCIATED_TOKEN_PROGRAM_ID
   );
-  const verifyingKey = deriveVerifyingKey();
 
-  // Decode proof using SDK approach
-  const proofBytes = Buffer.from(proof1.proof, 'base64');
-  const fieldBytes = proof1.publicInputs.map((input) => {
-    const canonical = canonicalizeHex(input);
-    return canonicalHexToBytesLE(canonical, 32);
-  });
-  const publicInputsBytes = Buffer.concat(fieldBytes.map((entry) => Buffer.from(entry)));
-  const amountCommitmentBytes = await poseidonHashMany([noteAmount1, BigInt(blinding1)]);
+  const shieldArgs = {
+    amount_commit: Array.from(amountCommitmentBytes),
+    amount: new BN(noteAmount1.toString()),
+    proof: decodedProof1.proof,
+    public_inputs: decodedProof1.publicInputs
+  };
 
-  const shieldData = poolCoder.instruction.encode('shield', {
-    args: {
-      amount_commit: Array.from(amountCommitmentBytes),
-      amount: new BN(noteAmount1.toString()),
-      proof: proofBytes,
-      public_inputs: publicInputsBytes
-    }
-  });
+  const shieldData = poolCoder.instruction.encode('shield', { args: shieldArgs });
 
   const shieldKeys = [
     { pubkey: poolStateKey, isSigner: false, isWritable: true },
@@ -341,7 +530,8 @@ async function main() {
     data: shieldData
   });
 
-  const shieldSig = await sendAndConfirmInstructions(connection, owner, [shieldIx]);
+  const instructions = [ComputeBudgetProgram.setComputeUnitLimit({ units: 1_200_000 }), shieldIx];
+  const shieldSig = await sendAndConfirmInstructions(connection, owner, instructions, mintConfig.lookupTable);
   console.info('[test-01] shield instruction successful', shieldSig);
 
   console.info('[test-02] Testing shield_finalize_tree instruction (low-level)');
@@ -355,7 +545,7 @@ async function main() {
     ],
     data: finalizeTreeData
   });
-  const finalizeTreeSig = await sendAndConfirmInstructions(connection, owner, [finalizeTreeIx]);
+  const finalizeTreeSig = await sendAndConfirmInstructions(connection, owner, [finalizeTreeIx], mintConfig.lookupTable);
   console.info('[test-02] shield_finalize_tree instruction successful', finalizeTreeSig);
 
   console.info('[test-03] Testing shield_finalize_ledger instruction (low-level)');
@@ -364,14 +554,47 @@ async function main() {
     programId: POOL_PROGRAM_ID,
     keys: [
       { pubkey: poolStateKey, isSigner: false, isWritable: true },
+      { pubkey: hookConfigKey, isSigner: false, isWritable: false },
       { pubkey: noteLedgerKey, isSigner: false, isWritable: true },
       { pubkey: shieldClaimKey, isSigner: false, isWritable: true }
     ],
     data: finalizeLedgerData
   });
-  const finalizeLedgerSig = await sendAndConfirmInstructions(connection, owner, [finalizeLedgerIx]);
+  const finalizeLedgerSig = await sendAndConfirmInstructions(
+    connection,
+    owner,
+    [finalizeLedgerIx],
+    mintConfig.lookupTable
+  );
   console.info('[test-03] shield_finalize_ledger instruction successful', finalizeLedgerSig);
 
+  console.info('[test-03b] Testing shield_check_invariant instruction (low-level)');
+  const checkInvariantData = poolCoder.instruction.encode('shield_check_invariant', {});
+  const checkInvariantKeys = [
+    { pubkey: poolStateKey, isSigner: false, isWritable: false },
+    { pubkey: noteLedgerKey, isSigner: false, isWritable: false },
+    { pubkey: shieldClaimKey, isSigner: false, isWritable: true },
+    { pubkey: vaultTokenAccount, isSigner: false, isWritable: true }
+  ];
+  if (mintConfig.zTokenMint) {
+    checkInvariantKeys.push({ pubkey: new PublicKey(mintConfig.zTokenMint), isSigner: false, isWritable: true });
+  } else {
+    checkInvariantKeys.push({ pubkey: POOL_PROGRAM_ID, isSigner: false, isWritable: false });
+  }
+  const checkInvariantIx = new TransactionInstruction({
+    programId: POOL_PROGRAM_ID,
+    keys: checkInvariantKeys,
+    data: checkInvariantData
+  });
+  const checkInvariantSig = await sendAndConfirmInstructions(
+    connection,
+    owner,
+    [checkInvariantIx],
+    mintConfig.lookupTable
+  );
+  console.info('[test-03b] shield_check_invariant instruction successful', checkInvariantSig);
+
+  await waitForShieldClaimCleared(connection, shieldClaimKey);
   const updatedRoot = await fetchPoolStateRoot(connection, mintConfig.poolId);
   currentRoot = canonicalizeHex(updatedRoot.root);
   const wrap1: WrapResult = {
@@ -380,11 +603,19 @@ async function main() {
     noteAmount: noteAmount1,
     newRoot: currentRoot,
     commitment: proof1.publicInputs[2]!,
-    nullifier: (await poseidonHashMany([BigInt(`0x${depositId1}`), BigInt(blinding1)])).toString(16).padStart(64, '0')
+    nullifier: (await poseidonHashMany([BigInt(depositId1), BigInt(blinding1)])).toString(16).padStart(64, '0')
   };
 
   console.info('[test-04] Testing private_transfer instruction (low-level)');
-  const depositId2 = crypto.randomInt(1_000_000, 9_000_000).toString();
+  
+  // Ensure shield claim is cleared before starting next shield
+  const statusBefore = await fetchShieldClaimStatus(connection, shieldClaimKey);
+  if (statusBefore !== 0) {
+    console.warn(`[test-04] Shield claim status is ${statusBefore}, waiting for clearance...`);
+    await waitForShieldClaimCleared(connection, shieldClaimKey, 60);
+  }
+  
+  const depositId2 = generateUniqueDepositId();
   const blinding2 = crypto.randomInt(1_000_000, 9_000_000).toString();
   const noteAmount2 = WRAP_AMOUNT + (WRAP_AMOUNT * feeBps) / 10_000n;
   const proof2 = await proofClient.requestProof('wrap', {
@@ -397,66 +628,96 @@ async function main() {
     mintId: mintConfig.originMint
   });
 
-  const shieldData2 = poolCoder.instruction.encode('shield', {
-    args: {
-      oldRoot: Array.from(Buffer.from(proof2.publicInputs[0]!.slice(2), 'hex').reverse()),
-      newRoot: Array.from(Buffer.from(proof2.publicInputs[1]!.slice(2), 'hex').reverse()),
-      noteCommitment: Array.from(Buffer.from(proof2.publicInputs[2]!.slice(2), 'hex').reverse()),
-      amount: new BN(noteAmount2.toString()),
-      recipient: Array.from(owner.publicKey.toBytes()),
-      depositId: new BN(depositId2),
-      blinding: new BN(blinding2),
-      proofA: proof2.proof.a.map((x) => Array.from(Buffer.from(x.slice(2), 'hex').reverse())),
-      proofB: proof2.proof.b.map((x) => x.map((y) => Array.from(Buffer.from(y.slice(2), 'hex').reverse()))),
-      proofC: proof2.proof.c.map((x) => Array.from(Buffer.from(x.slice(2), 'hex').reverse()))
-    }
-  });
+  const decodedProof2 = decodeProofPayload(proof2);
+  const amountCommitmentBytes2 = await poseidonHashMany([noteAmount2, BigInt(blinding2)]);
+
+  const shieldArgs2 = {
+    amount_commit: Array.from(amountCommitmentBytes2),
+    amount: new BN(noteAmount2.toString()),
+    proof: decodedProof2.proof,
+    public_inputs: decodedProof2.publicInputs
+  };
+
+  const shieldData2 = poolCoder.instruction.encode('shield', { args: shieldArgs2 });
+
+  const shieldKeys2 = [
+    { pubkey: poolStateKey, isSigner: false, isWritable: true },
+    { pubkey: hookConfigKey, isSigner: false, isWritable: false },
+    { pubkey: nullifierSetKey, isSigner: false, isWritable: true },
+    { pubkey: commitmentTreeKey, isSigner: false, isWritable: true },
+    { pubkey: noteLedgerKey, isSigner: false, isWritable: true },
+    { pubkey: vaultStateKey, isSigner: false, isWritable: true },
+    { pubkey: vaultTokenAccount, isSigner: false, isWritable: true },
+    { pubkey: depositorTokenAccount, isSigner: false, isWritable: true }
+  ];
+
+  if (mintConfig.zTokenMint) {
+    shieldKeys2.push({ pubkey: new PublicKey(mintConfig.zTokenMint), isSigner: false, isWritable: true });
+  } else {
+    shieldKeys2.push({ pubkey: POOL_PROGRAM_ID, isSigner: false, isWritable: false });
+  }
+
+  shieldKeys2.push(
+    { pubkey: VERIFIER_PROGRAM_ID, isSigner: false, isWritable: false },
+    { pubkey: verifyingKey, isSigner: false, isWritable: false },
+    { pubkey: shieldClaimKey, isSigner: false, isWritable: true },
+    { pubkey: owner.publicKey, isSigner: true, isWritable: true },
+    { pubkey: originMintKey, isSigner: false, isWritable: false },
+    { pubkey: VAULT_PROGRAM_ID, isSigner: false, isWritable: false },
+    { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
+    { pubkey: SYSVAR_INSTRUCTIONS_PUBKEY, isSigner: false, isWritable: false },
+    { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+    { pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false }
+  );
 
   const shieldIx2 = new TransactionInstruction({
     programId: POOL_PROGRAM_ID,
-    keys: [
-      { pubkey: poolStateKey, isSigner: false, isWritable: true },
-      { pubkey: deriveShieldClaim(poolStateKey), isSigner: false, isWritable: true },
-      { pubkey: nullifierSetKey, isSigner: false, isWritable: false },
-      { pubkey: commitmentTreeKey, isSigner: false, isWritable: false },
-      { pubkey: noteLedgerKey, isSigner: false, isWritable: false },
-      { pubkey: vaultStateKey, isSigner: false, isWritable: false },
-      { pubkey: vaultTokenAccount, isSigner: false, isWritable: true },
-      { pubkey: depositorTokenAccount, isSigner: false, isWritable: true },
-      { pubkey: mintConfig.zTokenMint ? new PublicKey(mintConfig.zTokenMint) : originMintKey, isSigner: false, isWritable: false },
-      { pubkey: VERIFIER_PROGRAM_ID, isSigner: false, isWritable: false },
-      { pubkey: verifyingKey, isSigner: false, isWritable: false },
-      { pubkey: owner.publicKey, isSigner: true, isWritable: true },
-      { pubkey: originMintKey, isSigner: false, isWritable: false },
-      { pubkey: VAULT_PROGRAM_ID, isSigner: false, isWritable: false },
-      { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
-      { pubkey: SystemProgram.programId, isSigner: false, isWritable: false }
-    ],
+    keys: shieldKeys2,
     data: shieldData2
   });
-  await sendAndConfirmInstructions(connection, owner, [shieldIx2]);
+
+  await sendAndConfirmInstructions(
+    connection,
+    owner,
+    [ComputeBudgetProgram.setComputeUnitLimit({ units: 1_200_000 }), shieldIx2],
+    mintConfig.lookupTable
+  );
 
   const finalizeTreeIx2 = new TransactionInstruction({
     programId: POOL_PROGRAM_ID,
     keys: [
       { pubkey: poolStateKey, isSigner: false, isWritable: true },
       { pubkey: commitmentTreeKey, isSigner: false, isWritable: true },
-      { pubkey: deriveShieldClaim(poolStateKey), isSigner: false, isWritable: true }
+      { pubkey: shieldClaimKey, isSigner: false, isWritable: true }
     ],
     data: poolCoder.instruction.encode('shield_finalize_tree', {})
   });
-  await sendAndConfirmInstructions(connection, owner, [finalizeTreeIx2]);
+  await sendAndConfirmInstructions(connection, owner, [finalizeTreeIx2], mintConfig.lookupTable);
 
   const finalizeLedgerIx2 = new TransactionInstruction({
     programId: POOL_PROGRAM_ID,
     keys: [
       { pubkey: poolStateKey, isSigner: false, isWritable: true },
+      { pubkey: hookConfigKey, isSigner: false, isWritable: false },
       { pubkey: noteLedgerKey, isSigner: false, isWritable: true },
-      { pubkey: deriveShieldClaim(poolStateKey), isSigner: false, isWritable: true }
+      { pubkey: shieldClaimKey, isSigner: false, isWritable: true }
     ],
     data: poolCoder.instruction.encode('shield_finalize_ledger', {})
   });
-  await sendAndConfirmInstructions(connection, owner, [finalizeLedgerIx2]);
+  await sendAndConfirmInstructions(connection, owner, [finalizeLedgerIx2], mintConfig.lookupTable);
+  const checkInvariantIx2 = new TransactionInstruction({
+    programId: POOL_PROGRAM_ID,
+    keys: [
+      { pubkey: poolStateKey, isSigner: false, isWritable: false },
+      { pubkey: noteLedgerKey, isSigner: false, isWritable: false },
+      { pubkey: shieldClaimKey, isSigner: false, isWritable: true },
+      { pubkey: vaultTokenAccount, isSigner: false, isWritable: true },
+      { pubkey: mintConfig.zTokenMint ? new PublicKey(mintConfig.zTokenMint) : POOL_PROGRAM_ID, isSigner: false, isWritable: mintConfig.zTokenMint ? true : false }
+    ],
+    data: poolCoder.instruction.encode('shield_check_invariant', {})
+  });
+  await sendAndConfirmInstructions(connection, owner, [checkInvariantIx2], mintConfig.lookupTable);
+  await waitForShieldClaimCleared(connection, shieldClaimKey);
 
   const updatedRoot2 = await fetchPoolStateRoot(connection, mintConfig.poolId);
   currentRoot = canonicalizeHex(updatedRoot2.root);
@@ -491,27 +752,33 @@ async function main() {
     ]
   });
 
+  const decodedTransferProof = decodeProofPayload(transferProof);
   const nullifierBytes = Buffer.from(wrap1.nullifier, 'hex').reverse();
-  const outputCommitments = transferProof.publicInputs.slice(2, 4).map((x) =>
-    Array.from(Buffer.from(x.slice(2), 'hex').reverse())
-  );
+  // Output commitments are at indices 2 and 3 in the decoded fields
+  const outputCommitments = decodedTransferProof.fields.slice(2, 4).map((field) => Array.from(field));
   const amountCommitments = await Promise.all([
     poseidonHashMany([transferAmount, BigInt(transferBlinding)]),
     poseidonHashMany([changeAmount, BigInt(changeBlinding)])
-  ]).then((hashes) => hashes.map((h) => Array.from(Buffer.from(h.toString(16).padStart(64, '0'), 'hex').reverse())));
-
-  const transferData = poolCoder.instruction.encode('private_transfer', {
-    args: {
-      oldRoot: Array.from(Buffer.from(transferProof.publicInputs[0]!.slice(2), 'hex').reverse()),
-      newRoot: Array.from(Buffer.from(transferProof.publicInputs[1]!.slice(2), 'hex').reverse()),
-      nullifiers: [Array.from(nullifierBytes)],
-      outputCommitments,
-      outputAmountCommitments: amountCommitments,
-      proofA: transferProof.proof.a.map((x) => Array.from(Buffer.from(x.slice(2), 'hex').reverse())),
-      proofB: transferProof.proof.b.map((x) => x.map((y) => Array.from(Buffer.from(y.slice(2), 'hex').reverse()))),
-      proofC: transferProof.proof.c.map((x) => Array.from(Buffer.from(x.slice(2), 'hex').reverse()))
+  ]).then((hashes) => hashes.map((h) => {
+    const bytes = Buffer.alloc(32);
+    const hex = h.toString(16).padStart(64, '0');
+    for (let i = 0; i < 32; i++) {
+      bytes[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
     }
-  });
+    return Array.from(bytes.reverse());
+  }));
+
+  const transferArgs = {
+    old_root: toFixedArray(decodedTransferProof.fields[0]!, 'old_root'),
+    new_root: toFixedArray(decodedTransferProof.fields[1]!, 'new_root'),
+    nullifiers: [Array.from(nullifierBytes)],
+    output_commitments: outputCommitments,
+    output_amount_commitments: amountCommitments,
+    proof: decodedTransferProof.proof,
+    public_inputs: decodedTransferProof.publicInputs
+  };
+
+  const transferData = poolCoder.instruction.encode('private_transfer', { args: transferArgs });
 
   const transferIx = new TransactionInstruction({
     programId: POOL_PROGRAM_ID,
@@ -520,13 +787,21 @@ async function main() {
       { pubkey: nullifierSetKey, isSigner: false, isWritable: true },
       { pubkey: commitmentTreeKey, isSigner: false, isWritable: true },
       { pubkey: noteLedgerKey, isSigner: false, isWritable: true },
+      { pubkey: mintMappingKey, isSigner: false, isWritable: false },
       { pubkey: VERIFIER_PROGRAM_ID, isSigner: false, isWritable: false },
-      { pubkey: verifyingKey, isSigner: false, isWritable: false }
+      { pubkey: verifyingKey, isSigner: false, isWritable: false },
+      { pubkey: owner.publicKey, isSigner: true, isWritable: true },
+      { pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false }
     ],
     data: transferData
   });
 
-  const transferSig = await sendAndConfirmInstructions(connection, owner, [transferIx]);
+  const transferSig = await sendAndConfirmInstructions(
+    connection,
+    owner,
+    [ComputeBudgetProgram.setComputeUnitLimit({ units: 800_000 }), transferIx],
+    mintConfig.lookupTable
+  );
   console.info('[test-04] private_transfer instruction successful', transferSig);
 
   const updatedRoot3 = await fetchPoolStateRoot(connection, mintConfig.poolId);
@@ -550,11 +825,11 @@ async function main() {
     ],
     data: approveData
   });
-  const approveSig = await sendAndConfirmInstructions(connection, owner, [approveIx]);
+  const approveSig = await sendAndConfirmInstructions(connection, owner, [approveIx], mintConfig.lookupTable);
   console.info('[test-05] approve_allowance instruction successful', approveSig);
 
   console.info('[test-06] Testing transfer_from instruction (low-level)');
-  const depositId3 = crypto.randomInt(1_000_000, 9_000_000).toString();
+  const depositId3 = generateUniqueDepositId();
   const blinding3 = crypto.randomInt(1_000_000, 9_000_000).toString();
   const noteAmount3 = WRAP_AMOUNT + (WRAP_AMOUNT * feeBps) / 10_000n;
   const proof3 = await proofClient.requestProof('wrap', {
@@ -567,66 +842,95 @@ async function main() {
     mintId: mintConfig.originMint
   });
 
-  const shieldData3 = poolCoder.instruction.encode('shield', {
-    args: {
-      oldRoot: Array.from(Buffer.from(proof3.publicInputs[0]!.slice(2), 'hex').reverse()),
-      newRoot: Array.from(Buffer.from(proof3.publicInputs[1]!.slice(2), 'hex').reverse()),
-      noteCommitment: Array.from(Buffer.from(proof3.publicInputs[2]!.slice(2), 'hex').reverse()),
-      amount: new BN(noteAmount3.toString()),
-      recipient: Array.from(owner.publicKey.toBytes()),
-      depositId: new BN(depositId3),
-      blinding: new BN(blinding3),
-      proofA: proof3.proof.a.map((x) => Array.from(Buffer.from(x.slice(2), 'hex').reverse())),
-      proofB: proof3.proof.b.map((x) => x.map((y) => Array.from(Buffer.from(y.slice(2), 'hex').reverse()))),
-      proofC: proof3.proof.c.map((x) => Array.from(Buffer.from(x.slice(2), 'hex').reverse()))
-    }
-  });
+  const decodedProof3 = decodeProofPayload(proof3);
+  const amountCommitmentBytes3 = await poseidonHashMany([noteAmount3, BigInt(blinding3)]);
+
+  const shieldArgs3 = {
+    amount_commit: Array.from(amountCommitmentBytes3),
+    amount: new BN(noteAmount3.toString()),
+    proof: decodedProof3.proof,
+    public_inputs: decodedProof3.publicInputs
+  };
+
+  const shieldData3 = poolCoder.instruction.encode('shield', { args: shieldArgs3 });
+
+  const shieldKeys3 = [
+    { pubkey: poolStateKey, isSigner: false, isWritable: true },
+    { pubkey: hookConfigKey, isSigner: false, isWritable: false },
+    { pubkey: nullifierSetKey, isSigner: false, isWritable: true },
+    { pubkey: commitmentTreeKey, isSigner: false, isWritable: true },
+    { pubkey: noteLedgerKey, isSigner: false, isWritable: true },
+    { pubkey: vaultStateKey, isSigner: false, isWritable: true },
+    { pubkey: vaultTokenAccount, isSigner: false, isWritable: true },
+    { pubkey: depositorTokenAccount, isSigner: false, isWritable: true }
+  ];
+
+  if (mintConfig.zTokenMint) {
+    shieldKeys3.push({ pubkey: new PublicKey(mintConfig.zTokenMint), isSigner: false, isWritable: true });
+  } else {
+    shieldKeys3.push({ pubkey: POOL_PROGRAM_ID, isSigner: false, isWritable: false });
+  }
+
+  shieldKeys3.push(
+    { pubkey: VERIFIER_PROGRAM_ID, isSigner: false, isWritable: false },
+    { pubkey: verifyingKey, isSigner: false, isWritable: false },
+    { pubkey: shieldClaimKey, isSigner: false, isWritable: true },
+    { pubkey: owner.publicKey, isSigner: true, isWritable: true },
+    { pubkey: originMintKey, isSigner: false, isWritable: false },
+    { pubkey: VAULT_PROGRAM_ID, isSigner: false, isWritable: false },
+    { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
+    { pubkey: SYSVAR_INSTRUCTIONS_PUBKEY, isSigner: false, isWritable: false },
+    { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+    { pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false }
+  );
 
   const shieldIx3 = new TransactionInstruction({
     programId: POOL_PROGRAM_ID,
-    keys: [
-      { pubkey: poolStateKey, isSigner: false, isWritable: true },
-      { pubkey: deriveShieldClaim(poolStateKey), isSigner: false, isWritable: true },
-      { pubkey: nullifierSetKey, isSigner: false, isWritable: false },
-      { pubkey: commitmentTreeKey, isSigner: false, isWritable: false },
-      { pubkey: noteLedgerKey, isSigner: false, isWritable: false },
-      { pubkey: vaultStateKey, isSigner: false, isWritable: false },
-      { pubkey: vaultTokenAccount, isSigner: false, isWritable: true },
-      { pubkey: depositorTokenAccount, isSigner: false, isWritable: true },
-      { pubkey: mintConfig.zTokenMint ? new PublicKey(mintConfig.zTokenMint) : originMintKey, isSigner: false, isWritable: false },
-      { pubkey: VERIFIER_PROGRAM_ID, isSigner: false, isWritable: false },
-      { pubkey: verifyingKey, isSigner: false, isWritable: false },
-      { pubkey: owner.publicKey, isSigner: true, isWritable: true },
-      { pubkey: originMintKey, isSigner: false, isWritable: false },
-      { pubkey: VAULT_PROGRAM_ID, isSigner: false, isWritable: false },
-      { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
-      { pubkey: SystemProgram.programId, isSigner: false, isWritable: false }
-    ],
+    keys: shieldKeys3,
     data: shieldData3
   });
-  await sendAndConfirmInstructions(connection, owner, [shieldIx3]);
+  await sendAndConfirmInstructions(
+    connection,
+    owner,
+    [ComputeBudgetProgram.setComputeUnitLimit({ units: 1_200_000 }), shieldIx3],
+    mintConfig.lookupTable
+  );
 
   const finalizeTreeIx3 = new TransactionInstruction({
     programId: POOL_PROGRAM_ID,
     keys: [
       { pubkey: poolStateKey, isSigner: false, isWritable: true },
       { pubkey: commitmentTreeKey, isSigner: false, isWritable: true },
-      { pubkey: deriveShieldClaim(poolStateKey), isSigner: false, isWritable: true }
+      { pubkey: shieldClaimKey, isSigner: false, isWritable: true }
     ],
     data: poolCoder.instruction.encode('shield_finalize_tree', {})
   });
-  await sendAndConfirmInstructions(connection, owner, [finalizeTreeIx3]);
+  await sendAndConfirmInstructions(connection, owner, [finalizeTreeIx3], mintConfig.lookupTable);
 
   const finalizeLedgerIx3 = new TransactionInstruction({
     programId: POOL_PROGRAM_ID,
     keys: [
       { pubkey: poolStateKey, isSigner: false, isWritable: true },
+      { pubkey: hookConfigKey, isSigner: false, isWritable: false },
       { pubkey: noteLedgerKey, isSigner: false, isWritable: true },
-      { pubkey: deriveShieldClaim(poolStateKey), isSigner: false, isWritable: true }
+      { pubkey: shieldClaimKey, isSigner: false, isWritable: true }
     ],
     data: poolCoder.instruction.encode('shield_finalize_ledger', {})
   });
-  await sendAndConfirmInstructions(connection, owner, [finalizeLedgerIx3]);
+  await sendAndConfirmInstructions(connection, owner, [finalizeLedgerIx3], mintConfig.lookupTable);
+  const checkInvariantIx3 = new TransactionInstruction({
+    programId: POOL_PROGRAM_ID,
+    keys: [
+      { pubkey: poolStateKey, isSigner: false, isWritable: false },
+      { pubkey: noteLedgerKey, isSigner: false, isWritable: false },
+      { pubkey: shieldClaimKey, isSigner: false, isWritable: true },
+      { pubkey: vaultTokenAccount, isSigner: false, isWritable: true },
+      { pubkey: mintConfig.zTokenMint ? new PublicKey(mintConfig.zTokenMint) : POOL_PROGRAM_ID, isSigner: false, isWritable: mintConfig.zTokenMint ? true : false }
+    ],
+    data: poolCoder.instruction.encode('shield_check_invariant', {})
+  });
+  await sendAndConfirmInstructions(connection, owner, [checkInvariantIx3], mintConfig.lookupTable);
+  await waitForShieldClaimCleared(connection, shieldClaimKey);
 
   const updatedRoot4 = await fetchPoolStateRoot(connection, mintConfig.poolId);
   currentRoot = canonicalizeHex(updatedRoot4.root);
@@ -637,7 +941,7 @@ async function main() {
     noteAmount: noteAmount3,
     newRoot: currentRoot,
     commitment: proof3.publicInputs[2]!,
-    nullifier: (await poseidonHashMany([BigInt(`0x${depositId3}`), BigInt(blinding3)])).toString(16).padStart(64, '0')
+    nullifier: (await poseidonHashMany([BigInt(depositId3), BigInt(blinding3)])).toString(16).padStart(64, '0')
   };
 
   const transferFromAmount = WRAP_AMOUNT / 4n;
@@ -670,53 +974,69 @@ async function main() {
     ]
   });
 
+  const decodedTransferFromProof = decodeProofPayload(transferFromProof);
   const nullifierBytes3 = Buffer.from(wrap3.nullifier, 'hex').reverse();
-  const outputCommitments3 = transferFromProof.publicInputs.slice(2, 4).map((x) =>
-    Array.from(Buffer.from(x.slice(2), 'hex').reverse())
-  );
+  const outputCommitments3 = decodedTransferFromProof.fields.slice(2, 4).map((field) => Array.from(field));
   const amountCommitments3 = await Promise.all([
     poseidonHashMany([transferFromAmount, BigInt(transferFromBlinding)]),
     poseidonHashMany([changeFromAmount, BigInt(changeFromBlinding)])
-  ]).then((hashes) => hashes.map((h) => Array.from(Buffer.from(h.toString(16).padStart(64, '0'), 'hex').reverse())));
-
-  const transferFromData = poolCoder.instruction.encode('transfer_from', {
-    args: {
-      oldRoot: Array.from(Buffer.from(transferFromProof.publicInputs[0]!.slice(2), 'hex').reverse()),
-      newRoot: Array.from(Buffer.from(transferFromProof.publicInputs[1]!.slice(2), 'hex').reverse()),
-      nullifiers: [Array.from(nullifierBytes3)],
-      outputCommitments: outputCommitments3,
-      outputAmountCommitments: amountCommitments3,
-      proofA: transferFromProof.proof.a.map((x) => Array.from(Buffer.from(x.slice(2), 'hex').reverse())),
-      proofB: transferFromProof.proof.b.map((x) => x.map((y) => Array.from(Buffer.from(y.slice(2), 'hex').reverse()))),
-      proofC: transferFromProof.proof.c.map((x) => Array.from(Buffer.from(x.slice(2), 'hex').reverse()))
+  ]).then((hashes) => hashes.map((h) => {
+    const bytes = Buffer.alloc(32);
+    const hex = h.toString(16).padStart(64, '0');
+    for (let i = 0; i < 32; i++) {
+      bytes[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
     }
-  });
+    return Array.from(bytes.reverse());
+  }));
+
+  const transferFromTransferArgs = {
+    old_root: toFixedArray(decodedTransferFromProof.fields[0]!, 'old_root'),
+    new_root: toFixedArray(decodedTransferFromProof.fields[1]!, 'new_root'),
+    nullifiers: [Array.from(nullifierBytes3)],
+    output_commitments: outputCommitments3,
+    output_amount_commitments: amountCommitments3,
+    proof: decodedTransferFromProof.proof,
+    public_inputs: decodedTransferFromProof.publicInputs
+  };
+
+  const transferFromArgs = {
+    transfer: transferFromTransferArgs,
+    allowance_amount: new BN(transferFromAmount.toString())
+  };
+
+  const transferFromData = poolCoder.instruction.encode('transfer_from', { args: transferFromArgs });
 
   const transferFromIx = new TransactionInstruction({
     programId: POOL_PROGRAM_ID,
     keys: [
       { pubkey: poolStateKey, isSigner: false, isWritable: true },
       { pubkey: nullifierSetKey, isSigner: false, isWritable: true },
-      { pubkey: commitmentTreeKey, isSigner: false, isWritable: false },
-      { pubkey: noteLedgerKey, isSigner: false, isWritable: false },
+      { pubkey: commitmentTreeKey, isSigner: false, isWritable: true },
+      { pubkey: noteLedgerKey, isSigner: false, isWritable: true },
       { pubkey: VERIFIER_PROGRAM_ID, isSigner: false, isWritable: false },
       { pubkey: verifyingKey, isSigner: false, isWritable: false },
+      { pubkey: mintMappingKey, isSigner: false, isWritable: false },
       { pubkey: allowanceAddress, isSigner: false, isWritable: true },
       { pubkey: owner.publicKey, isSigner: false, isWritable: false },
       { pubkey: delegate.publicKey, isSigner: true, isWritable: true },
-      { pubkey: mintMappingKey, isSigner: false, isWritable: false }
+      { pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false }
     ],
     data: transferFromData
   });
 
-  const transferFromSig = await sendAndConfirmInstructions(connection, delegate, [transferFromIx]);
+  const transferFromSig = await sendAndConfirmInstructions(
+    connection,
+    delegate,
+    [ComputeBudgetProgram.setComputeUnitLimit({ units: 800_000 }), transferFromIx],
+    mintConfig.lookupTable
+  );
   console.info('[test-06] transfer_from instruction successful', transferFromSig);
 
   const updatedRoot5 = await fetchPoolStateRoot(connection, mintConfig.poolId);
   currentRoot = canonicalizeHex(updatedRoot5.root);
 
   console.info('[test-07] Testing unshield_to_origin instruction (low-level)');
-  const depositId4 = crypto.randomInt(1_000_000, 9_000_000).toString();
+  const depositId4 = generateUniqueDepositId();
   const blinding4 = crypto.randomInt(1_000_000, 9_000_000).toString();
   const noteAmount4 = WRAP_AMOUNT + (WRAP_AMOUNT * feeBps) / 10_000n;
   const proof4 = await proofClient.requestProof('wrap', {
@@ -729,66 +1049,115 @@ async function main() {
     mintId: mintConfig.originMint
   });
 
-  const shieldData4 = poolCoder.instruction.encode('shield', {
-    args: {
-      oldRoot: Array.from(Buffer.from(proof4.publicInputs[0]!.slice(2), 'hex').reverse()),
-      newRoot: Array.from(Buffer.from(proof4.publicInputs[1]!.slice(2), 'hex').reverse()),
-      noteCommitment: Array.from(Buffer.from(proof4.publicInputs[2]!.slice(2), 'hex').reverse()),
-      amount: new BN(noteAmount4.toString()),
-      recipient: Array.from(receiver.publicKey.toBytes()),
-      depositId: new BN(depositId4),
-      blinding: new BN(blinding4),
-      proofA: proof4.proof.a.map((x) => Array.from(Buffer.from(x.slice(2), 'hex').reverse())),
-      proofB: proof4.proof.b.map((x) => x.map((y) => Array.from(Buffer.from(y.slice(2), 'hex').reverse()))),
-      proofC: proof4.proof.c.map((x) => Array.from(Buffer.from(x.slice(2), 'hex').reverse()))
-    }
-  });
+  const decodedProof4 = decodeProofPayload(proof4);
+  const amountCommitmentBytes4 = await poseidonHashMany([noteAmount4, BigInt(blinding4)]);
+
+  const shieldArgs4 = {
+    amount_commit: Array.from(amountCommitmentBytes4),
+    amount: new BN(noteAmount4.toString()),
+    proof: decodedProof4.proof,
+    public_inputs: decodedProof4.publicInputs
+  };
+
+  const shieldData4 = poolCoder.instruction.encode('shield', { args: shieldArgs4 });
+
+  const receiverTokenAccount = await getAssociatedTokenAddress(
+    originMintKey,
+    receiver.publicKey,
+    false,
+    TOKEN_PROGRAM_ID,
+    ASSOCIATED_TOKEN_PROGRAM_ID
+  );
+  const receiverInfo = await connection.getAccountInfo(receiverTokenAccount);
+  if (!receiverInfo) {
+    const ix = createAssociatedTokenAccountInstruction(
+      receiver.publicKey,
+      receiverTokenAccount,
+      receiver.publicKey,
+      originMintKey,
+      TOKEN_PROGRAM_ID,
+      ASSOCIATED_TOKEN_PROGRAM_ID
+    );
+    await sendAndConfirmInstructions(connection, receiver, [ix]);
+  }
+
+  const shieldKeys4 = [
+    { pubkey: poolStateKey, isSigner: false, isWritable: true },
+    { pubkey: hookConfigKey, isSigner: false, isWritable: false },
+    { pubkey: nullifierSetKey, isSigner: false, isWritable: true },
+    { pubkey: commitmentTreeKey, isSigner: false, isWritable: true },
+    { pubkey: noteLedgerKey, isSigner: false, isWritable: true },
+    { pubkey: vaultStateKey, isSigner: false, isWritable: true },
+    { pubkey: vaultTokenAccount, isSigner: false, isWritable: true },
+    { pubkey: receiverTokenAccount, isSigner: false, isWritable: true }
+  ];
+
+  if (mintConfig.zTokenMint) {
+    shieldKeys4.push({ pubkey: new PublicKey(mintConfig.zTokenMint), isSigner: false, isWritable: true });
+  } else {
+    shieldKeys4.push({ pubkey: POOL_PROGRAM_ID, isSigner: false, isWritable: false });
+  }
+
+  shieldKeys4.push(
+    { pubkey: VERIFIER_PROGRAM_ID, isSigner: false, isWritable: false },
+    { pubkey: verifyingKey, isSigner: false, isWritable: false },
+    { pubkey: shieldClaimKey, isSigner: false, isWritable: true },
+    { pubkey: receiver.publicKey, isSigner: true, isWritable: true },
+    { pubkey: originMintKey, isSigner: false, isWritable: false },
+    { pubkey: VAULT_PROGRAM_ID, isSigner: false, isWritable: false },
+    { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
+    { pubkey: SYSVAR_INSTRUCTIONS_PUBKEY, isSigner: false, isWritable: false },
+    { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+    { pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false }
+  );
 
   const shieldIx4 = new TransactionInstruction({
     programId: POOL_PROGRAM_ID,
-    keys: [
-      { pubkey: poolStateKey, isSigner: false, isWritable: true },
-      { pubkey: deriveShieldClaim(poolStateKey), isSigner: false, isWritable: true },
-      { pubkey: nullifierSetKey, isSigner: false, isWritable: false },
-      { pubkey: commitmentTreeKey, isSigner: false, isWritable: false },
-      { pubkey: noteLedgerKey, isSigner: false, isWritable: false },
-      { pubkey: vaultStateKey, isSigner: false, isWritable: false },
-      { pubkey: vaultTokenAccount, isSigner: false, isWritable: true },
-      { pubkey: await getAssociatedTokenAddress(originMintKey, receiver.publicKey, false, TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID), isSigner: false, isWritable: true },
-      { pubkey: mintConfig.zTokenMint ? new PublicKey(mintConfig.zTokenMint) : originMintKey, isSigner: false, isWritable: false },
-      { pubkey: VERIFIER_PROGRAM_ID, isSigner: false, isWritable: false },
-      { pubkey: verifyingKey, isSigner: false, isWritable: false },
-      { pubkey: receiver.publicKey, isSigner: true, isWritable: true },
-      { pubkey: originMintKey, isSigner: false, isWritable: false },
-      { pubkey: VAULT_PROGRAM_ID, isSigner: false, isWritable: false },
-      { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
-      { pubkey: SystemProgram.programId, isSigner: false, isWritable: false }
-    ],
+    keys: shieldKeys4,
     data: shieldData4
   });
-  await sendAndConfirmInstructions(connection, receiver, [shieldIx4]);
+  await sendAndConfirmInstructions(
+    connection,
+    receiver,
+    [ComputeBudgetProgram.setComputeUnitLimit({ units: 1_200_000 }), shieldIx4],
+    mintConfig.lookupTable
+  );
 
   const finalizeTreeIx4 = new TransactionInstruction({
     programId: POOL_PROGRAM_ID,
     keys: [
       { pubkey: poolStateKey, isSigner: false, isWritable: true },
       { pubkey: commitmentTreeKey, isSigner: false, isWritable: true },
-      { pubkey: deriveShieldClaim(poolStateKey), isSigner: false, isWritable: true }
+      { pubkey: shieldClaimKey, isSigner: false, isWritable: true }
     ],
     data: poolCoder.instruction.encode('shield_finalize_tree', {})
   });
-  await sendAndConfirmInstructions(connection, receiver, [finalizeTreeIx4]);
+  await sendAndConfirmInstructions(connection, receiver, [finalizeTreeIx4], mintConfig.lookupTable);
 
   const finalizeLedgerIx4 = new TransactionInstruction({
     programId: POOL_PROGRAM_ID,
     keys: [
       { pubkey: poolStateKey, isSigner: false, isWritable: true },
+      { pubkey: hookConfigKey, isSigner: false, isWritable: false },
       { pubkey: noteLedgerKey, isSigner: false, isWritable: true },
-      { pubkey: deriveShieldClaim(poolStateKey), isSigner: false, isWritable: true }
+      { pubkey: shieldClaimKey, isSigner: false, isWritable: true }
     ],
     data: poolCoder.instruction.encode('shield_finalize_ledger', {})
   });
-  await sendAndConfirmInstructions(connection, receiver, [finalizeLedgerIx4]);
+  await sendAndConfirmInstructions(connection, receiver, [finalizeLedgerIx4], mintConfig.lookupTable);
+  const checkInvariantIx4 = new TransactionInstruction({
+    programId: POOL_PROGRAM_ID,
+    keys: [
+      { pubkey: poolStateKey, isSigner: false, isWritable: false },
+      { pubkey: noteLedgerKey, isSigner: false, isWritable: false },
+      { pubkey: shieldClaimKey, isSigner: false, isWritable: true },
+      { pubkey: vaultTokenAccount, isSigner: false, isWritable: true },
+      { pubkey: mintConfig.zTokenMint ? new PublicKey(mintConfig.zTokenMint) : POOL_PROGRAM_ID, isSigner: false, isWritable: mintConfig.zTokenMint ? true : false }
+    ],
+    data: poolCoder.instruction.encode('shield_check_invariant', {})
+  });
+  await sendAndConfirmInstructions(connection, receiver, [checkInvariantIx4], mintConfig.lookupTable);
+  await waitForShieldClaimCleared(connection, shieldClaimKey);
 
   const updatedRoot6 = await fetchPoolStateRoot(connection, mintConfig.poolId);
   currentRoot = canonicalizeHex(updatedRoot6.root);
@@ -799,10 +1168,11 @@ async function main() {
     noteAmount: noteAmount4,
     newRoot: currentRoot,
     commitment: proof4.publicInputs[2]!,
-    nullifier: (await poseidonHashMany([BigInt(`0x${depositId4}`), BigInt(blinding4)])).toString(16).padStart(64, '0')
+    nullifier: (await poseidonHashMany([BigInt(depositId4), BigInt(blinding4)])).toString(16).padStart(64, '0')
   };
 
-  const unshieldAmount = wrap4.noteAmount;
+  // Unshield amount should account for fees - use a slightly smaller amount
+  const unshieldAmount = wrap4.noteAmount - (wrap4.noteAmount * feeBps) / 10_000n;
   const unshieldBlinding = randomFieldScalar();
 
   const unshieldProof = await proofClient.requestProof('unwrap', {
@@ -821,6 +1191,7 @@ async function main() {
     blinding: unshieldBlinding
   });
 
+  const decodedUnshieldProof = decodeProofPayload(unshieldProof);
   const nullifierBytes4 = Buffer.from(wrap4.nullifier, 'hex').reverse();
   const destinationTokenAccount = await getAssociatedTokenAddress(
     originMintKey,
@@ -829,56 +1200,61 @@ async function main() {
     TOKEN_PROGRAM_ID,
     ASSOCIATED_TOKEN_PROGRAM_ID
   );
-  const destInfo = await connection.getAccountInfo(destinationTokenAccount);
-  if (!destInfo) {
-    const ix = createAssociatedTokenAccountInstruction(
-      receiver.publicKey,
-      destinationTokenAccount,
-      receiver.publicKey,
-      originMintKey,
-      TOKEN_PROGRAM_ID,
-      ASSOCIATED_TOKEN_PROGRAM_ID
-    );
-    await sendAndConfirmInstructions(connection, receiver, [ix]);
-  }
 
-  const unshieldData = poolCoder.instruction.encode('unshield_to_origin', {
-    args: {
-      oldRoot: Array.from(Buffer.from(unshieldProof.publicInputs[0]!.slice(2), 'hex').reverse()),
-      newRoot: Array.from(Buffer.from(unshieldProof.publicInputs[1]!.slice(2), 'hex').reverse()),
-      nullifiers: [Array.from(nullifierBytes4)],
-      amount: new BN(unshieldAmount.toString()),
-      recipient: Array.from(receiver.publicKey.toBytes()),
-      blinding: new BN(unshieldBlinding),
-      proofA: unshieldProof.proof.a.map((x) => Array.from(Buffer.from(x.slice(2), 'hex').reverse())),
-      proofB: unshieldProof.proof.b.map((x) => x.map((y) => Array.from(Buffer.from(y.slice(2), 'hex').reverse()))),
-      proofC: unshieldProof.proof.c.map((x) => Array.from(Buffer.from(x.slice(2), 'hex').reverse()))
-    }
-  });
+  const ROOT_FIELD_COUNT = 2;
+  const TRAILING_FIELD_COUNT = 6;
+  const CHANGE_FIELD_COUNT = 2;
+  const nullifierCount = decodedUnshieldProof.fields.length - (ROOT_FIELD_COUNT + TRAILING_FIELD_COUNT + CHANGE_FIELD_COUNT);
+  const oldRootBytes = decodedUnshieldProof.fields[0]!;
+  const newRootBytes = decodedUnshieldProof.fields[1]!;
+  const nullifierBytesArray = decodedUnshieldProof.fields.slice(2, 2 + nullifierCount);
+  const changeCommitmentBytes = decodedUnshieldProof.fields[2 + nullifierCount]!;
+  const changeAmountCommitmentBytes = decodedUnshieldProof.fields[3 + nullifierCount]!;
+
+  const unshieldArgs = {
+    old_root: Array.from(oldRootBytes),
+    new_root: Array.from(newRootBytes),
+    nullifiers: nullifierBytesArray.map((entry) => Array.from(entry)),
+    output_commitments: [Array.from(changeCommitmentBytes)],
+    output_amount_commitments: [Array.from(changeAmountCommitmentBytes)],
+    amount: new BN(unshieldAmount.toString()),
+    proof: decodedUnshieldProof.proof,
+    public_inputs: decodedUnshieldProof.publicInputs
+  };
+
+  const unshieldData = poolCoder.instruction.encode('unshield_to_origin', { args: unshieldArgs });
 
   const unshieldIx = new TransactionInstruction({
     programId: POOL_PROGRAM_ID,
     keys: [
       { pubkey: poolStateKey, isSigner: false, isWritable: true },
+      { pubkey: hookConfigKey, isSigner: false, isWritable: false },
       { pubkey: nullifierSetKey, isSigner: false, isWritable: true },
-      { pubkey: commitmentTreeKey, isSigner: false, isWritable: false },
-      { pubkey: noteLedgerKey, isSigner: false, isWritable: false },
+      { pubkey: commitmentTreeKey, isSigner: false, isWritable: true },
+      { pubkey: noteLedgerKey, isSigner: false, isWritable: true },
       { pubkey: mintMappingKey, isSigner: false, isWritable: false },
       { pubkey: VERIFIER_PROGRAM_ID, isSigner: false, isWritable: false },
       { pubkey: verifyingKey, isSigner: false, isWritable: false },
-      { pubkey: vaultStateKey, isSigner: false, isWritable: false },
+      { pubkey: vaultStateKey, isSigner: false, isWritable: true },
       { pubkey: vaultTokenAccount, isSigner: false, isWritable: true },
       { pubkey: destinationTokenAccount, isSigner: false, isWritable: true },
       { pubkey: mintConfig.zTokenMint ? new PublicKey(mintConfig.zTokenMint) : originMintKey, isSigner: false, isWritable: false },
       { pubkey: VAULT_PROGRAM_ID, isSigner: false, isWritable: false },
       { pubkey: factoryStateKey, isSigner: false, isWritable: false },
       { pubkey: FACTORY_PROGRAM_ID, isSigner: false, isWritable: false },
-      { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false }
+      { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
+      { pubkey: receiver.publicKey, isSigner: true, isWritable: true },
+      { pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false }
     ],
     data: unshieldData
   });
 
-  const unshieldSig = await sendAndConfirmInstructions(connection, receiver, [unshieldIx]);
+  const unshieldSig = await sendAndConfirmInstructions(
+    connection,
+    receiver,
+    [ComputeBudgetProgram.setComputeUnitLimit({ units: 1_400_000 }), unshieldIx],
+    mintConfig.lookupTable
+  );
   console.info('[test-07] unshield_to_origin instruction successful', unshieldSig);
 
   console.info('[test-08] Testing write_nullifier instruction (low-level)');
@@ -926,19 +1302,134 @@ async function main() {
     ],
     data: revokeData
   });
-  const revokeSig = await sendAndConfirmInstructions(connection, owner, [revokeIx]);
+  const revokeSig = await sendAndConfirmInstructions(connection, owner, [revokeIx], mintConfig.lookupTable);
   console.info('[test-10] revoke_allowance instruction successful', revokeSig);
 
   console.info('[test-11] Testing insufficient allowance rejection (edge case)');
+  const depositId5 = generateUniqueDepositId();
+  const blinding5 = crypto.randomInt(1_000_000, 9_000_000).toString();
+  const noteAmount5 = WRAP_AMOUNT + (WRAP_AMOUNT * feeBps) / 10_000n;
+  const proof5 = await proofClient.requestProof('wrap', {
+    oldRoot: currentRoot,
+    amount: noteAmount5.toString(),
+    recipient: owner.publicKey.toBase58(),
+    depositId: depositId5,
+    poolId: mintConfig.poolId,
+    blinding: blinding5,
+    mintId: mintConfig.originMint
+  });
+
+  const decodedProof5 = decodeProofPayload(proof5);
+  const amountCommitmentBytes5 = await poseidonHashMany([noteAmount5, BigInt(blinding5)]);
+
+  const shieldArgs5 = {
+    amount_commit: Array.from(amountCommitmentBytes5),
+    amount: new BN(noteAmount5.toString()),
+    proof: decodedProof5.proof,
+    public_inputs: decodedProof5.publicInputs
+  };
+
+  const shieldData5 = poolCoder.instruction.encode('shield', { args: shieldArgs5 });
+
+  const shieldKeys5 = [
+    { pubkey: poolStateKey, isSigner: false, isWritable: true },
+    { pubkey: hookConfigKey, isSigner: false, isWritable: false },
+    { pubkey: nullifierSetKey, isSigner: false, isWritable: true },
+    { pubkey: commitmentTreeKey, isSigner: false, isWritable: true },
+    { pubkey: noteLedgerKey, isSigner: false, isWritable: true },
+    { pubkey: vaultStateKey, isSigner: false, isWritable: true },
+    { pubkey: vaultTokenAccount, isSigner: false, isWritable: true },
+    { pubkey: depositorTokenAccount, isSigner: false, isWritable: true }
+  ];
+
+  if (mintConfig.zTokenMint) {
+    shieldKeys5.push({ pubkey: new PublicKey(mintConfig.zTokenMint), isSigner: false, isWritable: true });
+  } else {
+    shieldKeys5.push({ pubkey: POOL_PROGRAM_ID, isSigner: false, isWritable: false });
+  }
+
+  shieldKeys5.push(
+    { pubkey: VERIFIER_PROGRAM_ID, isSigner: false, isWritable: false },
+    { pubkey: verifyingKey, isSigner: false, isWritable: false },
+    { pubkey: shieldClaimKey, isSigner: false, isWritable: true },
+    { pubkey: owner.publicKey, isSigner: true, isWritable: true },
+    { pubkey: originMintKey, isSigner: false, isWritable: false },
+    { pubkey: VAULT_PROGRAM_ID, isSigner: false, isWritable: false },
+    { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
+    { pubkey: SYSVAR_INSTRUCTIONS_PUBKEY, isSigner: false, isWritable: false },
+    { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+    { pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false }
+  );
+
+  const shieldIx5 = new TransactionInstruction({
+    programId: POOL_PROGRAM_ID,
+    keys: shieldKeys5,
+    data: shieldData5
+  });
+  await sendAndConfirmInstructions(
+    connection,
+    owner,
+    [ComputeBudgetProgram.setComputeUnitLimit({ units: 1_200_000 }), shieldIx5],
+    mintConfig.lookupTable
+  );
+
+  const finalizeTreeIx5 = new TransactionInstruction({
+    programId: POOL_PROGRAM_ID,
+    keys: [
+      { pubkey: poolStateKey, isSigner: false, isWritable: true },
+      { pubkey: commitmentTreeKey, isSigner: false, isWritable: true },
+      { pubkey: shieldClaimKey, isSigner: false, isWritable: true }
+    ],
+    data: poolCoder.instruction.encode('shield_finalize_tree', {})
+  });
+  await sendAndConfirmInstructions(connection, owner, [finalizeTreeIx5], mintConfig.lookupTable);
+
+  const finalizeLedgerIx5 = new TransactionInstruction({
+    programId: POOL_PROGRAM_ID,
+    keys: [
+      { pubkey: poolStateKey, isSigner: false, isWritable: true },
+      { pubkey: hookConfigKey, isSigner: false, isWritable: false },
+      { pubkey: noteLedgerKey, isSigner: false, isWritable: true },
+      { pubkey: shieldClaimKey, isSigner: false, isWritable: true }
+    ],
+    data: poolCoder.instruction.encode('shield_finalize_ledger', {})
+  });
+  await sendAndConfirmInstructions(connection, owner, [finalizeLedgerIx5], mintConfig.lookupTable);
+  const checkInvariantIx5 = new TransactionInstruction({
+    programId: POOL_PROGRAM_ID,
+    keys: [
+      { pubkey: poolStateKey, isSigner: false, isWritable: false },
+      { pubkey: noteLedgerKey, isSigner: false, isWritable: false },
+      { pubkey: shieldClaimKey, isSigner: false, isWritable: true },
+      { pubkey: vaultTokenAccount, isSigner: false, isWritable: true },
+      { pubkey: mintConfig.zTokenMint ? new PublicKey(mintConfig.zTokenMint) : POOL_PROGRAM_ID, isSigner: false, isWritable: mintConfig.zTokenMint ? true : false }
+    ],
+    data: poolCoder.instruction.encode('shield_check_invariant', {})
+  });
+  await sendAndConfirmInstructions(connection, owner, [checkInvariantIx5], mintConfig.lookupTable);
+  await waitForShieldClaimCleared(connection, shieldClaimKey);
+
+  const updatedRoot7 = await fetchPoolStateRoot(connection, mintConfig.poolId);
+  currentRoot = canonicalizeHex(updatedRoot7.root);
+
+  const wrap5: WrapResult = {
+    noteId: depositId5,
+    spendingKey: blinding5,
+    noteAmount: noteAmount5,
+    newRoot: currentRoot,
+    commitment: proof5.publicInputs[2]!,
+    nullifier: (await poseidonHashMany([BigInt(depositId5), BigInt(blinding5)])).toString(16).padStart(64, '0')
+  };
+
   const insufficientTransferFromProof = await proofClient.requestProof('transfer', {
     oldRoot: currentRoot,
     mintId: mintConfig.originMint,
     poolId: mintConfig.poolId,
     inNotes: [
       {
-        noteId: wrap3.noteId,
-        spendingKey: wrap3.spendingKey,
-        amount: wrap3.noteAmount.toString()
+        noteId: wrap5.noteId,
+        spendingKey: wrap5.spendingKey,
+        amount: wrap5.noteAmount.toString()
       }
     ],
     outNotes: [
@@ -949,19 +1440,42 @@ async function main() {
       }
     ]
   });
+
   try {
-    const insufficientTransferFromData = poolCoder.instruction.encode('transfer_from', {
-      args: {
-        oldRoot: Array.from(Buffer.from(insufficientTransferFromProof.publicInputs[0]!.slice(2), 'hex').reverse()),
-        newRoot: Array.from(Buffer.from(insufficientTransferFromProof.publicInputs[1]!.slice(2), 'hex').reverse()),
-        nullifiers: [Array.from(nullifierBytes3)],
-        outputCommitments: [Array.from(Buffer.from(insufficientTransferFromProof.publicInputs[2]!.slice(2), 'hex').reverse())],
-        outputAmountCommitments: [Array.from(Buffer.from((await poseidonHashMany([WRAP_AMOUNT * 2n, BigInt(randomFieldScalar())])).toString(16).padStart(64, '0'), 'hex').reverse())],
-        proofA: insufficientTransferFromProof.proof.a.map((x) => Array.from(Buffer.from(x.slice(2), 'hex').reverse())),
-        proofB: insufficientTransferFromProof.proof.b.map((x) => x.map((y) => Array.from(Buffer.from(y.slice(2), 'hex').reverse()))),
-        proofC: insufficientTransferFromProof.proof.c.map((x) => Array.from(Buffer.from(x.slice(2), 'hex').reverse()))
+    const decodedInsufficientProof = decodeProofPayload(insufficientTransferFromProof);
+    const nullifierBytes5 = Buffer.from(wrap5.nullifier, 'hex').reverse();
+    const outputCommitments5 = decodedInsufficientProof.fields.slice(2, 3).map((field) => Array.from(field));
+    const randomBlinding = randomFieldScalar();
+    const amountCommitments5 = await Promise.all([
+      poseidonHashMany([WRAP_AMOUNT * 2n, BigInt(randomBlinding)])
+    ]).then((hashes) => hashes.map((h) => {
+      const bytes = Buffer.alloc(32);
+      const hex = h.toString(16).padStart(64, '0');
+      for (let i = 0; i < 32; i++) {
+        bytes[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
       }
+      return Array.from(bytes.reverse());
+    }));
+
+    const insufficientTransferArgs = {
+      old_root: toFixedArray(decodedInsufficientProof.fields[0]!, 'old_root'),
+      new_root: toFixedArray(decodedInsufficientProof.fields[1]!, 'new_root'),
+      nullifiers: [Array.from(nullifierBytes5)],
+      output_commitments: outputCommitments5,
+      output_amount_commitments: amountCommitments5,
+      proof: decodedInsufficientProof.proof,
+      public_inputs: decodedInsufficientProof.publicInputs
+    };
+
+    const insufficientTransferFromArgs = {
+      transfer: insufficientTransferArgs,
+      allowance_amount: new BN((WRAP_AMOUNT * 2n).toString())
+    };
+
+    const insufficientTransferFromData = poolCoder.instruction.encode('transfer_from', {
+      args: insufficientTransferFromArgs
     });
+
     const insufficientTransferFromIx = new TransactionInstruction({
       programId: POOL_PROGRAM_ID,
       keys: [
@@ -969,16 +1483,21 @@ async function main() {
         { pubkey: nullifierSetKey, isSigner: false, isWritable: true },
         { pubkey: commitmentTreeKey, isSigner: false, isWritable: false },
         { pubkey: noteLedgerKey, isSigner: false, isWritable: false },
+        { pubkey: mintMappingKey, isSigner: false, isWritable: false },
         { pubkey: VERIFIER_PROGRAM_ID, isSigner: false, isWritable: false },
-        { pubkey: PublicKey.findProgramAddressSync([Buffer.from('vk'), Buffer.from('transfer'), new Uint8Array([1])], VERIFIER_PROGRAM_ID)[0], isSigner: false, isWritable: false },
+        { pubkey: verifyingKey, isSigner: false, isWritable: false },
         { pubkey: allowanceAddress, isSigner: false, isWritable: true },
         { pubkey: owner.publicKey, isSigner: false, isWritable: false },
-        { pubkey: delegate.publicKey, isSigner: true, isWritable: true },
-        { pubkey: mintMappingKey, isSigner: false, isWritable: false }
+        { pubkey: delegate.publicKey, isSigner: true, isWritable: true }
       ],
       data: insufficientTransferFromData
     });
-    await sendAndConfirmInstructions(connection, delegate, [insufficientTransferFromIx]);
+    await sendAndConfirmInstructions(
+      connection,
+      delegate,
+      [ComputeBudgetProgram.setComputeUnitLimit({ units: 800_000 }), insufficientTransferFromIx],
+      mintConfig.lookupTable
+    );
     throw new Error('Expected insufficient allowance error');
   } catch (error: any) {
     if (error.logs?.some((log: string) => log.includes('AllowanceInsufficient'))) {
@@ -988,6 +1507,24 @@ async function main() {
     }
   }
 
+  console.info('[test-12] Testing accept_root instruction (edge case)');
+  const testRoot = Buffer.alloc(32);
+  crypto.randomFillSync(testRoot);
+  const acceptRootData = poolCoder.instruction.encode('accept_root', {
+    root: Array.from(testRoot)
+  });
+  const acceptRootIx = new TransactionInstruction({
+    programId: POOL_PROGRAM_ID,
+    keys: [
+      { pubkey: adminAuthority.publicKey, isSigner: true, isWritable: true },
+      { pubkey: poolStateKey, isSigner: false, isWritable: true },
+      { pubkey: nullifierSetKey, isSigner: false, isWritable: true }
+    ],
+    data: acceptRootData
+  });
+  const acceptRootSig = await sendAndConfirmInstructions(connection, adminAuthority, [acceptRootIx]);
+  console.info('[test-12] accept_root instruction successful', acceptRootSig);
+
   console.info('[lowlevel-e2e] All low-level E2E tests completed successfully');
 }
 
@@ -995,4 +1532,3 @@ main().catch((error) => {
   console.error('[fatal] lowlevel-e2e script failed', error);
   process.exitCode = 1;
 });
-
