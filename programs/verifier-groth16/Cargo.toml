@@ -26,9 +26,17 @@ serde_json = "1.0"
 
 [features]
 # NOTE: groth16-syscall requires Solana runtime support for sol_groth16_verify syscall
-# This syscall is not available in Solana 2.3.2 local validator
-# For production deployment, ensure the target Solana version supports the syscall
-# For local development/testing, use groth16-dev-skip feature
+# The syscall IS available on mainnet (Solana 1.18.x+) but NOT in local validator
+# 
+# For PRODUCTION (mainnet/testnet): Use groth16-syscall feature
+#   anchor build --features groth16-syscall
+#   This enables full security and decentralization
+#
+# For LOCAL DEVELOPMENT: Use groth16-dev-skip feature (default)
+#   anchor build  (uses dev-skip by default)
+#   This bypasses verification for local testing only
+#
+# IMPORTANT: Always deploy to mainnet with groth16-syscall enabled!
 default = ["groth16-dev-skip"]
 groth16-syscall = []
 groth16-dev-skip = []
