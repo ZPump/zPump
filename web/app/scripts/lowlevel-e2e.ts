@@ -603,7 +603,7 @@ async function main() {
     noteAmount: noteAmount1,
     newRoot: currentRoot,
     commitment: proof1.publicInputs[2]!,
-    nullifier: (await poseidonHashMany([BigInt(depositId1), BigInt(blinding1)])).toString(16).padStart(64, '0')
+    nullifier: Buffer.from(await poseidonHashMany([BigInt(depositId1), BigInt(blinding1)])).reverse().toString('hex').padStart(64, '0')
   };
 
   console.info('[test-04] Testing private_transfer instruction (low-level)');
@@ -760,12 +760,8 @@ async function main() {
     poseidonHashMany([transferAmount, BigInt(transferBlinding)]),
     poseidonHashMany([changeAmount, BigInt(changeBlinding)])
   ]).then((hashes) => hashes.map((h) => {
-    const bytes = Buffer.alloc(32);
-    const hex = h.toString(16).padStart(64, '0');
-    for (let i = 0; i < 32; i++) {
-      bytes[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
-    }
-    return Array.from(bytes.reverse());
+    const bytes = Buffer.from(h).reverse();
+    return Array.from(bytes);
   }));
 
   const transferArgs = {
@@ -941,7 +937,7 @@ async function main() {
     noteAmount: noteAmount3,
     newRoot: currentRoot,
     commitment: proof3.publicInputs[2]!,
-    nullifier: (await poseidonHashMany([BigInt(depositId3), BigInt(blinding3)])).toString(16).padStart(64, '0')
+    nullifier: Buffer.from(await poseidonHashMany([BigInt(depositId3), BigInt(blinding3)])).reverse().toString('hex').padStart(64, '0')
   };
 
   const transferFromAmount = WRAP_AMOUNT / 4n;
@@ -981,12 +977,8 @@ async function main() {
     poseidonHashMany([transferFromAmount, BigInt(transferFromBlinding)]),
     poseidonHashMany([changeFromAmount, BigInt(changeFromBlinding)])
   ]).then((hashes) => hashes.map((h) => {
-    const bytes = Buffer.alloc(32);
-    const hex = h.toString(16).padStart(64, '0');
-    for (let i = 0; i < 32; i++) {
-      bytes[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
-    }
-    return Array.from(bytes.reverse());
+    const bytes = Buffer.from(h).reverse();
+    return Array.from(bytes);
   }));
 
   const transferFromTransferArgs = {
@@ -1168,7 +1160,7 @@ async function main() {
     noteAmount: noteAmount4,
     newRoot: currentRoot,
     commitment: proof4.publicInputs[2]!,
-    nullifier: (await poseidonHashMany([BigInt(depositId4), BigInt(blinding4)])).toString(16).padStart(64, '0')
+    nullifier: Buffer.from(await poseidonHashMany([BigInt(depositId4), BigInt(blinding4)])).reverse().toString('hex').padStart(64, '0')
   };
 
   // Unshield amount should account for fees - use a slightly smaller amount
@@ -1418,7 +1410,7 @@ async function main() {
     noteAmount: noteAmount5,
     newRoot: currentRoot,
     commitment: proof5.publicInputs[2]!,
-    nullifier: (await poseidonHashMany([BigInt(depositId5), BigInt(blinding5)])).toString(16).padStart(64, '0')
+    nullifier: Buffer.from(await poseidonHashMany([BigInt(depositId5), BigInt(blinding5)])).reverse().toString('hex').padStart(64, '0')
   };
 
   const insufficientTransferFromProof = await proofClient.requestProof('transfer', {
@@ -1449,12 +1441,8 @@ async function main() {
     const amountCommitments5 = await Promise.all([
       poseidonHashMany([WRAP_AMOUNT * 2n, BigInt(randomBlinding)])
     ]).then((hashes) => hashes.map((h) => {
-      const bytes = Buffer.alloc(32);
-      const hex = h.toString(16).padStart(64, '0');
-      for (let i = 0; i < 32; i++) {
-        bytes[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
-      }
-      return Array.from(bytes.reverse());
+      const bytes = Buffer.from(h).reverse();
+      return Array.from(bytes);
     }));
 
     const insufficientTransferArgs = {

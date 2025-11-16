@@ -60,12 +60,36 @@ wait_for_rpc
 
 log "Deploying programs to ${RPC_URL}..."
 
-# Deploy using anchor deploy (handles all programs)
-log "Deploying all programs via anchor deploy..."
-if anchor deploy --provider.cluster "${RPC_URL}" 2>&1 | tee -a "${PROJECT_ROOT}/.deploy.log"; then
-  log_success "All programs deployed successfully"
-else
-  log_error "Failed to deploy programs"
-  exit 1
-fi
+# Deploy using solana program deploy for each program
+log "Deploying all programs..."
+PROGRAMS=(
+  "ptf_factory:4z618BY2dXGqAUiegqDt8omo3e81TSdXRHt64ikX1bTy"
+  "ptf_vault:9g6ZodQwxK8MN6MX3dbvFC3E7vGVqFtKZEHY7PByRAuh"
+  "ptf_pool:7kbUWzeTPY6qb1mFJC1ZMRmTZAdaHC27yukc3Czj7fKh"
+  "ptf_verifier_groth16:3aCv39mCRFH9BGJskfXqwQoWzW1ULq2yXEbEwGgKtLgg"
+)
+
+for program_info in "${PROGRAMS[@]}"; do
+  IFS=':' read -r program_name program_id <<< "${program_info}"
+  program_so="${PROJECT_ROOT}/target/deploy/${program_name}.so"
+  program_keypair="${PROJECT_ROOT}/target/deploy/${program_name}-keypair.json"
+  
+  if [[ ! -f "${program_so}" ]]; then
+    log_error "Program binary not found: ${program_so}"
+    exit 1
+  fi
+  
+  log "Deploying ${program_name} (${program_id})..."
+  if solana program deploy \
+    --url "${RPC_URL}" \
+    --program-id "${program_keypair}" \
+    "${program_so}" 2>&1 | tee -a "${PROJECT_ROOT}/.deploy.log"; then
+    log_success "${program_name} deployed successfully"
+  else
+    log_error "Failed to deploy ${program_name}"
+    exit 1
+  fi
+done
+
+log_success "All programs deployed successfully"
 
