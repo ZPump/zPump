@@ -17,16 +17,44 @@ cd web/app
 npm run test
 ```
 
-### End-to-End Script
+### End-to-End Scripts
 
-- `web/app/scripts/wrap-unwrap-local.ts` – Exercises the entire flow (faucet, proof generation, wrap, publish root, unwrap, verify balances). Vital for smoke-testing the devnet after bootstrap or code changes.
+The project includes two comprehensive E2E test suites:
+
+#### High-Level E2E Test (`browser-e2e.ts`)
+
+- `web/app/scripts/browser-e2e.ts` – Comprehensive high-level E2E test that exercises the full user flow using the SDK. Tests include:
+  - Token wrapping (shield) with multi-step finalization
+  - Private transfers between users
+  - Transfer-from with allowance delegation
+  - Unwrapping (unshield) to origin tokens
+  - Governance freeze/thaw functionality
+  - Nullifier set stress testing
+  - Indexer integration and balance verification
 
 Run:
 ```bash
-npx tsx web/app/scripts/wrap-unwrap-local.ts
+npx tsx web/app/scripts/browser-e2e.ts
 ```
 
-Requires validator, proof RPC, and indexer to be running.
+#### Low-Level E2E Test (`lowlevel-e2e.ts`)
+
+- `web/app/scripts/lowlevel-e2e.ts` – Low-level E2E test that directly constructs and tests individual program instructions. Tests include:
+  - Direct instruction construction using IDL encoder
+  - Individual instruction testing (shield, shield_finalize_tree, shield_finalize_ledger, private_transfer, transfer_from, unshield_to_origin, approve_allowance, revoke_allowance, write_nullifier)
+  - Edge case testing (nullifier reuse rejection, insufficient allowance rejection)
+  - Account key ordering and PDA derivation validation
+
+Run:
+```bash
+npx tsx web/app/scripts/lowlevel-e2e.ts
+```
+
+Both tests require:
+- Validator running (local devnet)
+- Proof RPC server running
+- Indexer service running
+- Bootstrap script executed first (`npx tsx web/app/scripts/bootstrap-private-devnet.ts`)
 
 ### On-chain Tests
 
@@ -54,7 +82,8 @@ While full CI automation is still pending, the following steps are recommended b
 3. **Bootstrap & E2E smoke test**
    - Start validator.
    - `npx tsx web/app/scripts/bootstrap-private-devnet.ts`.
-   - `npx tsx web/app/scripts/wrap-unwrap-local.ts`.
+   - `npx tsx web/app/scripts/browser-e2e.ts` (high-level test).
+   - Optionally: `npx tsx web/app/scripts/lowlevel-e2e.ts` (low-level test).
 
 4. **Manual UI verification** (quick):
    - Visit `/convert` and `/faucet`, ensure roots update after wraps and that the SDK submits the three follow-up finalize transactions (check browser console when `NEXT_PUBLIC_DEBUG_WRAP=true`).

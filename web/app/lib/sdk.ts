@@ -1283,7 +1283,6 @@ export async function transferFrom(params: TransferFromParams): Promise<string> 
         { pubkey: allowanceKey, isSigner: false, isWritable: true },
         { pubkey: allowanceOwnerKey, isSigner: false, isWritable: false },
         { pubkey: spender, isSigner: true, isWritable: false },
-        { pubkey: wallet.publicKey, isSigner: true, isWritable: true },
         { pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false }
       ],
       data: poolCoder.instruction.encode('transfer_from', { args: transferFromArgs })
