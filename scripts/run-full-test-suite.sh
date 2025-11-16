@@ -14,9 +14,9 @@ PASSED=0; FAILED=0; SKIPPED=0
 
 mkdir -p "${LOG_DIR}"
 log() { printf '[%s] %s\n' "$(date '+%H:%M:%S')" "$*" | tee -a "${LOG_DIR}/test-suite.log"; }
-log_success() { printf "${GREEN}✓${NC} %s\n" "$*"; log "$*"; ((PASSED++)); }
-log_error() { printf "${RED}✗${NC} %s\n" "$*" >&2; log "ERROR: $*"; ((FAILED++)); }
-log_skip() { printf "${YELLOW}⊘${NC} %s\n" "$*"; log "SKIPPED: $*"; ((SKIPPED++)); }
+log_success() { printf "${GREEN}✓${NC} %s\n" "$*"; log "$*"; PASSED=$((PASSED + 1)); }
+log_error() { printf "${RED}✗${NC} %s\n" "$*" >&2; log "ERROR: $*"; FAILED=$((FAILED + 1)); }
+log_skip() { printf "${YELLOW}⊘${NC} %s\n" "$*"; log "SKIPPED: $*"; SKIPPED=$((SKIPPED + 1)); }
 log_section() { echo ""; printf "${BOLD}${CYAN}━━━ %s ━━━${NC}\n" "$*"; log "SECTION: $*"; }
 
 run_test() {
