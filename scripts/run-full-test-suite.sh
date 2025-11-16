@@ -56,7 +56,7 @@ else
 fi
 
 if [[ "${SKIP_RESET}" != "true" ]]; then
-  run_test "Reset and Bootstrap" env RUN_SMOKE_TESTS=false "${PROJECT_ROOT}/scripts/reset-dev-env.sh" || exit 1
+  RUN_SMOKE_TESTS=false run_test "Reset and Bootstrap" "${PROJECT_ROOT}/scripts/reset-dev-env.sh" || exit 1
 else
   log_skip "Reset and Bootstrap"
 fi
