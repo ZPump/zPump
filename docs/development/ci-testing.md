@@ -85,9 +85,9 @@ The project includes a comprehensive master test script that orchestrates the en
 
 The master script runs the complete test stack in order:
 
-1. **Smart Contract Tests** (Anchor tests)
+1. **Reset and Bootstrap** (wipes state, resets validator, bootstraps on-chain state)
 2. **Build and Deploy** (compiles and deploys all programs)
-3. **Reset and Bootstrap** (wipes state, resets validator, bootstraps on-chain state)
+3. **Smart Contract Tests** (Anchor tests)
 4. **Low-Level E2E** (direct instruction testing)
 5. **High-Level E2E** (SDK-based integration testing)
 
