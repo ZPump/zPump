@@ -43,10 +43,11 @@ printf "${NC}"
 
 log "Starting full test suite at $(date)"
 
-if [[ "${SKIP_ANCHOR}" != "true" ]]; then
-  run_test "Anchor Tests" "${PROJECT_ROOT}/scripts/run-anchor-tests.sh" || exit 1
+# Order: Reset first (clean state), then build/deploy, then tests
+if [[ "${SKIP_RESET}" != "true" ]]; then
+  RUN_SMOKE_TESTS=false run_test "Reset and Bootstrap" "${PROJECT_ROOT}/scripts/reset-dev-env.sh" || exit 1
 else
-  log_skip "Anchor Tests"
+  log_skip "Reset and Bootstrap"
 fi
 
 if [[ "${SKIP_BUILD}" != "true" ]]; then
@@ -55,10 +56,10 @@ else
   log_skip "Build and Deploy"
 fi
 
-if [[ "${SKIP_RESET}" != "true" ]]; then
-  RUN_SMOKE_TESTS=false run_test "Reset and Bootstrap" "${PROJECT_ROOT}/scripts/reset-dev-env.sh" || exit 1
+if [[ "${SKIP_ANCHOR}" != "true" ]]; then
+  run_test "Anchor Tests" "${PROJECT_ROOT}/scripts/run-anchor-tests.sh" || exit 1
 else
-  log_skip "Reset and Bootstrap"
+  log_skip "Anchor Tests"
 fi
 
 if [[ "${SKIP_LOW}" != "true" ]]; then

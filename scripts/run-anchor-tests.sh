@@ -50,10 +50,11 @@ cd "${PROJECT_ROOT}"
 
 wait_for_rpc
 
-log "Running Anchor tests with features: ${TEST_FEATURES}..."
+log "Running Anchor tests..."
 
-# Anchor test will build, deploy, and run tests
-if anchor test -- --features "${TEST_FEATURES}" 2>&1 | tee "${PROJECT_ROOT}/.anchor-test.log"; then
+# Anchor test will build and run tests, but skip deploy since programs are already deployed
+# Features are applied during build via Anchor.toml, not via command line
+if anchor test --skip-deploy 2>&1 | tee "${PROJECT_ROOT}/.anchor-test.log"; then
   log_success "All Anchor tests passed"
   exit 0
 else
