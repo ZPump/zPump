@@ -512,16 +512,23 @@ export async function wrap(params: WrapParams): Promise<string> {
     data: shieldData
   });
 
-  const finalizeTreeKeys = [
-    { pubkey: poolState, isSigner: false, isWritable: true },
-    { pubkey: commitmentTreeKey, isSigner: false, isWritable: true },
-    { pubkey: shieldClaim, isSigner: false, isWritable: true }
-  ];
-
+  // Add finalize_ledger instruction to the same transaction as shield (required for security)
   const finalizeLedgerKeys = [
     { pubkey: poolState, isSigner: false, isWritable: true },
     { pubkey: hookConfig, isSigner: false, isWritable: false },
     { pubkey: noteLedger, isSigner: false, isWritable: true },
+    { pubkey: shieldClaim, isSigner: false, isWritable: true }
+  ];
+
+  const finalizeLedgerInstruction = new TransactionInstruction({
+    programId: POOL_PROGRAM_ID,
+    keys: finalizeLedgerKeys,
+    data: finalizeLedgerData
+  });
+
+  const finalizeTreeKeys = [
+    { pubkey: poolState, isSigner: false, isWritable: true },
+    { pubkey: commitmentTreeKey, isSigner: false, isWritable: true },
     { pubkey: shieldClaim, isSigner: false, isWritable: true }
   ];
 
@@ -542,12 +549,6 @@ export async function wrap(params: WrapParams): Promise<string> {
     programId: POOL_PROGRAM_ID,
     keys: finalizeTreeKeys,
     data: finalizeTreeData
-  });
-
-  const finalizeLedgerInstruction = new TransactionInstruction({
-    programId: POOL_PROGRAM_ID,
-    keys: finalizeLedgerKeys,
-    data: finalizeLedgerData
   });
 
   const checkInvariantInstruction = new TransactionInstruction({
@@ -578,7 +579,8 @@ export async function wrap(params: WrapParams): Promise<string> {
   }
 
   const latestBlockhash = await connection.getLatestBlockhash('confirmed');
-  const shieldInstructionSet = [...instructions, shieldInstruction];
+  // Include shield and finalize_ledger in the same transaction (required for security)
+  const shieldInstructionSet = [...instructions, shieldInstruction, finalizeLedgerInstruction];
 
   let shieldSignature: string;
   if (lookupTables.length > 0) {
@@ -642,30 +644,8 @@ export async function wrap(params: WrapParams): Promise<string> {
     claimState = await fetchShieldClaimState(connection, shieldClaim);
   }
 
-  const finalizeLedgerInstructions: TransactionInstruction[] = [];
-  if (resolvedComputeLimit > 0) {
-    finalizeLedgerInstructions.push(ComputeBudgetProgram.setComputeUnitLimit({ units: resolvedComputeLimit }));
-  }
-  finalizeLedgerInstructions.push(finalizeLedgerInstruction);
-
-  const finalizeLedgerBlockhash = await connection.getLatestBlockhash('confirmed');
-  const finalizeLedgerTransaction = new Transaction().add(...finalizeLedgerInstructions);
-  finalizeLedgerTransaction.feePayer = wallet.publicKey;
-  finalizeLedgerTransaction.recentBlockhash = finalizeLedgerBlockhash.blockhash;
-
-  const finalizeLedgerSignature = await wallet.sendTransaction(finalizeLedgerTransaction, connection, {
-    skipPreflight: false
-  });
-
-  await waitForSignatureConfirmation(
-    connection,
-    finalizeLedgerSignature,
-    finalizeLedgerBlockhash.blockhash,
-    finalizeLedgerBlockhash.lastValidBlockHeight
-  );
-  if (process.env.NEXT_PUBLIC_DEBUG_WRAP === 'true') {
-    console.info('[wrap] shield finalize_ledger signature', finalizeLedgerSignature);
-  }
+  // finalize_ledger is now included in the same transaction as shield (above)
+  // No separate transaction needed
 
   const invariantInstructions: TransactionInstruction[] = [];
   if (resolvedComputeLimit > 0) {
