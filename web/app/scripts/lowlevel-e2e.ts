@@ -509,14 +509,14 @@ async function main() {
     ASSOCIATED_TOKEN_PROGRAM_ID
   );
 
-  const shieldArgs = {
+  let shieldArgs = {
     amount_commit: Array.from(amountCommitmentBytes),
     amount: new BN(noteAmount1.toString()),
     proof: decodedProof1.proof,
     public_inputs: decodedProof1.publicInputs
   };
 
-  const shieldData = poolCoder.instruction.encode('shield', { args: shieldArgs });
+  let shieldData = poolCoder.instruction.encode('shield', { args: shieldArgs });
 
   const shieldKeys = [
     { pubkey: poolStateKey, isSigner: false, isWritable: true },
@@ -548,12 +548,76 @@ async function main() {
     { pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false }
   );
 
-  const shieldIx = new TransactionInstruction({
+  let shieldIx = new TransactionInstruction({
     programId: POOL_PROGRAM_ID,
     keys: shieldKeys,
     data: shieldData
   });
 
+  // Refresh root right before sending to ensure it matches what's on-chain
+  // Add a small delay to ensure any pending transactions are finalized
+  await new Promise(resolve => setTimeout(resolve, 500));
+  const finalRootCheck = await fetchPoolStateRoot(connection, mintConfig.poolId);
+  const finalRoot = canonicalizeHex(finalRootCheck.root);
+  
+  // Always regenerate proof right before sending to ensure root matches exactly
+  // This handles any timing issues where the root might have changed
+  console.info(`[test-01] Regenerating proof with final root: ${finalRoot}`);
+  const proof1Final = await proofClient.requestProof('wrap', {
+    oldRoot: finalRoot,
+    amount: noteAmount1.toString(),
+    recipient: owner.publicKey.toBase58(),
+    depositId: depositId1,
+    poolId: mintConfig.poolId,
+    blinding: blinding1,
+    mintId: mintConfig.originMint
+  });
+  const decodedProof1Final = decodeProofPayload(proof1Final);
+  
+  // Debug: Verify root format matches
+  const proofOldRootBytes = Buffer.from(decodedProof1Final.fields[0]!);
+  const poolAccount = await connection.getAccountInfo(new PublicKey(mintConfig.poolId), 'confirmed');
+  if (!poolAccount) {
+    throw new Error('Pool state account missing');
+  }
+  const poolBuffer = Buffer.from(poolAccount.data);
+  const rootOffset = 8 + (32 * 6) + 32 + 32; // discriminator + 6 pubkeys + 2 [u8;32]
+  const onChainRootBytes = poolBuffer.slice(rootOffset, rootOffset + 32);
+  
+  console.info(`[test-01] Root comparison - Proof: ${proofOldRootBytes.toString('hex')}, On-chain: ${onChainRootBytes.toString('hex')}`);
+  if (!proofOldRootBytes.equals(onChainRootBytes)) {
+    console.error(`[test-01] CRITICAL: Root mismatch detected! Proof root does not match on-chain root.`);
+    console.error(`[test-01] This indicates a format conversion issue between proof service and on-chain format.`);
+    // Try one more time with a fresh root fetch
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    const lastRootCheck = await fetchPoolStateRoot(connection, mintConfig.poolId);
+    const lastRoot = canonicalizeHex(lastRootCheck.root);
+    if (lastRoot !== finalRoot) {
+      console.warn(`[test-01] Root changed again, using latest: ${lastRoot}`);
+      const proof1Last = await proofClient.requestProof('wrap', {
+        oldRoot: lastRoot,
+        amount: noteAmount1.toString(),
+        recipient: owner.publicKey.toBase58(),
+        depositId: depositId1,
+        poolId: mintConfig.poolId,
+        blinding: blinding1,
+        mintId: mintConfig.originMint
+      });
+      const decodedProof1Last = decodeProofPayload(proof1Last);
+      shieldArgs.proof = decodedProof1Last.proof;
+      shieldArgs.public_inputs = decodedProof1Last.publicInputs;
+      shieldData = poolCoder.instruction.encode('shield', { args: shieldArgs });
+      shieldIx.data = shieldData;
+      currentRoot = lastRoot;
+    }
+  } else {
+    shieldArgs.proof = decodedProof1Final.proof;
+    shieldArgs.public_inputs = decodedProof1Final.publicInputs;
+    shieldData = poolCoder.instruction.encode('shield', { args: shieldArgs });
+    shieldIx.data = shieldData;
+    currentRoot = finalRoot;
+  }
+  
   const instructions = [ComputeBudgetProgram.setComputeUnitLimit({ units: 1_200_000 }), shieldIx];
   const shieldSig = await sendAndConfirmInstructions(connection, owner, instructions, mintConfig.lookupTable);
   console.info('[test-01] shield instruction successful', shieldSig);
