@@ -1,14 +1,14 @@
 [
   {
-    "symbol": "FBOM",
+    "symbol": "TEST",
     "decimals": 6,
-    "originMint": "GLau628zCbyhzMFNyjgThZ9BrYkmGGwiRTvezxH1JdSa",
-    "poolId": "13uWBrv3L28t9tcb5ez8BBr5qHfQpaN4wM3rw9zqxuXj",
-    "zTokenMint": "5snaRL2krLrE7BnJt2itCnuH1pH9KQGBPg7SbYP8bqiA",
+    "originMint": "245ErNwSsRLD3MYPfHSmtCWNjyZ7PfhHci2aozEo7xRg",
+    "poolId": "6VEFCX7onFGeParfDPyheNgwXfMJUQLkDPcGX4YfWH7w",
+    "zTokenMint": "d6CG1tzWd6iZ5MUjWHEMbrJvSx7MDztZQ44xWwQKeyV",
     "features": {
       "zTokenEnabled": true,
       "wrappedTransfers": false
     },
-    "lookupTable": "XUciFqJzN9s1WZPWfZjWsWVca4w1eadbZb7VDtrCTyq"
+    "lookupTable": "EYExyRJPuBkBmYCtjEwZ9Y2VN3jPvRfVhp1BC4F2roPY"
   }
 ]
