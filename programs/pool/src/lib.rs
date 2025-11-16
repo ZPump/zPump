@@ -346,6 +346,8 @@ pub mod ptf_pool {
         args: ShieldArgs,
     ) -> Result<()> {
         msg!("shield: entry");
+        // Check mint status first - must be active
+        ensure_mint_active(&ctx.accounts.mint_mapping)?;
         let pool_loader = &ctx.accounts.pool_state;
         msg!("shield: got pool_loader");
         let mut pool_state = pool_loader.load_mut()?;
@@ -1035,6 +1037,8 @@ fn process_unshield<'info>(
     args: UnshieldArgs,
     mode: UnshieldMode,
 ) -> Result<()> {
+    // Check mint status first - must be active
+    ensure_mint_active(&ctx.accounts.mint_mapping)?;
     // CRITICAL: Cache ALL account fields and AccountInfos BEFORE taking ANY mutable borrows
     // Accessing ctx.accounts while holding mutable borrows causes access violations
     let decimals = ctx.accounts.mint_mapping.decimals;
@@ -1698,6 +1702,13 @@ pub struct Shield<'info> {
     #[account(mut)]
     pub payer: Signer<'info>,
     pub origin_mint: InterfaceAccount<'info, Mint>,
+    #[account(
+        seeds = [seeds::MINT_MAPPING, pool_state.load()?.origin_mint.as_ref()],
+        bump = mint_mapping.bump,
+        seeds::program = ptf_factory::ID,
+        constraint = mint_mapping.origin_mint == pool_state.load()?.origin_mint @ PoolError::OriginMintMismatch,
+    )]
+    pub mint_mapping: Account<'info, MintMapping>,
     pub vault_program: Program<'info, PtfVault>,
     pub token_program: Interface<'info, TokenInterface>,
     /// CHECK: constrained by address check
