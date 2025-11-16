@@ -599,7 +599,7 @@ pub mod ptf_pool {
         }
 
         if !finalize_found {
-            msg!("shield finalize instruction not detected; skipping enforcement");
+            return err!(PoolError::ShieldFinalizationRequired);
         }
 
         Ok(())
@@ -3296,6 +3296,8 @@ pub enum PoolError {
     FeatureDisabled,
     #[msg("E_MINT_FROZEN")]
     MintFrozen,
+    #[msg("E_SHIELD_FINALIZATION_REQUIRED")]
+    ShieldFinalizationRequired,
     #[msg("E_VAULT_AUTHORITY_MISMATCH")]
     MismatchedVaultAuthority,
     #[msg("E_ORIGIN_MINT_MISMATCH")]

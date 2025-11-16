@@ -1,1 +1,14 @@
-[]
+[
+  {
+    "symbol": "FBQP",
+    "decimals": 6,
+    "originMint": "D19wwjqFnbUohAmB7WVUZiLb4oNBX7m83bfGgy77e7GS",
+    "poolId": "HxFdp2SzU34Ff2pU2of6WGXhtfHa4ksrnDa3e5ZiNhyb",
+    "zTokenMint": "2DWE8udcXzZUP3qRpt2VH1pL9F1o99HKHhkDUiNUJKHU",
+    "features": {
+      "zTokenEnabled": true,
+      "wrappedTransfers": false
+    },
+    "lookupTable": "stCe1j8wqeFv8Ev85jepHdTdSmVTMqHh6fQZoWgpBwn"
+  }
+]
