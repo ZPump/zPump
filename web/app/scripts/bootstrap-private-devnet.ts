@@ -289,10 +289,15 @@ async function sendAndConfirm(
       try {
         const tx = await connection.getTransaction(signature, { commitment: 'confirmed', maxSupportedTransactionVersion: 0 });
         if (tx?.meta?.logMessages) {
-          const errorLogs = tx.meta.logMessages.filter(log => log.includes('Error') || log.includes('failed') || log.includes('require'));
+          const errorLogs = tx.meta.logMessages.filter(log => log.includes('Error') || log.includes('failed') || log.includes('require') || log.includes('AccountOwnedByWrongProgram'));
           if (errorLogs.length > 0) {
             errorDetails += `\nLogs: ${errorLogs.join('\n')}`;
           }
+        }
+        // If the error is AccountOwnedByWrongProgram for mint_mapping, it means the account is uninitialized
+        // This can happen if init_if_needed couldn't initialize a BPF-owned account
+        if (errorDetails.includes('AccountOwnedByWrongProgram') && errorDetails.includes('mint_mapping')) {
+          errorDetails += '\n\nNOTE: mint_mapping account is uninitialized (owned by BPF loader). This usually means the account was created but never initialized. Try running the bootstrap script again or manually initialize the account.';
         }
       } catch (e) {
         // Ignore errors fetching transaction details
@@ -632,35 +637,75 @@ async function ensureMint(
       registerAccounts.ptkn_mint = ptknMintKeypair.publicKey;
     }
 
-    try {
-      const signature = await sendInstruction(
-        ctx,
-        ctx.idls.factory,
-        ctx.coders.factory,
-        PROGRAM_IDS.factory,
-        'register_mint',
-        registerAccounts,
-        {
-          decimals: mintConfig.decimals,
-          enable_ptkn: enablePtkn,
-          feature_flags: null,
-          fee_bps_override: null
-        },
-        ptknMintKeypair ? [ptknMintKeypair] : []
-      );
-      console.log(`Registered mint mapping for ${mintConfig.symbol} (tx ${signature})`);
-      
-      // Wait for account to be created and properly initialized
-      await waitForAccount(connection, mintMapping, `Mint mapping for ${mintConfig.symbol}`, 30, 1000, PROGRAM_IDS.factory);
-      
-      // Double-check the account is properly initialized
-      const mappingInfo = await connection.getAccountInfo(mintMapping);
-      if (!mappingInfo || !mappingInfo.owner.equals(PROGRAM_IDS.factory)) {
-        throw new Error(`Mint mapping account for ${mintConfig.symbol} was not properly initialized. Owner: ${mappingInfo?.owner.toBase58()}, Expected: ${PROGRAM_IDS.factory.toBase58()}`);
+    // CRITICAL FIX: If account is uninitialized (BPF-owned), we need to retry registration
+    // init_if_needed cannot initialize BPF-owned accounts because Anchor validates ownership
+    // before the instruction runs. We'll try to register, and if it fails due to ownership,
+    // we'll wait a bit and retry (the account might get initialized by another transaction).
+    let maxRetries = isUninitialized ? 3 : 1;
+    let lastError: Error | null = null;
+    
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+      try {
+        if (attempt > 0) {
+          console.log(`Retrying mint registration for ${mintConfig.symbol} (attempt ${attempt + 1}/${maxRetries})...`);
+          // Wait a bit before retrying
+          await new Promise((resolve) => setTimeout(resolve, 2000));
+          // Check if account was initialized by another transaction
+          const currentMapping = await connection.getAccountInfo(mintMapping);
+          if (currentMapping && currentMapping.owner.equals(PROGRAM_IDS.factory)) {
+            console.log(`Mint mapping for ${mintConfig.symbol} was initialized by another transaction`);
+            break;
+          }
+        }
+        
+        const signature = await sendInstruction(
+          ctx,
+          ctx.idls.factory,
+          ctx.coders.factory,
+          PROGRAM_IDS.factory,
+          'register_mint',
+          registerAccounts,
+          {
+            decimals: mintConfig.decimals,
+            enable_ptkn: enablePtkn,
+            feature_flags: null,
+            fee_bps_override: null
+          },
+          ptknMintKeypair ? [ptknMintKeypair] : []
+        );
+        console.log(`Registered mint mapping for ${mintConfig.symbol} (tx ${signature})`);
+        
+        // Wait for account to be created and properly initialized
+        await waitForAccount(connection, mintMapping, `Mint mapping for ${mintConfig.symbol}`, 30, 1000, PROGRAM_IDS.factory);
+        
+        // Double-check the account is properly initialized
+        const mappingInfo = await connection.getAccountInfo(mintMapping);
+        if (!mappingInfo || !mappingInfo.owner.equals(PROGRAM_IDS.factory)) {
+          throw new Error(`Mint mapping account for ${mintConfig.symbol} was not properly initialized. Owner: ${mappingInfo?.owner.toBase58()}, Expected: ${PROGRAM_IDS.factory.toBase58()}`);
+        }
+        
+        // Success - break out of retry loop
+        lastError = null;
+        break;
+      } catch (error) {
+        lastError = error instanceof Error ? error : new Error(String(error));
+        const errorMessage = lastError.message;
+        
+        // If it's an AccountOwnedByWrongProgram error and we have retries left, continue
+        if (errorMessage.includes('AccountOwnedByWrongProgram') && attempt < maxRetries - 1) {
+          console.warn(`Mint registration failed due to uninitialized account, will retry: ${errorMessage}`);
+          continue;
+        }
+        
+        // If it's the last attempt or a different error, throw
+        if (attempt === maxRetries - 1) {
+          throw new Error(`Failed to register mint ${mintConfig.symbol} after ${maxRetries} attempts: ${errorMessage}`);
+        }
       }
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      throw new Error(`Failed to register mint ${mintConfig.symbol}: ${errorMessage}`);
+    }
+    
+    if (lastError) {
+      throw lastError;
     }
     if (ptknMintKeypair) {
       ptknMintForConfig = ptknMintKeypair.publicKey;

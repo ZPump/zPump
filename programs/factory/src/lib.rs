@@ -83,20 +83,14 @@ pub mod ptf_factory {
         }
 
         let mapping = &mut ctx.accounts.mint_mapping;
-        // CRITICAL FIX: Handle existing but uninitialized accounts (owned by BPF loader)
-        // init_if_needed should handle this, but we need to check if the account is actually
-        // initialized by checking if origin_mint is set. If it's default, the account exists
-        // but wasn't initialized properly (e.g., owned by BPF loader).
-        // Note: init_if_needed will initialize the account if it doesn't exist or is uninitialized,
-        // but we need to handle the case where it exists but is uninitialized.
-        let account_info = mapping.to_account_info();
-        let is_uninitialized = account_info.owner != &crate::ID 
-            || account_info.data_len() < MintMapping::SPACE
-            || mapping.origin_mint == Pubkey::default();
-        
-        if is_uninitialized {
+        // CRITICAL FIX: init_if_needed should initialize the account, but if it's owned by BPF loader,
+        // Anchor's constraint validation might fail. We check if the account is actually initialized.
+        // If origin_mint is default, the account exists but wasn't initialized properly.
+        if mapping.origin_mint == Pubkey::default() {
             // Account exists but is uninitialized - initialize it
-            // init_if_needed should have handled this, but if it didn't, we do it here
+            // init_if_needed should have handled this, but if it didn't (e.g., BPF-owned account),
+            // we initialize it here. This handles the case where init_if_needed couldn't initialize
+            // due to ownership validation issues.
             mapping.origin_mint = ctx.accounts.origin_mint.key();
             mapping.status = MintStatus::Active as u8;
             mapping.decimals = decimals;
