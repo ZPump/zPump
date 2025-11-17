@@ -759,26 +759,11 @@ pub mod ptf_pool {
         process_unshield(ctx, args, UnshieldMode::Twin)
     }
 
-    pub fn accept_root(ctx: Context<UpdateAuthority>, root: [u8; 32]) -> Result<()> {
-        let mut pool_state = ctx.accounts.pool_state.load_mut()?;
-        pool_state.push_root(root);
-        Ok(())
-    }
-
-    pub fn write_nullifier(ctx: Context<UpdateAuthority>, nullifier: [u8; 32]) -> Result<()> {
-        {
-            let mut nullifier_set = ctx.accounts.nullifier_set.load_mut()?;
-            nullifier_set
-                .insert(nullifier)
-                .map_err(|_| PoolError::NullifierReuse)?;
-        }
-        let pool_state = ctx.accounts.pool_state.load()?;
-        emit!(PTFNullifierUsed {
-            mint: pool_state.origin_mint,
-            nullifier,
-        });
-        Ok(())
-    }
+    // CRITICAL FIX: Removed accept_root and write_nullifier functions
+    // These functions allowed authority to directly manipulate Merkle tree and nullifier set
+    // without proof verification, creating a critical security vulnerability.
+    // If emergency recovery is needed, implement a separate safeguarded mechanism with
+    // timelock, multi-sig, and governance approval.
 
     pub fn private_transfer(ctx: Context<PrivateTransfer>, args: TransferArgs) -> Result<()> {
         ensure_mint_active(&ctx.accounts.mint_mapping)?;

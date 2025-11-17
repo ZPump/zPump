@@ -35,3 +35,20 @@ This directory contains fixes that have been implemented, tested, and verified.
   - `programs/verifier-groth16/src/lib.rs` (lines ~66-75, ~195-214)
   - Added error types: `EmptyProof`, `EmptyPublicInputs`
 
+### ✅ Fix 03: Authority Functions Can Manipulate Core State
+- **Status**: COMPLETE
+- **Date**: 2024
+- **Changes**:
+  - Removed `accept_root` function - was allowing authority to add arbitrary Merkle roots without proof
+  - Removed `write_nullifier` function - was allowing authority to mark nullifiers as used without proof
+  - Both functions completely removed (Option A - safest approach)
+  - Added documentation comment explaining removal and suggesting safeguarded recovery mechanism if needed
+- **Verification**:
+  - ✅ Code compiles successfully
+  - ✅ All unit tests pass (4/4)
+  - ✅ No linting errors
+  - ✅ Functions no longer accessible
+- **Files Modified**: 
+  - `programs/pool/src/lib.rs` (removed lines ~762-781)
+  - Note: `UpdateAuthority` account struct kept (used by `set_fee` and `set_features`)
+
