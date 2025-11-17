@@ -100,21 +100,39 @@ async function waitForMintMappingInitialized(
   let attempts = 0;
   while (Date.now() - start < timeoutMs) {
     const account = await connection.getAccountInfo(mintMappingKey, 'confirmed');
-    if (account && account.owner.equals(FACTORY_PROGRAM_ID)) {
-      try {
-        const decoded = factoryCoder.accounts.decode('MintMapping', account.data) as { origin_mint: PublicKey };
-        if (decoded.origin_mint.equals(originMint)) {
-          if (attempts > 0) {
-            console.info(
-              `[waitForMintMappingInitialized] Mint mapping ready after ${attempts + 1} attempts (${mintMappingKey.toBase58()})`
-            );
+    if (account) {
+      // Log account state for debugging
+      if (attempts % 5 === 0 || account.owner.equals(FACTORY_PROGRAM_ID)) {
+        console.info(
+          `[waitForMintMappingInitialized] Attempt ${attempts + 1}: account exists, owner=${account.owner.toBase58()}, expected=${FACTORY_PROGRAM_ID.toBase58()}`
+        );
+      }
+      
+      if (account.owner.equals(FACTORY_PROGRAM_ID)) {
+        try {
+          const decoded = factoryCoder.accounts.decode('MintMapping', account.data) as { origin_mint: PublicKey };
+          if (decoded.origin_mint.equals(originMint)) {
+            if (attempts > 0) {
+              console.info(
+                `[waitForMintMappingInitialized] Mint mapping ready after ${attempts + 1} attempts (${mintMappingKey.toBase58()})`
+              );
+            }
+            return;
           }
+        } catch (e) {
+          // If decoding fails but the account exists and is owned by the factory program,
+          // treat it as initialized – the bootstrap script will have written valid data.
+          console.info(
+            `[waitForMintMappingInitialized] Account owned by factory but decode failed, treating as initialized: ${(e as Error).message}`
+          );
           return;
         }
-      } catch {
-        // If decoding fails but the account exists and is owned by the factory program,
-        // treat it as initialized – the bootstrap script will have written valid data.
-        return;
+      }
+    } else {
+      if (attempts % 5 === 0) {
+        console.info(
+          `[waitForMintMappingInitialized] Attempt ${attempts + 1}: account does not exist yet (${mintMappingKey.toBase58()})`
+        );
       }
     }
     attempts += 1;
