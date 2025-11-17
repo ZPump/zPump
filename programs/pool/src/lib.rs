@@ -244,6 +244,16 @@ pub mod ptf_pool {
             hook_config.bump = ctx.bumps.hook_config;
         }
         msg!("init_pool stage: hook_config_init_complete");
+        
+        // Initialize hook whitelist
+        msg!("init_pool stage: entering_hook_whitelist_init");
+        {
+            let hook_whitelist = &mut ctx.accounts.hook_whitelist;
+            hook_whitelist.authority = ctx.accounts.authority.key();
+            hook_whitelist.allowed_programs = Vec::new();
+            hook_whitelist.bump = ctx.bumps.hook_whitelist;
+        }
+        msg!("init_pool stage: hook_whitelist_init_complete");
 
         msg!("init_pool stage: entering_nullifier_init");
         {
@@ -306,6 +316,21 @@ pub mod ptf_pool {
                 .contains(FeatureFlags::from(FEATURE_HOOKS_ENABLED)),
             PoolError::HooksDisabled,
         );
+
+        // CRITICAL FIX: Check whitelist for hook programs before configuring
+        if args.post_shield_enabled && args.post_shield_program != Pubkey::default() {
+            require!(
+                ctx.accounts.hook_whitelist.is_allowed(&args.post_shield_program),
+                PoolError::HookNotWhitelisted
+            );
+        }
+        
+        if args.post_unshield_enabled && args.post_unshield_program != Pubkey::default() {
+            require!(
+                ctx.accounts.hook_whitelist.is_allowed(&args.post_unshield_program),
+                PoolError::HookNotWhitelisted
+            );
+        }
 
         let mut hook_config = ctx.accounts.hook_config.load_mut()?;
         hook_config.pool = ctx.accounts.pool_state.key();
@@ -728,6 +753,12 @@ pub mod ptf_pool {
                 )
             };
             if post_shield_enabled && target_program != Pubkey::default() {
+                // CRITICAL FIX: Verify hook is still whitelisted at execution time
+                require!(
+                    ctx.accounts.hook_whitelist.is_allowed(&target_program),
+                    PoolError::HookNotWhitelisted
+                );
+                
                 validate_hook_accounts(&required_accounts, hook_mode, ctx.remaining_accounts)?;
 
                 let mut metas = Vec::with_capacity(2 + ctx.remaining_accounts.len());
@@ -1428,6 +1459,12 @@ fn process_unshield<'info>(
             )
         };
         if post_unshield_enabled && target_program != Pubkey::default() {
+            // CRITICAL FIX: Verify hook is still whitelisted at execution time
+            require!(
+                ctx.accounts.hook_whitelist.is_allowed(&target_program),
+                PoolError::HookNotWhitelisted
+            );
+            
             validate_hook_accounts(&required_accounts, hook_mode, ctx.remaining_accounts)?;
 
             let mut metas = Vec::with_capacity(2 + ctx.remaining_accounts.len());
@@ -1723,6 +1760,14 @@ pub struct InitializePool<'info> {
         space = HookConfig::SPACE,
     )]
     pub hook_config: AccountLoader<'info, HookConfig>,
+    #[account(
+        init,
+        payer = payer,
+        seeds = [b"hook-whitelist", origin_mint.key().as_ref()],
+        bump,
+        space = HookWhitelist::SPACE,
+    )]
+    pub hook_whitelist: Account<'info, HookWhitelist>,
     /// CHECK: Validated in instruction
     #[account(mut)]
     pub vault_state: UncheckedAccount<'info>,
@@ -1891,6 +1936,11 @@ pub struct ShieldFinalizeLedger<'info> {
         bump = shield_claim.bump
     )]
     pub shield_claim: Account<'info, ShieldClaim>,
+    #[account(
+        seeds = [b"hook-whitelist", pool_state.load()?.origin_mint.as_ref()],
+        bump = hook_whitelist.bump
+    )]
+    pub hook_whitelist: Account<'info, HookWhitelist>,
 }
 
 #[derive(Accounts)]
@@ -1933,6 +1983,11 @@ pub struct Unshield<'info> {
         constraint = hook_config.load()?.pool == pool_state.key() @ PoolError::HookConfigInvalid,
     )]
     pub hook_config: AccountLoader<'info, HookConfig>,
+    #[account(
+        seeds = [b"hook-whitelist", pool_state.load()?.origin_mint.as_ref()],
+        bump = hook_whitelist.bump
+    )]
+    pub hook_whitelist: Account<'info, HookWhitelist>,
     #[account(
         mut,
         seeds = [seeds::NULLIFIERS, pool_state.load()?.origin_mint.as_ref()],
@@ -2006,6 +2061,49 @@ pub struct ConfigureHooks<'info> {
         constraint = hook_config.load()?.pool == pool_state.key() @ PoolError::HookConfigInvalid,
     )]
     pub hook_config: AccountLoader<'info, HookConfig>,
+    #[account(
+        seeds = [b"hook-whitelist", pool_state.load()?.origin_mint.as_ref()],
+        bump = hook_whitelist.bump
+    )]
+    pub hook_whitelist: Account<'info, HookWhitelist>,
+}
+
+#[derive(Accounts)]
+pub struct InitializeHookWhitelist<'info> {
+    #[account(
+        init,
+        payer = authority,
+        seeds = [b"hook-whitelist", pool_state.load()?.origin_mint.as_ref()],
+        bump,
+        space = HookWhitelist::SPACE,
+    )]
+    pub hook_whitelist: Account<'info, HookWhitelist>,
+    #[account(
+        mut,
+        seeds = [seeds::POOL, pool_state.load()?.origin_mint.as_ref()],
+        bump = pool_state.load()?.bump,
+        has_one = authority
+    )]
+    pub pool_state: AccountLoader<'info, PoolState>,
+    #[account(mut)]
+    pub authority: Signer<'info>,
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct ManageHookWhitelist<'info> {
+    #[account(
+        mut,
+        seeds = [b"hook-whitelist", pool_state.load()?.origin_mint.as_ref()],
+        bump = hook_whitelist.bump
+    )]
+    pub hook_whitelist: Account<'info, HookWhitelist>,
+    #[account(
+        seeds = [seeds::POOL, pool_state.load()?.origin_mint.as_ref()],
+        bump = pool_state.load()?.bump,
+    )]
+    pub pool_state: AccountLoader<'info, PoolState>,
+    pub authority: Signer<'info>,
 }
 
 #[derive(Accounts)]
@@ -3275,6 +3373,22 @@ impl HookConfig {
 }
 
 #[account]
+pub struct HookWhitelist {
+    pub authority: Pubkey,
+    pub allowed_programs: Vec<Pubkey>,
+    pub bump: u8,
+}
+
+impl HookWhitelist {
+    pub const MAX_PROGRAMS: usize = 100;
+    pub const SPACE: usize = 8 + 32 + 4 + (32 * Self::MAX_PROGRAMS) + 1 + 7;
+    
+    pub fn is_allowed(&self, hook_program: &Pubkey) -> bool {
+        self.allowed_programs.contains(hook_program)
+    }
+}
+
+#[account]
 pub struct AllowanceAccount {
     pub pool: Pubkey,
     pub owner: Pubkey,
@@ -3357,6 +3471,18 @@ pub struct PTFAllowanceUpdated {
     pub owner: Pubkey,
     pub spender: Pubkey,
     pub amount: u64,
+}
+
+#[event]
+pub struct HookAddedToWhitelist {
+    pub hook_program: Pubkey,
+    pub added_by: Pubkey,
+}
+
+#[event]
+pub struct HookRemovedFromWhitelist {
+    pub hook_program: Pubkey,
+    pub removed_by: Pubkey,
 }
 
 #[event]
@@ -3507,6 +3633,14 @@ pub enum PoolError {
     AllowanceInsufficient,
     #[msg("E_ALLOWANCE_AMOUNT_INVALID")]
     AllowanceAmountInvalid,
+    #[msg("E_HOOK_NOT_WHITELISTED")]
+    HookNotWhitelisted,
+    #[msg("E_HOOK_ALREADY_WHITELISTED")]
+    HookAlreadyWhitelisted,
+    #[msg("E_WHITELIST_FULL")]
+    WhitelistFull,
+    #[msg("E_UNAUTHORIZED")]
+    Unauthorized,
 }
 
 fn ensure_mint_active(mapping: &AccountInfo) -> Result<()> {
