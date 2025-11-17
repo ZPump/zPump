@@ -315,6 +315,82 @@ function extractCommitmentByteOutputs(publicInputs: Buffer): Uint8Array | null {
   return bytes;
 }
 
+async function waitForPendingShieldInactive(
+  connection: Connection,
+  poolStateKey: PublicKey,
+  timeoutMs: number = 60_000
+): Promise<void> {
+  const start = Date.now();
+  let attempts = 0;
+  const maxAttempts = Math.ceil(timeoutMs / 1000);
+  
+  while (Date.now() - start < timeoutMs) {
+    attempts++;
+    const accountInfo = await connection.getAccountInfo(poolStateKey, 'confirmed');
+    if (!accountInfo) {
+      throw new Error('Pool state account missing');
+    }
+    
+    try {
+      // Try decoding first
+      const decoded = poolCoder.accounts.decode('PoolState', accountInfo.data) as {
+        pendingShield?: { active?: number };
+        pending_shield?: { active?: number };
+      };
+      const pendingShield = decoded.pendingShield ?? decoded.pending_shield;
+      const isActive = pendingShield?.active !== undefined && pendingShield.active !== 0;
+      
+      if (!isActive) {
+        if (process.env.NEXT_PUBLIC_DEBUG_WRAP === 'true') {
+          console.info(`[wrap] pending_shield is inactive after ${attempts} attempts`);
+        }
+        return;
+      }
+      
+      if (attempts % 10 === 0) {
+        console.info(`[wrap] Waiting for pending_shield to be inactive (attempt ${attempts}/${maxAttempts})...`);
+      }
+    } catch (error) {
+      // If decoding fails, try manual reading
+      // PoolState layout: pending_shield is the last field
+      // Calculate offset: discriminator(8) + authority(32) + origin_mint(32) + vault(32) + verifier_program(32) + verifying_key(32) + commitment_tree(32)
+      // + verifying_key_id(32) + verifying_key_hash(32) + current_root(32) + recent_roots(512) + roots_len(1) + fee_bps(2) + features(1)
+      // + note_ledger(32) + note_ledger_bump(1) + protocol_fees(16) + hook_config(32) + hook_config_present(1) + hook_config_bump(1) + bump(1)
+      // + twin_mint(32) + twin_mint_enabled(1) + pending_shield.active(1)
+      // = 8 + 32*6 + 32 + 32 + 32 + 512 + 1 + 2 + 1 + 32 + 1 + 16 + 32 + 1 + 1 + 1 + 32 + 1 + 1 = 929
+      const buffer = Buffer.from(accountInfo.data);
+      if (buffer.length >= 930) {
+        const pendingShieldActiveOffset = 929; // After all fields before pending_shield.active
+        const activeByte = buffer.readUInt8(pendingShieldActiveOffset);
+        const isActive = activeByte !== 0;
+        
+        if (process.env.NEXT_PUBLIC_DEBUG_WRAP === 'true') {
+          console.info(`[wrap] pending_shield.active byte at offset ${pendingShieldActiveOffset}: ${activeByte}`);
+        }
+        
+        if (!isActive) {
+          if (process.env.NEXT_PUBLIC_DEBUG_WRAP === 'true') {
+            console.info(`[wrap] pending_shield is inactive (manual read) after ${attempts} attempts`);
+          }
+          return;
+        }
+        
+        if (attempts % 10 === 0) {
+          console.info(`[wrap] Waiting for pending_shield to be inactive (manual read, attempt ${attempts}/${maxAttempts})...`);
+        }
+      } else {
+        // Buffer too short, assume inactive
+        console.warn('[wrap] PoolState buffer too short, assuming pending_shield is inactive');
+        return;
+      }
+    }
+    
+    await sleep(1000);
+  }
+  
+  throw new Error(`pending_shield did not become inactive within ${timeoutMs}ms`);
+}
+
 export async function wrap(params: WrapParams): Promise<string> {
   assertWallet(params.wallet);
 
@@ -336,6 +412,81 @@ export async function wrap(params: WrapParams): Promise<string> {
     originMintKey
   );
   ensureMintActive(mintMapping);
+  
+  // Wait for pending_shield to be inactive before starting a new shield
+  // This prevents PendingShieldInFlight errors from previous incomplete operations
+  // If pending_shield is stuck active, try to clear it by calling shield_finalize_tree
+  try {
+    await waitForPendingShieldInactive(connection, poolState, 5000); // Short timeout first
+  } catch (error) {
+    // If pending_shield is still active, try to clear it by calling shield_finalize_tree
+    // This handles the case where a previous shield operation didn't complete
+    console.warn('[wrap] pending_shield is still active, attempting to clear it...');
+    
+    let claimState: ShieldClaimAccount | null = null;
+    try {
+      claimState = await fetchShieldClaimState(connection, shieldClaim);
+    } catch (error) {
+      // Shield claim doesn't exist - this is a stuck state where pending_shield is active
+      // but there's no shield claim to finalize. We can't clear it from the SDK.
+      console.warn('[wrap] Shield claim does not exist but pending_shield is active - stuck state');
+      // Wait a bit longer hoping it clears
+      try {
+        await waitForPendingShieldInactive(connection, poolState, 30000);
+      } catch (waitError) {
+        throw new Error('pending_shield is stuck active with no shield claim - cannot proceed. This indicates a program bug or incomplete previous operation.');
+      }
+    }
+    
+    // If shield claim exists and is in a state that allows finalize_tree, try to finalize it
+    if (claimState && claimState.status !== 0) {
+      try {
+        const finalizeTreeData = poolCoder.instruction.encode('shield_finalize_tree', {});
+        const finalizeTreeInstruction = new TransactionInstruction({
+          programId: POOL_PROGRAM_ID,
+          keys: [
+            { pubkey: poolState, isSigner: false, isWritable: true },
+            { pubkey: commitmentTreeKey, isSigner: false, isWritable: true },
+            { pubkey: shieldClaim, isSigner: false, isWritable: true }
+          ],
+          data: finalizeTreeData
+        });
+        
+        const clearBlockhash = await connection.getLatestBlockhash('confirmed');
+        const clearTransaction = new Transaction().add(finalizeTreeInstruction);
+        clearTransaction.feePayer = wallet.publicKey;
+        clearTransaction.recentBlockhash = clearBlockhash.blockhash;
+        
+        try {
+          const clearSignature = await wallet.sendTransaction(clearTransaction, connection, {
+            skipPreflight: false
+          });
+          await waitForSignatureConfirmation(
+            connection,
+            clearSignature,
+            clearBlockhash.blockhash,
+            clearBlockhash.lastValidBlockHeight
+          );
+          console.info('[wrap] Cleared pending_shield via shield_finalize_tree');
+          // Wait a bit more to ensure it's cleared
+          await sleep(1000);
+        } catch (clearError) {
+          console.warn('[wrap] Failed to clear pending_shield, will retry waiting:', clearError);
+          // Retry waiting with longer timeout
+          await waitForPendingShieldInactive(connection, poolState, 30000);
+        }
+      } catch (instructionError) {
+        console.warn('[wrap] Failed to create clear instruction, will retry waiting:', instructionError);
+        // Retry waiting with longer timeout
+        await waitForPendingShieldInactive(connection, poolState, 30000);
+      }
+    } else {
+      // Shield claim is inactive but pending_shield is active - this is a stuck state
+      // Retry waiting with longer timeout, hoping it clears somehow
+      console.warn('[wrap] Shield claim is inactive but pending_shield is active - stuck state');
+      await waitForPendingShieldInactive(connection, poolState, 30000);
+    }
+  }
 
   const commitmentTreeAccount = await connection.getAccountInfo(commitmentTreeKey);
   if (!commitmentTreeAccount) {
