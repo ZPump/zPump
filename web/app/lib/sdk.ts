@@ -621,7 +621,11 @@ export async function wrap(params: WrapParams): Promise<string> {
   finalizeTreeInstructions.push(finalizeTreeInstruction);
 
   let claimState = await fetchShieldClaimState(connection, shieldClaim);
-  while (claimState.status === SHIELD_CLAIM_STATUS.PENDING_TREE) {
+  // After shield + finalize_ledger, status may be AWAITING_LEDGER, AWAITING_INVARIANT, or PENDING_TREE
+  // We need to call finalize_tree for any of these statuses (except INACTIVE)
+  while (claimState.status === SHIELD_CLAIM_STATUS.PENDING_TREE 
+      || claimState.status === SHIELD_CLAIM_STATUS.AWAITING_LEDGER
+      || claimState.status === SHIELD_CLAIM_STATUS.AWAITING_INVARIANT) {
     const treeBlockhash = await connection.getLatestBlockhash('confirmed');
     const finalizeTreeTransaction = new Transaction().add(...finalizeTreeInstructions);
     finalizeTreeTransaction.feePayer = wallet.publicKey;
@@ -643,6 +647,10 @@ export async function wrap(params: WrapParams): Promise<string> {
     }
     claimState = await fetchShieldClaimState(connection, shieldClaim);
   }
+
+  // Wait a bit to ensure pending_shield is deactivated after shield_finalize_tree
+  // This prevents race conditions where shield claim is INACTIVE but pending_shield is still active
+  await sleep(500);
 
   // finalize_ledger is now included in the same transaction as shield (above)
   // No separate transaction needed
