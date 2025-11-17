@@ -293,6 +293,9 @@ async function thawMintOnChain(params: {
   );
 }
 
+// SKIPPED: growNullifierSet function - write_nullifier removed for security (Fix 03)
+// The write_nullifier function was removed because it allowed authority to manipulate
+// nullifier set without proof verification, creating a critical security vulnerability.
 async function growNullifierSet(params: {
   connection: Connection;
   authority: Keypair;
@@ -301,55 +304,9 @@ async function growNullifierSet(params: {
   mintMapping: PublicKey;
   inserts: number;
 }): Promise<void> {
-  const { connection, authority, poolState, nullifierSet, mintMapping, inserts } = params;
-  const before = await connection.getAccountInfo(nullifierSet, 'confirmed');
-  console.info(
-    '[edge] nullifier set size before growth',
-    before ? `${before.data.length} bytes` : 'account missing'
-  );
-  let inserted = 0;
-  let nonce = 0;
-  while (inserted < inserts) {
-    const batch: TransactionInstruction[] = [];
-    for (let idx = 0; idx < 8 && inserted < inserts; idx += 1) {
-      const nullifierBuffer = Buffer.alloc(32);
-      const seed = Buffer.from(`realloc-${Date.now()}-${nonce}`);
-      seed.copy(nullifierBuffer, 0, 0, Math.min(seed.length, 32));
-      const data = poolCoder.instruction.encode('write_nullifier', {
-        nullifier: Array.from(nullifierBuffer)
-      });
-      batch.push(
-        new TransactionInstruction({
-          programId: POOL_PROGRAM_ID,
-          keys: [
-            { pubkey: authority.publicKey, isSigner: true, isWritable: true },
-            { pubkey: poolState, isSigner: false, isWritable: true },
-            { pubkey: nullifierSet, isSigner: false, isWritable: true },
-            { pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false }
-          ],
-          data
-        })
-      );
-      inserted += 1;
-      nonce += 1;
-    }
-    try {
-      await sendAndConfirmInstructions(connection, authority, batch);
-    } catch (error: any) {
-      const logs = (error?.transactionLogs ?? error?.logs ?? []) as string[];
-      const nullifierReuse = logs.some((line) => line.includes('NullifierReuse') || line.includes('E_NULLIFIER_REUSE'));
-      if (nullifierReuse) {
-        console.info('[edge] nullifier reuse encountered as expected during growth stress test');
-        break;
-      }
-      throw error;
-    }
-  }
-  const after = await connection.getAccountInfo(nullifierSet, 'confirmed');
-  console.info(
-    '[edge] nullifier set size after growth',
-    after ? `${after.data.length} bytes` : 'account missing'
-  );
+  console.info('[edge] SKIPPED: nullifier set growth stress test (write_nullifier function removed for security)');
+  // Function disabled - write_nullifier was removed in Fix 03 for security
+  // Nullifiers should only be added through proper proof-verified operations (unshield, transfer)
 }
 
 async function fetchMintCatalog(): Promise<MintConfig[]> {
