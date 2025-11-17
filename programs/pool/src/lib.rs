@@ -361,10 +361,7 @@ pub mod ptf_pool {
         msg!("shield: got pool_loader");
         let mut pool_state = pool_loader.load_mut()?;
         msg!("shield: loaded pool_state");
-        require!(
-            pool_state.pending_shield.is_inactive(),
-            PoolError::PendingShieldInFlight
-        );
+        
         let expected_pool = pool_loader.key();
         let claim_bump = {
             let shield_claim = &mut ctx.accounts.shield_claim;
@@ -390,9 +387,51 @@ pub mod ptf_pool {
         // Check if there's an active shield claim that needs finalization
         let has_active_claim = ctx.accounts.shield_claim.is_active();
         
-        // If there's an active claim, reject - it must be finalized first
+        // CRITICAL FIX: If pending_shield is active but shield_claim is inactive,
+        // this indicates a stuck state (e.g., from a failed/interrupted operation).
+        // We can safely deactivate pending_shield in this case since there's no active claim.
+        if !pool_state.pending_shield.is_inactive() && !has_active_claim {
+            msg!("shield: detected stuck pending_shield with inactive claim, deactivating...");
+            pool_state.pending_shield.deactivate();
+        }
+        
+        // CRITICAL FIX: If pending_shield is active and shield_claim is active but stale
+        // (old_root doesn't match current_root), we can't finalize it, so pending_shield is stuck.
+        // In this case, we deactivate pending_shield to allow new shields to proceed.
+        // This is safe because the stale shield claim can't be finalized anyway.
+        if !pool_state.pending_shield.is_inactive() && has_active_claim {
+            let commitment_tree = ctx.accounts.commitment_tree.load()?;
+            let claim_old_root = ctx.accounts.shield_claim.old_root;
+            let tree_current_root = commitment_tree.current_root;
+            
+            // If the shield claim's old_root doesn't match the tree's current_root,
+            // the claim is stale and can't be finalized, so we can safely deactivate pending_shield
+            if claim_old_root != tree_current_root {
+                msg!("shield: detected stuck pending_shield with stale claim (old_root mismatch), deactivating...");
+                msg!("shield: claim old_root={:?}, tree current_root={:?}", 
+                     claim_old_root, tree_current_root);
+                pool_state.pending_shield.deactivate();
+            }
+        }
+        
+        // If there's an active claim that's not stale, reject - it must be finalized first
         // (This prevents creating a new shield while one is pending)
-        require!(!has_active_claim, PoolError::PendingShieldInFlight);
+        if has_active_claim {
+            let commitment_tree = ctx.accounts.commitment_tree.load()?;
+            let claim_old_root = ctx.accounts.shield_claim.old_root;
+            let tree_current_root = commitment_tree.current_root;
+            
+            // Only reject if the claim is not stale (can potentially be finalized)
+            if claim_old_root == tree_current_root {
+                return err!(PoolError::PendingShieldInFlight);
+            }
+        }
+        
+        // Now check that pending_shield is inactive (either it was already inactive, or we just deactivated it)
+        require!(
+            pool_state.pending_shield.is_inactive(),
+            PoolError::PendingShieldInFlight
+        );
         
         // Validate unchecked accounts
         require_keys_eq!(
