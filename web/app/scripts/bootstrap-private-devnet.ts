@@ -609,21 +609,10 @@ async function ensureMint(
     // If account exists but is uninitialized (owned by BPF loader), we need to close it first
     // The init constraint requires the account to not exist
     if (isUninitialized) {
-      console.log(`Closing uninitialized mint mapping account for ${mintConfig.symbol}...`);
-      try {
-        // Close the uninitialized account by transferring its lamports to the payer
-        const closeIx = SystemProgram.transfer({
-          fromPubkey: mintMapping,
-          toPubkey: ctx.payer.publicKey,
-          lamports: existingMapping.lamports
-        });
-        // Note: This won't work if the account is owned by BPF loader
-        // We'll need to let the register_mint transaction handle it
-        // For now, just log and proceed
-        console.warn(`Cannot close BPF-owned account, proceeding with registration...`);
-      } catch (e) {
-        console.warn(`Could not close uninitialized account: ${(e as Error).message}`);
-      }
+      console.log(`Mint mapping account for ${mintConfig.symbol} is uninitialized (owned by ${existingMapping.owner.toBase58()})`);
+      console.log(`Using init_if_needed in register_mint to initialize it...`);
+      // init_if_needed should handle BPF-owned accounts if they're the right size
+      // We'll proceed with registration and let init_if_needed handle it
     }
     const enablePtkn = true;
     const ptknMintKeypair = enablePtkn ? Keypair.generate() : null;

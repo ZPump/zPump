@@ -84,10 +84,19 @@ pub mod ptf_factory {
 
         let mapping = &mut ctx.accounts.mint_mapping;
         // CRITICAL FIX: Handle existing but uninitialized accounts (owned by BPF loader)
-        // If origin_mint is default, the account exists but wasn't initialized properly
-        // In this case, we need to initialize it. Otherwise, just update the fields.
-        if mapping.origin_mint == Pubkey::default() {
+        // init_if_needed should handle this, but we need to check if the account is actually
+        // initialized by checking if origin_mint is set. If it's default, the account exists
+        // but wasn't initialized properly (e.g., owned by BPF loader).
+        // Note: init_if_needed will initialize the account if it doesn't exist or is uninitialized,
+        // but we need to handle the case where it exists but is uninitialized.
+        let account_info = mapping.to_account_info();
+        let is_uninitialized = account_info.owner != &crate::ID 
+            || account_info.data_len() < MintMapping::SPACE
+            || mapping.origin_mint == Pubkey::default();
+        
+        if is_uninitialized {
             // Account exists but is uninitialized - initialize it
+            // init_if_needed should have handled this, but if it didn't, we do it here
             mapping.origin_mint = ctx.accounts.origin_mint.key();
             mapping.status = MintStatus::Active as u8;
             mapping.decimals = decimals;
