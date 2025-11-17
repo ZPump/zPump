@@ -271,6 +271,7 @@ pub mod ptf_factory {
         }
 
         // CRITICAL FIX: Use sequence for unique entry address
+        // Note: The sequence is incremented BEFORE creating the account so the PDA seeds match
         let sequence = state.last_action_sequence
             .checked_add(1)
             .ok_or(FactoryError::SequenceOverflow)?;
@@ -618,7 +619,11 @@ pub struct QueueTimelockAction<'info> {
     #[account(
         init,
         payer = payer,
-        seeds = [seeds::TIMELOCK, factory_state.key().as_ref(), salt.as_ref()],
+        seeds = [
+            seeds::TIMELOCK,
+            factory_state.key().as_ref(),
+            &factory_state.last_action_sequence.to_le_bytes(),
+        ],
         bump,
         space = TimelockEntry::SPACE,
     )]
@@ -702,7 +707,7 @@ pub struct CancelTimelockAction<'info> {
         seeds = [
             seeds::TIMELOCK,
             factory_state.key().as_ref(),
-            timelock_entry.salt.as_ref()
+            &timelock_entry.sequence.to_le_bytes()
         ],
         bump = timelock_entry.bump,
         constraint = timelock_entry.factory == factory_state.key() @ FactoryError::TimelockInvalidFactory,
