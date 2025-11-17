@@ -52,3 +52,24 @@ This directory contains fixes that have been implemented, tested, and verified.
   - `programs/pool/src/lib.rs` (removed lines ~762-781)
   - Note: `UpdateAuthority` account struct kept (used by `set_fee` and `set_features`)
 
+### ✅ Fix 04: Timelock Bypass for Direct Updates
+- **Status**: COMPLETE
+- **Date**: 2024
+- **Changes**:
+  - Added `MIN_TIMELOCK_SECONDS` constant (24 hours = 86400 seconds)
+  - Updated `ensure_direct_update_allowed` to always reject direct updates (never allow bypass)
+  - Added minimum timelock validation in `initialize_factory`
+  - Added new error type: `TimelockTooShort`
+  - All critical operations now must go through timelock system
+- **Verification**:
+  - ✅ Code compiles successfully
+  - ✅ All unit tests pass (1/1)
+  - ✅ No linting errors
+  - ✅ Direct updates always rejected
+- **Files Modified**: 
+  - `programs/factory/src/lib.rs`:
+    - Added `MIN_TIMELOCK_SECONDS` constant (line ~17)
+    - Updated `initialize_factory` to validate minimum (lines ~33-37)
+    - Updated `ensure_direct_update_allowed` to always reject (lines ~607-612)
+    - Added `TimelockTooShort` error type
+
