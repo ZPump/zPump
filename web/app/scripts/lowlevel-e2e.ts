@@ -90,6 +90,92 @@ interface WrapResult {
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
+function toBuffer(value: Buffer | Uint8Array | number[] | undefined): Buffer {
+  if (!value) {
+    return Buffer.alloc(0);
+  }
+  if (Buffer.isBuffer(value)) {
+    return Buffer.from(value);
+  }
+  return Buffer.from(value);
+}
+
+function bnToBigInt(value: BN | bigint | number | undefined | null): bigint {
+  if (value === null || value === undefined) {
+    return 0n;
+  }
+  if (typeof value === 'bigint') {
+    return value;
+  }
+  if (typeof value === 'number') {
+    return BigInt(value);
+  }
+  if (BN.isBN(value)) {
+    return BigInt(value.toString());
+  }
+  return BigInt(value as number);
+}
+
+interface CommitmentTreeState {
+  root: string;
+  nextIndex: bigint;
+}
+
+interface ShieldClaimState {
+  newRoot: string;
+  nextIndex: bigint;
+  status: number;
+}
+
+async function readCommitmentTreeState(
+  connection: Connection,
+  commitmentTreeKey: PublicKey
+): Promise<CommitmentTreeState | null> {
+  const account = await connection.getAccountInfo(commitmentTreeKey, 'confirmed');
+  if (!account) {
+    return null;
+  }
+
+  const baseOffset = 8; // discriminator
+  const canopyDepthOffset = baseOffset + 32;
+  const padding = 7;
+  const nextIndexOffset = canopyDepthOffset + 1 + padding;
+  const currentRootOffset = nextIndexOffset + 8;
+
+  if (account.data.length < currentRootOffset + 32) {
+    throw new Error('Commitment tree account too small');
+  }
+
+  const nextIndexBytes = account.data.slice(nextIndexOffset, nextIndexOffset + 8);
+  const rootBytes = account.data.slice(currentRootOffset, currentRootOffset + 32);
+  return {
+    root: canonicalizeHex(rootBytes.toString('hex')),
+    nextIndex: nextIndexBytes.readBigUInt64LE(0)
+  };
+}
+
+async function readShieldClaimState(
+  connection: Connection,
+  shieldClaimKey: PublicKey
+): Promise<ShieldClaimState | null> {
+  const account = await connection.getAccountInfo(shieldClaimKey, 'confirmed');
+  if (!account) {
+    return null;
+  }
+
+  const decoded = poolCoder.accounts.decode('ShieldClaim', account.data) as Record<string, unknown>;
+  const rawNewRoot = (decoded.newRoot ?? decoded.new_root) as Buffer | Uint8Array | number[] | undefined;
+  const newRootBytes = toBuffer(rawNewRoot);
+  const nextIndexValue = decoded.nextIndex ?? decoded.next_index;
+  const statusValue = decoded.status ?? decoded.Status ?? 0;
+
+  return {
+    newRoot: canonicalizeHex(newRootBytes.toString('hex')),
+    nextIndex: bnToBigInt(nextIndexValue as BN | number | bigint | undefined),
+    status: typeof statusValue === 'number' ? statusValue : Number(statusValue ?? 0)
+  };
+}
+
 async function waitForMintMappingInitialized(
   connection: Connection,
   originMint: PublicKey,
@@ -361,28 +447,22 @@ async function fetchPoolStateRoot(connection: Connection, poolId: string): Promi
   if (!account) {
     throw new Error('Pool state account missing');
   }
+
   const buffer = Buffer.from(account.data);
-  // PoolState layout (from Rust struct, #[repr(C)] order):
-  // discriminator: 8 bytes
-  // authority: 32 bytes (Pubkey) - field 1
-  // origin_mint: 32 bytes (Pubkey) - field 2
-  // vault: 32 bytes (Pubkey) - field 3
-  // verifier_program: 32 bytes (Pubkey) - field 4
-  // verifying_key: 32 bytes (Pubkey) - field 5
-  // commitment_tree: 32 bytes (Pubkey) - field 6
-  // verifying_key_id: 32 bytes ([u8; 32]) - field 7
-  // verifying_key_hash: 32 bytes ([u8; 32]) - field 8
-  // current_root: 32 bytes ([u8; 32]) - field 9 - THIS IS WHAT WE WANT
   let offset = 8; // discriminator
-  offset += 32 * 6; // 6 pubkeys: authority, origin_mint, vault, verifier_program, verifying_key, commitment_tree
+  offset += 32 * 6; // authority, origin_mint, vault, verifier_program, verifying_key, commitment_tree
   offset += 32; // verifying_key_id
   offset += 32; // verifying_key_hash
   const rootBytes = buffer.slice(offset, offset + 32);
-  console.info(`[fetchPoolStateRoot] Reading root at offset ${offset}, root bytes: ${rootBytes.toString('hex')}`);
-  // Skip to fee_bps: current_root (32) + recent_roots (32*16=512) + roots_len (1) = 545
-  offset += 32 + (32 * 16) + 1; // current_root + recent_roots + roots_len
-  // fee_bps is u16, so we need to align if needed (but u16 is 2 bytes, so no alignment needed)
+
+  offset += 32; // current_root
+  offset += 32 * 16; // recent_roots
+  offset += 1; // roots_len
+  if (offset % 2 !== 0) {
+    offset += 1; // align for u16
+  }
   const feeBps = buffer.readUInt16LE(offset);
+
   return {
     root: bytesLEToCanonicalHex(rootBytes),
     feeBps
@@ -464,6 +544,7 @@ async function main() {
   // Clear any pending shield claims from previous runs
   console.info('[setup] Checking for pending shield claims...');
   const shieldClaimKey = deriveShieldClaim(poolStateKey);
+  console.info(`[setup] Shield claim account: ${shieldClaimKey.toBase58()}`);
   const shieldClaimStatus = await fetchShieldClaimStatus(connection, shieldClaimKey);
   if (shieldClaimStatus !== 0) {
     console.info('[setup] Found pending shield claim, attempting to finalize...');
@@ -633,7 +714,10 @@ async function main() {
     blinding: blinding1,
     mintId: mintConfig.originMint
   });
+  console.info('[test-01] Proof service publicInputs:', proof1Final?.publicInputs);
   const decodedProof1Final = decodeProofPayload(proof1Final);
+  const proofNewRootHex = canonicalizeHex(Buffer.from(decodedProof1Final.fields[1] ?? Buffer.alloc(32)).toString('hex'));
+  console.info(`[test-01] Proof new_root for first shield: ${proofNewRootHex}`);
   
   // Debug: Verify root format matches
   const proofOldRootBytes = Buffer.from(decodedProof1Final.fields[0]!);
@@ -702,6 +786,12 @@ async function main() {
   ];
   const shieldSig = await sendAndConfirmInstructions(connection, owner, instructions, mintConfig.lookupTable);
   console.info('[test-01] shield + finalize_ledger instruction successful', shieldSig);
+  const shieldClaimAfterShield = await readShieldClaimState(connection, shieldClaimKey);
+  if (shieldClaimAfterShield) {
+    console.info(
+      `[test-01] Shield claim new_root after shield: ${shieldClaimAfterShield.newRoot}, next_index: ${shieldClaimAfterShield.nextIndex}, status: ${shieldClaimAfterShield.status}`
+    );
+  }
 
   console.info('[test-02] Testing shield_finalize_tree instruction (low-level)');
   // Check root before finalize_tree
@@ -726,31 +816,16 @@ async function main() {
   const rootAfterFinalize = await fetchPoolStateRoot(connection, mintConfig.poolId);
   console.info(`[test-02] Root after shield_finalize_tree: ${canonicalizeHex(rootAfterFinalize.root)}`);
   
-  // Also check commitment_tree root
-  const treeAccountAfter = await connection.getAccountInfo(commitmentTreeKey, 'confirmed');
-  if (treeAccountAfter) {
-    const treeBufferAfter = Buffer.from(treeAccountAfter.data);
-    // CommitmentTree layout: discriminator (8) + pool (32) + canopy_depth (1) + next_index (8) + current_root (32)
-    const treeRootOffsetAfter = 8 + 32 + 1 + 8; // 49
-    const treeRootBytesAfter = treeBufferAfter.slice(treeRootOffsetAfter, treeRootOffsetAfter + 32);
-    const treeRootAfter = canonicalizeHex(treeRootBytesAfter.toString('hex'));
-    console.info(`[test-02] Commitment tree root after shield_finalize_tree: ${treeRootAfter}`);
-    
-    // Debug: Check next_index
-    const nextIndexOffsetAfter = 8 + 32 + 1; // 41
-    const nextIndexBytesAfter = treeBufferAfter.slice(nextIndexOffsetAfter, nextIndexOffsetAfter + 8);
-    const nextIndexAfter = nextIndexBytesAfter.readBigUInt64LE(0);
-    console.info(`[test-02] Commitment tree next_index after shield_finalize_tree: ${nextIndexAfter} (bytes: ${nextIndexBytesAfter.toString('hex')})`);
-    
-    // Debug: Check pool to verify we're reading the right account
-    const poolOffsetAfter = 8; // discriminator
-    const poolBytesAfter = treeBufferAfter.slice(poolOffsetAfter, poolOffsetAfter + 32);
-    const poolPubkeyAfter = new PublicKey(poolBytesAfter);
-    console.info(`[test-02] Commitment tree pool: ${poolPubkeyAfter.toBase58()}, expected: ${poolStateKey.toBase58()}`);
-    
-    // Debug: Dump first 100 bytes to see what's actually there
-    const first100Bytes = treeBufferAfter.slice(0, 100);
-    console.info(`[test-02] First 100 bytes of commitment_tree: ${first100Bytes.toString('hex')}`);
+  const treeStateAfterFinalize = await readCommitmentTreeState(connection, commitmentTreeKey);
+  if (treeStateAfterFinalize) {
+    console.info(`[test-02] Commitment tree root after shield_finalize_tree: ${treeStateAfterFinalize.root}`);
+    console.info(`[test-02] Commitment tree next_index after shield_finalize_tree: ${treeStateAfterFinalize.nextIndex}`);
+  }
+  const shieldClaimAfterTree = await readShieldClaimState(connection, shieldClaimKey);
+  if (shieldClaimAfterTree) {
+    console.info(
+      `[test-02] Shield claim new_root after finalize_tree: ${shieldClaimAfterTree.newRoot}, next_index: ${shieldClaimAfterTree.nextIndex}, status: ${shieldClaimAfterTree.status}`
+    );
   }
 
   console.info('[test-03b] Testing shield_check_invariant instruction (low-level)');
@@ -780,34 +855,10 @@ async function main() {
   console.info('[test-03b] shield_check_invariant instruction successful', checkInvariantSig);
 
   await waitForShieldClaimCleared(connection, shieldClaimKey);
-  // Refresh root after first shield completes
-  // Extract new_root from the proof's public inputs (decodedProof1Final.fields[1] is the new_root)
-  await new Promise(resolve => setTimeout(resolve, 1000));
-  
-  // The proof's public inputs format: [old_root, new_root, commitment, ...]
-  // decodedProof1Final.fields[1] is the new_root after the shield
-  // Use this as the source of truth since the on-chain root might not be updated correctly
-  const newRootFromProof = decodedProof1Final.fields[1];
-  if (newRootFromProof) {
-    // The fields are already in the correct format (Buffer)
-    const newRootBytes = Buffer.from(newRootFromProof);
-    currentRoot = canonicalizeHex(newRootBytes.toString('hex'));
-    console.info(`[test-04] Root after first shield (from proof new_root): ${currentRoot}`);
-  } else {
-    // Fallback: try reading from commitment_tree
-    const commitmentTreeAccount = await connection.getAccountInfo(commitmentTreeKey, 'confirmed');
-    if (commitmentTreeAccount) {
-      const treeBuffer = Buffer.from(commitmentTreeAccount.data);
-      const treeRootOffset = 8 + 32 + 1 + 8;
-      const treeRootBytes = treeBuffer.slice(treeRootOffset, treeRootOffset + 32);
-      currentRoot = canonicalizeHex(treeRootBytes.toString('hex'));
-      console.info(`[test-04] Root after first shield (from commitment_tree): ${currentRoot}`);
-    } else {
-      const updatedRoot = await fetchPoolStateRoot(connection, mintConfig.poolId);
-      currentRoot = canonicalizeHex(updatedRoot.root);
-      console.info(`[test-04] Root after first shield (from pool_state): ${currentRoot}`);
-    }
-  }
+  await sleep(1000);
+  const updatedRoot = await fetchPoolStateRoot(connection, mintConfig.poolId);
+  currentRoot = canonicalizeHex(updatedRoot.root);
+  console.info(`[test-04] Root after first shield (from pool_state): ${currentRoot}`);
   const wrap1: WrapResult = {
     noteId: depositId1,
     spendingKey: blinding1,
@@ -826,80 +877,10 @@ async function main() {
     await waitForShieldClaimCleared(connection, shieldClaimKey, 60);
   }
   
-  // Refresh root right before second shield
-  // The on-chain root should match the proof's new_root after shield_finalize_tree
-  // But if it doesn't, we need to use the actual on-chain root for the proof
-  await new Promise(resolve => setTimeout(resolve, 1000));
-  
-  // Get the actual on-chain root from pool_state (this is what the shield instruction checks)
-  const onChainRootInfo = await fetchPoolStateRoot(connection, mintConfig.poolId);
-  const onChainRoot = canonicalizeHex(onChainRootInfo.root);
-  console.info(`[test-04] On-chain root from pool_state: ${onChainRoot}`);
-  
-  // Also check commitment_tree root
-  const commitmentTreeAccount2 = await connection.getAccountInfo(commitmentTreeKey, 'confirmed');
-  let treeRoot2: string | null = null;
-  if (commitmentTreeAccount2) {
-    const treeBuffer2 = Buffer.from(commitmentTreeAccount2.data);
-    const treeRootOffset2 = 8 + 32 + 1 + 8;
-    const treeRootBytes2 = treeBuffer2.slice(treeRootOffset2, treeRootOffset2 + 32);
-    treeRoot2 = canonicalizeHex(treeRootBytes2.toString('hex'));
-    console.info(`[test-04] On-chain root from commitment_tree: ${treeRoot2}`);
-  }
-  
-  // Use the on-chain root for the proof (this is what the shield instruction will check)
-  // The shield instruction checks: old_root_bytes == pool_state.current_root
-  // If the root is zero, it means shield_finalize_tree didn't update it correctly
-  // In that case, the tree's next_index should be 1, and we should use the initial root
-  // (the root before the first shield) as the old_root for the second shield
-  let currentRoot2: string;
-  if (onChainRoot !== '0x0000000000000000000000000000000000000000000000000000000000000000') {
-    currentRoot2 = onChainRoot;
-    console.info(`[test-04] Using on-chain root from pool_state for second shield: ${currentRoot2}`);
-  } else if (treeRoot2 && treeRoot2 !== '0x0000000000000000000000000000000000000000000000000000000000000000') {
-    currentRoot2 = treeRoot2;
-    console.info(`[test-04] Using on-chain root from commitment_tree for second shield: ${currentRoot2}`);
-  } else {
-    // Both are zero - this means shield_finalize_tree didn't update the root correctly
-    // Check if next_index is 1 (meaning the first shield was processed but root wasn't updated)
-    // If so, use the initial root (before first shield) as the old_root
-    if (commitmentTreeAccount2) {
-      const treeBuffer2 = Buffer.from(commitmentTreeAccount2.data);
-      const nextIndexOffset2 = 8 + 32 + 1;
-      const nextIndexBytes2 = treeBuffer2.slice(nextIndexOffset2, nextIndexOffset2 + 8);
-      const nextIndex2 = nextIndexBytes2.readBigUInt64LE(0);
-      console.info(`[test-04] Commitment tree next_index: ${nextIndex2} (bytes: ${nextIndexBytes2.toString('hex')})`);
-      
-      // The bytes 0000000000000001 represent 1 in big-endian, but Rust stores u64 in little-endian
-      // So if the value is 1, the bytes should be 0100000000000000 (little-endian)
-      // But we're seeing 0000000000000001, which means either:
-      // 1. The value is stored in big-endian (unlikely for Rust)
-      // 2. The value is actually 72057594037927936 (0x0100000000000000)
-      // 3. There's a bug in how we're reading it
-      // Let's check: if byte 0 is 0x00 and byte 7 is 0x01, that's 1 in big-endian
-      // But readBigUInt64LE reads it as little-endian, giving 72057594037927936
-      // The actual value should be 1, so let's read it as big-endian if byte 7 is 0x01 and bytes 0-6 are 0x00
-      const isBigEndian = nextIndexBytes2[7] === 0x01 && nextIndexBytes2.slice(0, 7).every(b => b === 0x00);
-      const correctNextIndex = isBigEndian ? BigInt(nextIndexBytes2.readBigUInt64BE(0)) : nextIndex2;
-      console.info(`[test-04] Corrected next_index: ${correctNextIndex} (isBigEndian: ${isBigEndian})`);
-      
-      if (correctNextIndex === 1n) {
-        // The first shield was processed (next_index = 1), but root wasn't updated
-        // The on-chain root is zero, so we must use zero for the proof's old_root
-        // Otherwise the shield instruction will fail with RootMismatch
-        // The shield instruction checks: old_root_bytes == pool_state.current_root
-        // Since pool_state.current_root is zero, we must use zero
-        currentRoot2 = '0x0000000000000000000000000000000000000000000000000000000000000000';
-        console.warn(`[test-04] First shield processed (next_index=1) but root is zero - using zero for proof (shield_finalize_tree may not have updated root correctly)`);
-      } else {
-        currentRoot2 = '0x0000000000000000000000000000000000000000000000000000000000000000';
-        console.warn(`[test-04] Both on-chain roots are zero and next_index is ${correctNextIndex}, using zero for proof`);
-      }
-    } else {
-      currentRoot2 = '0x0000000000000000000000000000000000000000000000000000000000000000';
-      console.warn(`[test-04] Both on-chain roots are zero, using zero for proof`);
-    }
-  }
+  await sleep(1000);
+  const poolRootBeforeSecond = await fetchPoolStateRoot(connection, mintConfig.poolId);
+  const currentRoot2 = canonicalizeHex(poolRootBeforeSecond.root);
+  console.info(`[test-04] Root before second shield (from pool_state): ${currentRoot2}`);
   
   const depositId2 = generateUniqueDepositId();
   const blinding2 = crypto.randomInt(1_000_000, 9_000_000).toString();
