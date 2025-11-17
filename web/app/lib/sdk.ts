@@ -48,7 +48,7 @@ import {
   canonicalizeHex
 } from './onchain/utils';
 import { poseidonHashMany } from './onchain/poseidon';
-import { ProofResponse } from './proofClient';
+import { ProofResponse, ProofClient } from './proofClient';
 import poolIdl from '../idl/ptf_pool.json';
 import factoryIdl from '../idl/ptf_factory.json';
 import {
@@ -351,38 +351,13 @@ async function waitForPendingShieldInactive(
         console.info(`[wrap] Waiting for pending_shield to be inactive (attempt ${attempts}/${maxAttempts})...`);
       }
     } catch (error) {
-      // If decoding fails, try manual reading
-      // PoolState layout: pending_shield is the last field
-      // Calculate offset: discriminator(8) + authority(32) + origin_mint(32) + vault(32) + verifier_program(32) + verifying_key(32) + commitment_tree(32)
-      // + verifying_key_id(32) + verifying_key_hash(32) + current_root(32) + recent_roots(512) + roots_len(1) + fee_bps(2) + features(1)
-      // + note_ledger(32) + note_ledger_bump(1) + protocol_fees(16) + hook_config(32) + hook_config_present(1) + hook_config_bump(1) + bump(1)
-      // + twin_mint(32) + twin_mint_enabled(1) + pending_shield.active(1)
-      // = 8 + 32*6 + 32 + 32 + 32 + 512 + 1 + 2 + 1 + 32 + 1 + 16 + 32 + 1 + 1 + 1 + 32 + 1 + 1 = 929
-      const buffer = Buffer.from(accountInfo.data);
-      if (buffer.length >= 930) {
-        const pendingShieldActiveOffset = 929; // After all fields before pending_shield.active
-        const activeByte = buffer.readUInt8(pendingShieldActiveOffset);
-        const isActive = activeByte !== 0;
-        
-        if (process.env.NEXT_PUBLIC_DEBUG_WRAP === 'true') {
-          console.info(`[wrap] pending_shield.active byte at offset ${pendingShieldActiveOffset}: ${activeByte}`);
-        }
-        
-        if (!isActive) {
-          if (process.env.NEXT_PUBLIC_DEBUG_WRAP === 'true') {
-            console.info(`[wrap] pending_shield is inactive (manual read) after ${attempts} attempts`);
-          }
-          return;
-        }
-        
-        if (attempts % 10 === 0) {
-          console.info(`[wrap] Waiting for pending_shield to be inactive (manual read, attempt ${attempts}/${maxAttempts})...`);
-        }
-      } else {
-        // Buffer too short, assume inactive
-        console.warn('[wrap] PoolState buffer too short, assuming pending_shield is inactive');
-        return;
+      // If decoding fails, we can't reliably check pending_shield status
+      // Skip the check and let the program reject with PendingShieldInFlight if it's active
+      // We'll handle that error below
+      if (process.env.NEXT_PUBLIC_DEBUG_WRAP === 'true') {
+        console.warn('[wrap] Failed to decode PoolState, skipping pending_shield check:', error);
       }
+      return; // Proceed and let program handle it
     }
     
     await sleep(1000);
@@ -416,9 +391,15 @@ export async function wrap(params: WrapParams): Promise<string> {
   // Wait for pending_shield to be inactive before starting a new shield
   // This prevents PendingShieldInFlight errors from previous incomplete operations
   // If pending_shield is stuck active, try to clear it by calling shield_finalize_tree
+  // Note: We skip the check if decoding fails, as the program will reject with PendingShieldInFlight anyway
   try {
-    await waitForPendingShieldInactive(connection, poolState, 5000); // Short timeout first
+    await waitForPendingShieldInactive(connection, poolState, 3000); // Short timeout first
   } catch (error) {
+    // If we can't determine pending_shield status or it's still active, try to proceed anyway
+    // The program will reject with PendingShieldInFlight if it's active, which we'll handle below
+    if (process.env.NEXT_PUBLIC_DEBUG_WRAP === 'true') {
+      console.warn('[wrap] Could not verify pending_shield status, proceeding (program will reject if active)');
+    }
     // If pending_shield is still active, try to clear it by calling shield_finalize_tree
     // This handles the case where a previous shield operation didn't complete
     console.warn('[wrap] pending_shield is still active, attempting to clear it...');
@@ -729,28 +710,143 @@ export async function wrap(params: WrapParams): Promise<string> {
     console.warn('[wrap] proceeding without lookup tables; transaction size may exceed limit');
   }
 
-  const latestBlockhash = await connection.getLatestBlockhash('confirmed');
+  let latestBlockhash = await connection.getLatestBlockhash('confirmed');
   // Include shield and finalize_ledger in the same transaction (required for security)
   const shieldInstructionSet = [...instructions, shieldInstruction, finalizeLedgerInstruction];
 
-  let shieldSignature: string;
-  if (lookupTables.length > 0) {
-    const shieldMessage = new TransactionMessage({
-      payerKey: wallet.publicKey,
-      recentBlockhash: latestBlockhash.blockhash,
-      instructions: shieldInstructionSet
-    }).compileToV0Message(lookupTables);
-    const shieldTransaction = new VersionedTransaction(shieldMessage);
-    shieldSignature = await wallet.sendTransaction(shieldTransaction, connection, {
-      skipPreflight: false
-    });
-  } else {
-    const shieldTransaction = new Transaction().add(...shieldInstructionSet);
-    shieldTransaction.feePayer = wallet.publicKey;
-    shieldTransaction.recentBlockhash = latestBlockhash.blockhash;
-    shieldSignature = await wallet.sendTransaction(shieldTransaction, connection, {
-      skipPreflight: false
-    });
+  let shieldSignature: string | undefined;
+  let shieldAttempts = 0;
+  const maxShieldAttempts = 5;
+  
+  // Retry shield if it fails with PendingShieldInFlight (0x1793 = 6035)
+  while (shieldAttempts < maxShieldAttempts) {
+    shieldAttempts++;
+    try {
+      if (lookupTables.length > 0) {
+        const shieldMessage = new TransactionMessage({
+          payerKey: wallet.publicKey,
+          recentBlockhash: latestBlockhash.blockhash,
+          instructions: shieldInstructionSet
+        }).compileToV0Message(lookupTables);
+        const shieldTransaction = new VersionedTransaction(shieldMessage);
+        shieldSignature = await wallet.sendTransaction(shieldTransaction, connection, {
+          skipPreflight: false
+        });
+      } else {
+        const shieldTransaction = new Transaction().add(...shieldInstructionSet);
+        shieldTransaction.feePayer = wallet.publicKey;
+        shieldTransaction.recentBlockhash = latestBlockhash.blockhash;
+        shieldSignature = await wallet.sendTransaction(shieldTransaction, connection, {
+          skipPreflight: false
+        });
+      }
+      break; // Success, exit retry loop
+    } catch (error: any) {
+      // Check if error is PendingShieldInFlight (0x1793 = 6035)
+      const isPendingShieldError = error?.logs?.some((log: string) => log.includes('0x1793') || log.includes('PendingShieldInFlight') || log.includes('6035')) ||
+                                   error?.transactionLogs?.some((log: string) => log.includes('0x1793') || log.includes('PendingShieldInFlight') || log.includes('6035')) ||
+                                   error?.message?.includes('0x1793') ||
+                                   error?.message?.includes('PendingShieldInFlight') ||
+                                   error?.message?.includes('6035');
+      
+      if (isPendingShieldError && shieldAttempts < maxShieldAttempts) {
+        console.warn(`[wrap] Shield failed with PendingShieldInFlight (attempt ${shieldAttempts}/${maxShieldAttempts}), waiting and trying to clear...`);
+        // Wait a bit and try to clear pending_shield
+        await sleep(2000);
+        // Try to clear by calling shield_finalize_tree if shield claim exists
+        try {
+          const claimState = await fetchShieldClaimState(connection, shieldClaim);
+          if (claimState.status !== 0) {
+            const finalizeTreeData = poolCoder.instruction.encode('shield_finalize_tree', {});
+            const finalizeTreeInstruction = new TransactionInstruction({
+              programId: POOL_PROGRAM_ID,
+              keys: [
+                { pubkey: poolState, isSigner: false, isWritable: true },
+                { pubkey: commitmentTreeKey, isSigner: false, isWritable: true },
+                { pubkey: shieldClaim, isSigner: false, isWritable: true }
+              ],
+              data: finalizeTreeData
+            });
+            const clearBlockhash = await connection.getLatestBlockhash('confirmed');
+            const clearTransaction = new Transaction().add(finalizeTreeInstruction);
+            clearTransaction.feePayer = wallet.publicKey;
+            clearTransaction.recentBlockhash = clearBlockhash.blockhash;
+            try {
+              const clearSignature = await wallet.sendTransaction(clearTransaction, connection, {
+                skipPreflight: false
+              });
+              await waitForSignatureConfirmation(
+                connection,
+                clearSignature,
+                clearBlockhash.blockhash,
+                clearBlockhash.lastValidBlockHeight
+              );
+              console.info('[wrap] Cleared pending_shield via shield_finalize_tree, refreshing root and regenerating proof...');
+              await sleep(1000);
+              // Refresh root after clearing pending_shield - it may have changed
+              const refreshedTreeAccount = await connection.getAccountInfo(commitmentTreeKey);
+              if (refreshedTreeAccount) {
+                const refreshedTreeState = decodeCommitmentTree(new Uint8Array(refreshedTreeAccount.data));
+                // Use bytesLEToCanonicalHex to convert little-endian bytes to canonical hex format
+                const newRoot = bytesLEToCanonicalHex(refreshedTreeState.currentRoot);
+                // Regenerate proof with new root
+                const proofClient = new ProofClient({ baseUrl: process.env.PROOF_RPC_URL ?? 'http://127.0.0.1:8788' });
+                const refreshedProof = await proofClient.requestProof('wrap', {
+                  oldRoot: newRoot,
+                  amount: amount.toString(),
+                  recipient: recipientKey.toBase58(),
+                  depositId: depositId.toString(),
+                  poolId: poolState.toBase58(),
+                  blinding: blinding.toString(),
+                  mintId: originMintKey.toBase58()
+                });
+                // Update proof and public inputs
+                const refreshedAmountCommitmentBytes = await poseidonHashMany([amount, blinding]);
+                const refreshedDecodedProof = decodeProofPayload(refreshedProof);
+                const refreshedShieldArgs = {
+                  amount_commit: Array.from(refreshedAmountCommitmentBytes),
+                  amount: new BN(amount.toString()),
+                  proof: Buffer.from(refreshedDecodedProof.proof),
+                  public_inputs: Buffer.from(refreshedDecodedProof.publicInputs)
+                };
+                const refreshedShieldData = poolCoder.instruction.encode('shield', { args: refreshedShieldArgs });
+                // Update shield instruction with new data
+                shieldInstruction.data = refreshedShieldData;
+                shieldInstructionSet[shieldInstructionSet.length - 2] = shieldInstruction; // Update shield instruction (second to last, before finalize_ledger)
+                console.info('[wrap] Regenerated proof with new root, retrying shield...');
+              }
+              await sleep(1000); // Wait for state to settle
+            } catch (clearError: any) {
+              // shield_finalize_tree may fail if the shield claim doesn't match current state
+              // This is expected if the shield claim is stale - just wait and retry
+              const isRootMismatch = clearError?.logs?.some((log: string) => log.includes('0x1792') || log.includes('RootMismatch')) ||
+                                    clearError?.transactionLogs?.some((log: string) => log.includes('0x1792') || log.includes('RootMismatch'));
+              if (isRootMismatch) {
+                console.warn('[wrap] shield_finalize_tree failed with RootMismatch (stale shield claim), waiting longer...');
+                await sleep(3000);
+              } else {
+                console.warn('[wrap] Failed to clear pending_shield:', clearError);
+                await sleep(2000);
+              }
+            }
+          }
+        } catch (claimError) {
+          // Shield claim doesn't exist or can't be read - just wait longer
+          console.warn('[wrap] Could not read shield claim, waiting longer...');
+          await sleep(3000);
+        }
+        // Refresh blockhash for retry
+        latestBlockhash = await connection.getLatestBlockhash('confirmed');
+        continue; // Retry shield
+      } else {
+        // Not PendingShieldInFlight or max attempts reached - throw the error
+        throw error;
+      }
+    }
+  }
+  
+  if (!shieldSignature) {
+    throw new Error(`Failed to send shield transaction after ${maxShieldAttempts} attempts due to PendingShieldInFlight`);
   }
 
   await waitForSignatureConfirmation(
