@@ -13,6 +13,8 @@ use ptf_common::{seeds, FeatureFlags, MAX_BPS};
 use solana_program::pubkey;
 
 const PTF_POOL_PROGRAM_ID: Pubkey = pubkey!("7kbUWzeTPY6qb1mFJC1ZMRmTZAdaHC27yukc3Czj7fKh");
+// CRITICAL FIX: Minimum timelock duration in seconds (24 hours)
+const MIN_TIMELOCK_SECONDS: i64 = 24 * 60 * 60; // 86400 seconds = 24 hours
 
 declare_id!("4z618BY2dXGqAUiegqDt8omo3e81TSdXRHt64ikX1bTy");
 
@@ -27,6 +29,12 @@ pub mod ptf_factory {
         timelock_seconds: i64,
     ) -> Result<()> {
         require!(default_fee_bps <= MAX_BPS, FactoryError::InvalidFeeBps);
+        
+        // CRITICAL FIX: Enforce minimum timelock
+        require!(
+            timelock_seconds >= MIN_TIMELOCK_SECONDS,
+            FactoryError::TimelockTooShort
+        );
 
         let state = &mut ctx.accounts.factory_state;
         state.authority = authority;
@@ -596,11 +604,11 @@ impl TimelockEntry {
     pub const SPACE: usize = 8 + 32 + 32 + 32 + 8 + 8 + 1 + 1 + Self::MAX_ACTION_SIZE;
 }
 
-fn ensure_direct_update_allowed(state: &FactoryState) -> Result<()> {
-    if state.timelock_seconds > 0 {
-        return Err(error!(FactoryError::TimelockOnlyQueue));
-    }
-    Ok(())
+fn ensure_direct_update_allowed(_state: &FactoryState) -> Result<()> {
+    // CRITICAL FIX: Never allow direct updates
+    // All critical operations must go through timelock system
+    // This prevents bypassing security delays even if timelock_seconds is 0
+    Err(error!(FactoryError::TimelockOnlyQueue))
 }
 
 fn apply_mint_update<'info>(
@@ -881,4 +889,6 @@ pub enum FactoryError {
     OriginMintMismatch,
     #[msg("E_INVALID_AMOUNT")]
     InvalidAmount,
+    #[msg("E_TIMELOCK_TOO_SHORT")]
+    TimelockTooShort,
 }
