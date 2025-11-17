@@ -90,6 +90,41 @@ interface WrapResult {
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
+async function waitForMintMappingInitialized(
+  connection: Connection,
+  originMint: PublicKey,
+  timeoutMs = 120_000
+): Promise<void> {
+  const mintMappingKey = deriveMintMapping(originMint);
+  const start = Date.now();
+  let attempts = 0;
+  while (Date.now() - start < timeoutMs) {
+    const account = await connection.getAccountInfo(mintMappingKey, 'confirmed');
+    if (account && account.owner.equals(FACTORY_PROGRAM_ID)) {
+      try {
+        const decoded = factoryCoder.accounts.decode('MintMapping', account.data) as { origin_mint: PublicKey };
+        if (decoded.origin_mint.equals(originMint)) {
+          if (attempts > 0) {
+            console.info(
+              `[waitForMintMappingInitialized] Mint mapping ready after ${attempts + 1} attempts (${mintMappingKey.toBase58()})`
+            );
+          }
+          return;
+        }
+      } catch {
+        // If decoding fails but the account exists and is owned by the factory program,
+        // treat it as initialized – the bootstrap script will have written valid data.
+        return;
+      }
+    }
+    attempts += 1;
+    await sleep(1000);
+  }
+  throw new Error(
+    `Timed out waiting for mint mapping ${mintMappingKey.toBase58()} for origin mint ${originMint.toBase58()} to initialize`
+  );
+}
+
 function randomFieldScalar(): string {
   const bytes = crypto.randomBytes(31);
   return BigInt(`0x${bytes.toString('hex')}`).toString();
@@ -374,7 +409,8 @@ async function main() {
     console.info('[setup] Test mint created successfully');
   }
   const mintConfig = catalog[0]!;
-  
+  await waitForMintMappingInitialized(connection, new PublicKey(mintConfig.originMint));
+
   console.info('[setup] Funding wallets with tokens');
   const originMintKey = new PublicKey(mintConfig.originMint);
   await faucetToken(connection, originMintKey, owner.publicKey, WRAP_AMOUNT * 5n);

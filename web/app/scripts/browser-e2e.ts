@@ -77,6 +77,39 @@ interface OnchainAllowance {
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
+async function waitForMintMappingInitialized(
+  connection: Connection,
+  originMint: PublicKey,
+  timeoutMs = 120_000
+): Promise<void> {
+  const mintMappingKey = deriveMintMapping(originMint);
+  const start = Date.now();
+  let attempts = 0;
+  while (Date.now() - start < timeoutMs) {
+    const account = await connection.getAccountInfo(mintMappingKey, 'confirmed');
+    if (account && account.owner.equals(FACTORY_PROGRAM_ID)) {
+      try {
+        const decoded = factoryCoder.accounts.decode('MintMapping', account.data) as { origin_mint: PublicKey };
+        if (decoded.origin_mint.equals(originMint)) {
+          if (attempts > 0) {
+            console.info(
+              `[waitForMintMappingInitialized] Mint mapping ready after ${attempts + 1} attempts (${mintMappingKey.toBase58()})`
+            );
+          }
+          return;
+        }
+      } catch {
+        return;
+      }
+    }
+    attempts += 1;
+    await sleep(1000);
+  }
+  throw new Error(
+    `Timed out waiting for mint mapping ${mintMappingKey.toBase58()} for origin mint ${originMint.toBase58()} to initialize`
+  );
+}
+
 function randomSymbol(prefix = 'FB'): string {
   const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
   let suffix = '';
@@ -597,6 +630,7 @@ async function main() {
     mintConfig = catalog[0]!;
     console.info('[mint] using pre-existing mint', { symbol: mintConfig.symbol, originMint: mintConfig.originMint });
   }
+  await waitForMintMappingInitialized(connection, new PublicKey(mintConfig.originMint));
   const originMintKey = new PublicKey(mintConfig.originMint);
   const poolId = mintConfig.poolId;
   const poolStateKey = new PublicKey(poolId);
