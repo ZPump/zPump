@@ -284,7 +284,20 @@ async function sendAndConfirm(
       return signature;
     }
     if (status?.err) {
-      throw new Error(`Transaction ${signature} failed: ${JSON.stringify(status.err)}`);
+      // Try to get transaction logs for better error reporting
+      let errorDetails = JSON.stringify(status.err);
+      try {
+        const tx = await connection.getTransaction(signature, { commitment: 'confirmed', maxSupportedTransactionVersion: 0 });
+        if (tx?.meta?.logMessages) {
+          const errorLogs = tx.meta.logMessages.filter(log => log.includes('Error') || log.includes('failed') || log.includes('require'));
+          if (errorLogs.length > 0) {
+            errorDetails += `\nLogs: ${errorLogs.join('\n')}`;
+          }
+        }
+      } catch (e) {
+        // Ignore errors fetching transaction details
+      }
+      throw new Error(`Transaction ${signature} failed: ${errorDetails}`);
     }
     await new Promise((resolve) => setTimeout(resolve, 1000));
   }
@@ -391,11 +404,22 @@ async function waitForAccount(
   pubkey: PublicKey,
   label: string,
   retries = 12,
-  delayMs = 500
+  delayMs = 500,
+  expectedOwner?: PublicKey
 ): Promise<void> {
   for (let attempt = 0; attempt < retries; attempt++) {
     const info = await connection.getAccountInfo(pubkey);
     if (info) {
+      // If expected owner is provided, verify the account is owned by it
+      if (expectedOwner && !info.owner.equals(expectedOwner)) {
+        if (attempt < retries - 1) {
+          // Still retrying, wait and try again
+          await new Promise((resolve) => setTimeout(resolve, delayMs));
+          continue;
+        } else {
+          throw new Error(`${label} (${pubkey.toBase58()}) exists but is owned by ${info.owner.toBase58()}, expected ${expectedOwner.toBase58()}`);
+        }
+      }
       if (attempt > 0) {
         console.log(`${label} available after ${attempt + 1} attempts (${pubkey.toBase58()})`);
       }
@@ -457,7 +481,7 @@ async function ensureFactory(ctx: BootstrapContext): Promise<void> {
     {
       authority: ctx.payer.publicKey,
       default_fee_bps: new BN(5),
-      timelock_seconds: new BN(0)
+      timelock_seconds: new BN(24 * 60 * 60) // Minimum timelock: 24 hours (86400 seconds)
     }
   );
   console.log(`Initialised factory state ${factoryState.toBase58()}`);
@@ -576,7 +600,31 @@ async function ensureMint(
 
   let ptknMintForConfig: PublicKey | null = null;
 
-  if (!(await connection.getAccountInfo(mintMapping))) {
+  // Check if mint mapping exists and is properly initialized
+  const existingMapping = await connection.getAccountInfo(mintMapping);
+  const isUninitialized = existingMapping && !existingMapping.owner.equals(PROGRAM_IDS.factory);
+  const needsRegistration = !existingMapping || isUninitialized;
+  
+  if (needsRegistration) {
+    // If account exists but is uninitialized (owned by BPF loader), we need to close it first
+    // The init constraint requires the account to not exist
+    if (isUninitialized) {
+      console.log(`Closing uninitialized mint mapping account for ${mintConfig.symbol}...`);
+      try {
+        // Close the uninitialized account by transferring its lamports to the payer
+        const closeIx = SystemProgram.transfer({
+          fromPubkey: mintMapping,
+          toPubkey: ctx.payer.publicKey,
+          lamports: existingMapping.lamports
+        });
+        // Note: This won't work if the account is owned by BPF loader
+        // We'll need to let the register_mint transaction handle it
+        // For now, just log and proceed
+        console.warn(`Cannot close BPF-owned account, proceeding with registration...`);
+      } catch (e) {
+        console.warn(`Could not close uninitialized account: ${(e as Error).message}`);
+      }
+    }
     const enablePtkn = true;
     const ptknMintKeypair = enablePtkn ? Keypair.generate() : null;
 
@@ -595,26 +643,41 @@ async function ensureMint(
       registerAccounts.ptkn_mint = ptknMintKeypair.publicKey;
     }
 
-    const signature = await sendInstruction(
-      ctx,
-      ctx.idls.factory,
-      ctx.coders.factory,
-      PROGRAM_IDS.factory,
-      'register_mint',
-      registerAccounts,
-      {
-        decimals: mintConfig.decimals,
-        enable_ptkn: enablePtkn,
-        feature_flags: null,
-        fee_bps_override: null
-      },
-      ptknMintKeypair ? [ptknMintKeypair] : []
-    );
-    console.log(`Registered mint mapping for ${mintConfig.symbol} (tx ${signature})`);
-    await waitForAccount(connection, mintMapping, `Mint mapping for ${mintConfig.symbol}`);
+    try {
+      const signature = await sendInstruction(
+        ctx,
+        ctx.idls.factory,
+        ctx.coders.factory,
+        PROGRAM_IDS.factory,
+        'register_mint',
+        registerAccounts,
+        {
+          decimals: mintConfig.decimals,
+          enable_ptkn: enablePtkn,
+          feature_flags: null,
+          fee_bps_override: null
+        },
+        ptknMintKeypair ? [ptknMintKeypair] : []
+      );
+      console.log(`Registered mint mapping for ${mintConfig.symbol} (tx ${signature})`);
+      
+      // Wait for account to be created and properly initialized
+      await waitForAccount(connection, mintMapping, `Mint mapping for ${mintConfig.symbol}`, 30, 1000, PROGRAM_IDS.factory);
+      
+      // Double-check the account is properly initialized
+      const mappingInfo = await connection.getAccountInfo(mintMapping);
+      if (!mappingInfo || !mappingInfo.owner.equals(PROGRAM_IDS.factory)) {
+        throw new Error(`Mint mapping account for ${mintConfig.symbol} was not properly initialized. Owner: ${mappingInfo?.owner.toBase58()}, Expected: ${PROGRAM_IDS.factory.toBase58()}`);
+      }
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      throw new Error(`Failed to register mint ${mintConfig.symbol}: ${errorMessage}`);
+    }
     if (ptknMintKeypair) {
       ptknMintForConfig = ptknMintKeypair.publicKey;
     }
+  } else {
+    console.log(`Mint mapping for ${mintConfig.symbol} already exists and is initialized`);
   }
 
   if (!(await connection.getAccountInfo(vaultState))) {

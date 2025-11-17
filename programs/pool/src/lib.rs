@@ -377,7 +377,14 @@ pub mod ptf_pool {
                 shield_claim.bump
             }
         };
-        require!(!ctx.accounts.shield_claim.is_active(), PoolError::PendingShieldInFlight);
+        
+        // Check if there's an active shield claim that needs finalization
+        let has_active_claim = ctx.accounts.shield_claim.is_active();
+        
+        // If there's an active claim, reject - it must be finalized first
+        // (This prevents creating a new shield while one is pending)
+        require!(!has_active_claim, PoolError::PendingShieldInFlight);
+        
         // Validate unchecked accounts
         require_keys_eq!(
             ctx.accounts.verifier_program.key(),
@@ -556,22 +563,24 @@ pub mod ptf_pool {
             claim_bump,
         );
 
-        fn is_finalize_ix(ix: &Instruction, pool_key: Pubkey) -> bool {
-            ix.program_id == crate::ID
-                && ix.data.len() >= 8
-                && ix.data[..8] == instruction_discriminator("shield_finalize_ledger")
-                && ix.accounts.first().map(|meta| meta.pubkey) == Some(pool_key)
-        }
-
+        // CRITICAL FIX: Require finalize_ledger in the same transaction for atomicity
+        // This ensures tokens are only deposited if finalization will complete
+        // The SDK already includes finalize_ledger in the same transaction (see sdk.ts line 583)
         let ix_sysvar = ctx.accounts.instructions.to_account_info();
         let mut finalize_found = false;
-
+        
         if let Ok(current_index) = load_current_index_checked(&ix_sysvar) {
             let mut search_index = current_index as usize + 1;
+            let finalize_disc = instruction_discriminator("shield_finalize_ledger");
             loop {
                 match load_instruction_at_checked(search_index, &ix_sysvar) {
                     Ok(ix) => {
-                        if is_finalize_ix(&ix, pool_loader.key()) {
+                        // Check if this is a shield_finalize_ledger instruction
+                        if ix.program_id == crate::ID
+                            && ix.data.len() >= 8
+                            && &ix.data[..8] == finalize_disc.as_slice()
+                            && ix.accounts.first().map(|meta| meta.pubkey) == Some(pool_loader.key())
+                        {
                             finalize_found = true;
                             break;
                         }
@@ -581,26 +590,11 @@ pub mod ptf_pool {
                 }
             }
         }
-
-        if !finalize_found {
-            let mut search_index = 0usize;
-            loop {
-                match load_instruction_at_checked(search_index, &ix_sysvar) {
-                    Ok(ix) => {
-                        if is_finalize_ix(&ix, pool_loader.key()) {
-                            finalize_found = true;
-                            break;
-                        }
-                        search_index += 1;
-                    }
-                    Err(_) => break,
-                }
-            }
-        }
-
-        if !finalize_found {
-            return err!(PoolError::ShieldFinalizationRequired);
-        }
+        
+        require!(
+            finalize_found,
+            PoolError::ShieldFinalizationRequired
+        );
 
         Ok(())
     }

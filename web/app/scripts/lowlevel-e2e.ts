@@ -619,9 +619,29 @@ async function main() {
     currentRoot = finalRoot;
   }
   
-  const instructions = [ComputeBudgetProgram.setComputeUnitLimit({ units: 1_200_000 }), shieldIx];
+  // CRITICAL FIX: finalize_ledger must be in the same transaction as shield for security
+  // This ensures atomicity - tokens are only deposited if finalization will complete
+  // This matches the SDK behavior (see sdk.ts line 583) and the on-chain security requirement
+  const finalizeLedgerData = poolCoder.instruction.encode('shield_finalize_ledger', {});
+  const finalizeLedgerIx = new TransactionInstruction({
+    programId: POOL_PROGRAM_ID,
+    keys: [
+      { pubkey: poolStateKey, isSigner: false, isWritable: true },
+      { pubkey: hookConfigKey, isSigner: false, isWritable: false },
+      { pubkey: noteLedgerKey, isSigner: false, isWritable: true },
+      { pubkey: shieldClaimKey, isSigner: false, isWritable: true }
+    ],
+    data: finalizeLedgerData
+  });
+
+  // Include shield and finalize_ledger in the same transaction (required for security)
+  const instructions = [
+    ComputeBudgetProgram.setComputeUnitLimit({ units: 1_200_000 }),
+    shieldIx,
+    finalizeLedgerIx
+  ];
   const shieldSig = await sendAndConfirmInstructions(connection, owner, instructions, mintConfig.lookupTable);
-  console.info('[test-01] shield instruction successful', shieldSig);
+  console.info('[test-01] shield + finalize_ledger instruction successful', shieldSig);
 
   console.info('[test-02] Testing shield_finalize_tree instruction (low-level)');
   const finalizeTreeData = poolCoder.instruction.encode('shield_finalize_tree', {});
@@ -636,26 +656,6 @@ async function main() {
   });
   const finalizeTreeSig = await sendAndConfirmInstructions(connection, owner, [finalizeTreeIx], mintConfig.lookupTable);
   console.info('[test-02] shield_finalize_tree instruction successful', finalizeTreeSig);
-
-  console.info('[test-03] Testing shield_finalize_ledger instruction (low-level)');
-  const finalizeLedgerData = poolCoder.instruction.encode('shield_finalize_ledger', {});
-  const finalizeLedgerIx = new TransactionInstruction({
-    programId: POOL_PROGRAM_ID,
-    keys: [
-      { pubkey: poolStateKey, isSigner: false, isWritable: true },
-      { pubkey: hookConfigKey, isSigner: false, isWritable: false },
-      { pubkey: noteLedgerKey, isSigner: false, isWritable: true },
-      { pubkey: shieldClaimKey, isSigner: false, isWritable: true }
-    ],
-    data: finalizeLedgerData
-  });
-  const finalizeLedgerSig = await sendAndConfirmInstructions(
-    connection,
-    owner,
-    [finalizeLedgerIx],
-    mintConfig.lookupTable
-  );
-  console.info('[test-03] shield_finalize_ledger instruction successful', finalizeLedgerSig);
 
   console.info('[test-03b] Testing shield_check_invariant instruction (low-level)');
   const checkInvariantData = poolCoder.instruction.encode('shield_check_invariant', {});
@@ -765,10 +765,21 @@ async function main() {
     data: shieldData2
   });
 
+  // Include finalize_ledger in same transaction as shield (required for security)
+  const finalizeLedgerIx2 = new TransactionInstruction({
+    programId: POOL_PROGRAM_ID,
+    keys: [
+      { pubkey: poolStateKey, isSigner: false, isWritable: true },
+      { pubkey: hookConfigKey, isSigner: false, isWritable: false },
+      { pubkey: noteLedgerKey, isSigner: false, isWritable: true },
+      { pubkey: shieldClaimKey, isSigner: false, isWritable: true }
+    ],
+    data: poolCoder.instruction.encode('shield_finalize_ledger', {})
+  });
   await sendAndConfirmInstructions(
     connection,
     owner,
-    [ComputeBudgetProgram.setComputeUnitLimit({ units: 1_200_000 }), shieldIx2],
+    [ComputeBudgetProgram.setComputeUnitLimit({ units: 1_200_000 }), shieldIx2, finalizeLedgerIx2],
     mintConfig.lookupTable
   );
 
@@ -782,18 +793,6 @@ async function main() {
     data: poolCoder.instruction.encode('shield_finalize_tree', {})
   });
   await sendAndConfirmInstructions(connection, owner, [finalizeTreeIx2], mintConfig.lookupTable);
-
-  const finalizeLedgerIx2 = new TransactionInstruction({
-    programId: POOL_PROGRAM_ID,
-    keys: [
-      { pubkey: poolStateKey, isSigner: false, isWritable: true },
-      { pubkey: hookConfigKey, isSigner: false, isWritable: false },
-      { pubkey: noteLedgerKey, isSigner: false, isWritable: true },
-      { pubkey: shieldClaimKey, isSigner: false, isWritable: true }
-    ],
-    data: poolCoder.instruction.encode('shield_finalize_ledger', {})
-  });
-  await sendAndConfirmInstructions(connection, owner, [finalizeLedgerIx2], mintConfig.lookupTable);
   const checkInvariantIx2 = new TransactionInstruction({
     programId: POOL_PROGRAM_ID,
     keys: [
@@ -974,10 +973,21 @@ async function main() {
     keys: shieldKeys3,
     data: shieldData3
   });
+  // Include finalize_ledger in same transaction as shield (required for security)
+  const finalizeLedgerIx3 = new TransactionInstruction({
+    programId: POOL_PROGRAM_ID,
+    keys: [
+      { pubkey: poolStateKey, isSigner: false, isWritable: true },
+      { pubkey: hookConfigKey, isSigner: false, isWritable: false },
+      { pubkey: noteLedgerKey, isSigner: false, isWritable: true },
+      { pubkey: shieldClaimKey, isSigner: false, isWritable: true }
+    ],
+    data: poolCoder.instruction.encode('shield_finalize_ledger', {})
+  });
   await sendAndConfirmInstructions(
     connection,
     owner,
-    [ComputeBudgetProgram.setComputeUnitLimit({ units: 1_200_000 }), shieldIx3],
+    [ComputeBudgetProgram.setComputeUnitLimit({ units: 1_200_000 }), shieldIx3, finalizeLedgerIx3],
     mintConfig.lookupTable
   );
 
@@ -991,18 +1001,6 @@ async function main() {
     data: poolCoder.instruction.encode('shield_finalize_tree', {})
   });
   await sendAndConfirmInstructions(connection, owner, [finalizeTreeIx3], mintConfig.lookupTable);
-
-  const finalizeLedgerIx3 = new TransactionInstruction({
-    programId: POOL_PROGRAM_ID,
-    keys: [
-      { pubkey: poolStateKey, isSigner: false, isWritable: true },
-      { pubkey: hookConfigKey, isSigner: false, isWritable: false },
-      { pubkey: noteLedgerKey, isSigner: false, isWritable: true },
-      { pubkey: shieldClaimKey, isSigner: false, isWritable: true }
-    ],
-    data: poolCoder.instruction.encode('shield_finalize_ledger', {})
-  });
-  await sendAndConfirmInstructions(connection, owner, [finalizeLedgerIx3], mintConfig.lookupTable);
   const checkInvariantIx3 = new TransactionInstruction({
     programId: POOL_PROGRAM_ID,
     keys: [
@@ -1197,10 +1195,21 @@ async function main() {
     keys: shieldKeys4,
     data: shieldData4
   });
+  // Include finalize_ledger in same transaction as shield (required for security)
+  const finalizeLedgerIx4 = new TransactionInstruction({
+    programId: POOL_PROGRAM_ID,
+    keys: [
+      { pubkey: poolStateKey, isSigner: false, isWritable: true },
+      { pubkey: hookConfigKey, isSigner: false, isWritable: false },
+      { pubkey: noteLedgerKey, isSigner: false, isWritable: true },
+      { pubkey: shieldClaimKey, isSigner: false, isWritable: true }
+    ],
+    data: poolCoder.instruction.encode('shield_finalize_ledger', {})
+  });
   await sendAndConfirmInstructions(
     connection,
     receiver,
-    [ComputeBudgetProgram.setComputeUnitLimit({ units: 1_200_000 }), shieldIx4],
+    [ComputeBudgetProgram.setComputeUnitLimit({ units: 1_200_000 }), shieldIx4, finalizeLedgerIx4],
     mintConfig.lookupTable
   );
 
@@ -1214,18 +1223,6 @@ async function main() {
     data: poolCoder.instruction.encode('shield_finalize_tree', {})
   });
   await sendAndConfirmInstructions(connection, receiver, [finalizeTreeIx4], mintConfig.lookupTable);
-
-  const finalizeLedgerIx4 = new TransactionInstruction({
-    programId: POOL_PROGRAM_ID,
-    keys: [
-      { pubkey: poolStateKey, isSigner: false, isWritable: true },
-      { pubkey: hookConfigKey, isSigner: false, isWritable: false },
-      { pubkey: noteLedgerKey, isSigner: false, isWritable: true },
-      { pubkey: shieldClaimKey, isSigner: false, isWritable: true }
-    ],
-    data: poolCoder.instruction.encode('shield_finalize_ledger', {})
-  });
-  await sendAndConfirmInstructions(connection, receiver, [finalizeLedgerIx4], mintConfig.lookupTable);
   const checkInvariantIx4 = new TransactionInstruction({
     programId: POOL_PROGRAM_ID,
     keys: [
@@ -1335,36 +1332,11 @@ async function main() {
   );
   console.info('[test-07] unshield_to_origin instruction successful', unshieldSig);
 
-  console.info('[test-08] Testing write_nullifier instruction (low-level)');
-  const testNullifier = Buffer.alloc(32);
-  crypto.randomFillSync(testNullifier);
-  const writeNullifierData = poolCoder.instruction.encode('write_nullifier', {
-    nullifier: Array.from(testNullifier)
-  });
-  const writeNullifierIx = new TransactionInstruction({
-    programId: POOL_PROGRAM_ID,
-    keys: [
-      { pubkey: adminAuthority.publicKey, isSigner: true, isWritable: true },
-      { pubkey: poolStateKey, isSigner: false, isWritable: true },
-      { pubkey: nullifierSetKey, isSigner: false, isWritable: true },
-      { pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false }
-    ],
-    data: writeNullifierData
-  });
-  const writeNullifierSig = await sendAndConfirmInstructions(connection, adminAuthority, [writeNullifierIx]);
-  console.info('[test-08] write_nullifier instruction successful', writeNullifierSig);
-
-  console.info('[test-09] Testing nullifier reuse rejection (edge case)');
-  try {
-    await sendAndConfirmInstructions(connection, adminAuthority, [writeNullifierIx]);
-    throw new Error('Expected nullifier reuse error');
-  } catch (error: any) {
-    if (error.logs?.some((log: string) => log.includes('NullifierReuse'))) {
-      console.info('[test-09] nullifier reuse correctly rejected');
-    } else {
-      throw error;
-    }
-  }
+  // SKIPPED: test-08 and test-09 - write_nullifier function removed for security (Fix 03)
+  // The write_nullifier function was removed because it allowed authority to manipulate
+  // nullifier set without proof verification, creating a critical security vulnerability.
+  console.info('[test-08] SKIPPED: write_nullifier instruction test (function removed for security)');
+  console.info('[test-09] SKIPPED: nullifier reuse rejection test (function removed for security)');
 
   console.info('[test-10] Testing revoke_allowance instruction (low-level)');
   const revokeData = poolCoder.instruction.encode('revoke_allowance', {});
@@ -1582,23 +1554,10 @@ async function main() {
     }
   }
 
-  console.info('[test-12] Testing accept_root instruction (edge case)');
-  const testRoot = Buffer.alloc(32);
-  crypto.randomFillSync(testRoot);
-  const acceptRootData = poolCoder.instruction.encode('accept_root', {
-    root: Array.from(testRoot)
-  });
-  const acceptRootIx = new TransactionInstruction({
-    programId: POOL_PROGRAM_ID,
-    keys: [
-      { pubkey: adminAuthority.publicKey, isSigner: true, isWritable: true },
-      { pubkey: poolStateKey, isSigner: false, isWritable: true },
-      { pubkey: nullifierSetKey, isSigner: false, isWritable: true }
-    ],
-    data: acceptRootData
-  });
-  const acceptRootSig = await sendAndConfirmInstructions(connection, adminAuthority, [acceptRootIx]);
-  console.info('[test-12] accept_root instruction successful', acceptRootSig);
+  // SKIPPED: test-12 - accept_root function removed for security (Fix 03)
+  // The accept_root function was removed because it allowed authority to manipulate
+  // Merkle tree roots without proof verification, creating a critical security vulnerability.
+  console.info('[test-12] SKIPPED: accept_root instruction test (function removed for security)');
 
   console.info('[lowlevel-e2e] All low-level E2E tests completed successfully');
 }
