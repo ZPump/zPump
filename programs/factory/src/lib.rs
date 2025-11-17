@@ -281,6 +281,23 @@ pub mod ptf_factory {
             FactoryError::TimelockNotReady
         );
 
+        // CRITICAL FIX: Recompute and verify action hash before execution
+        // This ensures the action hasn't been tampered with after queuing
+        let action_bytes = entry.action
+            .try_to_vec()
+            .map_err(|_| error!(FactoryError::SerializationError))?;
+        let expected_hash = hashv(&[
+            state.key().as_ref(),
+            &action_bytes,
+            &entry.execute_after.to_le_bytes(),
+        ]);
+        
+        require!(
+            expected_hash.to_bytes() == entry.action_hash,
+            FactoryError::TimelockHashMismatch
+        );
+
+        // Now safe to execute the action
         match &entry.action {
             TimelockAction::SetDefaultFeatures { features } => {
                 state.default_features = FeatureFlags::from(*features);
@@ -913,4 +930,6 @@ pub enum FactoryError {
     InvalidAmount,
     #[msg("E_TIMELOCK_TOO_SHORT")]
     TimelockTooShort,
+    #[msg("E_TIMELOCK_HASH_MISMATCH")]
+    TimelockHashMismatch,
 }
