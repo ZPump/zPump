@@ -950,13 +950,13 @@ fn execute_private_transfer<'info>(
             args.output_amount_commitments.as_slice(),
         )?
     };
-    if new_root != args.new_root {
-        msg!(
-            "unshield proof new root ({}) differs from computed root ({})",
-            hex::encode(args.new_root),
-            hex::encode(new_root)
-        );
-    }
+    
+    // CRITICAL FIX: Reject if roots don't match - proof's public inputs are source of truth
+    require!(
+        new_root == args.new_root,
+        PoolError::RootMismatch
+    );
+    
     pool_state.push_root(new_root);
 
     {
@@ -1223,13 +1223,13 @@ fn process_unshield<'info>(
                 args.output_amount_commitments.as_slice(),
             )?
         };
-        if new_root != args.new_root {
-            msg!(
-                "unshield proof new root ({}) differs from computed root ({})",
-                hex::encode(args.new_root),
-                hex::encode(new_root)
-            );
-        }
+        
+        // CRITICAL FIX: Reject if roots don't match - proof's public inputs are source of truth
+        require!(
+            new_root == args.new_root,
+            PoolError::RootMismatch
+        );
+        
         pool_state.push_root(new_root);
 
         note_ledger.record_unshield(
