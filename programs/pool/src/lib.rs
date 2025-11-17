@@ -1969,13 +1969,13 @@ pub struct PrivateTransfer<'info> {
         constraint = note_ledger.load()?.pool == pool_state.key() @ PoolError::NoteLedgerMismatch,
     )]
     pub note_ledger: AccountLoader<'info, NoteLedger>,
+    /// CHECK: Validated in instruction via ensure_mint_active
     #[account(
         seeds = [seeds::MINT_MAPPING, pool_state.load()?.origin_mint.as_ref()],
-        bump = mint_mapping.bump,
+        bump,
         seeds::program = ptf_factory::ID,
-        constraint = mint_mapping.origin_mint == pool_state.load()?.origin_mint @ PoolError::OriginMintMismatch,
     )]
-    pub mint_mapping: Account<'info, MintMapping>,
+    pub mint_mapping: UncheckedAccount<'info>,
     pub verifier_program: Program<'info, PtfVerifierGroth16>,
     #[account(
         address = pool_state.load()?.verifying_key,
