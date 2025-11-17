@@ -347,7 +347,16 @@ pub mod ptf_pool {
     ) -> Result<()> {
         msg!("shield: entry");
         // Check mint status first - must be active
-        ensure_mint_active(&ctx.accounts.mint_mapping)?;
+        // CRITICAL FIX: Handle uninitialized accounts (owned by BPF loader)
+        // If account is owned by BPF loader, it's uninitialized - this is a bootstrap issue
+        // We check this before ensure_mint_active to provide a better error message
+        let mint_mapping_info = ctx.accounts.mint_mapping.to_account_info();
+        if mint_mapping_info.owner != &ptf_factory::ID {
+            msg!("shield: mint_mapping owner mismatch - owner={}, expected={}", 
+                 mint_mapping_info.owner, ptf_factory::ID);
+            return err!(PoolError::MintMappingCorrupt);
+        }
+        ensure_mint_active(&mint_mapping_info)?;
         let pool_loader = &ctx.accounts.pool_state;
         msg!("shield: got pool_loader");
         let mut pool_state = pool_loader.load_mut()?;
@@ -787,7 +796,7 @@ pub mod ptf_pool {
     // timelock, multi-sig, and governance approval.
 
     pub fn private_transfer(ctx: Context<PrivateTransfer>, args: TransferArgs) -> Result<()> {
-        ensure_mint_active(&ctx.accounts.mint_mapping)?;
+        ensure_mint_active(&ctx.accounts.mint_mapping.to_account_info())?;
         execute_private_transfer(
             &ctx.accounts.pool_state,
             &ctx.accounts.nullifier_set,
@@ -825,7 +834,7 @@ pub mod ptf_pool {
 
     pub fn transfer_from(ctx: Context<TransferFrom>, args: TransferFromArgs) -> Result<()> {
         require!(args.allowance_amount > 0, PoolError::AllowanceAmountInvalid);
-        ensure_mint_active(&ctx.accounts.mint_mapping)?;
+        ensure_mint_active(&ctx.accounts.mint_mapping.to_account_info())?;
 
         {
             let allowance = &mut ctx.accounts.allowance;
@@ -1044,7 +1053,7 @@ fn process_unshield<'info>(
     mode: UnshieldMode,
 ) -> Result<()> {
     // Check mint status first - must be active
-    ensure_mint_active(&ctx.accounts.mint_mapping)?;
+    ensure_mint_active(&ctx.accounts.mint_mapping.to_account_info())?;
     // CRITICAL: Cache ALL account fields and AccountInfos BEFORE taking ANY mutable borrows
     // Accessing ctx.accounts while holding mutable borrows causes access violations
     let decimals = ctx.accounts.mint_mapping.decimals;
@@ -3419,9 +3428,26 @@ pub enum PoolError {
     AllowanceAmountInvalid,
 }
 
-fn ensure_mint_active(mapping: &Account<MintMapping>) -> Result<()> {
+fn ensure_mint_active(mapping: &AccountInfo) -> Result<()> {
+    // CRITICAL FIX: Handle uninitialized accounts (owned by BPF loader)
+    // If account is not owned by factory, it's uninitialized - reject
+    require_keys_eq!(
+        *mapping.owner,
+        ptf_factory::ID,
+        PoolError::MintMappingCorrupt
+    );
+    
+    // Manually read status from account data (similar to init_pool)
+    let mapping_data = mapping.try_borrow_data()?;
+    if mapping_data.len() < 84 {
+        return err!(PoolError::MintMappingCorrupt);
+    }
+    let body = &mapping_data[8..];
+    let raw_status = body[65];
+    drop(mapping_data);
+    
     require!(
-        mapping.status == MintStatus::Active as u8,
+        raw_status == MintStatus::Active as u8,
         PoolError::MintFrozen
     );
     Ok(())
