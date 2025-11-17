@@ -11,6 +11,8 @@ use spl_token_2022::state::Mint as Token2022Mint;
 
 use ptf_common::{seeds, FeatureFlags, MAX_BPS};
 use solana_program::pubkey;
+use sha3::{Digest, Keccak256};
+use ptf_verifier_groth16;
 
 const PTF_POOL_PROGRAM_ID: Pubkey = pubkey!("7kbUWzeTPY6qb1mFJC1ZMRmTZAdaHC27yukc3Czj7fKh");
 // CRITICAL FIX: Minimum timelock duration in seconds (24 hours)
@@ -267,6 +269,67 @@ pub mod ptf_factory {
             queued_at: clock.unix_timestamp,
             execute_after,
         });
+        Ok(())
+    }
+
+    pub fn create_verifying_key(
+        ctx: Context<CreateVerifyingKey>,
+        circuit_tag: [u8; 32],
+        verifying_key_id: [u8; 32],
+        hash: [u8; 32],
+        version: u8,
+        verifying_key_data: Vec<u8>,
+    ) -> Result<()> {
+        let state = &ctx.accounts.factory_state;
+        require_keys_eq!(
+            ctx.accounts.authority.key(),
+            state.authority,
+            FactoryError::Unauthorized
+        );
+        
+        // Verify hash matches
+        let mut hasher = Keccak256::new();
+        hasher.update(&verifying_key_data);
+        let computed_hash: [u8; 32] = hasher.finalize().into();
+        require!(
+            computed_hash == hash,
+            FactoryError::VerifyingKeyHashMismatch
+        );
+        
+        // CPI to verifier program - factory program signs as authority
+        let cpi_program = ctx.accounts.verifier_program.to_account_info();
+        let cpi_accounts = ptf_verifier_groth16::cpi::accounts::InitializeVerifyingKey {
+            verifier_state: ctx.accounts.verifier_state.to_account_info(),
+            authority: ctx.accounts.factory_state.to_account_info(), // Factory state PDA as authority (owned by factory program)
+            payer: ctx.accounts.payer.to_account_info(),
+            system_program: ctx.accounts.system_program.to_account_info(),
+        };
+        
+        // Sign with factory_state PDA - the verifier will verify authority is factory program ID
+        let factory_seeds: &[&[&[u8]]] = &[&[
+            seeds::FACTORY,
+            ptf_factory::ID.as_ref(),
+            &[state.bump],
+        ]];
+        let cpi_ctx = CpiContext::new_with_signer(cpi_program, cpi_accounts, factory_seeds);
+        
+        ptf_verifier_groth16::cpi::initialize_verifying_key(
+            cpi_ctx,
+            circuit_tag,
+            verifying_key_id,
+            hash,
+            version,
+            verifying_key_data,
+        )?;
+        
+        emit!(VerifyingKeyCreated {
+            circuit_tag,
+            verifying_key_id,
+            hash,
+            version,
+            created_by: ctx.accounts.authority.key(),
+        });
+        
         Ok(())
     }
 
@@ -576,6 +639,21 @@ pub struct MintPtkn<'info> {
 }
 
 #[derive(Accounts)]
+pub struct CreateVerifyingKey<'info> {
+    #[account(has_one = authority)]
+    pub factory_state: Account<'info, FactoryState>,
+    pub authority: Signer<'info>,
+    /// CHECK: Verifier program will validate
+    pub verifier_program: UncheckedAccount<'info>,
+    /// CHECK: Will be initialized by verifier program
+    #[account(mut)]
+    pub verifier_state: UncheckedAccount<'info>,
+    #[account(mut)]
+    pub payer: Signer<'info>,
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
 pub struct CancelTimelockAction<'info> {
     #[account(mut, has_one = authority)]
     pub factory_state: Account<'info, FactoryState>,
@@ -843,6 +921,15 @@ pub struct MintThawed {
 }
 
 #[event]
+pub struct VerifyingKeyCreated {
+    pub circuit_tag: [u8; 32],
+    pub verifying_key_id: [u8; 32],
+    pub hash: [u8; 32],
+    pub version: u8,
+    pub created_by: Pubkey,
+}
+
+#[event]
 pub struct FactoryPaused {
     pub authority: Pubkey,
 }
@@ -932,4 +1019,6 @@ pub enum FactoryError {
     TimelockTooShort,
     #[msg("E_TIMELOCK_HASH_MISMATCH")]
     TimelockHashMismatch,
+    #[msg("E_VERIFYING_KEY_HASH_MISMATCH")]
+    VerifyingKeyHashMismatch,
 }

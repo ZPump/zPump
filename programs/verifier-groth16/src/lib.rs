@@ -1,7 +1,11 @@
 use anchor_lang::prelude::*;
+use anchor_lang::solana_program::pubkey;
 use sha3::{Digest, Keccak256};
 
 declare_id!("3aCv39mCRFH9BGJskfXqwQoWzW1ULq2yXEbEwGgKtLgg");
+
+// Factory program ID - only factory can create verifying keys
+const PTF_FACTORY_PROGRAM_ID: Pubkey = pubkey!("4z618BY2dXGqAUiegqDt8omo3e81TSdXRHt64ikX1bTy");
 
 #[cfg(all(feature = "groth16-syscall", feature = "groth16-dev-skip"))]
 compile_error!("groth16-syscall and groth16-dev-skip cannot be enabled together");
@@ -25,6 +29,22 @@ pub mod ptf_verifier_groth16 {
         require!(
             verifying_key_id != [0u8; 32],
             VerifierError::InvalidVerifyingKeyId
+        );
+
+        // CRITICAL FIX: Only factory program can create verifying keys
+        // This prevents malicious keys from being created by unauthorized parties
+        // The authority must be the factory_state PDA (which is owned by factory program)
+        // or the factory program itself. We verify ownership to ensure it's from factory.
+        require!(
+            ctx.accounts.authority.is_signer,
+            VerifierError::UnauthorizedAuthority
+        );
+        
+        // Verify authority is owned by factory program
+        require_keys_eq!(
+            *ctx.accounts.authority.owner,
+            PTF_FACTORY_PROGRAM_ID,
+            VerifierError::UnauthorizedAuthority
         );
 
         let mut hasher = Keccak256::new();
@@ -175,6 +195,8 @@ pub enum VerifierError {
     EmptyProof,
     #[msg("public inputs must not be empty")]
     EmptyPublicInputs,
+    #[msg("unauthorized authority - only factory can create keys")]
+    UnauthorizedAuthority,
 }
 
 fn verify_account_hash(account: &VerifyingKeyAccount) -> bool {
