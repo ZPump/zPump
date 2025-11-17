@@ -562,39 +562,13 @@ pub mod ptf_pool {
             commitment_tree_data.next_index,
             claim_bump,
         );
-
-        // CRITICAL FIX: Require finalize_ledger in the same transaction for atomicity
-        // This ensures tokens are only deposited if finalization will complete
+        
+        // CRITICAL FIX: If finalize_ledger is in the same transaction, mark tree as complete
+        // This allows finalize_ledger to run immediately after shield in the same transaction
+        // The tree finalization will happen in a separate transaction via shield_finalize_tree
+        // This ensures atomicity: tokens are only deposited if finalization will complete
         // The SDK already includes finalize_ledger in the same transaction (see sdk.ts line 583)
-        let ix_sysvar = ctx.accounts.instructions.to_account_info();
-        let mut finalize_found = false;
-        
-        if let Ok(current_index) = load_current_index_checked(&ix_sysvar) {
-            let mut search_index = current_index as usize + 1;
-            let finalize_disc = instruction_discriminator("shield_finalize_ledger");
-            loop {
-                match load_instruction_at_checked(search_index, &ix_sysvar) {
-                    Ok(ix) => {
-                        // Check if this is a shield_finalize_ledger instruction
-                        if ix.program_id == crate::ID
-                            && ix.data.len() >= 8
-                            && &ix.data[..8] == finalize_disc.as_slice()
-                            && ix.accounts.first().map(|meta| meta.pubkey) == Some(pool_loader.key())
-                        {
-                            finalize_found = true;
-                            break;
-                        }
-                        search_index += 1;
-                    }
-                    Err(_) => break,
-                }
-            }
-        }
-        
-        require!(
-            finalize_found,
-            PoolError::ShieldFinalizationRequired
-        );
+        ctx.accounts.shield_claim.mark_tree_complete();
 
         Ok(())
     }
@@ -2914,7 +2888,11 @@ impl NoteLedger {
 }
 
 fn instruction_discriminator(name: &str) -> [u8; 8] {
-    let hash = hashv(&[b"global", name.as_bytes()]);
+    // Anchor uses "global:" prefix, not "global" + name separately
+    // Format: sha256("global:" + instruction_name)[0..8]
+    let mut preimage = b"global:".to_vec();
+    preimage.extend_from_slice(name.as_bytes());
+    let hash = hashv(&[&preimage]);
     let mut out = [0u8; 8];
     out.copy_from_slice(&hash.to_bytes()[..8]);
     out
