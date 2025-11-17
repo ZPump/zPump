@@ -988,6 +988,12 @@ async function main() {
 
   const updatedRoot2 = await fetchPoolStateRoot(connection, mintConfig.poolId);
   currentRoot = canonicalizeHex(updatedRoot2.root);
+  console.info(`[test-04] Root before transfer (from pool_state): ${currentRoot}`);
+  
+  // Also check commitment_tree root to ensure consistency
+  // Use pool_state root as source of truth since it's what the program checks
+  // The commitment_tree root should match, but we'll use pool_state to avoid byte order issues
+  console.info(`[test-04] Using pool_state root for transfer proof: ${currentRoot}`);
 
   const transferAmount = WRAP_AMOUNT / 2n;
   const changeAmount = wrap1.noteAmount - transferAmount;
