@@ -63,26 +63,12 @@ pub mod ptf_verifier_groth16 {
         );
         require!(verify_account_hash(vk), VerifierError::HashMismatch,);
 
-        if proof.is_empty() && public_inputs.is_empty() {
-            emit!(ProofVerified {
-                circuit_tag: vk.circuit_tag,
-                verifying_key_id,
-                hash: vk.hash,
-                version: vk.version,
-            });
-            return Ok(());
-        }
+        // CRITICAL FIX: Remove empty proof/input bypass - always require valid proofs
+        require!(!proof.is_empty(), VerifierError::EmptyProof);
+        require!(!public_inputs.is_empty(), VerifierError::EmptyPublicInputs);
+        require!(!vk.verifying_key.is_empty(), VerifierError::EmptyVerifyingKey);
 
-        if vk.verifying_key.is_empty() {
-            emit!(ProofVerified {
-                circuit_tag: vk.circuit_tag,
-                verifying_key_id,
-                hash: vk.hash,
-                version: vk.version,
-            });
-            return Ok(());
-        }
-
+        // CRITICAL FIX: Always perform actual verification - no bypasses
         require!(
             groth16_verify(&vk.verifying_key, &proof, &public_inputs),
             VerifierError::InvalidProof,
@@ -185,6 +171,10 @@ pub enum VerifierError {
     EmptyVerifyingKey,
     #[msg("verifying key id must be provided")]
     InvalidVerifyingKeyId,
+    #[msg("proof must not be empty")]
+    EmptyProof,
+    #[msg("public inputs must not be empty")]
+    EmptyPublicInputs,
 }
 
 fn verify_account_hash(account: &VerifyingKeyAccount) -> bool {
@@ -202,14 +192,26 @@ fn groth16_verify(verifying_key: &[u8], proof: &[u8], public_inputs: &[u8]) -> b
     unsafe { groth16_verify_syscall(verifying_key, proof, public_inputs) }
 }
 
+// CRITICAL FIX: Dev-skip only allowed in test or debug builds, never in release/production
 #[cfg(all(
     feature = "groth16-dev-skip",
     not(feature = "groth16-syscall"),
-    any(target_arch = "bpf", target_arch = "sbf")
+    any(target_arch = "bpf", target_arch = "sbf"),
+    any(test, debug_assertions)  // Only in test or debug builds
 ))]
 fn groth16_verify(_verifying_key: &[u8], _proof: &[u8], _public_inputs: &[u8]) -> bool {
     true
 }
+
+// CRITICAL FIX: Compile error if dev-skip is enabled in release/production builds
+#[cfg(all(
+    feature = "groth16-dev-skip",
+    not(feature = "groth16-syscall"),
+    not(test),
+    not(debug_assertions),  // Not in debug mode
+    any(target_arch = "bpf", target_arch = "sbf")
+))]
+compile_error!("groth16-dev-skip cannot be enabled in release/production builds. Use groth16-syscall for production or build in debug mode for local development.");
 
 #[cfg(all(
     any(target_arch = "bpf", target_arch = "sbf"),
