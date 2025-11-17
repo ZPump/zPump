@@ -1098,6 +1098,12 @@ async function main() {
   console.info('[test-05] approve_allowance instruction successful', approveSig);
 
   console.info('[test-06] Testing transfer_from instruction (low-level)');
+  // Ensure mint_mapping is initialized before third shield
+  await waitForMintMappingInitialized(connection, originMintKey);
+  // Refresh root before third shield to ensure we have the latest on-chain root
+  const rootBeforeShield3 = await fetchPoolStateRoot(connection, mintConfig.poolId);
+  currentRoot = canonicalizeHex(rootBeforeShield3.root);
+  console.info(`[test-06] Root before third shield: ${currentRoot}`);
   const depositId3 = generateUniqueDepositId();
   const blinding3 = crypto.randomInt(1_000_000, 9_000_000).toString();
   const noteAmount3 = WRAP_AMOUNT + (WRAP_AMOUNT * feeBps) / 10_000n;
@@ -1146,6 +1152,7 @@ async function main() {
     { pubkey: shieldClaimKey, isSigner: false, isWritable: true },
     { pubkey: owner.publicKey, isSigner: true, isWritable: true },
     { pubkey: originMintKey, isSigner: false, isWritable: false },
+    { pubkey: mintMappingKey, isSigner: false, isWritable: false },
     { pubkey: VAULT_PROGRAM_ID, isSigner: false, isWritable: false },
     { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
     { pubkey: SYSVAR_INSTRUCTIONS_PUBKEY, isSigner: false, isWritable: false },
@@ -1300,6 +1307,12 @@ async function main() {
   currentRoot = canonicalizeHex(updatedRoot5.root);
 
   console.info('[test-07] Testing unshield_to_origin instruction (low-level)');
+  // Ensure mint_mapping is initialized before fourth shield
+  await waitForMintMappingInitialized(connection, originMintKey);
+  // Refresh root before fourth shield
+  const rootBeforeShield4 = await fetchPoolStateRoot(connection, mintConfig.poolId);
+  currentRoot = canonicalizeHex(rootBeforeShield4.root);
+  console.info(`[test-07] Root before fourth shield: ${currentRoot}`);
   const depositId4 = generateUniqueDepositId();
   const blinding4 = crypto.randomInt(1_000_000, 9_000_000).toString();
   const noteAmount4 = WRAP_AMOUNT + (WRAP_AMOUNT * feeBps) / 10_000n;
@@ -1368,6 +1381,7 @@ async function main() {
     { pubkey: shieldClaimKey, isSigner: false, isWritable: true },
     { pubkey: receiver.publicKey, isSigner: true, isWritable: true },
     { pubkey: originMintKey, isSigner: false, isWritable: false },
+    { pubkey: mintMappingKey, isSigner: false, isWritable: false },
     { pubkey: VAULT_PROGRAM_ID, isSigner: false, isWritable: false },
     { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
     { pubkey: SYSVAR_INSTRUCTIONS_PUBKEY, isSigner: false, isWritable: false },
@@ -1424,6 +1438,10 @@ async function main() {
 
   const updatedRoot6 = await fetchPoolStateRoot(connection, mintConfig.poolId);
   currentRoot = canonicalizeHex(updatedRoot6.root);
+  console.info(`[test-07] Root before unshield (from pool_state): ${currentRoot}`);
+  
+  // Use pool_state root as source of truth since is_known_root checks against pool_state
+  // The commitment_tree root should match, but pool_state is what the program checks
 
   const wrap4: WrapResult = {
     noteId: depositId4,
@@ -1542,6 +1560,12 @@ async function main() {
   console.info('[test-10] revoke_allowance instruction successful', revokeSig);
 
   console.info('[test-11] Testing insufficient allowance rejection (edge case)');
+  // Ensure mint_mapping is initialized before fifth shield
+  await waitForMintMappingInitialized(connection, originMintKey);
+  // Refresh root before fifth shield
+  const rootBeforeShield5 = await fetchPoolStateRoot(connection, mintConfig.poolId);
+  currentRoot = canonicalizeHex(rootBeforeShield5.root);
+  console.info(`[test-11] Root before fifth shield: ${currentRoot}`);
   const depositId5 = generateUniqueDepositId();
   const blinding5 = crypto.randomInt(1_000_000, 9_000_000).toString();
   const noteAmount5 = WRAP_AMOUNT + (WRAP_AMOUNT * feeBps) / 10_000n;
@@ -1590,6 +1614,7 @@ async function main() {
     { pubkey: shieldClaimKey, isSigner: false, isWritable: true },
     { pubkey: owner.publicKey, isSigner: true, isWritable: true },
     { pubkey: originMintKey, isSigner: false, isWritable: false },
+    { pubkey: mintMappingKey, isSigner: false, isWritable: false },
     { pubkey: VAULT_PROGRAM_ID, isSigner: false, isWritable: false },
     { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
     { pubkey: SYSVAR_INSTRUCTIONS_PUBKEY, isSigner: false, isWritable: false },
@@ -1602,10 +1627,21 @@ async function main() {
     keys: shieldKeys5,
     data: shieldData5
   });
+  // Include finalize_ledger in same transaction as shield (required for security)
+  const finalizeLedgerIx5Shield = new TransactionInstruction({
+    programId: POOL_PROGRAM_ID,
+    keys: [
+      { pubkey: poolStateKey, isSigner: false, isWritable: true },
+      { pubkey: hookConfigKey, isSigner: false, isWritable: false },
+      { pubkey: noteLedgerKey, isSigner: false, isWritable: true },
+      { pubkey: shieldClaimKey, isSigner: false, isWritable: true }
+    ],
+    data: poolCoder.instruction.encode('shield_finalize_ledger', {})
+  });
   await sendAndConfirmInstructions(
     connection,
     owner,
-    [ComputeBudgetProgram.setComputeUnitLimit({ units: 1_200_000 }), shieldIx5],
+    [ComputeBudgetProgram.setComputeUnitLimit({ units: 1_200_000 }), shieldIx5, finalizeLedgerIx5Shield],
     mintConfig.lookupTable
   );
 
@@ -1619,18 +1655,9 @@ async function main() {
     data: poolCoder.instruction.encode('shield_finalize_tree', {})
   });
   await sendAndConfirmInstructions(connection, owner, [finalizeTreeIx5], mintConfig.lookupTable);
-
-  const finalizeLedgerIx5 = new TransactionInstruction({
-    programId: POOL_PROGRAM_ID,
-    keys: [
-      { pubkey: poolStateKey, isSigner: false, isWritable: true },
-      { pubkey: hookConfigKey, isSigner: false, isWritable: false },
-      { pubkey: noteLedgerKey, isSigner: false, isWritable: true },
-      { pubkey: shieldClaimKey, isSigner: false, isWritable: true }
-    ],
-    data: poolCoder.instruction.encode('shield_finalize_ledger', {})
-  });
-  await sendAndConfirmInstructions(connection, owner, [finalizeLedgerIx5], mintConfig.lookupTable);
+  
+  // shield_finalize_ledger was already called in the same transaction as shield
+  // Now call shield_check_invariant to clear the claim
   const checkInvariantIx5 = new TransactionInstruction({
     programId: POOL_PROGRAM_ID,
     keys: [
