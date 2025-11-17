@@ -46,6 +46,9 @@ pub mod ptf_factory {
         state.timelock_seconds = timelock_seconds;
         state.bump = ctx.bumps.factory_state;
         state.last_updated_slot = Clock::get()?.slot;
+        // CRITICAL FIX: Initialize pending action tracking
+        state.pending_action_hashes = Vec::new();
+        state.last_action_sequence = 0;
 
         emit!(FactoryInitialized {
             authority,
@@ -222,7 +225,7 @@ pub mod ptf_factory {
         salt: [u8; 32],
         action: TimelockAction,
     ) -> Result<()> {
-        let state = &ctx.accounts.factory_state;
+        let state = &mut ctx.accounts.factory_state;
         require!(!state.paused, FactoryError::Paused);
 
         let clock = Clock::get()?;
@@ -234,11 +237,25 @@ pub mod ptf_factory {
         let action_bytes = action
             .try_to_vec()
             .map_err(|_| error!(FactoryError::SerializationError))?;
-        let expected_hash = hashv(&[
+        
+        // CRITICAL FIX: Compute action hash (without salt for deduplication)
+        let action_hash = hashv(&[
             state.key().as_ref(),
             &action_bytes,
             &execute_after.to_le_bytes(),
         ]);
+        
+        // CRITICAL FIX: Check for duplicate actions
+        require!(
+            !state.pending_action_hashes.contains(&action_hash.to_bytes()),
+            FactoryError::DuplicateAction
+        );
+        
+        // CRITICAL FIX: Check maximum pending actions
+        require!(
+            state.pending_action_hashes.len() < FactoryState::MAX_PENDING_ACTIONS,
+            FactoryError::TooManyPendingActions
+        );
 
         if let TimelockAction::UpdateMint { origin_mint, .. } = &action {
             let mapping = ctx
@@ -253,15 +270,26 @@ pub mod ptf_factory {
             );
         }
 
+        // CRITICAL FIX: Use sequence for unique entry address
+        let sequence = state.last_action_sequence
+            .checked_add(1)
+            .ok_or(FactoryError::SequenceOverflow)?;
+        state.last_action_sequence = sequence;
+
         let entry = &mut ctx.accounts.timelock_entry;
         entry.factory = state.key();
         entry.salt = salt;
-        entry.action_hash = expected_hash.to_bytes();
+        entry.action_hash = action_hash.to_bytes();
         entry.queued_at = clock.unix_timestamp;
         entry.execute_after = execute_after;
         entry.executed = false;
+        entry.canceled = false;
         entry.action = action;
         entry.bump = ctx.bumps.timelock_entry;
+        entry.sequence = sequence;
+        
+        // CRITICAL FIX: Track this action hash
+        state.pending_action_hashes.push(action_hash.to_bytes());
 
         emit!(TimelockQueued {
             factory: state.key(),
@@ -421,6 +449,9 @@ pub mod ptf_factory {
 
         state.last_updated_slot = clock.slot;
         entry.executed = true;
+        
+        // CRITICAL FIX: Remove from pending hashes
+        state.pending_action_hashes.retain(|&h| h != entry.action_hash);
 
         emit!(TimelockExecuted {
             factory: state.key(),
@@ -434,11 +465,19 @@ pub mod ptf_factory {
     pub fn cancel_timelock_action(ctx: Context<CancelTimelockAction>) -> Result<()> {
         let entry = &mut ctx.accounts.timelock_entry;
         require!(!entry.executed, FactoryError::TimelockConsumed);
+        
+        let state = &mut ctx.accounts.factory_state;
+        
         entry.executed = true;
+        entry.canceled = true;
+        
+        // CRITICAL FIX: Remove from pending hashes
+        state.pending_action_hashes.retain(|&h| h != entry.action_hash);
+        
         let clock = Clock::get()?;
 
         emit!(TimelockCanceled {
-            factory: ctx.accounts.factory_state.key(),
+            factory: state.key(),
             action_hash: entry.action_hash,
             canceled_at: clock.unix_timestamp,
             authority: ctx.accounts.authority.key(),
@@ -599,7 +638,7 @@ pub struct ExecuteTimelockAction<'info> {
         seeds = [
             seeds::TIMELOCK,
             factory_state.key().as_ref(),
-            timelock_entry.salt.as_ref()
+            &timelock_entry.sequence.to_le_bytes()
         ],
         bump = timelock_entry.bump,
         constraint = timelock_entry.factory == factory_state.key() @ FactoryError::TimelockInvalidFactory,
@@ -681,10 +720,15 @@ pub struct FactoryState {
     pub timelock_seconds: i64,
     pub bump: u8,
     pub last_updated_slot: u64,
+    // CRITICAL FIX: Track pending action hashes to prevent duplicates
+    pub pending_action_hashes: Vec<[u8; 32]>,
+    pub last_action_sequence: u64,
 }
 
 impl FactoryState {
-    pub const SPACE: usize = 8 + 32 + 2 + 1 + 1 + 8 + 1 + 8;
+    pub const MAX_PENDING_ACTIONS: usize = 50;
+    // SPACE = discriminator[8] + authority[32] + default_fee_bps[2] + default_features[1] + paused[1] + timelock_seconds[8] + bump[1] + last_updated_slot[8] + pending_action_hashes[4 + (32 * MAX_PENDING_ACTIONS)] + last_action_sequence[8]
+    pub const SPACE: usize = 8 + 32 + 2 + 1 + 1 + 8 + 1 + 8 + 4 + (32 * Self::MAX_PENDING_ACTIONS) + 8;
 }
 
 #[account]
@@ -712,13 +756,16 @@ pub struct TimelockEntry {
     pub queued_at: i64,
     pub execute_after: i64,
     pub executed: bool,
+    pub canceled: bool,
     pub action: TimelockAction,
     pub bump: u8,
+    pub sequence: u64,
 }
 
 impl TimelockEntry {
     pub const MAX_ACTION_SIZE: usize = 128;
-    pub const SPACE: usize = 8 + 32 + 32 + 32 + 8 + 8 + 1 + 1 + Self::MAX_ACTION_SIZE;
+    // SPACE = discriminator[8] + factory[32] + salt[32] + action_hash[32] + queued_at[8] + execute_after[8] + executed[1] + canceled[1] + action[MAX_ACTION_SIZE] + bump[1] + sequence[8]
+    pub const SPACE: usize = 8 + 32 + 32 + 32 + 8 + 8 + 1 + 1 + Self::MAX_ACTION_SIZE + 1 + 8;
 }
 
 fn ensure_direct_update_allowed(_state: &FactoryState) -> Result<()> {
@@ -1021,4 +1068,10 @@ pub enum FactoryError {
     TimelockHashMismatch,
     #[msg("E_VERIFYING_KEY_HASH_MISMATCH")]
     VerifyingKeyHashMismatch,
+    #[msg("E_DUPLICATE_ACTION")]
+    DuplicateAction,
+    #[msg("E_TOO_MANY_PENDING_ACTIONS")]
+    TooManyPendingActions,
+    #[msg("E_SEQUENCE_OVERFLOW")]
+    SequenceOverflow,
 }
