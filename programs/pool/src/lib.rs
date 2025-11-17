@@ -578,9 +578,11 @@ pub mod ptf_pool {
                 commitment_tree_data.next_index,
                 claim_bump,
             );
-            // Immediately set status to AWAITING_LEDGER so finalize_ledger can run in same transaction
-            shield_claim.status = ShieldClaim::STATUS_AWAITING_LEDGER;
-            shield_claim.tree_level = CommitmentTree::DEPTH as u8;
+            msg!(
+                "shield: claim activated new_root={} next_index={}",
+                hex::encode(new_root_bytes),
+                commitment_tree_data.next_index
+            );
         }
 
         Ok(())
@@ -634,19 +636,12 @@ pub mod ptf_pool {
         // Set status to AWAITING_LEDGER if it's not already in a valid state
         // This handles same-transaction flow where modifications aren't visible yet
         if current_status == ShieldClaim::STATUS_INACTIVE {
-            // Same-transaction flow: account was activated in shield but status not visible
             ctx.accounts.shield_claim.status = ShieldClaim::STATUS_AWAITING_LEDGER;
-            ctx.accounts.shield_claim.tree_level = CommitmentTree::DEPTH as u8;
         } else if current_status == ShieldClaim::STATUS_PENDING_TREE {
-            // From shield_finalize_tree flow: transition to AWAITING_LEDGER
             ctx.accounts.shield_claim.status = ShieldClaim::STATUS_AWAITING_LEDGER;
-            ctx.accounts.shield_claim.tree_level = CommitmentTree::DEPTH as u8;
         } else if current_status != ShieldClaim::STATUS_AWAITING_LEDGER 
             && current_status != ShieldClaim::STATUS_AWAITING_INVARIANT {
-            // Unknown status - if pool matches, assume same-transaction issue and set to AWAITING_LEDGER
-            // This is safe because pool matching ensures the account was initialized in shield
             ctx.accounts.shield_claim.status = ShieldClaim::STATUS_AWAITING_LEDGER;
-            ctx.accounts.shield_claim.tree_level = CommitmentTree::DEPTH as u8;
         }
         // If status is already AWAITING_LEDGER or AWAITING_INVARIANT, proceed normally
 
@@ -1443,6 +1438,7 @@ fn process_shield_finalize_tree<'info>(
     // We allow finalize_tree to proceed from any of these states since tree finalization
     // can happen after ledger finalization in the flow.
     let current_status = shield_claim.status;
+    let mut allow_ledger_complete_state = false;
     let needs_root_fix = current_status == ShieldClaim::STATUS_INACTIVE;
     
     if current_status == ShieldClaim::STATUS_INACTIVE {
@@ -1461,9 +1457,11 @@ fn process_shield_finalize_tree<'info>(
         // to allow tree finalization to proceed. This handles the case where finalize_ledger
         // ran before finalize_tree.
         shield_claim.status = ShieldClaim::STATUS_PENDING_TREE;
+    } else if current_status == ShieldClaim::STATUS_LEDGER_COMPLETE {
+        allow_ledger_complete_state = true;
     }
     require!(
-        shield_claim.is_pending_tree(),
+        shield_claim.is_pending_tree() || allow_ledger_complete_state,
         PoolError::ShieldClaimStage
     );
     require_keys_eq!(
@@ -1471,7 +1469,15 @@ fn process_shield_finalize_tree<'info>(
         pool_loader.key(),
         PoolError::ShieldClaimMismatch
     );
-    let pending = shield_claim.snapshot();
+    let mut pending = shield_claim.snapshot();
+    if pending.active == 0 {
+        let pool_state_snapshot = pool_loader.load()?;
+        require!(
+            !pool_state_snapshot.pending_shield.is_inactive(),
+            PoolError::PendingShieldMismatch
+        );
+        pending = pool_state_snapshot.pending_shield;
+    }
     
     // CRITICAL FIX: If we fixed the root above, verify it matches the tree
     // If old_root was zero and we set it from tree, it should match
@@ -2675,6 +2681,7 @@ impl ShieldClaim {
     pub const STATUS_PENDING_TREE: u8 = 1;
     pub const STATUS_AWAITING_LEDGER: u8 = 2;
     pub const STATUS_AWAITING_INVARIANT: u8 = 3;
+    pub const STATUS_LEDGER_COMPLETE: u8 = 4;
     pub const SPACE: usize = 8 + core::mem::size_of::<ShieldClaim>();
 
     pub fn is_active(&self) -> bool {
@@ -2737,8 +2744,16 @@ impl ShieldClaim {
     }
 
     pub fn mark_tree_complete(&mut self) {
-        self.status = Self::STATUS_AWAITING_LEDGER;
         self.tree_level = CommitmentTree::DEPTH as u8;
+        if self.status == Self::STATUS_LEDGER_COMPLETE {
+            if self.needs_invariant() {
+                self.status = Self::STATUS_AWAITING_INVARIANT;
+            } else {
+                self.deactivate();
+            }
+        } else {
+            self.status = Self::STATUS_AWAITING_LEDGER;
+        }
     }
 
     pub fn mark_ledger_complete(&mut self, requires_invariant: bool) {
@@ -2746,7 +2761,11 @@ impl ShieldClaim {
             self.enforce_invariant = 1;
             self.status = Self::STATUS_AWAITING_INVARIANT;
         } else {
-            self.deactivate();
+            if self.tree_level == CommitmentTree::DEPTH as u8 {
+                self.deactivate();
+            } else {
+                self.status = Self::STATUS_LEDGER_COMPLETE;
+            }
         }
     }
 
