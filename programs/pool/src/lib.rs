@@ -607,6 +607,51 @@ pub mod ptf_pool {
             args.public_inputs.clone(),
         )?;
 
+        // CRITICAL FIX: Verify that shield_finalize_ledger is in the same transaction
+        // This ensures tokens are only deposited if finalization will complete
+        // Use instruction sysvar to check for the next instruction
+        let ix_sysvar = ctx.accounts.instructions.to_account_info();
+        let current_idx = load_current_index_checked(&ix_sysvar)
+            .map_err(|_| PoolError::ShieldFinalizationRequired)?;
+        
+        // Check if next instruction is shield_finalize_ledger
+        let next_idx = (current_idx as usize).checked_add(1)
+            .ok_or(PoolError::ShieldFinalizationRequired)?;
+        
+        let next_ix = load_instruction_at_checked(next_idx, &ix_sysvar)
+            .map_err(|_| PoolError::ShieldFinalizationRequired)?;
+        
+        // Verify it's our program
+        require!(
+            next_ix.program_id == crate::ID,
+            PoolError::ShieldFinalizationRequired
+        );
+        
+        // Verify it has enough data for discriminator
+        require!(
+            next_ix.data.len() >= 8,
+            PoolError::ShieldFinalizationRequired
+        );
+        
+        // Verify discriminator matches shield_finalize_ledger
+        let finalize_ledger_disc = instruction_discriminator("shield_finalize_ledger");
+        let next_discriminator = &next_ix.data[..8];
+        require!(
+            next_discriminator == finalize_ledger_disc.as_slice(),
+            PoolError::ShieldFinalizationRequired
+        );
+        
+        // Verify the first account is the pool_state (ensures it's for this pool)
+        require!(
+            !next_ix.accounts.is_empty(),
+            PoolError::ShieldFinalizationRequired
+        );
+        require_keys_eq!(
+            next_ix.accounts[0].pubkey,
+            pool_loader.key(),
+            PoolError::ShieldFinalizationRequired
+        );
+
         let deposit_accounts = ptf_vault::cpi::accounts::Deposit {
             vault_state: ctx.accounts.vault_state.to_account_info(),
             vault_token_account: ctx.accounts.vault_token_account.to_account_info(),
