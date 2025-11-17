@@ -2,25 +2,25 @@
   {
     "symbol": "TEST",
     "decimals": 6,
-    "originMint": "BT852g67akX36oUdgA4fVbSwRf7hMbZPSDLK2y1ztcfQ",
-    "poolId": "5DSUB55Axj74AQjAxairZLTxYgJoSkdPGWmjQ4thw8Rs",
-    "zTokenMint": "EUrCQUojpZoGjYJQzJJbhg9nwuPqMikMHKRb5E6RjFGz",
+    "originMint": "BDuKcU3hG3aUkGth6Ms21v9y2iWGfQ88URo7NQmDys18",
+    "poolId": "71NRwbom3998NjajY4BQQ1hSinrpFE5q1sB3ns8J8FXP",
+    "zTokenMint": "HJMCTPxCH5ip7JfGZNETPpvstEy1XenQW3XKiXskFSY5",
     "features": {
       "zTokenEnabled": true,
       "wrappedTransfers": false
     },
-    "lookupTable": "2QvkjQ7V4MAof9nEMEmL7dXc4fGj3Q1CtqYMzKWU3hGg"
+    "lookupTable": "GMsfV8ZBVAGxHTdHfuS9w61A2Pik6ivKbuJksxNHaUxJ"
   },
   {
-    "symbol": "FBAZ",
+    "symbol": "FBHG",
     "decimals": 6,
-    "originMint": "DXQeTD73JaN6PNWyztPFGEGGqkbDRsG3xRNvTBtnbmyU",
-    "poolId": "Hc6DxigY1JVAwMCtiu3xPGV3FBXQpwyPAqiVVCHpYDn",
-    "zTokenMint": "AM9xBFP5Qxu94uA81Yz1pmJ9QGN9bLwSiC3x2vP9pERr",
+    "originMint": "9tQUB9CHzTMoeLPQb4Rgo5f7moXrmPexpXU4G6gALVW7",
+    "poolId": "8QeAFesj8LqjvfcnKnwfeav8He9eUP9fP64K3djw3nLN",
+    "zTokenMint": "7tk4UZZrKxRqX5NEnb6KFp7LSycYDHMBdtCBJg49dyf",
     "features": {
       "zTokenEnabled": true,
       "wrappedTransfers": false
     },
-    "lookupTable": "EUvbAddQGYEGAnoatE5frKZRZCXAPXSok92Yq3WEX5he"
+    "lookupTable": "8GuaiGbrhbT4RbTBYw3ZksiKqVG3iAmGwwgFP7EZrXGz"
   }
 ]

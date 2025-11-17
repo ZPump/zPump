@@ -602,6 +602,10 @@ async function ensureMint(
     [Buffer.from('hooks'), originMintKey.toBuffer()],
     PROGRAM_IDS.pool
   )[0];
+  const hookWhitelist = PublicKey.findProgramAddressSync(
+    [Buffer.from('hook-whitelist'), originMintKey.toBuffer()],
+    PROGRAM_IDS.pool
+  )[0];
 
   let ptknMintForConfig: PublicKey | null = null;
 
@@ -761,6 +765,7 @@ async function ensureMint(
       note_ledger: noteLedger,
       commitment_tree: commitmentTree,
       hook_config: hookConfig,
+      hook_whitelist: hookWhitelist,
       vault_state: vaultState,
       origin_mint: originMintKey,
       mint_mapping: mintMapping,

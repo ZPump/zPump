@@ -32,6 +32,7 @@ import {
   deriveAllowanceAccount,
   deriveCommitmentTree,
   deriveHookConfig,
+  deriveHookWhitelist,
   deriveNullifierSet,
   deriveNoteLedger,
   deriveVaultState,
@@ -378,6 +379,7 @@ export async function wrap(params: WrapParams): Promise<string> {
   const nullifierSet = deriveNullifierSet(originMintKey);
   const noteLedger = deriveNoteLedger(originMintKey);
   const hookConfig = deriveHookConfig(originMintKey);
+  const hookWhitelist = deriveHookWhitelist(originMintKey);
   const vaultState = deriveVaultState(originMintKey);
   const verifyingKey = deriveVerifyingKey();
   const shieldClaim = deriveShieldClaim(poolState);
@@ -649,7 +651,8 @@ export async function wrap(params: WrapParams): Promise<string> {
     { pubkey: poolState, isSigner: false, isWritable: true },
     { pubkey: hookConfig, isSigner: false, isWritable: false },
     { pubkey: noteLedger, isSigner: false, isWritable: true },
-    { pubkey: shieldClaim, isSigner: false, isWritable: true }
+    { pubkey: shieldClaim, isSigner: false, isWritable: true },
+    { pubkey: hookWhitelist, isSigner: false, isWritable: false }
   ];
 
   const finalizeLedgerInstruction = new TransactionInstruction({
@@ -952,6 +955,7 @@ export async function unwrap(params: UnwrapParams): Promise<string> {
   const nullifierSetKey = deriveNullifierSet(originMintKey);
   const noteLedgerKey = deriveNoteLedger(originMintKey);
   const hookConfigKey = deriveHookConfig(originMintKey);
+  const hookWhitelistKey = deriveHookWhitelist(originMintKey);
   const vaultStateKey = deriveVaultState(originMintKey);
   const factoryStateKey = deriveFactoryState();
   const verifyingKey = deriveVerifyingKey();
@@ -1190,6 +1194,7 @@ export async function unwrap(params: UnwrapParams): Promise<string> {
   const keys: { pubkey: PublicKey; isSigner: boolean; isWritable: boolean }[] = [
     { pubkey: poolStateKey, isSigner: false, isWritable: true },
     { pubkey: hookConfigKey, isSigner: false, isWritable: false },
+    { pubkey: hookWhitelistKey, isSigner: false, isWritable: false },
     { pubkey: nullifierSetKey, isSigner: false, isWritable: true },
     { pubkey: commitmentTreeKey, isSigner: false, isWritable: true },
     { pubkey: noteLedgerKey, isSigner: false, isWritable: true },

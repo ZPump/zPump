@@ -45,7 +45,8 @@ import {
   deriveMintMapping,
   deriveFactoryState,
   deriveVerifyingKey,
-  deriveHookConfig
+  deriveHookConfig,
+  deriveHookWhitelist
 } from '../lib/onchain/pdas';
 import { ensureFetchPolyfill } from './utils/fetch-polyfill';
 
@@ -544,6 +545,7 @@ async function main() {
   // Clear any pending shield claims from previous runs
   console.info('[setup] Checking for pending shield claims...');
   const shieldClaimKey = deriveShieldClaim(poolStateKey);
+  const hookWhitelistKey = deriveHookWhitelist(originMintKey);
   console.info(`[setup] Shield claim account: ${shieldClaimKey.toBase58()}`);
   const shieldClaimStatus = await fetchShieldClaimStatus(connection, shieldClaimKey);
   if (shieldClaimStatus !== 0) {
@@ -573,7 +575,8 @@ async function main() {
           { pubkey: poolStateKey, isSigner: false, isWritable: true },
           { pubkey: hookConfigKey, isSigner: false, isWritable: false },
           { pubkey: noteLedgerKey, isSigner: false, isWritable: true },
-          { pubkey: shieldClaimKey, isSigner: false, isWritable: true }
+          { pubkey: shieldClaimKey, isSigner: false, isWritable: true },
+          { pubkey: hookWhitelistKey, isSigner: false, isWritable: false }
         ],
         data: poolCoder.instruction.encode('shield_finalize_ledger', {})
       });
@@ -773,7 +776,8 @@ async function main() {
       { pubkey: poolStateKey, isSigner: false, isWritable: true },
       { pubkey: hookConfigKey, isSigner: false, isWritable: false },
       { pubkey: noteLedgerKey, isSigner: false, isWritable: true },
-      { pubkey: shieldClaimKey, isSigner: false, isWritable: true }
+      { pubkey: shieldClaimKey, isSigner: false, isWritable: true },
+      { pubkey: hookWhitelistKey, isSigner: false, isWritable: false }
     ],
     data: finalizeLedgerData
   });
@@ -951,7 +955,8 @@ async function main() {
       { pubkey: poolStateKey, isSigner: false, isWritable: true },
       { pubkey: hookConfigKey, isSigner: false, isWritable: false },
       { pubkey: noteLedgerKey, isSigner: false, isWritable: true },
-      { pubkey: shieldClaimKey, isSigner: false, isWritable: true }
+      { pubkey: shieldClaimKey, isSigner: false, isWritable: true },
+      { pubkey: hookWhitelistKey, isSigner: false, isWritable: false }
     ],
     data: poolCoder.instruction.encode('shield_finalize_ledger', {})
   });
@@ -1172,7 +1177,8 @@ async function main() {
       { pubkey: poolStateKey, isSigner: false, isWritable: true },
       { pubkey: hookConfigKey, isSigner: false, isWritable: false },
       { pubkey: noteLedgerKey, isSigner: false, isWritable: true },
-      { pubkey: shieldClaimKey, isSigner: false, isWritable: true }
+      { pubkey: shieldClaimKey, isSigner: false, isWritable: true },
+      { pubkey: hookWhitelistKey, isSigner: false, isWritable: false }
     ],
     data: poolCoder.instruction.encode('shield_finalize_ledger', {})
   });
@@ -1401,7 +1407,8 @@ async function main() {
       { pubkey: poolStateKey, isSigner: false, isWritable: true },
       { pubkey: hookConfigKey, isSigner: false, isWritable: false },
       { pubkey: noteLedgerKey, isSigner: false, isWritable: true },
-      { pubkey: shieldClaimKey, isSigner: false, isWritable: true }
+      { pubkey: shieldClaimKey, isSigner: false, isWritable: true },
+      { pubkey: hookWhitelistKey, isSigner: false, isWritable: false }
     ],
     data: poolCoder.instruction.encode('shield_finalize_ledger', {})
   });
@@ -1507,6 +1514,7 @@ async function main() {
     keys: [
       { pubkey: poolStateKey, isSigner: false, isWritable: true },
       { pubkey: hookConfigKey, isSigner: false, isWritable: false },
+      { pubkey: hookWhitelistKey, isSigner: false, isWritable: false },
       { pubkey: nullifierSetKey, isSigner: false, isWritable: true },
       { pubkey: commitmentTreeKey, isSigner: false, isWritable: true },
       { pubkey: noteLedgerKey, isSigner: false, isWritable: true },
@@ -1634,7 +1642,8 @@ async function main() {
       { pubkey: poolStateKey, isSigner: false, isWritable: true },
       { pubkey: hookConfigKey, isSigner: false, isWritable: false },
       { pubkey: noteLedgerKey, isSigner: false, isWritable: true },
-      { pubkey: shieldClaimKey, isSigner: false, isWritable: true }
+      { pubkey: shieldClaimKey, isSigner: false, isWritable: true },
+      { pubkey: hookWhitelistKey, isSigner: false, isWritable: false }
     ],
     data: poolCoder.instruction.encode('shield_finalize_ledger', {})
   });
