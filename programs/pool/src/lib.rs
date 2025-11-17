@@ -1424,8 +1424,16 @@ fn process_shield_finalize_tree<'info>(
     // We allow finalize_tree to proceed from any of these states since tree finalization
     // can happen after ledger finalization in the flow.
     let current_status = shield_claim.status;
+    let needs_root_fix = current_status == ShieldClaim::STATUS_INACTIVE;
+    
     if current_status == ShieldClaim::STATUS_INACTIVE {
         // Same-transaction flow: account was activated in shield but status not visible
+        // Get the current root from the tree to fix the old_root field
+        let tree = commitment_tree.load()?;
+        // Update old_root from tree's current_root if it's still default/zero
+        if shield_claim.old_root == [0u8; 32] {
+            shield_claim.old_root = tree.current_root;
+        }
         // Set to PENDING_TREE to allow tree finalization
         shield_claim.status = ShieldClaim::STATUS_PENDING_TREE;
     } else if current_status == ShieldClaim::STATUS_AWAITING_LEDGER 
@@ -1445,6 +1453,16 @@ fn process_shield_finalize_tree<'info>(
         PoolError::ShieldClaimMismatch
     );
     let pending = shield_claim.snapshot();
+    
+    // CRITICAL FIX: If we fixed the root above, verify it matches the tree
+    // If old_root was zero and we set it from tree, it should match
+    if needs_root_fix {
+        let tree = commitment_tree.load()?;
+        require!(
+            tree.current_root == pending.old_root,
+            PoolError::RootMismatch,
+        );
+    }
 
     #[cfg(feature = "full_tree")]
     {
