@@ -11,8 +11,10 @@ name = "ptf_factory"
 anchor-lang = { workspace = true, features = ["init-if-needed"] }
 anchor-spl = { workspace = true }
 ptf-common = { path = "../common" }
+ptf-verifier-groth16 = { path = "../verifier-groth16", features = ["cpi"] }
 thiserror = { workspace = true }
 solana-program = { workspace = true }
+sha3 = { workspace = true }
 
 [features]
 default = []

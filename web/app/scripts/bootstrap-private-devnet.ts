@@ -523,15 +523,24 @@ async function ensureVerifyingKey(
   const hashBytes = keccak_256(binary);
   console.log(`Using verifying key hash ${Buffer.from(hashBytes).toString('hex')}`);
 
+  // CRITICAL FIX: Use factory program to create verifying keys
+  // Only factory can create verifying keys now (security fix)
+  const factoryState = PublicKey.findProgramAddressSync(
+    [Buffer.from('factory'), PROGRAM_IDS.factory.toBuffer()],
+    PROGRAM_IDS.factory
+  )[0];
+  
   await sendInstruction(
     ctx,
-    ctx.idls.verifier,
-    ctx.coders.verifier,
-    PROGRAM_IDS.verifier,
-    'initialize_verifying_key',
+    ctx.idls.factory,
+    ctx.coders.factory,
+    PROGRAM_IDS.factory,
+    'create_verifying_key',
     {
-      verifier_state: verifierState,
+      factory_state: factoryState,
       authority: ctx.payer.publicKey,
+      verifier_program: PROGRAM_IDS.verifier,
+      verifier_state: verifierState,
       payer: ctx.payer.publicKey,
       system_program: SystemProgram.programId
     },
