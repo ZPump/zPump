@@ -729,6 +729,16 @@ pub mod ptf_pool {
     pub fn shield_check_invariant<'info>(
         ctx: Context<'_, '_, '_, 'info, ShieldCheckInvariant<'info>>,
     ) -> Result<()> {
+        // CRITICAL FIX: Handle AWAITING_LEDGER status - if no invariant needed, deactivate directly
+        // This allows shield_check_invariant to be called even if finalize_ledger hasn't run yet
+        // when invariant checks are disabled or not needed
+        if ctx.accounts.shield_claim.is_awaiting_ledger() 
+            && !ctx.accounts.shield_claim.needs_invariant() {
+            // Status is AWAITING_LEDGER but no invariant needed - deactivate directly
+            ctx.accounts.shield_claim.deactivate();
+            return Ok(());
+        }
+        
         if !ctx.accounts.shield_claim.is_awaiting_invariant()
             || !ctx.accounts.shield_claim.needs_invariant()
         {

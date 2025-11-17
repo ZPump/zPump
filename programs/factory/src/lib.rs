@@ -83,16 +83,35 @@ pub mod ptf_factory {
         }
 
         let mapping = &mut ctx.accounts.mint_mapping;
-        mapping.origin_mint = ctx.accounts.origin_mint.key();
-        mapping.status = MintStatus::Active as u8;
-        mapping.decimals = decimals;
-        mapping.features =
-            FeatureFlags::from(feature_flags.unwrap_or_else(|| state.default_features.bits()));
-        mapping.has_fee_override = fee_bps_override.is_some();
-        mapping.fee_bps_override = fee_bps_override.unwrap_or_default();
-        mapping.bump = ctx.bumps.mint_mapping;
-        mapping.has_ptkn = false;
-        mapping.ptkn_mint = Pubkey::default();
+        // CRITICAL FIX: Handle existing but uninitialized accounts (owned by BPF loader)
+        // If origin_mint is default, the account exists but wasn't initialized properly
+        // In this case, we need to initialize it. Otherwise, just update the fields.
+        if mapping.origin_mint == Pubkey::default() {
+            // Account exists but is uninitialized - initialize it
+            mapping.origin_mint = ctx.accounts.origin_mint.key();
+            mapping.status = MintStatus::Active as u8;
+            mapping.decimals = decimals;
+            mapping.features =
+                FeatureFlags::from(feature_flags.unwrap_or_else(|| state.default_features.bits()));
+            mapping.has_fee_override = fee_bps_override.is_some();
+            mapping.fee_bps_override = fee_bps_override.unwrap_or_default();
+            mapping.bump = ctx.bumps.mint_mapping;
+            mapping.has_ptkn = false;
+            mapping.ptkn_mint = Pubkey::default();
+        } else {
+            // Account already initialized - just update mutable fields
+            require_keys_eq!(
+                mapping.origin_mint,
+                ctx.accounts.origin_mint.key(),
+                FactoryError::OriginMintMismatch
+            );
+            mapping.status = MintStatus::Active as u8;
+            mapping.decimals = decimals;
+            mapping.features =
+                FeatureFlags::from(feature_flags.unwrap_or_else(|| state.default_features.bits()));
+            mapping.has_fee_override = fee_bps_override.is_some();
+            mapping.fee_bps_override = fee_bps_override.unwrap_or_default();
+        }
 
         let effective_fee_bps = fee_bps_override.unwrap_or(state.default_fee_bps);
 
@@ -428,7 +447,7 @@ pub struct RegisterMint<'info> {
     pub factory_state: Account<'info, FactoryState>,
     pub authority: Signer<'info>,
     #[account(
-        init,
+        init_if_needed,
         payer = payer,
         seeds = [seeds::MINT_MAPPING, origin_mint.key().as_ref()],
         bump,
