@@ -262,11 +262,26 @@ pub mod ptf_pool {
         msg!("init_pool stage: nullifier_init_complete");
 
         {
-            let mut tree = ctx.accounts.commitment_tree.load_init()?;
-            tree.init(pool_key, DEFAULT_CANOPY_DEPTH, ctx.bumps.commitment_tree)?;
-            pool_state.current_root = tree.current_root;
-            pool_state.roots_len = 1;
-            pool_state.recent_roots[0] = tree.current_root;
+            // Initialize commitment_tree if needed (init_if_needed constraint)
+            // This handles the case where the account structure changed and needs reinitialization
+            if ctx.accounts.commitment_tree.to_account_info().owner == &anchor_lang::solana_program::system_program::ID {
+                let mut tree = ctx.accounts.commitment_tree.load_init()?;
+                tree.init(pool_key, DEFAULT_CANOPY_DEPTH, ctx.bumps.commitment_tree)?;
+                pool_state.current_root = tree.current_root;
+                pool_state.roots_len = 1;
+                pool_state.recent_roots[0] = tree.current_root;
+            } else {
+                // Account exists - load and validate
+                let tree = ctx.accounts.commitment_tree.load()?;
+                require_keys_eq!(
+                    tree.pool,
+                    pool_key,
+                    PoolError::CommitmentTreeMismatch
+                );
+                pool_state.current_root = tree.current_root;
+                pool_state.roots_len = 1;
+                pool_state.recent_roots[0] = tree.current_root;
+            }
         }
         msg!("init_pool stage: commitment_tree_init_complete");
 
@@ -1820,7 +1835,7 @@ pub struct InitializePool<'info> {
     )]
     pub note_ledger: AccountLoader<'info, NoteLedger>,
     #[account(
-        init,
+        init_if_needed,
         payer = payer,
         seeds = [seeds::TREE, origin_mint.key().as_ref()],
         bump,
