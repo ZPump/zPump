@@ -56,6 +56,12 @@ pub mod ptf_vault {
         let vault_state = &ctx.accounts.vault_state;
         validate_pool_authority(&ctx.accounts.pool_authority, &vault_state.pool_authority)?;
 
+        // CRITICAL FIX: Explicitly validate vault has sufficient balance before releasing
+        require!(
+            ctx.accounts.vault_token_account.amount >= amount,
+            VaultError::InsufficientBalance
+        );
+
         let seeds = &[
             seeds::VAULT,
             vault_state.origin_mint.as_ref(),
@@ -410,6 +416,8 @@ pub enum VaultError {
     InvalidDepositAmount,
     #[msg("E_INVALID_RELEASE_AMOUNT")]
     InvalidReleaseAmount,
+    #[msg("E_INSUFFICIENT_BALANCE")]
+    InsufficientBalance,
     // CRITICAL FIX: Error types for timelock-based authority changes
     #[msg("E_TIMELOCK_OVERFLOW")]
     TimelockOverflow,

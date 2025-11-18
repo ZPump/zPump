@@ -1071,6 +1071,7 @@ async function main() {
       { pubkey: VERIFIER_PROGRAM_ID, isSigner: false, isWritable: false },
       { pubkey: verifyingKey, isSigner: false, isWritable: false },
       { pubkey: owner.publicKey, isSigner: true, isWritable: true },
+      { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
       { pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false }
     ],
     data: transferData
@@ -1310,6 +1311,7 @@ async function main() {
       { pubkey: allowanceAddress, isSigner: false, isWritable: true },
       { pubkey: owner.publicKey, isSigner: false, isWritable: false },
       { pubkey: delegate.publicKey, isSigner: true, isWritable: true },
+      { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
       { pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false }
     ],
     data: transferFromData
@@ -1538,11 +1540,12 @@ async function main() {
       { pubkey: vaultStateKey, isSigner: false, isWritable: true },
       { pubkey: vaultTokenAccount, isSigner: false, isWritable: true },
       { pubkey: destinationTokenAccount, isSigner: false, isWritable: true },
-      { pubkey: mintConfig.zTokenMint ? new PublicKey(mintConfig.zTokenMint) : originMintKey, isSigner: false, isWritable: mintConfig.zTokenMint ? true : false },
+      ...(mintConfig.zTokenMint ? [{ pubkey: new PublicKey(mintConfig.zTokenMint), isSigner: false, isWritable: true }] : []),
       { pubkey: VAULT_PROGRAM_ID, isSigner: false, isWritable: false },
       { pubkey: factoryStateKey, isSigner: false, isWritable: false },
       { pubkey: FACTORY_PROGRAM_ID, isSigner: false, isWritable: false },
       { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
+      { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
       { pubkey: receiver.publicKey, isSigner: true, isWritable: true },
       { pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false }
     ],

@@ -17,6 +17,7 @@ use ptf_verifier_groth16;
 const PTF_POOL_PROGRAM_ID: Pubkey = pubkey!("7kbUWzeTPY6qb1mFJC1ZMRmTZAdaHC27yukc3Czj7fKh");
 // CRITICAL FIX: Minimum timelock duration in seconds (24 hours)
 const MIN_TIMELOCK_SECONDS: i64 = 24 * 60 * 60; // 86400 seconds = 24 hours
+const TIMELOCK_STALE_GRACE_SECONDS: i64 = 30 * 24 * 60 * 60; // 30 days
 
 declare_id!("4z618BY2dXGqAUiegqDt8omo3e81TSdXRHt64ikX1bTy");
 
@@ -238,9 +239,10 @@ pub mod ptf_factory {
             .try_to_vec()
             .map_err(|_| error!(FactoryError::SerializationError))?;
         
-        // CRITICAL FIX: Compute action hash (without salt for deduplication)
+        // CRITICAL FIX: Compute action hash including salt for deduplication
         let action_hash = hashv(&[
             state.key().as_ref(),
+            &salt,
             &action_bytes,
             &execute_after.to_le_bytes(),
         ]);
@@ -272,10 +274,17 @@ pub mod ptf_factory {
 
         // CRITICAL FIX: Use sequence for unique entry address
         // Note: The sequence is incremented BEFORE creating the account so the PDA seeds match
-        let sequence = state.last_action_sequence
+        let sequence = state
+            .last_action_sequence
             .checked_add(1)
             .ok_or(FactoryError::SequenceOverflow)?;
         state.last_action_sequence = sequence;
+        if state.last_action_sequence >= FactoryState::SEQUENCE_WARNING_THRESHOLD {
+            emit!(TimelockSequenceWarning {
+                factory: state.key(),
+                sequence: state.last_action_sequence,
+            });
+        }
 
         let entry = &mut ctx.accounts.timelock_entry;
         entry.factory = state.key();
@@ -301,6 +310,11 @@ pub mod ptf_factory {
         Ok(())
     }
 
+    // CRITICAL FIX: Maximum size for verifying key data to prevent DoS attacks
+    pub const MAX_VERIFYING_KEY_SIZE: usize = 100 * 1024; // 100KB
+    // CRITICAL FIX: Maximum mint amount to prevent excessive minting
+    pub const MAX_MINT_AMOUNT: u64 = 1_000_000_000_000; // 1 trillion (reasonable limit)
+
     pub fn create_verifying_key(
         ctx: Context<CreateVerifyingKey>,
         circuit_tag: [u8; 32],
@@ -314,6 +328,12 @@ pub mod ptf_factory {
             ctx.accounts.authority.key(),
             state.authority,
             FactoryError::Unauthorized
+        );
+        
+        // CRITICAL FIX: Validate verifying key data size
+        require!(
+            verifying_key_data.len() <= ptf_factory::MAX_VERIFYING_KEY_SIZE,
+            FactoryError::VerifyingKeyTooLarge
         );
         
         // Verify hash matches
@@ -486,8 +506,43 @@ pub mod ptf_factory {
         Ok(())
     }
 
+    pub fn cleanup_timelock_action(ctx: Context<CleanupTimelockAction>) -> Result<()> {
+        let entry = &mut ctx.accounts.timelock_entry;
+        require!(!entry.executed, FactoryError::TimelockConsumed);
+
+        let clock = Clock::get()?;
+        require!(
+            clock.unix_timestamp
+                >= entry
+                    .execute_after
+                    .checked_add(TIMELOCK_STALE_GRACE_SECONDS)
+                    .ok_or(FactoryError::TimelockOverflow)?,
+            FactoryError::TimelockNotExpired
+        );
+
+        entry.executed = true;
+        entry.canceled = true;
+
+        let state = &mut ctx.accounts.factory_state;
+        state.pending_action_hashes.retain(|&h| h != entry.action_hash);
+
+        emit!(TimelockGarbageCollected {
+            factory: state.key(),
+            action_hash: entry.action_hash,
+            cleaner: ctx.accounts.cleaner.key(),
+            cleaned_at: clock.unix_timestamp,
+        });
+        Ok(())
+    }
+
     pub fn mint_ptkn(ctx: Context<MintPtkn>, amount: u64) -> Result<()> {
         require!(amount > 0, FactoryError::InvalidAmount);
+        // CRITICAL FIX: Validate amount limit to prevent excessive minting
+        require!(
+            amount <= ptf_factory::MAX_MINT_AMOUNT,
+            FactoryError::AmountTooLarge
+        );
+        
         let factory_state = &ctx.accounts.factory_state;
         require!(!factory_state.paused, FactoryError::Paused);
 
@@ -499,6 +554,12 @@ pub mod ptf_factory {
         require!(
             mapping.status == MintStatus::Active as u8,
             FactoryError::MintFrozen
+        );
+        
+        // CRITICAL FIX: Validate destination account is not default/uninitialized
+        require!(
+            ctx.accounts.destination_token_account.owner != Pubkey::default(),
+            FactoryError::InvalidDestination
         );
         require_keys_eq!(
             mapping.ptkn_mint,
@@ -723,6 +784,26 @@ pub struct CancelTimelockAction<'info> {
     pub timelock_entry: Account<'info, TimelockEntry>,
 }
 
+#[derive(Accounts)]
+pub struct CleanupTimelockAction<'info> {
+    #[account(mut)]
+    pub factory_state: Account<'info, FactoryState>,
+    #[account(
+        mut,
+        seeds = [
+            seeds::TIMELOCK,
+            factory_state.key().as_ref(),
+            &timelock_entry.sequence.to_le_bytes()
+        ],
+        bump = timelock_entry.bump,
+        constraint = timelock_entry.factory == factory_state.key() @ FactoryError::TimelockInvalidFactory,
+        close = cleaner,
+    )]
+    pub timelock_entry: Account<'info, TimelockEntry>,
+    #[account(mut)]
+    pub cleaner: Signer<'info>,
+}
+
 #[account]
 pub struct FactoryState {
     pub authority: Pubkey,
@@ -741,6 +822,7 @@ impl FactoryState {
     pub const MAX_PENDING_ACTIONS: usize = 50;
     // SPACE = discriminator[8] + authority[32] + default_fee_bps[2] + default_features[1] + paused[1] + timelock_seconds[8] + bump[1] + last_updated_slot[8] + pending_action_hashes[4 + (32 * MAX_PENDING_ACTIONS)] + last_action_sequence[8]
     pub const SPACE: usize = 8 + 32 + 2 + 1 + 1 + 8 + 1 + 8 + 4 + (32 * Self::MAX_PENDING_ACTIONS) + 8;
+    pub const SEQUENCE_WARNING_THRESHOLD: u64 = u64::MAX - 1_000_000;
 }
 
 #[account]
@@ -1040,6 +1122,20 @@ pub struct TimelockCanceled {
     pub authority: Pubkey,
 }
 
+#[event]
+pub struct TimelockSequenceWarning {
+    pub factory: Pubkey,
+    pub sequence: u64,
+}
+
+#[event]
+pub struct TimelockGarbageCollected {
+    pub factory: Pubkey,
+    pub action_hash: [u8; 32],
+    pub cleaner: Pubkey,
+    pub cleaned_at: i64,
+}
+
 #[repr(u8)]
 pub enum MintStatus {
     Active = 1,
@@ -1080,6 +1176,8 @@ pub enum FactoryError {
     TimelockConsumed,
     #[msg("E_TIMELOCK_NOT_READY")]
     TimelockNotReady,
+    #[msg("E_TIMELOCK_NOT_EXPIRED")]
+    TimelockNotExpired,
     #[msg("E_TIMELOCK_MINT_MAPPING_MISSING")]
     TimelockMissingMapping,
     #[msg("E_TIMELOCK_INVALID_FACTORY")]
@@ -1094,12 +1192,18 @@ pub enum FactoryError {
     MintFrozen,
     #[msg("E_INVALID_AMOUNT")]
     InvalidAmount,
+    #[msg("E_AMOUNT_TOO_LARGE")]
+    AmountTooLarge,
+    #[msg("E_INVALID_DESTINATION")]
+    InvalidDestination,
     #[msg("E_TIMELOCK_TOO_SHORT")]
     TimelockTooShort,
     #[msg("E_TIMELOCK_HASH_MISMATCH")]
     TimelockHashMismatch,
     #[msg("E_VERIFYING_KEY_HASH_MISMATCH")]
     VerifyingKeyHashMismatch,
+    #[msg("E_VERIFYING_KEY_TOO_LARGE")]
+    VerifyingKeyTooLarge,
     #[msg("E_DUPLICATE_ACTION")]
     DuplicateAction,
     #[msg("E_TOO_MANY_PENDING_ACTIONS")]

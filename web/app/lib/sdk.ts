@@ -1215,12 +1215,6 @@ export async function unwrap(params: UnwrapParams): Promise<string> {
       isSigner: false,
       isWritable: true
     });
-  } else {
-    keys.push({
-      pubkey: POOL_PROGRAM_ID,
-      isSigner: false,
-      isWritable: false
-    });
   }
 
   keys.push(
@@ -1228,6 +1222,7 @@ export async function unwrap(params: UnwrapParams): Promise<string> {
     { pubkey: factoryStateKey, isSigner: false, isWritable: false },
     { pubkey: FACTORY_PROGRAM_ID, isSigner: false, isWritable: false },
     { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
+    { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
     { pubkey: wallet.publicKey, isSigner: true, isWritable: true },
     { pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false }
   );
@@ -1373,6 +1368,7 @@ export async function transfer(params: TransferParams): Promise<string> {
         { pubkey: VERIFIER_PROGRAM_ID, isSigner: false, isWritable: false },
         { pubkey: verifyingKey, isSigner: false, isWritable: false },
         { pubkey: wallet.publicKey, isSigner: true, isWritable: true },
+        { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
         { pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false }
       ],
       data: poolCoder.instruction.encode('private_transfer', { args: transferArgs })
@@ -1538,6 +1534,7 @@ export async function transferFrom(params: TransferFromParams): Promise<string> 
         { pubkey: allowanceKey, isSigner: false, isWritable: true },
         { pubkey: allowanceOwnerKey, isSigner: false, isWritable: false },
         { pubkey: spender, isSigner: true, isWritable: false },
+        { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
         { pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false }
       ],
       data: poolCoder.instruction.encode('transfer_from', { args: transferFromArgs })
