@@ -264,23 +264,39 @@ pub mod ptf_pool {
         {
             // Initialize commitment_tree if needed (init_if_needed constraint)
             // This handles the case where the account structure changed and needs reinitialization
+            // Try to load first - if it fails (wrong discriminator or doesn't exist), try to initialize
             if ctx.accounts.commitment_tree.to_account_info().owner == &anchor_lang::solana_program::system_program::ID {
+                // Account doesn't exist - initialize it
                 let mut tree = ctx.accounts.commitment_tree.load_init()?;
                 tree.init(pool_key, DEFAULT_CANOPY_DEPTH, ctx.bumps.commitment_tree)?;
                 pool_state.current_root = tree.current_root;
                 pool_state.roots_len = 1;
                 pool_state.recent_roots[0] = tree.current_root;
             } else {
-                // Account exists - load and validate
-                let tree = ctx.accounts.commitment_tree.load()?;
-                require_keys_eq!(
-                    tree.pool,
-                    pool_key,
-                    PoolError::CommitmentTreeMismatch
-                );
-                pool_state.current_root = tree.current_root;
-                pool_state.roots_len = 1;
-                pool_state.recent_roots[0] = tree.current_root;
+                // Account exists - try to load and validate
+                // If load fails (wrong discriminator), init_if_needed will handle reinitialization
+                match ctx.accounts.commitment_tree.load() {
+                    Ok(tree) => {
+                        require_keys_eq!(
+                            tree.pool,
+                            pool_key,
+                            PoolError::CommitmentTreeMismatch
+                        );
+                        pool_state.current_root = tree.current_root;
+                        pool_state.roots_len = 1;
+                        pool_state.recent_roots[0] = tree.current_root;
+                    }
+                    Err(_) => {
+                        // Account exists but has wrong discriminator - init_if_needed should handle this
+                        // but if it doesn't, we need to manually reinitialize
+                        // For now, just try load_init which should work with init_if_needed
+                        let mut tree = ctx.accounts.commitment_tree.load_init()?;
+                        tree.init(pool_key, DEFAULT_CANOPY_DEPTH, ctx.bumps.commitment_tree)?;
+                        pool_state.current_root = tree.current_root;
+                        pool_state.roots_len = 1;
+                        pool_state.recent_roots[0] = tree.current_root;
+                    }
+                }
             }
         }
         msg!("init_pool stage: commitment_tree_init_complete");
@@ -535,6 +551,9 @@ pub mod ptf_pool {
                 PoolError::NullifierSetMismatch
             );
         }
+        
+        // commitment_tree is now AccountLoader again, so Anchor handles validation
+        // The init_if_needed in initialize_pool should handle discriminator mismatches
         
         let expected_pool = pool_loader.key();
         let claim_bump = {
@@ -822,6 +841,7 @@ pub mod ptf_pool {
     pub fn shield_finalize_tree<'info>(
         ctx: Context<'_, '_, '_, 'info, ShieldFinalizeTree<'info>>,
     ) -> Result<()> {
+        // ShieldFinalizeTree still uses AccountLoader, so no conversion needed
         process_shield_finalize_tree(
             &ctx.accounts.pool_state,
             &ctx.accounts.commitment_tree,
@@ -906,6 +926,7 @@ pub mod ptf_pool {
         ensure_mint_active(&ctx.accounts.mint_mapping.to_account_info())?;
         let payer_account_info = ctx.accounts.payer.to_account_info();
         let system_program_account_info = ctx.accounts.system_program.to_account_info();
+        // PrivateTransfer still uses AccountLoader, so no conversion needed
         execute_private_transfer(
             &ctx.accounts.pool_state,
             &mut ctx.accounts.nullifier_set,
@@ -995,6 +1016,7 @@ pub mod ptf_pool {
 
         let spender_account_info = ctx.accounts.spender.to_account_info();
         let system_program_account_info = ctx.accounts.system_program.to_account_info();
+        // TransferFrom still uses AccountLoader, so no conversion needed
         execute_private_transfer(
             &ctx.accounts.pool_state,
             &mut ctx.accounts.nullifier_set,
