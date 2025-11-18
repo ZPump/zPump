@@ -896,7 +896,9 @@ pub mod ptf_pool {
         drop(pool_state);
 
         // Convert UncheckedAccount to AccountLoader for process_shield_finalize_ledger
-        let note_ledger_loader_for_finalize = AccountLoader::<NoteLedger>::try_from(&ctx.accounts.note_ledger.to_account_info())
+        // We need to use the account info directly to avoid lifetime issues
+        let note_ledger_account_info = ctx.accounts.note_ledger.to_account_info();
+        let note_ledger_loader_for_finalize = AccountLoader::<NoteLedger>::try_from(&note_ledger_account_info)
             .map_err(|_| PoolError::NoteLedgerMismatch)?;
         process_shield_finalize_ledger(
             pool_loader,
