@@ -2,13 +2,13 @@
   {
     "symbol": "TEST",
     "decimals": 6,
-    "originMint": "6ULb8pgmCwYek6U8Pqi96WLDoMEkzUojUgrBT764SXm4",
-    "poolId": "Bdvarbu3rWoav8DQwjrCbzwQSXAowEUZUifaxtyBNt3X",
-    "zTokenMint": "8aj7Gf6QJYp4bKaQY59DZgS7G3zf95R9j8LS5BDxq5V2",
+    "originMint": "AD7zm7iXZUMa6p3PsPUJRcSUVibxm3soffaPaRB5bn1k",
+    "poolId": "AVYPhaQy4qyMQ3N5t1CT6Ja18ai87p9o6KkZvB7iZ1CQ",
+    "zTokenMint": "BHPABuuTcBLBgrGGjQ3yGVC9EKoWW6GXMG7tphDvBAi9",
     "features": {
       "zTokenEnabled": true,
       "wrappedTransfers": false
     },
-    "lookupTable": "GrCrQobgPLvz6a8KvpvTKiUSLeVt846sLuoKH9sAqi41"
+    "lookupTable": "4wLMVHmmmJJEKhXdTKzjzB92Dbr9vCXoSBcveAKgaah5"
   }
 ]

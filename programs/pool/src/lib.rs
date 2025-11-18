@@ -552,8 +552,57 @@ pub mod ptf_pool {
             );
         }
         
-        // commitment_tree is now AccountLoader again, so Anchor handles validation
-        // The init_if_needed in initialize_pool should handle discriminator mismatches
+        // CRITICAL FIX: Validate and initialize commitment_tree manually
+        // This handles the case where the account structure changed and needs reinitialization
+        let (expected_commitment_tree, expected_tree_bump) = Pubkey::find_program_address(
+            &[seeds::TREE, pool_state.origin_mint.as_ref()],
+            &crate::ID,
+        );
+        require_keys_eq!(
+            ctx.accounts.commitment_tree.key(),
+            expected_commitment_tree,
+            PoolError::CommitmentTreeMismatch
+        );
+        
+        // For UncheckedAccount with ZeroCopy, we can load it directly
+        // CommitmentTree uses zero_copy, so we can use load_deref_mut or manual deserialization
+        // We'll create a helper function to load it when needed
+        let load_commitment_tree = || -> Result<&CommitmentTree> {
+            let account_info = ctx.accounts.commitment_tree.to_account_info();
+            require_keys_eq!(
+                *account_info.owner,
+                crate::ID,
+                PoolError::CommitmentTreeMismatch
+            );
+            // For ZeroCopy, we can use bytemuck or direct pointer access
+            // Anchor provides load_deref for ZeroCopy accounts
+            let data = account_info.try_borrow_data()?;
+            if data.len() < 8 + std::mem::size_of::<CommitmentTree>() {
+                return err!(PoolError::CommitmentTreeMismatch);
+            }
+            // Skip discriminator (8 bytes) and cast to CommitmentTree
+            unsafe {
+                let ptr = data.as_ptr().add(8) as *const CommitmentTree;
+                Ok(&*ptr)
+            }
+        };
+        
+        let load_commitment_tree_mut = || -> Result<&mut CommitmentTree> {
+            let account_info = ctx.accounts.commitment_tree.to_account_info();
+            require_keys_eq!(
+                *account_info.owner,
+                crate::ID,
+                PoolError::CommitmentTreeMismatch
+            );
+            let mut data = account_info.try_borrow_mut_data()?;
+            if data.len() < 8 + std::mem::size_of::<CommitmentTree>() {
+                return err!(PoolError::CommitmentTreeMismatch);
+            }
+            unsafe {
+                let ptr = data.as_mut_ptr().add(8) as *mut CommitmentTree;
+                Ok(&mut *ptr)
+            }
+        };
         
         let expected_pool = pool_loader.key();
         let claim_bump = {
@@ -593,7 +642,7 @@ pub mod ptf_pool {
         // In this case, we deactivate pending_shield to allow new shields to proceed.
         // This is safe because the stale shield claim can't be finalized anyway.
         if !pool_state.pending_shield.is_inactive() && has_active_claim {
-            let commitment_tree = ctx.accounts.commitment_tree.load()?;
+            let commitment_tree = load_commitment_tree()?;
             let claim_old_root = ctx.accounts.shield_claim.old_root;
             let tree_current_root = commitment_tree.current_root;
             
@@ -610,7 +659,7 @@ pub mod ptf_pool {
         // If there's an active claim that's not stale, reject - it must be finalized first
         // (This prevents creating a new shield while one is pending)
         if has_active_claim {
-            let commitment_tree = ctx.accounts.commitment_tree.load()?;
+            let commitment_tree = load_commitment_tree()?;
             let claim_old_root = ctx.accounts.shield_claim.old_root;
             let tree_current_root = commitment_tree.current_root;
             
@@ -719,7 +768,7 @@ pub mod ptf_pool {
             PoolError::CommitmentTreeMismatch,
         );
 
-        let commitment_tree_data = ctx.accounts.commitment_tree.load()?;
+        let commitment_tree_data = load_commitment_tree()?;
         require!(
             commitment_tree_data.current_root == pool_state.current_root,
             PoolError::RootMismatch,
