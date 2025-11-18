@@ -493,6 +493,13 @@ pub mod ptf_factory {
 
         let mapping = &ctx.accounts.mint_mapping;
         require!(mapping.has_ptkn, FactoryError::PtknMintDisabled);
+        
+        // CRITICAL FIX: Check mint status to prevent frozen mints from minting PTKN
+        // Governance can freeze a mint, and this should prevent all operations including PTKN minting
+        require!(
+            mapping.status == MintStatus::Active as u8,
+            FactoryError::MintFrozen
+        );
         require_keys_eq!(
             mapping.ptkn_mint,
             ctx.accounts.ptkn_mint.key(),
@@ -1065,6 +1072,8 @@ pub enum FactoryError {
     SerializationError,
     #[msg("E_ORIGIN_MINT_MISMATCH")]
     OriginMintMismatch,
+    #[msg("E_MINT_FROZEN")]
+    MintFrozen,
     #[msg("E_INVALID_AMOUNT")]
     InvalidAmount,
     #[msg("E_TIMELOCK_TOO_SHORT")]

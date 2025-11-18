@@ -1323,6 +1323,22 @@ fn process_unshield<'info>(
         args.public_inputs.clone(),
     )?;
 
+    // CRITICAL FIX: Record nullifiers immediately after proof verification
+    // This prevents replay attacks by marking notes as spent
+    // Must happen before touching the commitment tree to ensure atomicity
+    {
+        let mut nullifier_set = ctx.accounts.nullifier_set.load_mut()?;
+        for nullifier in &args.nullifiers {
+            nullifier_set
+                .insert(*nullifier)
+                .map_err(|_| PoolError::NullifierReuse)?;
+            emit!(PTFNullifierUsed {
+                mint: origin_mint,
+                nullifier: *nullifier,
+            });
+        }
+    }
+
     let pool_account_key = pool_loader.key();
     let fee = validate_unshield_public_inputs(
         &pool_state,
