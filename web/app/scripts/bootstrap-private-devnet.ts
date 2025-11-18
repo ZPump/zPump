@@ -766,7 +766,12 @@ async function ensureMint(
 
   const twinMintKey = decodedMintMapping.has_ptkn ? new PublicKey(decodedMintMapping.ptkn_mint) : null;
 
-  if (!(await connection.getAccountInfo(poolState))) {
+  // Check if pool needs initialization or reinitialization
+  // If any account exists but has wrong structure, we need to reinitialize
+  const poolStateInfo = await connection.getAccountInfo(poolState);
+  const needsInit = !poolStateInfo;
+  
+  if (needsInit) {
     const poolAccounts: Record<string, PublicKey> = {
       authority: ctx.payer.publicKey,
       pool_state: poolState,
@@ -794,26 +799,37 @@ async function ensureMint(
       ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 1 })
     ];
 
-    const signature = await sendInstruction(
-      ctx,
-      ctx.idls.pool,
-      ctx.coders.pool,
-      PROGRAM_IDS.pool,
-      'initialize_pool',
-      poolAccounts,
-      {
-        fee_bps: new BN(5),
-        features: FEATURE_PRIVATE_TRANSFER_ENABLED | FEATURE_ALLOWANCES_ENABLED
-      },
-      [],
-      computeBudgetIxs
-    );
-    console.log(`Initialised pool state ${poolState.toBase58()} (tx ${signature})`);
-    await waitForAccount(connection, poolState, `Pool state for ${mintConfig.symbol}`);
-    await waitForAccount(connection, nullifierSet, `Nullifier set for ${mintConfig.symbol}`);
-    await waitForAccount(connection, noteLedger, `Note ledger for ${mintConfig.symbol}`);
-    await waitForAccount(connection, commitmentTree, `Commitment tree for ${mintConfig.symbol}`);
-    await waitForAccount(connection, hookConfig, `Hook config for ${mintConfig.symbol}`);
+    try {
+      const signature = await sendInstruction(
+        ctx,
+        ctx.idls.pool,
+        ctx.coders.pool,
+        PROGRAM_IDS.pool,
+        'initialize_pool',
+        poolAccounts,
+        {
+          fee_bps: new BN(5),
+          features: FEATURE_PRIVATE_TRANSFER_ENABLED | FEATURE_ALLOWANCES_ENABLED
+        },
+        [],
+        computeBudgetIxs
+      );
+      console.log(`Initialised pool state ${poolState.toBase58()} (tx ${signature})`);
+      await waitForAccount(connection, poolState, `Pool state for ${mintConfig.symbol}`);
+      await waitForAccount(connection, nullifierSet, `Nullifier set for ${mintConfig.symbol}`);
+      await waitForAccount(connection, noteLedger, `Note ledger for ${mintConfig.symbol}`);
+      await waitForAccount(connection, commitmentTree, `Commitment tree for ${mintConfig.symbol}`);
+      await waitForAccount(connection, hookConfig, `Hook config for ${mintConfig.symbol}`);
+    } catch (error: any) {
+      // If initialization fails due to account discriminator mismatch, 
+      // the accounts need to be closed and recreated
+      if (error.message?.includes('AccountDiscriminatorMismatch') || 
+          error.message?.includes('discriminator')) {
+        console.warn(`Account discriminator mismatch detected for ${mintConfig.symbol}. This may require manual account closure.`);
+        throw error;
+      }
+      throw error;
+    }
 
     if (INDEXER_URL) {
       const commitmentTreeAccount = await connection.getAccountInfo(commitmentTree);
