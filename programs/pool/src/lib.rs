@@ -257,10 +257,10 @@ pub mod ptf_pool {
 
         msg!("init_pool stage: entering_nullifier_init");
         {
-            let mut nulls = ctx.accounts.nullifier_set.load_init()?;
-            nulls.pool = pool_key;
-            nulls.bump = ctx.bumps.nullifier_set;
-            nulls.bloom = [0u8; NullifierSet::BLOOM_BYTES];
+            ctx.accounts.nullifier_set.init(
+                ctx.accounts.pool_state.key(),
+                ctx.bumps.nullifier_set,
+            );
         }
         msg!("init_pool stage: nullifier_init_complete");
 
@@ -362,6 +362,86 @@ pub mod ptf_pool {
             post_shield_enabled: args.post_shield_enabled,
             post_unshield_enabled: args.post_unshield_enabled,
             mode: args.mode as u8,
+        });
+        Ok(())
+    }
+
+    pub fn add_hook_to_whitelist(
+        ctx: Context<ManageHookWhitelist>,
+        hook_program: Pubkey,
+    ) -> Result<()> {
+        require!(hook_program != Pubkey::default(), PoolError::HookConfigInvalid);
+
+        let (origin_mint, pool_authority) = {
+            let pool_state = ctx.accounts.pool_state.load()?;
+            (pool_state.origin_mint, pool_state.authority)
+        };
+
+        require_keys_eq!(
+            pool_authority,
+            ctx.accounts.authority.key(),
+            PoolError::Unauthorized
+        );
+
+        let whitelist = &mut ctx.accounts.hook_whitelist;
+        require_keys_eq!(
+            whitelist.authority,
+            ctx.accounts.authority.key(),
+            PoolError::Unauthorized
+        );
+        require!(
+            !whitelist.is_allowed(&hook_program),
+            PoolError::HookAlreadyWhitelisted
+        );
+        require!(
+            whitelist.allowed_programs.len() < HookWhitelist::MAX_PROGRAMS,
+            PoolError::WhitelistFull
+        );
+
+        whitelist.allowed_programs.push(hook_program);
+
+        emit!(HookProgramWhitelisted {
+            origin_mint,
+            hook_program,
+            authority: ctx.accounts.authority.key(),
+        });
+        Ok(())
+    }
+
+    pub fn remove_hook_from_whitelist(
+        ctx: Context<ManageHookWhitelist>,
+        hook_program: Pubkey,
+    ) -> Result<()> {
+        let (origin_mint, pool_authority) = {
+            let pool_state = ctx.accounts.pool_state.load()?;
+            (pool_state.origin_mint, pool_state.authority)
+        };
+
+        require_keys_eq!(
+            pool_authority,
+            ctx.accounts.authority.key(),
+            PoolError::Unauthorized
+        );
+
+        let whitelist = &mut ctx.accounts.hook_whitelist;
+        require_keys_eq!(
+            whitelist.authority,
+            ctx.accounts.authority.key(),
+            PoolError::Unauthorized
+        );
+
+        let Some(pos) = whitelist
+            .allowed_programs
+            .iter()
+            .position(|program| *program == hook_program) else {
+            return err!(PoolError::HookNotWhitelisted);
+        };
+        whitelist.allowed_programs.swap_remove(pos);
+
+        emit!(HookProgramRemoved {
+            origin_mint,
+            hook_program,
+            authority: ctx.accounts.authority.key(),
         });
         Ok(())
     }
@@ -914,9 +994,13 @@ pub mod ptf_pool {
 
     pub fn private_transfer(ctx: Context<PrivateTransfer>, args: TransferArgs) -> Result<()> {
         ensure_mint_active(&ctx.accounts.mint_mapping.to_account_info())?;
+        let payer_account_info = ctx.accounts.payer.to_account_info();
+        let system_program_account_info = ctx.accounts.system_program.to_account_info();
         execute_private_transfer(
             &ctx.accounts.pool_state,
-            &ctx.accounts.nullifier_set,
+            &mut ctx.accounts.nullifier_set,
+            &payer_account_info,
+            &system_program_account_info,
             &ctx.accounts.commitment_tree,
             &ctx.accounts.note_ledger,
             &ctx.accounts.verifier_program,
@@ -999,9 +1083,13 @@ pub mod ptf_pool {
             });
         }
 
+        let spender_account_info = ctx.accounts.spender.to_account_info();
+        let system_program_account_info = ctx.accounts.system_program.to_account_info();
         execute_private_transfer(
             &ctx.accounts.pool_state,
-            &ctx.accounts.nullifier_set,
+            &mut ctx.accounts.nullifier_set,
+            &spender_account_info,
+            &system_program_account_info,
             &ctx.accounts.commitment_tree,
             &ctx.accounts.note_ledger,
             &ctx.accounts.verifier_program,
@@ -1013,7 +1101,9 @@ pub mod ptf_pool {
 
 fn execute_private_transfer<'info>(
     pool_loader: &AccountLoader<'info, PoolState>,
-    nullifier_set_loader: &AccountLoader<'info, NullifierSet>,
+    nullifier_set: &mut Account<'info, NullifierSet>,
+    payer: &AccountInfo<'info>,
+    system_program: &AccountInfo<'info>,
     commitment_tree_loader: &AccountLoader<'info, CommitmentTree>,
     note_ledger_loader: &AccountLoader<'info, NoteLedger>,
     verifier_program: &Program<'info, PtfVerifierGroth16>,
@@ -1075,10 +1165,8 @@ fn execute_private_transfer<'info>(
 
     let origin_mint = pool_state.origin_mint;
     {
-        let mut nullifier_set = nullifier_set_loader.load_mut()?;
         for nullifier in &args.nullifiers {
-            nullifier_set
-                .insert(*nullifier)
+            NullifierSet::insert(nullifier_set, payer, system_program, *nullifier)
                 .map_err(|_| PoolError::NullifierReuse)?;
             emit!(PTFNullifierUsed {
                 mint: origin_mint,
@@ -1178,13 +1266,14 @@ fn write_allowance(
 // NOTE: This is only used while we migrate back to the fixed-size NullifierSet; it expects
 // a simple `insert(value)` API and AccountLoader-based access.
 fn process_nullifiers<'info>(
-    nullifier_set_loader: &AccountLoader<'info, NullifierSet>,
+    nullifier_set: &mut Account<'info, NullifierSet>,
+    payer: &AccountInfo<'info>,
+    system_program: &AccountInfo<'info>,
     nullifiers: &[[u8; 32]],
     origin_mint: Pubkey,
 ) -> Result<()> {
-    let mut nullifier_set = nullifier_set_loader.load_mut()?;
     for nullifier in nullifiers {
-        nullifier_set.insert(*nullifier)?;
+        NullifierSet::insert(nullifier_set, payer, system_program, *nullifier)?;
         emit!(PTFNullifierUsed {
             mint: origin_mint,
             nullifier: *nullifier,
@@ -1333,10 +1422,10 @@ fn process_unshield<'info>(
     // This prevents replay attacks by marking notes as spent
     // Must happen before touching the commitment tree to ensure atomicity
     {
-        let mut nullifier_set = ctx.accounts.nullifier_set.load_mut()?;
+        let payer_account_info = ctx.accounts.payer.to_account_info();
+        let system_program_account_info = ctx.accounts.system_program.to_account_info();
         for nullifier in &args.nullifiers {
-            nullifier_set
-                .insert(*nullifier)
+            NullifierSet::insert(&mut ctx.accounts.nullifier_set, &payer_account_info, &system_program_account_info, *nullifier)
                 .map_err(|_| PoolError::NullifierReuse)?;
             emit!(PTFNullifierUsed {
                 mint: origin_mint,
@@ -1823,9 +1912,9 @@ pub struct InitializePool<'info> {
         payer = payer,
         seeds = [seeds::NULLIFIERS, origin_mint.key().as_ref()],
         bump,
-        space = NullifierSet::SPACE,
+        space = NullifierSet::BASE_SPACE,
     )]
-    pub nullifier_set: AccountLoader<'info, NullifierSet>,
+    pub nullifier_set: Account<'info, NullifierSet>,
     #[account(
         init,
         payer = payer,
@@ -1893,9 +1982,9 @@ pub struct UpdateAuthority<'info> {
     #[account(
         mut,
         seeds = [seeds::NULLIFIERS, pool_state.load()?.origin_mint.as_ref()],
-        bump = nullifier_set.load()?.bump
+        bump = nullifier_set.bump
     )]
-    pub nullifier_set: AccountLoader<'info, NullifierSet>,
+    pub nullifier_set: Account<'info, NullifierSet>,
     pub rent: Sysvar<'info, Rent>,
 }
 
@@ -1916,9 +2005,9 @@ pub struct Shield<'info> {
     #[account(
         mut,
         seeds = [seeds::NULLIFIERS, pool_state.load()?.origin_mint.as_ref()],
-        bump = nullifier_set.load()?.bump
+        bump = nullifier_set.bump
     )]
-    pub nullifier_set: AccountLoader<'info, NullifierSet>,
+    pub nullifier_set: Account<'info, NullifierSet>,
     #[account(
         mut,
         seeds = [seeds::TREE, pool_state.load()?.origin_mint.as_ref()],
@@ -2081,9 +2170,9 @@ pub struct Unshield<'info> {
     #[account(
         mut,
         seeds = [seeds::NULLIFIERS, pool_state.load()?.origin_mint.as_ref()],
-        bump = nullifier_set.load()?.bump
+        bump = nullifier_set.bump
     )]
-    pub nullifier_set: AccountLoader<'info, NullifierSet>,
+    pub nullifier_set: Account<'info, NullifierSet>,
     #[account(
         mut,
         seeds = [seeds::TREE, pool_state.load()?.origin_mint.as_ref()],
@@ -2129,6 +2218,7 @@ pub struct Unshield<'info> {
     pub factory_state: Account<'info, ptf_factory::FactoryState>,
     pub factory_program: Program<'info, PtfFactory>,
     pub token_program: Interface<'info, TokenInterface>,
+    pub system_program: Program<'info, System>,
     #[account(mut)]
     pub payer: Signer<'info>,
     pub rent: Sysvar<'info, Rent>,
@@ -2207,9 +2297,9 @@ pub struct PrivateTransfer<'info> {
     #[account(
         mut,
         seeds = [seeds::NULLIFIERS, pool_state.load()?.origin_mint.as_ref()],
-        bump = nullifier_set.load()?.bump
+        bump = nullifier_set.bump
     )]
-    pub nullifier_set: AccountLoader<'info, NullifierSet>,
+    pub nullifier_set: Account<'info, NullifierSet>,
     #[account(
         mut,
         seeds = [seeds::TREE, pool_state.load()?.origin_mint.as_ref()],
@@ -2240,6 +2330,7 @@ pub struct PrivateTransfer<'info> {
     pub verifying_key: Account<'info, VerifyingKeyAccount>,
     #[account(mut)]
     pub payer: Signer<'info>,
+    pub system_program: Program<'info, System>,
     pub rent: Sysvar<'info, Rent>,
 }
 
@@ -2340,9 +2431,9 @@ pub struct TransferFrom<'info> {
     #[account(
         mut,
         seeds = [seeds::NULLIFIERS, pool_state.load()?.origin_mint.as_ref()],
-        bump = nullifier_set.load()?.bump
+        bump = nullifier_set.bump
     )]
-    pub nullifier_set: AccountLoader<'info, NullifierSet>,
+    pub nullifier_set: Account<'info, NullifierSet>,
     #[account(
         mut,
         seeds = [seeds::TREE, pool_state.load()?.origin_mint.as_ref()],
@@ -2385,6 +2476,7 @@ pub struct TransferFrom<'info> {
     /// CHECK: allowance owner reference
     pub allowance_owner: AccountInfo<'info>,
     pub spender: Signer<'info>,
+    pub system_program: Program<'info, System>,
     pub rent: Sysvar<'info, Rent>,
 }
 
@@ -3040,73 +3132,100 @@ impl ShieldClaim {
     }
 }
 
-#[account(zero_copy(unsafe))]
-#[repr(C)]
+// CRITICAL FIX: Replaced bloom filter with deterministic sorted array
+// This eliminates false positives entirely, preventing DoS attacks where
+// legitimate users' nullifiers are incorrectly rejected.
+//
+// Implementation details:
+// - Uses sorted Vec<[u8; 32]> for O(log n) binary search
+// - Account automatically reallocates when needed (up to 10MB Solana limit)
+// - Deterministic: no false positives, no false negatives
+// - Secure: users can always spend their notes
+#[account]
 pub struct NullifierSet {
     pub pool: Pubkey,
-    pub bloom: [u8; NullifierSet::BLOOM_BYTES],
+    pub nullifiers: Vec<[u8; 32]>,
     pub bump: u8,
 }
 
 impl NullifierSet {
-    // CRITICAL FIX: Increased bloom filter size from 512 to 2048 bytes (4x increase)
-    // This significantly reduces the false positive rate, mitigating DoS attacks
-    // where legitimate users' nullifiers trigger false positives.
-    // 
-    // False positive rate with 512 bytes: ~0.1% at 10k nullifiers
-    // False positive rate with 2048 bytes: ~0.006% at 10k nullifiers
-    // 
-    // TODO: Long-term solution is to replace bloom filter with deterministic set
-    // (e.g., sorted array or Merkle tree) to eliminate false positives entirely
-    pub const BLOOM_BYTES: usize = 2048;
-    pub const SPACE: usize = 8 + core::mem::size_of::<NullifierSet>() + 64;
+    // Base space: discriminator (8) + pool (32) + Vec overhead (24) + bump (1) + padding
+    // Vec will grow dynamically as nullifiers are added
+    pub const BASE_SPACE: usize = 8 + 32 + 24 + 1 + 7; // 72 bytes base
+    pub const NULLIFIER_SIZE: usize = 32; // Each nullifier is 32 bytes
+    
+    // Calculate space needed for a given number of nullifiers
+    pub fn space_for(nullifier_count: usize) -> usize {
+        Self::BASE_SPACE + (Self::NULLIFIER_SIZE * nullifier_count)
+    }
 
-    pub fn insert(&mut self, value: [u8; 32]) -> Result<()> {
-        if self.contains(&value) {
-            return err!(PoolError::NullifierReuse);
+    pub fn init(&mut self, pool: Pubkey, bump: u8) {
+        self.pool = pool;
+        self.nullifiers = Vec::new();
+        self.bump = bump;
+    }
+
+    pub fn insert<'info>(
+        nullifier_set: &mut Account<'info, NullifierSet>,
+        payer: &AccountInfo<'info>,
+        _system_program: &AccountInfo<'info>,
+        value: [u8; 32],
+    ) -> Result<()> {
+        // Binary search to find insertion point or existing value
+        let pos = match nullifier_set.nullifiers.binary_search(&value) {
+            Ok(_) => {
+                // Nullifier already exists - this is a reuse attempt
+                return err!(PoolError::NullifierReuse);
+            }
+            Err(pos) => pos,
+        };
+        
+        // Calculate space needed after insertion
+        let current_len = nullifier_set.nullifiers.len();
+        let current_space = Self::space_for(current_len);
+        let new_space = Self::space_for(current_len + 1);
+        
+        // Reallocate if needed
+        if new_space > current_space {
+            // Get the underlying AccountInfo for reallocation
+            let account_info = nullifier_set.to_account_info();
+            // Calculate additional rent needed
+            let rent_sysvar = Rent::get()?;
+            let additional_rent = rent_sysvar.minimum_balance(new_space)
+                .saturating_sub(rent_sysvar.minimum_balance(current_space));
+            
+            // Transfer lamports from payer to account for rent via CPI
+            if additional_rent > 0 {
+                let payer_info = payer.to_account_info();
+                anchor_lang::solana_program::program::invoke(
+                    &anchor_lang::solana_program::system_instruction::transfer(
+                        payer.key,
+                        account_info.key,
+                        additional_rent,
+                    ),
+                    &[
+                        payer_info,
+                        account_info,
+                    ],
+                )?;
+            }
+            
+            // Reallocate account to accommodate new nullifier
+            // Get fresh reference after CPI
+            let account_info_after = nullifier_set.to_account_info();
+            account_info_after.realloc(new_space, false)?;
         }
-        self.set_bloom_bits(&value);
+        
+        // Insert at position to maintain sorted order
+        // Anchor will automatically serialize the updated Vec when the account is dropped
+        nullifier_set.nullifiers.insert(pos, value);
         Ok(())
     }
 
-    fn contains(&self, value: &[u8; 32]) -> bool {
-        // Bloom filter only: false positives are acceptable (they just prevent double-spending)
-        // False negatives would be a security issue, but bloom filters don't have false negatives
-        self.test_bloom_bits(value)
-    }
-
-    fn set_bloom_bits(&mut self, value: &[u8; 32]) {
-        for position in Self::bloom_positions(value) {
-            let byte_index = position / 8;
-            let bit_index = position % 8;
-            self.bloom[byte_index] |= 1 << bit_index;
-        }
-    }
-
-    fn test_bloom_bits(&self, value: &[u8; 32]) -> bool {
-        for position in Self::bloom_positions(value) {
-            let byte_index = position / 8;
-            let bit_index = position % 8;
-            if (self.bloom[byte_index] & (1 << bit_index)) == 0 {
-                return false;
-            }
-        }
-        true
-    }
-
-    fn bloom_positions(value: &[u8; 32]) -> [usize; 3] {
-        let mut hasher = Keccak256::new();
-        hasher.update(value);
-        let bytes: [u8; 32] = hasher.finalize().into();
-        let mut positions = [0usize; 3];
-        for (idx, chunk) in positions.iter_mut().enumerate() {
-            let start = idx * 8;
-            let mut slice = [0u8; 8];
-            slice.copy_from_slice(&bytes[start..start + 8]);
-            let value = u64::from_le_bytes(slice) as usize;
-            *chunk = value % (Self::BLOOM_BYTES * 8);
-        }
-        positions
+    pub fn contains(&self, value: &[u8; 32]) -> bool {
+        // Binary search: O(log n) deterministic lookup
+        // No false positives, no false negatives
+        self.nullifiers.binary_search(value).is_ok()
     }
 }
 
@@ -3288,7 +3407,14 @@ fn sha_branch(left: &[u8; 32], right: &[u8; 32]) -> [u8; 32] {
     hashv(&[&left[..], &right[..]]).to_bytes()
 }
 
+// CRITICAL FIX: Maximum size for public inputs to prevent DoS attacks
+pub const MAX_PUBLIC_INPUTS_SIZE: usize = 10 * 1024; // 10KB
+
 fn parse_field_elements(bytes: &[u8]) -> Result<Vec<[u8; 32]>> {
+    require!(
+        bytes.len() <= MAX_PUBLIC_INPUTS_SIZE,
+        PoolError::PublicInputsTooLarge
+    );
     require!(bytes.len() % 32 == 0, PoolError::InvalidPublicInputs);
     let mut elements = Vec::with_capacity(bytes.len() / 32);
     for chunk in bytes.chunks(32) {
@@ -3751,6 +3877,20 @@ pub struct PTFHookPostUnshield {
 }
 
 #[event]
+pub struct HookProgramWhitelisted {
+    pub origin_mint: Pubkey,
+    pub hook_program: Pubkey,
+    pub authority: Pubkey,
+}
+
+#[event]
+pub struct HookProgramRemoved {
+    pub origin_mint: Pubkey,
+    pub hook_program: Pubkey,
+    pub authority: Pubkey,
+}
+
+#[event]
 pub struct PTFHookPostShield {
     pub mint: Pubkey,
     pub deposit_id: u64,
@@ -3845,6 +3985,8 @@ pub enum PoolError {
     VerifyingKeyHashMismatch,
     #[msg("E_INVALID_PUBLIC_INPUTS")]
     InvalidPublicInputs,
+    #[msg("E_PUBLIC_INPUTS_TOO_LARGE")]
+    PublicInputsTooLarge,
     #[msg("E_PUBLIC_INPUT_MISMATCH")]
     PublicInputMismatch,
     #[msg("E_UNKNOWN_ROOT")]

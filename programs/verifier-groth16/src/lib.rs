@@ -7,6 +7,11 @@ declare_id!("3aCv39mCRFH9BGJskfXqwQoWzW1ULq2yXEbEwGgKtLgg");
 // Factory program ID - only factory can create verifying keys
 const PTF_FACTORY_PROGRAM_ID: Pubkey = pubkey!("4z618BY2dXGqAUiegqDt8omo3e81TSdXRHt64ikX1bTy");
 
+/// Maximum Groth16 proof byte length (~10KB leaves plenty of headroom over 192-byte proofs)
+pub const MAX_PROOF_SIZE: usize = 10 * 1024;
+/// Maximum serialized public input byte length (~2KB supports >60 field elements)
+pub const MAX_PUBLIC_INPUTS_SIZE: usize = 2 * 1024;
+
 #[cfg(all(feature = "groth16-syscall", feature = "groth16-dev-skip"))]
 compile_error!("groth16-syscall and groth16-dev-skip cannot be enabled together");
 
@@ -45,10 +50,9 @@ pub mod ptf_verifier_groth16 {
             VerifierError::InvalidVerifyingKeyId
         );
 
-        // CRITICAL FIX: Only factory program can create verifying keys
+        // CRITICAL FIX: Only factory_state PDA can create verifying keys
         // This prevents malicious keys from being created by unauthorized parties
-        // The authority must be the factory_state PDA (which is owned by factory program)
-        // or the factory program itself. We verify ownership to ensure it's from factory.
+        // The authority must be specifically the factory_state PDA (not just any account owned by factory)
         require!(
             ctx.accounts.authority.is_signer,
             VerifierError::UnauthorizedAuthority
@@ -58,6 +62,17 @@ pub mod ptf_verifier_groth16 {
         require_keys_eq!(
             *ctx.accounts.authority.owner,
             PTF_FACTORY_PROGRAM_ID,
+            VerifierError::UnauthorizedAuthority
+        );
+        
+        // CRITICAL FIX: Verify authority is specifically the factory_state PDA
+        let (expected_factory_state, _) = Pubkey::find_program_address(
+            &[b"factory", PTF_FACTORY_PROGRAM_ID.as_ref()],
+            &PTF_FACTORY_PROGRAM_ID,
+        );
+        require_keys_eq!(
+            ctx.accounts.authority.key(),
+            expected_factory_state,
             VerifierError::UnauthorizedAuthority
         );
 
@@ -109,6 +124,14 @@ pub mod ptf_verifier_groth16 {
         );
         require!(verify_account_hash(vk), VerifierError::HashMismatch,);
 
+        require!(
+            proof.len() <= MAX_PROOF_SIZE,
+            VerifierError::ProofTooLarge
+        );
+        require!(
+            public_inputs.len() <= MAX_PUBLIC_INPUTS_SIZE,
+            VerifierError::PublicInputsTooLarge
+        );
         // CRITICAL FIX: Remove empty proof/input bypass - always require valid proofs
         require!(!proof.is_empty(), VerifierError::EmptyProof);
         require!(!public_inputs.is_empty(), VerifierError::EmptyPublicInputs);
@@ -223,6 +246,10 @@ pub enum VerifierError {
     EmptyPublicInputs,
     #[msg("unauthorized authority - only factory can create keys")]
     UnauthorizedAuthority,
+    #[msg("proof exceeds maximum allowed size")]
+    ProofTooLarge,
+    #[msg("public inputs exceed maximum allowed size")]
+    PublicInputsTooLarge,
 }
 
 fn verify_account_hash(account: &VerifyingKeyAccount) -> bool {
