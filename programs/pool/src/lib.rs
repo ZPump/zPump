@@ -3621,7 +3621,7 @@ fn validate_transfer_public_inputs(
 fn process_shield_finalize_ledger<'info>(
     pool_loader: &AccountLoader<'info, PoolState>,
     hook_config: &AccountLoader<'info, HookConfig>,
-    note_ledger: &AccountLoader<'info, NoteLedger>,
+    note_ledger: &UncheckedAccount<'info>,
     shield_claim: &mut Account<'info, ShieldClaim>,
     hook_whitelist: &Account<'info, HookWhitelist>,
     remaining_accounts: &[AccountInfo<'info>],
