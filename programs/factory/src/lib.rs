@@ -872,6 +872,8 @@ fn prepare_ptkn_mint<'info>(
             mint: mint_info.clone(),
         };
         let init_ctx = CpiContext::new(token_program.to_account_info(), init_accounts);
+        // CRITICAL FIX: Set freeze authority to None for new mints
+        // This prevents attackers from freezing accounts after registration
         token_interface::initialize_mint2(init_ctx, decimals, &factory_state.key(), None)?;
     } else {
         require_keys_eq!(
@@ -900,6 +902,22 @@ fn prepare_ptkn_mint<'info>(
             }
             COption::None => return err!(FactoryError::PtknAuthorityMissing),
         }
+        
+        // CRITICAL FIX: Also set freeze authority to None or factory PDA
+        // This prevents attackers from freezing accounts after registration
+        // Check if freeze authority exists and is not already None
+        if let COption::Some(freeze_auth) = mint_account.freeze_authority {
+            // If freeze authority is not None and not the factory, we need to set it
+            // However, we can only set it if we have the current freeze authority signer
+            // For now, we require that reused mints have freeze authority as None or factory
+            // If it's not, we reject the mint (safer approach)
+            if freeze_auth != factory_state.key() {
+                // Reject mints with non-factory freeze authority
+                // The caller must first set freeze authority to None or factory before registration
+                return err!(FactoryError::Unauthorized);
+            }
+        }
+        // If freeze authority is None, that's fine - we don't need to do anything
     }
 
     Ok(*mint_info.key)
