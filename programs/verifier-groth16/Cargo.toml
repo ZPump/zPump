@@ -37,6 +37,8 @@ serde_json = "1.0"
 #   This bypasses verification for local testing only
 #
 # IMPORTANT: Always deploy to mainnet with groth16-syscall enabled!
+# CRITICAL SECURITY: groth16-dev-skip bypasses all proof verification.
+# CI/CD MUST verify production builds use groth16-syscall, NOT groth16-dev-skip.
 default = ["groth16-dev-skip"]
 groth16-syscall = []
 groth16-dev-skip = []

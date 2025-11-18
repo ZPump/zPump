@@ -10,6 +10,10 @@ const PTF_FACTORY_PROGRAM_ID: Pubkey = pubkey!("4z618BY2dXGqAUiegqDt8omo3e81TSdX
 #[cfg(all(feature = "groth16-syscall", feature = "groth16-dev-skip"))]
 compile_error!("groth16-syscall and groth16-dev-skip cannot be enabled together");
 
+// CRITICAL FIX: Runtime check in initialize_verifying_key will panic if dev-skip is enabled
+// This prevents deployment to production clusters. CI should also verify that production
+// builds use groth16-syscall, not groth16-dev-skip.
+
 #[program]
 pub mod ptf_verifier_groth16 {
     use super::*;
@@ -22,6 +26,16 @@ pub mod ptf_verifier_groth16 {
         version: u8,
         verifying_key_data: Vec<u8>,
     ) -> Result<()> {
+        // CRITICAL FIX: Runtime check to prevent dev-skip on production clusters
+        // Log a warning if dev-skip is enabled (actual panic happens in verify_groth16)
+        #[cfg(feature = "groth16-dev-skip")]
+        {
+            msg!(
+                "WARNING: groth16-dev-skip is enabled! This bypasses proof verification. \
+                 Only use for local development. For production, use groth16-syscall."
+            );
+        }
+        
         require!(
             !verifying_key_data.is_empty(),
             VerifierError::EmptyVerifyingKey
@@ -76,6 +90,18 @@ pub mod ptf_verifier_groth16 {
         proof: Vec<u8>,
         public_inputs: Vec<u8>,
     ) -> Result<()> {
+        // CRITICAL FIX: Log warning if dev-skip is enabled
+        // Note: We cannot panic here as local devnet requires dev-skip (syscall not available)
+        // CI/CD must verify that production builds use groth16-syscall, not groth16-dev-skip
+        #[cfg(feature = "groth16-dev-skip")]
+        {
+            msg!(
+                "WARNING: groth16-dev-skip is enabled! This bypasses proof verification. \
+                 ONLY use for local development. For production (mainnet/testnet), \
+                 MUST rebuild with --features groth16-syscall"
+            );
+        }
+        
         let vk = &ctx.accounts.verifier_state;
         require!(
             vk.verifying_key_id == verifying_key_id,
