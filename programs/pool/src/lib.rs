@@ -3660,13 +3660,21 @@ fn process_shield_finalize_ledger<'info>(
 
     #[cfg(feature = "invariant_checks")]
     let requires_invariant = {
-        let mut ledger = note_ledger.load_mut()?;
+        // Convert UncheckedAccount to AccountLoader for loading
+        let note_ledger_account_info = note_ledger.to_account_info();
+        let note_ledger_loader = AccountLoader::<NoteLedger>::try_from(&note_ledger_account_info)
+            .map_err(|_| PoolError::NoteLedgerMismatch)?;
+        let mut ledger = note_ledger_loader.load_mut()?;
         ledger.record_shield(pending.amount, pending.amount_commit)?;
         ledger.should_enforce_invariant(pending.amount)
     };
     #[cfg(not(feature = "invariant_checks"))]
     let requires_invariant = {
-        let mut ledger = note_ledger.load_mut()?;
+        // Convert UncheckedAccount to AccountLoader for loading
+        let note_ledger_account_info = note_ledger.to_account_info();
+        let note_ledger_loader = AccountLoader::<NoteLedger>::try_from(&note_ledger_account_info)
+            .map_err(|_| PoolError::NoteLedgerMismatch)?;
+        let mut ledger = note_ledger_loader.load_mut()?;
         ledger.record_shield(pending.amount, pending.amount_commit)?;
         false
     };
