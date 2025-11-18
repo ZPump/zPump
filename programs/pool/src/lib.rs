@@ -473,16 +473,51 @@ pub mod ptf_pool {
             hook_whitelist.bump = ctx.bumps.hook_whitelist;
         }
         
-        // CRITICAL FIX: Initialize nullifier_set if needed (init_if_needed constraint)
+        // CRITICAL FIX: Validate and initialize nullifier_set manually
         // This handles the case where the account structure changed and needs reinitialization
-        if ctx.accounts.nullifier_set.to_account_info().owner == &anchor_lang::solana_program::system_program::ID {
-            let (_, bump) = Pubkey::find_program_address(
-                &[seeds::NULLIFIERS, pool_state.origin_mint.as_ref()],
-                &crate::ID,
+        let (expected_nullifier_set, expected_bump) = Pubkey::find_program_address(
+            &[seeds::NULLIFIERS, pool_state.origin_mint.as_ref()],
+            &crate::ID,
+        );
+        require_keys_eq!(
+            ctx.accounts.nullifier_set.key(),
+            expected_nullifier_set,
+            PoolError::NullifierSetMismatch
+        );
+        
+        // Initialize if account doesn't exist
+        if ctx.accounts.nullifier_set.owner == &anchor_lang::solana_program::system_program::ID {
+            // Account doesn't exist - initialize it
+            let space = NullifierSet::BASE_SPACE;
+            let rent = Rent::get()?;
+            let lamports = rent.minimum_balance(space);
+            
+            **ctx.accounts.nullifier_set.try_borrow_mut_lamports()? = lamports;
+            ctx.accounts.nullifier_set.assign(&crate::ID);
+            ctx.accounts.nullifier_set.realloc(space, false)?;
+            
+            let mut nullifier_set_data = ctx.accounts.nullifier_set.try_borrow_mut_data()?;
+            let mut nullifier_set = NullifierSet::try_deserialize(&mut &nullifier_set_data[..])
+                .map_err(|_| PoolError::NullifierSetMismatch)?;
+            nullifier_set.init(pool_loader.key(), expected_bump);
+            nullifier_set.try_serialize(&mut &mut nullifier_set_data[..])?;
+        } else {
+            // Account exists - validate it's owned by our program
+            require_keys_eq!(
+                *ctx.accounts.nullifier_set.owner,
+                crate::ID,
+                PoolError::NullifierSetMismatch
             );
-            ctx.accounts.nullifier_set.init(
+            // Try to deserialize to validate discriminator and pool
+            // We can't use Account::try_from here because it requires a long-lived reference
+            // Instead, we'll validate by trying to deserialize the data directly
+            let nullifier_set_data = ctx.accounts.nullifier_set.try_borrow_data()?;
+            let nullifier_set = NullifierSet::try_deserialize(&mut &nullifier_set_data[..])
+                .map_err(|_| PoolError::NullifierSetMismatch)?;
+            require_keys_eq!(
+                nullifier_set.pool,
                 pool_loader.key(),
-                bump,
+                PoolError::NullifierSetMismatch
             );
         }
         
@@ -1284,6 +1319,7 @@ fn process_unshield<'info>(
     {
         let payer_account_info = ctx.accounts.payer.to_account_info();
         let system_program_account_info = ctx.accounts.system_program.to_account_info();
+        // nullifier_set is already an Account, use it directly
         for nullifier in &args.nullifiers {
             NullifierSet::insert(&mut ctx.accounts.nullifier_set, &payer_account_info, &system_program_account_info, *nullifier)
                 .map_err(|_| PoolError::NullifierReuse)?;
@@ -1870,12 +1906,9 @@ pub struct Shield<'info> {
         space = HookWhitelist::SPACE,
     )]
     pub hook_whitelist: Account<'info, HookWhitelist>,
-    #[account(
-        mut,
-        seeds = [seeds::NULLIFIERS, pool_state.load()?.origin_mint.as_ref()],
-        bump = nullifier_set.bump
-    )]
-    pub nullifier_set: Account<'info, NullifierSet>,
+    /// CHECK: Validated and initialized manually to handle discriminator changes
+    #[account(mut)]
+    pub nullifier_set: UncheckedAccount<'info>,
     #[account(
         mut,
         seeds = [seeds::TREE, pool_state.load()?.origin_mint.as_ref()],
@@ -4056,6 +4089,8 @@ pub enum PoolError {
     AllowanceAmountInvalid,
     #[msg("E_ALLOWANCE_AMOUNT_MISMATCH")]
     AllowanceAmountMismatch,
+    #[msg("E_NULLIFIER_SET_MISMATCH")]
+    NullifierSetMismatch,
     #[msg("E_HOOK_NOT_WHITELISTED")]
     HookNotWhitelisted,
     #[msg("E_HOOK_ALREADY_WHITELISTED")]
