@@ -918,15 +918,7 @@ pub mod ptf_pool {
 
         drop(pool_state);
 
-        // Convert UncheckedAccount to AccountLoader for process_shield_finalize_ledger
-        // We validated note_ledger earlier, so we know it's correct
-        // We'll create the loader inline - the account info lives for the function lifetime
-        let note_ledger_account_info = ctx.accounts.note_ledger.to_account_info();
-        // Create AccountLoader from the account info
-        // Note: This requires the account to be properly initialized and owned by our program
-        // We've already validated this above
-        let note_ledger_loader = AccountLoader::<NoteLedger>::try_from(&note_ledger_account_info)
-            .map_err(|_| PoolError::NoteLedgerMismatch)?;
+        // Pass UncheckedAccount directly - process_shield_finalize_ledger now accepts it
         process_shield_finalize_ledger(
             pool_loader,
             &ctx.accounts.hook_config,
@@ -3658,20 +3650,27 @@ fn process_shield_finalize_ledger<'info>(
         (hook_enabled, pool_state.bump, pool_state.origin_mint)
     };
 
-    // Convert UncheckedAccount to Account for loading
-    // Account::try_from works with UncheckedAccount and doesn't have lifetime issues
+    // Convert UncheckedAccount to AccountLoader for loading
+    // We'll create the loader at the start of each block to avoid lifetime issues
+    // The account info from UncheckedAccount lives for 'info, so we can use it
     let note_ledger_account_info = note_ledger.to_account_info();
-    let mut note_ledger_account = Account::<NoteLedger>::try_from(&note_ledger_account_info)
-        .map_err(|_| PoolError::NoteLedgerMismatch)?;
     
     #[cfg(feature = "invariant_checks")]
     let requires_invariant = {
-        note_ledger_account.record_shield(pending.amount, pending.amount_commit)?;
-        note_ledger_account.should_enforce_invariant(pending.amount)
+        // Create AccountLoader inline - the account info lives for 'info
+        let note_ledger_loader = AccountLoader::<NoteLedger>::try_from(&note_ledger_account_info)
+            .map_err(|_| PoolError::NoteLedgerMismatch)?;
+        let mut ledger = note_ledger_loader.load_mut()?;
+        ledger.record_shield(pending.amount, pending.amount_commit)?;
+        ledger.should_enforce_invariant(pending.amount)
     };
     #[cfg(not(feature = "invariant_checks"))]
     let requires_invariant = {
-        note_ledger_account.record_shield(pending.amount, pending.amount_commit)?;
+        // Create AccountLoader inline - the account info lives for 'info
+        let note_ledger_loader = AccountLoader::<NoteLedger>::try_from(&note_ledger_account_info)
+            .map_err(|_| PoolError::NoteLedgerMismatch)?;
+        let mut ledger = note_ledger_loader.load_mut()?;
+        ledger.record_shield(pending.amount, pending.amount_commit)?;
         false
     };
 
