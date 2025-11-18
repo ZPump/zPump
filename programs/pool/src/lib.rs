@@ -930,7 +930,7 @@ pub mod ptf_pool {
         process_shield_finalize_ledger(
             pool_loader,
             &ctx.accounts.hook_config,
-            &note_ledger_loader,
+            &ctx.accounts.note_ledger,
             &mut ctx.accounts.shield_claim,
             &ctx.accounts.hook_whitelist,
             ctx.remaining_accounts,
@@ -3658,24 +3658,20 @@ fn process_shield_finalize_ledger<'info>(
         (hook_enabled, pool_state.bump, pool_state.origin_mint)
     };
 
+    // Convert UncheckedAccount to Account for loading
+    // Account::try_from works with UncheckedAccount and doesn't have lifetime issues
+    let note_ledger_account_info = note_ledger.to_account_info();
+    let mut note_ledger_account = Account::<NoteLedger>::try_from(&note_ledger_account_info)
+        .map_err(|_| PoolError::NoteLedgerMismatch)?;
+    
     #[cfg(feature = "invariant_checks")]
     let requires_invariant = {
-        // Convert UncheckedAccount to AccountLoader for loading
-        let note_ledger_account_info = note_ledger.to_account_info();
-        let note_ledger_loader = AccountLoader::<NoteLedger>::try_from(&note_ledger_account_info)
-            .map_err(|_| PoolError::NoteLedgerMismatch)?;
-        let mut ledger = note_ledger_loader.load_mut()?;
-        ledger.record_shield(pending.amount, pending.amount_commit)?;
-        ledger.should_enforce_invariant(pending.amount)
+        note_ledger_account.record_shield(pending.amount, pending.amount_commit)?;
+        note_ledger_account.should_enforce_invariant(pending.amount)
     };
     #[cfg(not(feature = "invariant_checks"))]
     let requires_invariant = {
-        // Convert UncheckedAccount to AccountLoader for loading
-        let note_ledger_account_info = note_ledger.to_account_info();
-        let note_ledger_loader = AccountLoader::<NoteLedger>::try_from(&note_ledger_account_info)
-            .map_err(|_| PoolError::NoteLedgerMismatch)?;
-        let mut ledger = note_ledger_loader.load_mut()?;
-        ledger.record_shield(pending.amount, pending.amount_commit)?;
+        note_ledger_account.record_shield(pending.amount, pending.amount_commit)?;
         false
     };
 
