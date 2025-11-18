@@ -302,8 +302,28 @@ pub mod ptf_pool {
         msg!("init_pool stage: commitment_tree_init_complete");
 
         {
-            let mut ledger = ctx.accounts.note_ledger.load_init()?;
-            ledger.init(pool_key, ctx.bumps.note_ledger);
+            // Initialize note_ledger if needed (init_if_needed constraint)
+            // This handles the case where the account structure changed and needs reinitialization
+            if ctx.accounts.note_ledger.to_account_info().owner == &anchor_lang::solana_program::system_program::ID {
+                let mut ledger = ctx.accounts.note_ledger.load_init()?;
+                ledger.init(pool_key, ctx.bumps.note_ledger);
+            } else {
+                // Account exists - load and validate
+                match ctx.accounts.note_ledger.load() {
+                    Ok(ledger) => {
+                        require_keys_eq!(
+                            ledger.pool,
+                            pool_key,
+                            PoolError::NoteLedgerMismatch
+                        );
+                    }
+                    Err(_) => {
+                        // Account exists but has wrong discriminator - reinitialize
+                        let mut ledger = ctx.accounts.note_ledger.load_init()?;
+                        ledger.init(pool_key, ctx.bumps.note_ledger);
+                    }
+                }
+            }
         }
         msg!("init_pool stage: note_ledger_init_complete");
 
@@ -1898,7 +1918,7 @@ pub struct InitializePool<'info> {
     )]
     pub nullifier_set: Account<'info, NullifierSet>,
     #[account(
-        init,
+        init_if_needed,
         payer = payer,
         seeds = [seeds::NOTES, origin_mint.key().as_ref()],
         bump,
@@ -1995,13 +2015,9 @@ pub struct Shield<'info> {
     /// CHECK: Validated and initialized manually to handle discriminator changes
     #[account(mut)]
     pub nullifier_set: UncheckedAccount<'info>,
-    #[account(
-        mut,
-        seeds = [seeds::TREE, pool_state.load()?.origin_mint.as_ref()],
-        bump = commitment_tree.load()?.bump,
-        constraint = commitment_tree.load()?.pool == pool_state.key() @ PoolError::CommitmentTreeMismatch
-    )]
-    pub commitment_tree: AccountLoader<'info, CommitmentTree>,
+    /// CHECK: Validated and initialized manually to handle discriminator changes
+    #[account(mut)]
+    pub commitment_tree: UncheckedAccount<'info>,
     #[account(
         mut,
         seeds = [seeds::NOTES, pool_state.load()?.origin_mint.as_ref()],
