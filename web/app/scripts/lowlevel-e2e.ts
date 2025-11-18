@@ -1031,9 +1031,15 @@ async function main() {
   });
 
   const decodedTransferProof = decodeProofPayload(transferProof);
-  const nullifierBytes = Buffer.from(wrap1.nullifier, 'hex').reverse();
-  // Output commitments are at indices 2 and 3 in the decoded fields
-  const outputCommitments = decodedTransferProof.fields.slice(2, 4).map((field) => Array.from(field));
+  // Structure: [oldRoot, newRoot, ...nullifiers, ...output_commitments, mint, pool]
+  // Extract nullifier from proof (at index 2, after oldRoot and newRoot)
+  const numNullifiers = 1;
+  const numOutputs = 2;
+  const nullifierFromProof = decodedTransferProof.fields[2]!; // First nullifier is at index 2
+  const nullifierBytes = Array.from(nullifierFromProof);
+  // Output commitments start after nullifiers
+  const outputStart = 2 + numNullifiers; // After oldRoot, newRoot, and nullifiers
+  const outputCommitments = decodedTransferProof.fields.slice(outputStart, outputStart + numOutputs).map((field) => Array.from(field));
   const amountCommitments = await Promise.all([
     poseidonHashMany([transferAmount, BigInt(transferBlinding)]),
     poseidonHashMany([changeAmount, BigInt(changeBlinding)])
@@ -1256,8 +1262,15 @@ async function main() {
   });
 
   const decodedTransferFromProof = decodeProofPayload(transferFromProof);
-  const nullifierBytes3 = Buffer.from(wrap3.nullifier, 'hex').reverse();
-  const outputCommitments3 = decodedTransferFromProof.fields.slice(2, 4).map((field) => Array.from(field));
+  // Structure: [oldRoot, newRoot, ...nullifiers, ...output_commitments, mint, pool]
+  // Extract nullifier from proof (at index 2, after oldRoot and newRoot)
+  const numNullifiers3 = 1;
+  const numOutputs3 = 2;
+  const nullifierFromProof3 = decodedTransferFromProof.fields[2]!; // First nullifier is at index 2
+  const nullifierBytes3 = Array.from(nullifierFromProof3);
+  // Output commitments start after nullifiers
+  const outputStart3 = 2 + numNullifiers3;
+  const outputCommitments3 = decodedTransferFromProof.fields.slice(outputStart3, outputStart3 + numOutputs3).map((field) => Array.from(field));
   const amountCommitments3 = await Promise.all([
     poseidonHashMany([transferFromAmount, BigInt(transferFromBlinding)]),
     poseidonHashMany([changeFromAmount, BigInt(changeFromBlinding)])
