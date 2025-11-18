@@ -1071,7 +1071,7 @@ fn execute_private_transfer<'info>(
     // CRITICAL FIX: Validate that output commitments and amount commitments in args
     // match what's in the proof's public inputs. This prevents attackers from
     // appending arbitrary commitments that weren't part of the proof.
-    validate_transfer_public_inputs(&args)?;
+    validate_transfer_public_inputs(&args, pool_state.origin_mint, pool_loader.key())?;
 
     let origin_mint = pool_state.origin_mint;
     {
@@ -3297,7 +3297,25 @@ fn u8_to_field_bytes(value: u8) -> [u8; 32] {
 // CRITICAL FIX: Validate transfer public inputs to ensure output commitments
 // match what's in the proof. This prevents attackers from appending arbitrary
 // commitments that weren't part of the proof.
-fn validate_transfer_public_inputs(args: &TransferArgs) -> Result<()> {
+//
+// IMPORTANT LIMITATION: The transfer circuit's new_root computation currently only
+// includes nullifiers: new_root = poseidon(old_root, nullifiers). It does NOT include
+// output commitments. This means the proof validates a different root than what's
+// actually stored in the tree (which includes outputs). 
+//
+// To mitigate this until the circuit is updated:
+// 1. We validate that output commitments in args match the proof's public inputs
+// 2. We use computed_new_root from the tree (which includes outputs) as the actual state
+// 3. We validate mint and pool match the pool state
+//
+// TODO: Update circuit to compute new_root including output commitments:
+//   new_root = poseidon(old_root, nullifiers, output_commitments_hash)
+// This will require a new trusted setup and circuit regeneration.
+fn validate_transfer_public_inputs(
+    args: &TransferArgs,
+    expected_mint: Pubkey,
+    expected_pool: Pubkey,
+) -> Result<()> {
     let fields = parse_field_elements(&args.public_inputs)?;
     
     // Expected structure from proof service: 
@@ -3321,6 +3339,9 @@ fn validate_transfer_public_inputs(args: &TransferArgs) -> Result<()> {
     }
     
     // Validate new_root matches (even though it doesn't include outputs yet)
+    // The circuit computes: new_root = poseidon(old_root, nullifiers)
+    // The tree computes: new_root = poseidon(old_root, nullifiers, output_commitments)
+    // This mismatch is a known limitation that will be fixed by updating the circuit
     if fields[1] != args.new_root {
         return err!(PoolError::PublicInputMismatch);
     }
@@ -3369,6 +3390,38 @@ fn validate_transfer_public_inputs(args: &TransferArgs) -> Result<()> {
             );
             return err!(PoolError::PublicInputMismatch);
         }
+    }
+    
+    // CRITICAL FIX: Validate mint and pool in proof match the actual pool state
+    // This prevents proof reuse across different pools or mints
+    let mint_index = output_end;
+    let pool_index = mint_index + 1;
+    require!(
+        fields.len() > pool_index,
+        PoolError::InvalidPublicInputs
+    );
+    
+    let proof_mint = fields[mint_index];
+    let proof_pool = fields[pool_index];
+    let expected_mint_bytes = pubkey_to_field_bytes(&expected_mint);
+    let expected_pool_bytes = pubkey_to_field_bytes(&expected_pool);
+    
+    if proof_mint != expected_mint_bytes {
+        msg!(
+            "transfer: mint mismatch - proof={} expected={}",
+            hex::encode(proof_mint),
+            hex::encode(expected_mint_bytes)
+        );
+        return err!(PoolError::PublicInputMismatch);
+    }
+    
+    if proof_pool != expected_pool_bytes {
+        msg!(
+            "transfer: pool mismatch - proof={} expected={}",
+            hex::encode(proof_pool),
+            hex::encode(expected_pool_bytes)
+        );
+        return err!(PoolError::PublicInputMismatch);
     }
     
     // CRITICAL FIX: output_amount_commitments are not currently in the proof's public inputs
