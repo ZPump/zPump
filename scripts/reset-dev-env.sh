@@ -107,6 +107,10 @@ log "Resetting validator ledger at ${LEDGER_DIR}"
 rm -rf "${LEDGER_DIR}"
 mkdir -p "${LEDGER_DIR}"
 
+# Also clear any test-ledger directories that might exist
+log "Clearing test-ledger directories"
+rm -rf ~/.local/share/solana/test-ledger 2>/dev/null || true
+
 log "Resetting Photon snapshot at ${PHOTON_STATE_FILE}"
 rm -rf "${PHOTON_STATE_DIR}"
 mkdir -p "${PHOTON_STATE_DIR}"
