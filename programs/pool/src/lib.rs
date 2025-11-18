@@ -3646,11 +3646,14 @@ fn process_shield_finalize_ledger<'info>(
     };
 
     // Convert UncheckedAccount to AccountLoader for loading
-    // We'll create the loader inline in each block to avoid lifetime issues
+    // The account info from UncheckedAccount lives for 'info, so we can use it directly
+    // We'll create the loader inline in each block
+    let note_ledger_account_info = note_ledger.to_account_info();
+    
     #[cfg(feature = "invariant_checks")]
     let requires_invariant = {
-        let account_info = note_ledger.to_account_info();
-        let loader = AccountLoader::<NoteLedger>::try_from(&account_info)
+        // Create AccountLoader - account_info lives for 'info
+        let loader = AccountLoader::<NoteLedger>::try_from(&note_ledger_account_info)
             .map_err(|_| PoolError::NoteLedgerMismatch)?;
         let mut ledger = loader.load_mut()?;
         ledger.record_shield(pending.amount, pending.amount_commit)?;
@@ -3658,8 +3661,8 @@ fn process_shield_finalize_ledger<'info>(
     };
     #[cfg(not(feature = "invariant_checks"))]
     let requires_invariant = {
-        let account_info = note_ledger.to_account_info();
-        let loader = AccountLoader::<NoteLedger>::try_from(&account_info)
+        // Create AccountLoader - account_info lives for 'info
+        let loader = AccountLoader::<NoteLedger>::try_from(&note_ledger_account_info)
             .map_err(|_| PoolError::NoteLedgerMismatch)?;
         let mut ledger = loader.load_mut()?;
         ledger.record_shield(pending.amount, pending.amount_commit)?;
