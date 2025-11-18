@@ -918,11 +918,19 @@ pub mod ptf_pool {
 
         drop(pool_state);
 
-        // Pass UncheckedAccount directly - process_shield_finalize_ledger now accepts it
+        // Convert UncheckedAccount to AccountLoader for process_shield_finalize_ledger
+        // We validated note_ledger earlier, so we know it's correct
+        // We'll create the loader inline - the account info lives for the function lifetime
+        let note_ledger_account_info = ctx.accounts.note_ledger.to_account_info();
+        // Create AccountLoader from the account info
+        // Note: This requires the account to be properly initialized and owned by our program
+        // We've already validated this above
+        let note_ledger_loader = AccountLoader::<NoteLedger>::try_from(&note_ledger_account_info)
+            .map_err(|_| PoolError::NoteLedgerMismatch)?;
         process_shield_finalize_ledger(
             pool_loader,
             &ctx.accounts.hook_config,
-            &ctx.accounts.note_ledger,
+            &note_ledger_loader,
             &mut ctx.accounts.shield_claim,
             &ctx.accounts.hook_whitelist,
             ctx.remaining_accounts,
