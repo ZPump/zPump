@@ -3646,24 +3646,55 @@ fn process_shield_finalize_ledger<'info>(
     };
 
     // Convert UncheckedAccount to AccountLoader for loading
-    // The account info from UncheckedAccount lives for 'info, so we can use it directly
-    // We'll create the loader inline in each block
-    let note_ledger_account_info = note_ledger.to_account_info();
-    
+    // We'll create the loader inline in each block using the account info directly
+    // The account info from UncheckedAccount lives for 'info, so we can use it
     #[cfg(feature = "invariant_checks")]
     let requires_invariant = {
-        // Create AccountLoader - account_info lives for 'info
-        let loader = AccountLoader::<NoteLedger>::try_from(&note_ledger_account_info)
+        // Create AccountLoader directly from UncheckedAccount's account info
+        // The account info lives for 'info, so this should work
+        let account_info = note_ledger.to_account_info();
+        // We need to ensure the account info lives long enough
+        // Since it's from UncheckedAccount, it should live for 'info
+        // But AccountLoader::try_from requires a reference that lives for 'info
+        // The issue is that to_account_info() returns a temporary
+        // We need to use the account info directly without storing it
+        // Actually, UncheckedAccount has an internal AccountInfo that lives for 'info
+        // We can access it directly
+        // Use the account info directly - UncheckedAccount's account info lives for 'info
+        let account_info = note_ledger.to_account_info();
+        // We can't use AccountLoader::try_from due to lifetime constraints
+        // Instead, we'll manually deserialize NoteLedger from the account data
+        // NoteLedger uses AccountLoader, so we need to work with the raw data
+        let mut account_data = account_info.try_borrow_mut_data()?;
+        // Skip discriminator (8 bytes)
+        if account_data.len() < 8 {
+            return err!(PoolError::NoteLedgerMismatch);
+        }
+        // Deserialize NoteLedger manually
+        let ledger = NoteLedger::try_deserialize_mut(&mut &mut account_data[8..])
             .map_err(|_| PoolError::NoteLedgerMismatch)?;
+        let mut ledger = ledger;
         let mut ledger = loader.load_mut()?;
         ledger.record_shield(pending.amount, pending.amount_commit)?;
         ledger.should_enforce_invariant(pending.amount)
     };
     #[cfg(not(feature = "invariant_checks"))]
     let requires_invariant = {
-        // Create AccountLoader - account_info lives for 'info
-        let loader = AccountLoader::<NoteLedger>::try_from(&note_ledger_account_info)
+        // Create AccountLoader directly from UncheckedAccount's account info
+        // Use the account info directly - UncheckedAccount's account info lives for 'info
+        let account_info = note_ledger.to_account_info();
+        // We can't use AccountLoader::try_from due to lifetime constraints
+        // Instead, we'll manually deserialize NoteLedger from the account data
+        // NoteLedger uses AccountLoader, so we need to work with the raw data
+        let mut account_data = account_info.try_borrow_mut_data()?;
+        // Skip discriminator (8 bytes)
+        if account_data.len() < 8 {
+            return err!(PoolError::NoteLedgerMismatch);
+        }
+        // Deserialize NoteLedger manually
+        let ledger = NoteLedger::try_deserialize_mut(&mut &mut account_data[8..])
             .map_err(|_| PoolError::NoteLedgerMismatch)?;
+        let mut ledger = ledger;
         let mut ledger = loader.load_mut()?;
         ledger.record_shield(pending.amount, pending.amount_commit)?;
         false
