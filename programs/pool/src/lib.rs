@@ -895,10 +895,13 @@ pub mod ptf_pool {
 
         drop(pool_state);
 
+        // Convert UncheckedAccount to AccountLoader for process_shield_finalize_ledger
+        let note_ledger_loader_for_finalize = AccountLoader::<NoteLedger>::try_from(&ctx.accounts.note_ledger.to_account_info())
+            .map_err(|_| PoolError::NoteLedgerMismatch)?;
         process_shield_finalize_ledger(
             pool_loader,
             &ctx.accounts.hook_config,
-            &ctx.accounts.note_ledger,
+            &note_ledger_loader_for_finalize,
             &mut ctx.accounts.shield_claim,
             &ctx.accounts.hook_whitelist,
             ctx.remaining_accounts,
