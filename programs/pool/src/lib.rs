@@ -951,6 +951,16 @@ pub mod ptf_pool {
 
     pub fn transfer_from(ctx: Context<TransferFrom>, args: TransferFromArgs) -> Result<()> {
         require!(args.allowance_amount > 0, PoolError::AllowanceAmountInvalid);
+        require!(args.spend_amount > 0, PoolError::AllowanceAmountInvalid);
+        
+        // CRITICAL FIX: Verify that allowance_amount matches the actual spend_amount
+        // This prevents attackers from draining unlimited funds while only decrementing
+        // allowance by an arbitrary small amount
+        require!(
+            args.allowance_amount == args.spend_amount,
+            PoolError::AllowanceAmountMismatch
+        );
+        
         ensure_mint_active(&ctx.accounts.mint_mapping.to_account_info())?;
 
         {
@@ -2253,6 +2263,9 @@ pub struct ApproveAllowanceArgs {
 pub struct TransferFromArgs {
     pub transfer: TransferArgs,
     pub allowance_amount: u64,
+    // CRITICAL FIX: Actual spend amount from the transfer (sum of outputs to others, excluding change)
+    // This must match allowance_amount to prevent bypass attacks
+    pub spend_amount: u64,
 }
 
 #[derive(Accounts)]
@@ -3767,6 +3780,8 @@ pub enum PoolError {
     AllowanceInsufficient,
     #[msg("E_ALLOWANCE_AMOUNT_INVALID")]
     AllowanceAmountInvalid,
+    #[msg("E_ALLOWANCE_AMOUNT_MISMATCH")]
+    AllowanceAmountMismatch,
     #[msg("E_HOOK_NOT_WHITELISTED")]
     HookNotWhitelisted,
     #[msg("E_HOOK_ALREADY_WHITELISTED")]

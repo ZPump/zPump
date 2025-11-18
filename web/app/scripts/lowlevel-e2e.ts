@@ -1291,7 +1291,8 @@ async function main() {
 
   const transferFromArgs = {
     transfer: transferFromTransferArgs,
-    allowance_amount: new BN(transferFromAmount.toString())
+    allowance_amount: new BN(transferFromAmount.toString()),
+    spend_amount: new BN(transferFromAmount.toString()) // Spend amount is the amount going to receiver (not change)
   };
 
   const transferFromData = poolCoder.instruction.encode('transfer_from', { args: transferFromArgs });

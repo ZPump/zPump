@@ -7,82 +7,6 @@
   },
   "instructions": [
     {
-      "name": "accept_root",
-      "discriminator": [
-        153,
-        154,
-        141,
-        159,
-        223,
-        24,
-        233,
-        135
-      ],
-      "accounts": [
-        {
-          "name": "authority",
-          "signer": true,
-          "relations": [
-            "pool_state"
-          ]
-        },
-        {
-          "name": "pool_state",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  112,
-                  111,
-                  111,
-                  108
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "pool_state"
-              }
-            ]
-          }
-        },
-        {
-          "name": "nullifier_set",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  110,
-                  117,
-                  108,
-                  108,
-                  115
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "pool_state"
-              }
-            ]
-          }
-        }
-      ],
-      "args": [
-        {
-          "name": "root",
-          "type": {
-            "array": [
-              "u8",
-              32
-            ]
-          }
-        }
-      ]
-    },
-    {
       "name": "approve_allowance",
       "discriminator": [
         100,
@@ -235,6 +159,36 @@
               }
             ]
           }
+        },
+        {
+          "name": "hook_whitelist",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  104,
+                  111,
+                  111,
+                  107,
+                  45,
+                  119,
+                  104,
+                  105,
+                  116,
+                  101,
+                  108,
+                  105,
+                  115,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "pool_state"
+              }
+            ]
+          }
         }
       ],
       "args": [
@@ -374,6 +328,37 @@
           }
         },
         {
+          "name": "hook_whitelist",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  104,
+                  111,
+                  111,
+                  107,
+                  45,
+                  119,
+                  104,
+                  105,
+                  116,
+                  101,
+                  108,
+                  105,
+                  115,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "origin_mint"
+              }
+            ]
+          }
+        },
+        {
           "name": "vault_state",
           "writable": true
         },
@@ -381,153 +366,10 @@
           "name": "origin_mint"
         },
         {
-          "name": "mint_mapping",
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  109,
-                  97,
-                  112
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "origin_mint"
-              }
-            ],
-            "program": {
-              "kind": "const",
-              "value": [
-                59,
-                50,
-                210,
-                164,
-                223,
-                35,
-                36,
-                179,
-                192,
-                127,
-                194,
-                187,
-                77,
-                118,
-                214,
-                109,
-                89,
-                154,
-                25,
-                124,
-                156,
-                82,
-                239,
-                156,
-                100,
-                188,
-                53,
-                24,
-                228,
-                191,
-                65,
-                100
-              ]
-            }
-          }
+          "name": "mint_mapping"
         },
         {
-          "name": "factory_state",
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  102,
-                  97,
-                  99,
-                  116,
-                  111,
-                  114,
-                  121
-                ]
-              },
-              {
-                "kind": "const",
-                "value": [
-                  59,
-                  50,
-                  210,
-                  164,
-                  223,
-                  35,
-                  36,
-                  179,
-                  192,
-                  127,
-                  194,
-                  187,
-                  77,
-                  118,
-                  214,
-                  109,
-                  89,
-                  154,
-                  25,
-                  124,
-                  156,
-                  82,
-                  239,
-                  156,
-                  100,
-                  188,
-                  53,
-                  24,
-                  228,
-                  191,
-                  65,
-                  100
-                ]
-              }
-            ],
-            "program": {
-              "kind": "const",
-              "value": [
-                59,
-                50,
-                210,
-                164,
-                223,
-                35,
-                36,
-                179,
-                192,
-                127,
-                194,
-                187,
-                77,
-                118,
-                214,
-                109,
-                89,
-                154,
-                25,
-                124,
-                156,
-                82,
-                239,
-                156,
-                100,
-                188,
-                53,
-                24,
-                228,
-                191,
-                65,
-                100
-              ]
-            }
-          }
+          "name": "factory_state"
         },
         {
           "name": "twin_mint",
@@ -535,8 +377,7 @@
           "optional": true
         },
         {
-          "name": "verifier_program",
-          "address": "3aCv39mCRFH9BGJskfXqwQoWzW1ULq2yXEbEwGgKtLgg"
+          "name": "verifier_program"
         },
         {
           "name": "verifying_key"
@@ -665,11 +506,76 @@
           }
         },
         {
+          "name": "mint_mapping",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  109,
+                  97,
+                  112
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "pool_state"
+              }
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                59,
+                50,
+                210,
+                164,
+                223,
+                35,
+                36,
+                179,
+                192,
+                127,
+                194,
+                187,
+                77,
+                118,
+                214,
+                109,
+                89,
+                154,
+                25,
+                124,
+                156,
+                82,
+                239,
+                156,
+                100,
+                188,
+                53,
+                24,
+                228,
+                191,
+                65,
+                100
+              ]
+            }
+          }
+        },
+        {
           "name": "verifier_program",
           "address": "3aCv39mCRFH9BGJskfXqwQoWzW1ULq2yXEbEwGgKtLgg"
         },
         {
           "name": "verifying_key"
+        },
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "rent",
+          "address": "SysvarRent111111111111111111111111111111111"
         }
       ],
       "args": [
@@ -827,6 +733,10 @@
               }
             ]
           }
+        },
+        {
+          "name": "rent",
+          "address": "SysvarRent111111111111111111111111111111111"
         }
       ],
       "args": [
@@ -898,6 +808,10 @@
               }
             ]
           }
+        },
+        {
+          "name": "rent",
+          "address": "SysvarRent111111111111111111111111111111111"
         }
       ],
       "args": [
@@ -1029,62 +943,7 @@
         },
         {
           "name": "vault_state",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  118,
-                  97,
-                  117,
-                  108,
-                  116
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "pool_state"
-              }
-            ],
-            "program": {
-              "kind": "const",
-              "value": [
-                128,
-                225,
-                112,
-                163,
-                76,
-                46,
-                101,
-                7,
-                167,
-                90,
-                254,
-                155,
-                84,
-                64,
-                168,
-                166,
-                59,
-                14,
-                160,
-                80,
-                114,
-                96,
-                118,
-                250,
-                147,
-                101,
-                159,
-                158,
-                221,
-                26,
-                37,
-                52
-              ]
-            }
-          }
+          "writable": true
         },
         {
           "name": "vault_token_account",
@@ -1100,8 +959,7 @@
           "optional": true
         },
         {
-          "name": "verifier_program",
-          "address": "3aCv39mCRFH9BGJskfXqwQoWzW1ULq2yXEbEwGgKtLgg"
+          "name": "verifier_program"
         },
         {
           "name": "verifying_key"
@@ -1137,6 +995,62 @@
           "name": "origin_mint"
         },
         {
+          "name": "mint_mapping",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  109,
+                  97,
+                  112
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "pool_state"
+              }
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                59,
+                50,
+                210,
+                164,
+                223,
+                35,
+                36,
+                179,
+                192,
+                127,
+                194,
+                187,
+                77,
+                118,
+                214,
+                109,
+                89,
+                154,
+                25,
+                124,
+                156,
+                82,
+                239,
+                156,
+                100,
+                188,
+                53,
+                24,
+                228,
+                191,
+                65,
+                100
+              ]
+            }
+          }
+        },
+        {
           "name": "vault_program",
           "address": "9g6ZodQwxK8MN6MX3dbvFC3E7vGVqFtKZEHY7PByRAuh"
         },
@@ -1150,6 +1064,10 @@
         {
           "name": "system_program",
           "address": "11111111111111111111111111111111"
+        },
+        {
+          "name": "rent",
+          "address": "SysvarRent111111111111111111111111111111111"
         }
       ],
       "args": [
@@ -1349,6 +1267,36 @@
               }
             ]
           }
+        },
+        {
+          "name": "hook_whitelist",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  104,
+                  111,
+                  111,
+                  107,
+                  45,
+                  119,
+                  104,
+                  105,
+                  116,
+                  101,
+                  108,
+                  105,
+                  115,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "pool_state"
+              }
+            ]
+          }
         }
       ],
       "args": []
@@ -1540,6 +1488,62 @@
           "name": "verifying_key"
         },
         {
+          "name": "mint_mapping",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  109,
+                  97,
+                  112
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "pool_state"
+              }
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                59,
+                50,
+                210,
+                164,
+                223,
+                35,
+                36,
+                179,
+                192,
+                127,
+                194,
+                187,
+                77,
+                118,
+                214,
+                109,
+                89,
+                154,
+                25,
+                124,
+                156,
+                82,
+                239,
+                156,
+                100,
+                188,
+                53,
+                24,
+                228,
+                191,
+                65,
+                100
+              ]
+            }
+          }
+        },
+        {
           "name": "allowance",
           "writable": true,
           "pda": {
@@ -1575,6 +1579,10 @@
         {
           "name": "spender",
           "signer": true
+        },
+        {
+          "name": "rent",
+          "address": "SysvarRent111111111111111111111111111111111"
         }
       ],
       "args": [
@@ -1644,6 +1652,36 @@
           }
         },
         {
+          "name": "hook_whitelist",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  104,
+                  111,
+                  111,
+                  107,
+                  45,
+                  119,
+                  104,
+                  105,
+                  116,
+                  101,
+                  108,
+                  105,
+                  115,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "pool_state"
+              }
+            ]
+          }
+        },
+        {
           "name": "nullifier_set",
           "writable": true,
           "pda": {
@@ -1891,6 +1929,15 @@
         },
         {
           "name": "token_program"
+        },
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "rent",
+          "address": "SysvarRent111111111111111111111111111111111"
         }
       ],
       "args": [
@@ -1960,6 +2007,36 @@
           }
         },
         {
+          "name": "hook_whitelist",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  104,
+                  111,
+                  111,
+                  107,
+                  45,
+                  119,
+                  104,
+                  105,
+                  116,
+                  101,
+                  108,
+                  105,
+                  115,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "pool_state"
+              }
+            ]
+          }
+        },
+        {
           "name": "nullifier_set",
           "writable": true,
           "pda": {
@@ -2207,6 +2284,15 @@
         },
         {
           "name": "token_program"
+        },
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "rent",
+          "address": "SysvarRent111111111111111111111111111111111"
         }
       ],
       "args": [
@@ -2216,82 +2302,6 @@
             "defined": {
               "name": "UnshieldArgs"
             }
-          }
-        }
-      ]
-    },
-    {
-      "name": "write_nullifier",
-      "discriminator": [
-        222,
-        251,
-        193,
-        154,
-        202,
-        158,
-        50,
-        81
-      ],
-      "accounts": [
-        {
-          "name": "authority",
-          "signer": true,
-          "relations": [
-            "pool_state"
-          ]
-        },
-        {
-          "name": "pool_state",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  112,
-                  111,
-                  111,
-                  108
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "pool_state"
-              }
-            ]
-          }
-        },
-        {
-          "name": "nullifier_set",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  110,
-                  117,
-                  108,
-                  108,
-                  115
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "pool_state"
-              }
-            ]
-          }
-        }
-      ],
-      "args": [
-        {
-          "name": "nullifier",
-          "type": {
-            "array": [
-              "u8",
-              32
-            ]
           }
         }
       ]
@@ -2348,6 +2358,19 @@
         72,
         8,
         182
+      ]
+    },
+    {
+      "name": "HookWhitelist",
+      "discriminator": [
+        5,
+        224,
+        69,
+        103,
+        41,
+        89,
+        183,
+        3
       ]
     },
     {
@@ -2470,6 +2493,19 @@
       ]
     },
     {
+      "name": "HookAddedToWhitelist",
+      "discriminator": [
+        54,
+        88,
+        82,
+        109,
+        191,
+        243,
+        43,
+        187
+      ]
+    },
+    {
       "name": "HookConfigUpdated",
       "discriminator": [
         124,
@@ -2480,6 +2516,19 @@
         95,
         253,
         85
+      ]
+    },
+    {
+      "name": "HookRemovedFromWhitelist",
+      "discriminator": [
+        233,
+        155,
+        86,
+        199,
+        141,
+        82,
+        73,
+        73
       ]
     },
     {
@@ -2651,193 +2700,228 @@
     },
     {
       "code": 6007,
-      "name": "NullifierCapacity",
-      "msg": "E_NULLIFIER_CAPACITY"
-    },
-    {
-      "code": 6008,
       "name": "AmountOverflow",
       "msg": "E_AMOUNT_OVERFLOW"
     },
     {
-      "code": 6009,
+      "code": 6008,
       "name": "InsufficientLiquidity",
       "msg": "E_INSUFFICIENT_LIQUIDITY"
     },
     {
-      "code": 6010,
+      "code": 6009,
       "name": "FeatureDisabled",
       "msg": "E_FEATURE_DISABLED"
     },
     {
+      "code": 6010,
+      "name": "MintFrozen",
+      "msg": "E_MINT_FROZEN"
+    },
+    {
       "code": 6011,
+      "name": "ShieldFinalizationRequired",
+      "msg": "E_SHIELD_FINALIZATION_REQUIRED"
+    },
+    {
+      "code": 6012,
       "name": "MismatchedVaultAuthority",
       "msg": "E_VAULT_AUTHORITY_MISMATCH"
     },
     {
-      "code": 6012,
+      "code": 6013,
       "name": "OriginMintMismatch",
       "msg": "E_ORIGIN_MINT_MISMATCH"
     },
     {
-      "code": 6013,
+      "code": 6014,
+      "name": "MintMappingCorrupt",
+      "msg": "E_MINT_MAPPING_CORRUPT"
+    },
+    {
+      "code": 6015,
       "name": "VaultTokenAccountMismatch",
       "msg": "E_VAULT_TOKEN_ACCOUNT_MISMATCH"
     },
     {
-      "code": 6014,
+      "code": 6016,
       "name": "InvalidDepositorAccount",
       "msg": "E_INVALID_DEPOSITOR_ACCOUNT"
     },
     {
-      "code": 6015,
+      "code": 6017,
       "name": "TwinMintMismatch",
       "msg": "E_TWIN_MINT_MISMATCH"
     },
     {
-      "code": 6016,
+      "code": 6018,
       "name": "TwinMintNotConfigured",
       "msg": "E_TWIN_MINT_NOT_CONFIGURED"
     },
     {
-      "code": 6017,
+      "code": 6019,
       "name": "TwinMintAuthorityMismatch",
       "msg": "E_TWIN_MINT_AUTHORITY_MISMATCH"
     },
     {
-      "code": 6018,
+      "code": 6020,
       "name": "TwinMintDecimalsMismatch",
       "msg": "E_TWIN_MINT_DECIMALS_MISMATCH"
     },
     {
-      "code": 6019,
+      "code": 6021,
       "name": "InvariantBreach",
       "msg": "E_INVARIANT_BREACH"
     },
     {
-      "code": 6020,
+      "code": 6022,
       "name": "HooksDisabled",
       "msg": "E_HOOKS_DISABLED"
     },
     {
-      "code": 6021,
+      "code": 6023,
       "name": "TooManyHookAccounts",
       "msg": "E_TOO_MANY_HOOK_ACCOUNTS"
     },
     {
-      "code": 6022,
+      "code": 6024,
       "name": "HookConfigInvalid",
       "msg": "E_HOOK_CONFIG_INVALID"
     },
     {
-      "code": 6023,
+      "code": 6025,
       "name": "HookAccountMismatch",
       "msg": "E_HOOK_ACCOUNT_MISMATCH"
     },
     {
-      "code": 6024,
+      "code": 6026,
       "name": "HookAccountMissing",
       "msg": "E_HOOK_ACCOUNT_MISSING"
     },
     {
-      "code": 6025,
+      "code": 6027,
       "name": "HookAccountUnexpected",
       "msg": "E_HOOK_ACCOUNT_UNEXPECTED"
     },
     {
-      "code": 6026,
+      "code": 6028,
       "name": "NoteLedgerMismatch",
       "msg": "E_NOTE_LEDGER_MISMATCH"
     },
     {
-      "code": 6027,
+      "code": 6029,
       "name": "CommitmentTreeMismatch",
       "msg": "E_TREE_MISMATCH"
     },
     {
-      "code": 6028,
+      "code": 6030,
       "name": "InvalidChangeNoteCount",
       "msg": "E_INVALID_CHANGE_NOTE_COUNT"
     },
     {
-      "code": 6029,
+      "code": 6031,
       "name": "OutputSetMismatch",
       "msg": "E_OUTPUT_SET_MISMATCH"
     },
     {
-      "code": 6030,
+      "code": 6032,
       "name": "CanopyDepthInvalid",
       "msg": "E_CANOPY_DEPTH_INVALID"
     },
     {
-      "code": 6031,
+      "code": 6033,
       "name": "TreeFull",
       "msg": "E_TREE_FULL"
     },
     {
-      "code": 6032,
+      "code": 6034,
       "name": "RootMismatch",
       "msg": "E_ROOT_MISMATCH"
     },
     {
-      "code": 6033,
+      "code": 6035,
       "name": "PendingShieldInFlight",
       "msg": "E_PENDING_SHIELD_IN_FLIGHT"
     },
     {
-      "code": 6034,
+      "code": 6036,
       "name": "NoPendingShield",
       "msg": "E_NO_PENDING_SHIELD"
     },
     {
-      "code": 6035,
+      "code": 6037,
       "name": "PendingShieldMismatch",
       "msg": "E_PENDING_SHIELD_MISMATCH"
     },
     {
-      "code": 6036,
+      "code": 6038,
       "name": "MissingShieldFinalize",
       "msg": "E_SHIELD_FINALIZE_MISSING"
     },
     {
-      "code": 6037,
+      "code": 6039,
       "name": "ShieldClaimMismatch",
       "msg": "E_SHIELD_CLAIM_MISMATCH"
     },
     {
-      "code": 6038,
+      "code": 6040,
       "name": "ShieldClaimStage",
       "msg": "E_SHIELD_CLAIM_STAGE"
     },
     {
-      "code": 6039,
+      "code": 6041,
       "name": "AllowancePoolMismatch",
       "msg": "E_ALLOWANCE_POOL_MISMATCH"
     },
     {
-      "code": 6040,
+      "code": 6042,
       "name": "AllowanceOwnerMismatch",
       "msg": "E_ALLOWANCE_OWNER_MISMATCH"
     },
     {
-      "code": 6041,
+      "code": 6043,
       "name": "AllowanceSpenderMismatch",
       "msg": "E_ALLOWANCE_SPENDER_MISMATCH"
     },
     {
-      "code": 6042,
+      "code": 6044,
       "name": "AllowanceMintMismatch",
       "msg": "E_ALLOWANCE_MINT_MISMATCH"
     },
     {
-      "code": 6043,
+      "code": 6045,
       "name": "AllowanceInsufficient",
       "msg": "E_ALLOWANCE_INSUFFICIENT"
     },
     {
-      "code": 6044,
+      "code": 6046,
       "name": "AllowanceAmountInvalid",
       "msg": "E_ALLOWANCE_AMOUNT_INVALID"
+    },
+    {
+      "code": 6047,
+      "name": "AllowanceAmountMismatch",
+      "msg": "E_ALLOWANCE_AMOUNT_MISMATCH"
+    },
+    {
+      "code": 6048,
+      "name": "HookNotWhitelisted",
+      "msg": "E_HOOK_NOT_WHITELISTED"
+    },
+    {
+      "code": 6049,
+      "name": "HookAlreadyWhitelisted",
+      "msg": "E_HOOK_ALREADY_WHITELISTED"
+    },
+    {
+      "code": 6050,
+      "name": "WhitelistFull",
+      "msg": "E_WHITELIST_FULL"
+    },
+    {
+      "code": 6051,
+      "name": "Unauthorized",
+      "msg": "E_UNAUTHORIZED"
     }
   ],
   "types": [
@@ -3054,6 +3138,21 @@
           {
             "name": "last_updated_slot",
             "type": "u64"
+          },
+          {
+            "name": "pending_action_hashes",
+            "type": {
+              "vec": {
+                "array": [
+                  "u8",
+                  32
+                ]
+              }
+            }
+          },
+          {
+            "name": "last_action_sequence",
+            "type": "u64"
           }
         ]
       }
@@ -3115,6 +3214,22 @@
           },
           {
             "name": "Lenient"
+          }
+        ]
+      }
+    },
+    {
+      "name": "HookAddedToWhitelist",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "hook_program",
+            "type": "pubkey"
+          },
+          {
+            "name": "added_by",
+            "type": "pubkey"
           }
         ]
       }
@@ -3252,6 +3367,44 @@
       }
     },
     {
+      "name": "HookRemovedFromWhitelist",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "hook_program",
+            "type": "pubkey"
+          },
+          {
+            "name": "removed_by",
+            "type": "pubkey"
+          }
+        ]
+      }
+    },
+    {
+      "name": "HookWhitelist",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "authority",
+            "type": "pubkey"
+          },
+          {
+            "name": "allowed_programs",
+            "type": {
+              "vec": "pubkey"
+            }
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
       "name": "MintMapping",
       "type": {
         "kind": "struct",
@@ -3369,24 +3522,6 @@
           {
             "name": "pool",
             "type": "pubkey"
-          },
-          {
-            "name": "count",
-            "type": "u32"
-          },
-          {
-            "name": "entries",
-            "type": {
-              "array": [
-                {
-                  "array": [
-                    "u8",
-                    32
-                  ]
-                },
-                256
-              ]
-            }
           },
           {
             "name": "bloom",
@@ -3819,66 +3954,6 @@
       }
     },
     {
-      "name": "PendingShield",
-      "type": {
-        "kind": "struct",
-        "fields": [
-          {
-            "name": "active",
-            "type": "u8"
-          },
-          {
-            "name": "old_root",
-            "type": {
-              "array": [
-                "u8",
-                32
-              ]
-            }
-          },
-          {
-            "name": "new_root",
-            "type": {
-              "array": [
-                "u8",
-                32
-              ]
-            }
-          },
-          {
-            "name": "commitment",
-            "type": {
-              "array": [
-                "u8",
-                32
-              ]
-            }
-          },
-          {
-            "name": "amount_commit",
-            "type": {
-              "array": [
-                "u8",
-                32
-              ]
-            }
-          },
-          {
-            "name": "amount",
-            "type": "u64"
-          },
-          {
-            "name": "depositor",
-            "type": "pubkey"
-          },
-          {
-            "name": "next_index",
-            "type": "u64"
-          }
-        ]
-      }
-    },
-    {
       "name": "ShieldArgs",
       "type": {
         "kind": "struct",
@@ -4081,6 +4156,10 @@
           },
           {
             "name": "allowance_amount",
+            "type": "u64"
+          },
+          {
+            "name": "spend_amount",
             "type": "u64"
           }
         ]

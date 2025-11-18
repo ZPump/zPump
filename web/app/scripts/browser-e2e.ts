@@ -823,6 +823,8 @@ async function main() {
       { amount: spendAmount, blinding: BigInt(outNotes[0]!.blinding) },
       { amount: changeAmount, blinding: changeAmount > 0n ? BigInt(outNotes[1]!.blinding) : 0n }
     ]);
+    // CRITICAL FIX: spendAmount is the amount going to others (not change back to spender)
+    // In this case, it's the first output (to receiver), not the second (change back)
     const signature = await transferFrom({
       connection,
       wallet: delegateAdapter,
@@ -834,6 +836,7 @@ async function main() {
       outputAmountCommitments: amountCommitments,
       allowanceOwner: owner.publicKey.toBase58(),
       allowanceAmount,
+      spendAmount, // Spend amount is the amount going to receiver (not change)
       lookupTable: mintConfig.lookupTable
     });
     console.info('[transfer_from] signature', signature);
