@@ -769,9 +769,22 @@ async function ensureMint(
   // Check if pool needs initialization or reinitialization
   // If any account exists but has wrong structure, we need to reinitialize
   const poolStateInfo = await connection.getAccountInfo(poolState);
-  const needsInit = !poolStateInfo;
+  const commitmentTreeInfo = await connection.getAccountInfo(commitmentTree);
+  const nullifierSetInfo = await connection.getAccountInfo(nullifierSet);
   
-  if (needsInit) {
+  // Check if accounts exist but have wrong discriminators
+  // If commitment_tree exists but has wrong discriminator, we need to handle it
+  // Since we can't easily close PDAs, we'll rely on init_if_needed in the program
+  // But we can check if the account owner is correct
+  const needsInit = !poolStateInfo;
+  const needsReinit = commitmentTreeInfo && !commitmentTreeInfo.owner.equals(PROGRAM_IDS.pool);
+  
+  if (needsInit || needsReinit) {
+    // If accounts exist with wrong structure, log a warning
+    // The program's init_if_needed should handle reinitialization
+    if (needsReinit && !needsInit) {
+      console.warn(`[bootstrap] ${mintConfig.symbol}: commitment_tree exists but may have wrong discriminator. Program will attempt to reinitialize.`);
+    }
     const poolAccounts: Record<string, PublicKey> = {
       authority: ctx.payer.publicKey,
       pool_state: poolState,
