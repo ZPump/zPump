@@ -50,11 +50,15 @@ Behaviour:
 - Updates vault accounting (e.g. `total_withdrawn`).
 - The pool authority account must be a signer and owned by `ptf_pool`; arbitrary accounts can no longer trigger releases.
 
-## Security Considerations
+## Security Features
 
-- Only the pool PDA can sign the `release` CPI (thanks to the seeds captured in `ptf_pool` instruction).
-- Deposits require user signature; release requires valid Groth16 proof in the calling program.
-- The vault program itself does not inspect Groth16 proofs—it trusts the caller (`ptf_pool`). Keep program IDs stable and verify on bootstrap.
+- **Pool Authority Signing**: Only the pool PDA can sign the `release` CPI (thanks to the seeds captured in `ptf_pool` instruction).
+- **Timelock-Based Authority Changes**: Authority changes require a two-step process with a 7-day timelock:
+  1. `propose_authority_change` – Initiates the change with timelock.
+  2. `execute_authority_change` – Finalizes the change after the timelock period.
+  3. `cancel_authority_change` – Allows the current authority to cancel a pending change.
+- **Proof Validation**: Deposits require user signature; release requires valid Groth16 proof in the calling program.
+- **Trust Boundary**: The vault program itself does not inspect Groth16 proofs—it trusts the caller (`ptf_pool`). Keep program IDs stable and verify on bootstrap.
 
 ## Feature Flags
 

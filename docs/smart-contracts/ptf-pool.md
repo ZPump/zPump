@@ -127,11 +127,24 @@ Administrative instructions (authority-gated). In devnet they are primarily used
 - Unwrap transactions leverage ALTs and consume ~146 k CU with all features enabled.
 - The `lightweight` feature remains available for regression testing but is no longer required to stay under the budget.
 
+## Security Features
+
+The program includes several security measures to prevent common attack vectors:
+
+- **Root Validation**: All operations (`shield`, `private_transfer`, `unshield`) strictly validate that proof-supplied roots match the on-chain commitment tree state. Root mismatches are rejected with `E_ROOT_MISMATCH`.
+- **Commitment Verification**: Private transfers validate that output commitments from the proof's public inputs match the commitments provided in the instruction arguments, preventing forged commitments.
+- **Allowance Validation**: `transfer_from` ensures the `spend_amount` matches the `allowance_amount` to prevent decoupled allowance spending.
+- **Shield Finalization**: The `shield` instruction requires `shield_finalize_ledger` to be included in the same transaction to ensure atomic finalization.
+- **Hook Whitelist**: Post-shield and post-unshield hooks can only be executed if the hook program is whitelisted, preventing arbitrary code execution.
+- **Mint Status Checks**: All operations verify the mint mapping is in `Active` state; frozen mints cannot be used for new operations.
+
 ## Common Errors
 
 - `E_ROOT_MISMATCH (0x1790)` – Raised when pool and commitment tree roots differ. Typically caused by validator crashes; see [Root Drift Playbook](../operations/root-drift.md).
 - `E_INSUFFICIENT_LIQUIDITY (0x1779)` – Attempted unshield without enough vault funds; ensure the wrap deposited `amount + fee`.
 - `ConstraintMut` / `AccountOwnedByWrongProgram` – Occur when optional accounts (twin mint) are omitted or mis-owned. Frontend SDK handles injecting placeholder program IDs for unused optional accounts.
+- `E_PUBLIC_INPUT_MISMATCH` – Output commitments from proof do not match instruction arguments.
+- `E_ALLOWANCE_AMOUNT_MISMATCH` – `spend_amount` does not match `allowance_amount` in `transfer_from`.
 
 ## Testing & Tooling
 

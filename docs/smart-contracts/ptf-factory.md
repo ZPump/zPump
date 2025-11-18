@@ -53,6 +53,16 @@ Entry point used during `ptf_pool::unshield_to_ptkn`.
 - `ptf_pool::unshield_to_ptkn` caches pool state fields, drops mutable borrow, then performs a CPI into `mint_ptkn`.
 - Frontend uses `mintMapping.hasPtkn` to determine whether to render the privacy twin option; currently the UI defaults to origin redeem to reduce user confusion.
 
+## Security Features
+
+The factory program implements several security measures:
+
+- **Timelock Hash Verification**: When executing timelock actions, the program verifies that the action hash matches the hash computed at queue time, preventing tampering.
+- **Action Deduplication**: Timelock actions are deduplicated by canonical hash (without salt) to prevent the same governance action from being queued multiple times.
+- **Sequence-Based PDAs**: Timelock entries use a sequence number for PDA derivation, ensuring consistent account addressing between queue and execute operations.
+- **Verifying Key Authority**: Only the factory program (via its PDA) can create verifying keys in the verifier program, preventing unauthorized key registration.
+- **Minimum Timelock**: Factory initialization requires a minimum timelock period (24 hours) to prevent instant governance changes.
+
 ## Feature Flags
 
 - The program has no optional flags; all logic always compiles.

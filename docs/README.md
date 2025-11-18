@@ -25,6 +25,15 @@ Welcome to the zPump developer documentation. The repository has grown beyond wh
   - [Common Errors & Fixes](operations/common-errors.md)
 - [Glossary](reference/glossary.md)
 
+## Security
+
+All smart contracts have been audited and security fixes have been implemented. Each program's documentation includes a "Security Features" section detailing the protections in place. Key security measures include:
+
+- Root validation and commitment verification in `ptf_pool`
+- Timelock-based governance with hash verification in `ptf_factory`
+- Timelock-based authority changes in `ptf_vault`
+- Verifying key authority restrictions and dev-skip protection in `ptf_verifier_groth16`
+
 Each document is written to stand on its own, but they are cross-linked where relevant. If you are brand new to the project, start with the [Overview](overview/overview.md) and [System Architecture](architecture/system-architecture.md) pages, then dive into the specific areas you care about.
 
 The documentation is intended to evolve with the codebase—please update or extend these guides whenever you change behaviour, add a component, or learn something new during debugging. Pull requests are welcome!
