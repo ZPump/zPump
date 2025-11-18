@@ -161,6 +161,9 @@ interface TransferParams {
 interface TransferFromParams extends TransferParams {
   allowanceOwner: string;
   allowanceAmount: bigint | number | string;
+  // CRITICAL FIX: Actual spend amount (sum of outputs to others, excluding change back to spender)
+  // This must match allowanceAmount to prevent bypass attacks
+  spendAmount: bigint | number | string;
 }
 
 type SplTokenProgramKind = 'token' | 'token-2022';
@@ -1435,6 +1438,16 @@ export async function transferFrom(params: TransferFromParams): Promise<string> 
     throw new Error('Allowance amount must be positive');
   }
 
+  const spendAmount = BigInt(params.spendAmount);
+  if (spendAmount <= 0n) {
+    throw new Error('Spend amount must be positive');
+  }
+
+  // CRITICAL FIX: Verify spend amount matches allowance amount
+  if (spendAmount !== allowanceAmount) {
+    throw new Error(`Spend amount (${spendAmount}) must match allowance amount (${allowanceAmount})`);
+  }
+
   const decodedProof = decodeProofPayload(params.proof);
   if (decodedProof.fields.length < 4) {
     throw new Error('Transfer proof missing public inputs');
@@ -1478,7 +1491,8 @@ export async function transferFrom(params: TransferFromParams): Promise<string> 
 
   const transferFromArgs = {
     transfer: transferArgs,
-    allowance_amount: new BN(allowanceAmount.toString())
+    allowance_amount: new BN(allowanceAmount.toString()),
+    spend_amount: new BN(spendAmount.toString())
   };
 
   const instructions: TransactionInstruction[] = [];
