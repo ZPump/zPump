@@ -3,9 +3,6 @@ use anchor_lang::InstructionData;
 use anchor_lang::solana_program::instruction::{AccountMeta, Instruction};
 use anchor_lang::solana_program::program::invoke_signed;
 use anchor_lang::solana_program::program_option::COption;
-use anchor_lang::solana_program::sysvar::instructions::{
-    load_current_index_checked, load_instruction_at_checked,
-};
 use borsh::BorshDeserialize;
 use anchor_spl::token_interface::{Mint, TokenAccount, TokenInterface};
 use ark_bn254::Fr;
@@ -467,6 +464,28 @@ pub mod ptf_pool {
         let mut pool_state = pool_loader.load_mut()?;
         msg!("shield: loaded pool_state");
         
+        // CRITICAL FIX: Initialize hook_whitelist if needed (init_if_needed constraint)
+        // This ensures the account exists before process_shield_finalize_ledger tries to use it
+        if ctx.accounts.hook_whitelist.to_account_info().owner == &anchor_lang::solana_program::system_program::ID {
+            let hook_whitelist = &mut ctx.accounts.hook_whitelist;
+            hook_whitelist.authority = pool_state.authority;
+            hook_whitelist.allowed_programs = Vec::new();
+            hook_whitelist.bump = ctx.bumps.hook_whitelist;
+        }
+        
+        // CRITICAL FIX: Initialize nullifier_set if needed (init_if_needed constraint)
+        // This handles the case where the account structure changed and needs reinitialization
+        if ctx.accounts.nullifier_set.to_account_info().owner == &anchor_lang::solana_program::system_program::ID {
+            let (_, bump) = Pubkey::find_program_address(
+                &[seeds::NULLIFIERS, pool_state.origin_mint.as_ref()],
+                &crate::ID,
+            );
+            ctx.accounts.nullifier_set.init(
+                pool_loader.key(),
+                bump,
+            );
+        }
+        
         let expected_pool = pool_loader.key();
         let claim_bump = {
             let shield_claim = &mut ctx.accounts.shield_claim;
@@ -687,51 +706,6 @@ pub mod ptf_pool {
             args.public_inputs.clone(),
         )?;
 
-        // CRITICAL FIX: Verify that shield_finalize_ledger is in the same transaction
-        // This ensures tokens are only deposited if finalization will complete
-        // Use instruction sysvar to check for the next instruction
-        let ix_sysvar = ctx.accounts.instructions.to_account_info();
-        let current_idx = load_current_index_checked(&ix_sysvar)
-            .map_err(|_| PoolError::ShieldFinalizationRequired)?;
-        
-        // Check if next instruction is shield_finalize_ledger
-        let next_idx = (current_idx as usize).checked_add(1)
-            .ok_or(PoolError::ShieldFinalizationRequired)?;
-        
-        let next_ix = load_instruction_at_checked(next_idx, &ix_sysvar)
-            .map_err(|_| PoolError::ShieldFinalizationRequired)?;
-        
-        // Verify it's our program
-        require!(
-            next_ix.program_id == crate::ID,
-            PoolError::ShieldFinalizationRequired
-        );
-        
-        // Verify it has enough data for discriminator
-        require!(
-            next_ix.data.len() >= 8,
-            PoolError::ShieldFinalizationRequired
-        );
-        
-        // Verify discriminator matches shield_finalize_ledger
-        let finalize_ledger_disc = instruction_discriminator("shield_finalize_ledger");
-        let next_discriminator = &next_ix.data[..8];
-        require!(
-            next_discriminator == finalize_ledger_disc.as_slice(),
-            PoolError::ShieldFinalizationRequired
-        );
-        
-        // Verify the first account is the pool_state (ensures it's for this pool)
-        require!(
-            !next_ix.accounts.is_empty(),
-            PoolError::ShieldFinalizationRequired
-        );
-        require_keys_eq!(
-            next_ix.accounts[0].pubkey,
-            pool_loader.key(),
-            PoolError::ShieldFinalizationRequired
-        );
-
         let deposit_accounts = ptf_vault::cpi::accounts::Deposit {
             vault_state: ctx.accounts.vault_state.to_account_info(),
             vault_token_account: ctx.accounts.vault_token_account.to_account_info(),
@@ -781,6 +755,17 @@ pub mod ptf_pool {
             );
         }
 
+        drop(pool_state);
+
+        process_shield_finalize_ledger(
+            pool_loader,
+            &ctx.accounts.hook_config,
+            &ctx.accounts.note_ledger,
+            &mut ctx.accounts.shield_claim,
+            &ctx.accounts.hook_whitelist,
+            ctx.remaining_accounts,
+        )?;
+
         Ok(())
     }
 
@@ -797,139 +782,14 @@ pub mod ptf_pool {
     pub fn shield_finalize_ledger<'info>(
         ctx: Context<'_, '_, '_, 'info, ShieldFinalizeLedger<'info>>,
     ) -> Result<()> {
-        let pool_loader = &ctx.accounts.pool_state;
-
-        // CRITICAL FIX: For same-transaction flow (shield + finalize_ledger), account
-        // modifications from shield might not be visible yet due to Anchor's init_if_needed
-        // behavior. We check if pool is set (account exists and is for this pool) and
-        // allow finalize_ledger to proceed, then set status appropriately.
-        // The pool field is set by init_if_needed constraint, so if it matches, the
-        // account was initialized in shield and we can proceed.
-        let pool_key = pool_loader.key();
-        let claim_pool = ctx.accounts.shield_claim.pool;
-        
-        // If pool is default, account wasn't initialized - this is an error
-        if claim_pool == Pubkey::default() {
-            return err!(PoolError::ShieldClaimMismatch);
-        }
-        
-        // Verify pool matches (ensures account is for this pool)
-        require_keys_eq!(
-            claim_pool,
-            pool_key,
-            PoolError::ShieldClaimMismatch
-        );
-        
-        // CRITICAL FIX: For same-transaction flow, account modifications from shield
-        // might not be visible. Since pool matches (verified above), the account was
-        // initialized in shield. Allow finalize_ledger to proceed and set status appropriately.
-        // This handles the case where init_if_needed creates account and activate() modifies it,
-        // but the modification isn't visible to finalize_ledger in same transaction.
-        // If pool matches, we trust that shield activated the account, so we allow finalize_ledger
-        // to proceed regardless of the visible status/activation state.
-        let current_status = ctx.accounts.shield_claim.status;
-        
-        // Set status to AWAITING_LEDGER if it's not already in a valid state
-        // This handles same-transaction flow where modifications aren't visible yet
-        if current_status == ShieldClaim::STATUS_INACTIVE {
-            ctx.accounts.shield_claim.status = ShieldClaim::STATUS_AWAITING_LEDGER;
-        } else if current_status == ShieldClaim::STATUS_PENDING_TREE {
-            ctx.accounts.shield_claim.status = ShieldClaim::STATUS_AWAITING_LEDGER;
-        } else if current_status != ShieldClaim::STATUS_AWAITING_LEDGER 
-            && current_status != ShieldClaim::STATUS_AWAITING_INVARIANT {
-            ctx.accounts.shield_claim.status = ShieldClaim::STATUS_AWAITING_LEDGER;
-        }
-        // If status is already AWAITING_LEDGER or AWAITING_INVARIANT, proceed normally
-
-        let pending = ctx.accounts.shield_claim.snapshot();
-        let (hook_enabled, pool_key, pool_bump, origin_mint) = {
-            let pool_state = pool_loader.load()?;
-            let hook_enabled = pool_state
-                .features
-                .contains(FeatureFlags::from(FEATURE_HOOKS_ENABLED))
-                && pool_state.hook_config_present;
-            let pool_key = pool_loader.key();
-            let pool_bump = pool_state.bump;
-            let origin_mint = pool_state.origin_mint;
-            (hook_enabled, pool_key, pool_bump, origin_mint)
-        };
-
-        #[cfg(feature = "invariant_checks")]
-        let requires_invariant = {
-            let mut note_ledger = ctx.accounts.note_ledger.load_mut()?;
-            note_ledger.record_shield(pending.amount, pending.amount_commit)?;
-            note_ledger.should_enforce_invariant(pending.amount)
-        };
-        #[cfg(not(feature = "invariant_checks"))]
-        let requires_invariant = {
-            let mut note_ledger = ctx.accounts.note_ledger.load_mut()?;
-            note_ledger.record_shield(pending.amount, pending.amount_commit)?;
-            false
-        };
-
-        if hook_enabled {
-            let (required_accounts, hook_mode, target_program, post_shield_enabled) = {
-                let hook_config = ctx.accounts.hook_config.load()?;
-                (
-                    hook_config.required_keys().collect::<Vec<_>>(),
-                    hook_config.mode,
-                    hook_config.post_shield_program_id,
-                    hook_config.post_shield_enabled,
-                )
-            };
-            if post_shield_enabled && target_program != Pubkey::default() {
-                // CRITICAL FIX: Verify hook is still whitelisted at execution time
-                require!(
-                    ctx.accounts.hook_whitelist.is_allowed(&target_program),
-                    PoolError::HookNotWhitelisted
-                );
-                
-                validate_hook_accounts(&required_accounts, hook_mode, ctx.remaining_accounts)?;
-
-                let mut metas = Vec::with_capacity(2 + ctx.remaining_accounts.len());
-                let mut infos = Vec::with_capacity(2 + ctx.remaining_accounts.len());
-
-                let hook_config_info = ctx.accounts.hook_config.to_account_info();
-                let pool_info = ctx.accounts.pool_state.to_account_info();
-                metas.push(AccountMeta::new_readonly(hook_config_info.key(), false));
-                metas.push(AccountMeta::new_readonly(pool_info.key(), false));
-                infos.push(hook_config_info);
-                infos.push(pool_info);
-
-                for account in ctx.remaining_accounts.iter() {
-                    let meta = if account.is_writable {
-                        AccountMeta::new(account.key(), account.is_signer)
-                    } else {
-                        AccountMeta::new_readonly(account.key(), account.is_signer)
-                    };
-                    metas.push(meta);
-                    infos.push(account.clone());
-                }
-
-                let ix = Instruction {
-                    program_id: target_program,
-                    accounts: metas,
-                    data: HookInstruction::PostShield(PostShieldHook {
-                        origin_mint,
-                        pool: pool_key,
-                        depositor: pending.depositor,
-                        commitment: pending.commitment,
-                        amount_commit: pending.amount_commit,
-                        amount: pending.amount,
-                    })
-                    .try_to_vec()?,
-                };
-
-                let signer_seeds: [&[u8]; 3] = [seeds::POOL, origin_mint.as_ref(), &[pool_bump]];
-                invoke_signed(&ix, &infos, &[&signer_seeds])?;
-            }
-        }
-
-        ctx.accounts
-            .shield_claim
-            .mark_ledger_complete(requires_invariant);
-
-        Ok(())
+        process_shield_finalize_ledger(
+            &ctx.accounts.pool_state,
+            &ctx.accounts.hook_config,
+            &ctx.accounts.note_ledger,
+            &mut ctx.accounts.shield_claim,
+            &ctx.accounts.hook_whitelist,
+            ctx.remaining_accounts,
+        )
     }
 
     pub fn shield_check_invariant<'info>(
@@ -1908,7 +1768,7 @@ pub struct InitializePool<'info> {
     )]
     pub pool_state: AccountLoader<'info, PoolState>,
     #[account(
-        init,
+        init_if_needed,
         payer = payer,
         seeds = [seeds::NULLIFIERS, origin_mint.key().as_ref()],
         bump,
@@ -2003,6 +1863,14 @@ pub struct Shield<'info> {
     )]
     pub hook_config: AccountLoader<'info, HookConfig>,
     #[account(
+        init_if_needed,
+        payer = payer,
+        seeds = [b"hook-whitelist", pool_state.load()?.origin_mint.as_ref()],
+        bump,
+        space = HookWhitelist::SPACE,
+    )]
+    pub hook_whitelist: Account<'info, HookWhitelist>,
+    #[account(
         mut,
         seeds = [seeds::NULLIFIERS, pool_state.load()?.origin_mint.as_ref()],
         bump = nullifier_set.bump
@@ -2057,9 +1925,6 @@ pub struct Shield<'info> {
     pub mint_mapping: Account<'info, MintMapping>,
     pub vault_program: Program<'info, PtfVault>,
     pub token_program: Interface<'info, TokenInterface>,
-    /// CHECK: constrained by address check
-    #[account(address = solana_program::sysvar::instructions::ID)]
-    pub instructions: UncheckedAccount<'info>,
     pub system_program: Program<'info, System>,
     pub rent: Sysvar<'info, Rent>,
 }
@@ -3588,6 +3453,120 @@ fn validate_transfer_public_inputs(
         );
     }
     
+    Ok(())
+}
+
+fn process_shield_finalize_ledger<'info>(
+    pool_loader: &AccountLoader<'info, PoolState>,
+    hook_config: &AccountLoader<'info, HookConfig>,
+    note_ledger: &AccountLoader<'info, NoteLedger>,
+    shield_claim: &mut Account<'info, ShieldClaim>,
+    hook_whitelist: &Account<'info, HookWhitelist>,
+    remaining_accounts: &[AccountInfo<'info>],
+) -> Result<()> {
+    if !shield_claim.is_active() {
+        return Ok(());
+    }
+
+    let pool_key = pool_loader.key();
+    let claim_pool = shield_claim.pool;
+
+    if claim_pool == Pubkey::default() {
+        return err!(PoolError::ShieldClaimMismatch);
+    }
+
+    require_keys_eq!(claim_pool, pool_key, PoolError::ShieldClaimMismatch);
+
+    let current_status = shield_claim.status;
+    if current_status == ShieldClaim::STATUS_INACTIVE
+        || current_status == ShieldClaim::STATUS_PENDING_TREE
+        || (current_status != ShieldClaim::STATUS_AWAITING_LEDGER
+            && current_status != ShieldClaim::STATUS_AWAITING_INVARIANT)
+    {
+        shield_claim.status = ShieldClaim::STATUS_AWAITING_LEDGER;
+    }
+
+    let pending = shield_claim.snapshot();
+    let (hook_enabled, pool_bump, origin_mint) = {
+        let pool_state = pool_loader.load()?;
+        let hook_enabled = pool_state
+            .features
+            .contains(FeatureFlags::from(FEATURE_HOOKS_ENABLED))
+            && pool_state.hook_config_present;
+        (hook_enabled, pool_state.bump, pool_state.origin_mint)
+    };
+
+    #[cfg(feature = "invariant_checks")]
+    let requires_invariant = {
+        let mut ledger = note_ledger.load_mut()?;
+        ledger.record_shield(pending.amount, pending.amount_commit)?;
+        ledger.should_enforce_invariant(pending.amount)
+    };
+    #[cfg(not(feature = "invariant_checks"))]
+    let requires_invariant = {
+        let mut ledger = note_ledger.load_mut()?;
+        ledger.record_shield(pending.amount, pending.amount_commit)?;
+        false
+    };
+
+    if hook_enabled {
+        let (required_accounts, hook_mode, target_program, post_shield_enabled) = {
+            let cfg = hook_config.load()?;
+            (
+                cfg.required_keys().collect::<Vec<_>>(),
+                cfg.mode,
+                cfg.post_shield_program_id,
+                cfg.post_shield_enabled,
+            )
+        };
+        if post_shield_enabled && target_program != Pubkey::default() {
+            require!(
+                hook_whitelist.is_allowed(&target_program),
+                PoolError::HookNotWhitelisted
+            );
+
+            validate_hook_accounts(&required_accounts, hook_mode, remaining_accounts)?;
+
+            let mut metas = Vec::with_capacity(2 + remaining_accounts.len());
+            let mut infos = Vec::with_capacity(2 + remaining_accounts.len());
+
+            let hook_config_info = hook_config.to_account_info();
+            let pool_info = pool_loader.to_account_info();
+            metas.push(AccountMeta::new_readonly(hook_config_info.key(), false));
+            metas.push(AccountMeta::new_readonly(pool_info.key(), false));
+            infos.push(hook_config_info);
+            infos.push(pool_info);
+
+            for account in remaining_accounts.iter() {
+                let meta = if account.is_writable {
+                    AccountMeta::new(account.key(), account.is_signer)
+                } else {
+                    AccountMeta::new_readonly(account.key(), account.is_signer)
+                };
+                metas.push(meta);
+                infos.push(account.clone());
+            }
+
+            let ix = Instruction {
+                program_id: target_program,
+                accounts: metas,
+                data: HookInstruction::PostShield(PostShieldHook {
+                    origin_mint,
+                    pool: pool_key,
+                    depositor: pending.depositor,
+                    commitment: pending.commitment,
+                    amount_commit: pending.amount_commit,
+                    amount: pending.amount,
+                })
+                .try_to_vec()?,
+            };
+
+            let signer_seeds: [&[u8]; 3] = [seeds::POOL, origin_mint.as_ref(), &[pool_bump]];
+            invoke_signed(&ix, &infos, &[&signer_seeds])?;
+        }
+    }
+
+    shield_claim.mark_ledger_complete(requires_invariant);
     Ok(())
 }
 
