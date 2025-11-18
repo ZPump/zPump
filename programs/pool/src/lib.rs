@@ -572,6 +572,29 @@ pub mod ptf_pool {
             );
         }
         
+        // CRITICAL FIX: Validate and initialize note_ledger manually
+        // This handles the case where the account structure changed and needs reinitialization
+        let (expected_note_ledger, expected_note_ledger_bump) = Pubkey::find_program_address(
+            &[seeds::NOTES, pool_state.origin_mint.as_ref()],
+            &crate::ID,
+        );
+        require_keys_eq!(
+            ctx.accounts.note_ledger.key(),
+            expected_note_ledger,
+            PoolError::NoteLedgerMismatch
+        );
+        
+        // Validate note_ledger owner and pool match
+        require_keys_eq!(
+            *ctx.accounts.note_ledger.owner,
+            crate::ID,
+            PoolError::NoteLedgerMismatch
+        );
+        // Create AccountLoader for note_ledger - we'll use it later
+        // We need to store it in a way that lives for the function lifetime
+        // Since we can't store it directly, we'll create it when needed
+        // For now, we'll just validate it exists and is correct
+        
         // CRITICAL FIX: Validate and initialize commitment_tree manually
         // This handles the case where the account structure changed and needs reinitialization
         let (expected_commitment_tree, expected_tree_bump) = Pubkey::find_program_address(
@@ -895,12 +918,11 @@ pub mod ptf_pool {
 
         drop(pool_state);
 
-        // Use the note_ledger_loader we created earlier for validation
-        // It's already validated and converted, so we can reuse it
+        // Pass UncheckedAccount directly - process_shield_finalize_ledger now accepts it
         process_shield_finalize_ledger(
             pool_loader,
             &ctx.accounts.hook_config,
-            &note_ledger_loader,
+            &ctx.accounts.note_ledger,
             &mut ctx.accounts.shield_claim,
             &ctx.accounts.hook_whitelist,
             ctx.remaining_accounts,
