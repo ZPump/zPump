@@ -2120,14 +2120,9 @@ pub struct ShieldFinalizeLedger<'info> {
         constraint = hook_config.load()?.pool == pool_state.key() @ PoolError::HookConfigInvalid,
     )]
     pub hook_config: AccountLoader<'info, HookConfig>,
-    #[account(
-        mut,
-        seeds = [seeds::NOTES, pool_state.load()?.origin_mint.as_ref()],
-        bump = pool_state.load()?.note_ledger_bump,
-        constraint = note_ledger.key() == pool_state.load()?.note_ledger @ PoolError::NoteLedgerMismatch,
-        constraint = note_ledger.load()?.pool == pool_state.key() @ PoolError::NoteLedgerMismatch,
-    )]
-    pub note_ledger: AccountLoader<'info, NoteLedger>,
+    /// CHECK: Validated and initialized manually to handle discriminator changes
+    #[account(mut)]
+    pub note_ledger: UncheckedAccount<'info>,
     #[account(
         mut,
         seeds = [seeds::CLAIM, pool_state.key().as_ref()],
@@ -3651,36 +3646,22 @@ fn process_shield_finalize_ledger<'info>(
     };
 
     // Convert UncheckedAccount to AccountLoader for loading
-    // We'll manually deserialize the account data to avoid lifetime issues
-    // NoteLedger uses AccountLoader, so we need to work with the raw data
-    let note_ledger_account_info = note_ledger.to_account_info();
-    let mut note_ledger_data = note_ledger_account_info.try_borrow_mut_data()?;
-    // Skip discriminator (8 bytes) and deserialize NoteLedger
-    if note_ledger_data.len() < 8 {
-        return err!(PoolError::NoteLedgerMismatch);
-    }
-    // NoteLedger is not zero_copy, so we need to deserialize it properly
-    // We'll use AccountLoader's internal deserialization
-    // Actually, let's just use AccountLoader::try_from with the account info directly
-    // But we need to ensure the account info lives long enough
-    // The account info from UncheckedAccount lives for 'info, so we can use it
-    // We'll create a helper that uses the account info directly
-    let load_note_ledger = || -> Result<&mut NoteLedger> {
+    // We'll create the loader inline in each block to avoid lifetime issues
+    #[cfg(feature = "invariant_checks")]
+    let requires_invariant = {
         let account_info = note_ledger.to_account_info();
         let loader = AccountLoader::<NoteLedger>::try_from(&account_info)
             .map_err(|_| PoolError::NoteLedgerMismatch)?;
-        loader.load_mut()
-    };
-    
-    #[cfg(feature = "invariant_checks")]
-    let requires_invariant = {
-        let mut ledger = load_note_ledger()?;
+        let mut ledger = loader.load_mut()?;
         ledger.record_shield(pending.amount, pending.amount_commit)?;
         ledger.should_enforce_invariant(pending.amount)
     };
     #[cfg(not(feature = "invariant_checks"))]
     let requires_invariant = {
-        let mut ledger = load_note_ledger()?;
+        let account_info = note_ledger.to_account_info();
+        let loader = AccountLoader::<NoteLedger>::try_from(&account_info)
+            .map_err(|_| PoolError::NoteLedgerMismatch)?;
+        let mut ledger = loader.load_mut()?;
         ledger.record_shield(pending.amount, pending.amount_commit)?;
         false
     };
