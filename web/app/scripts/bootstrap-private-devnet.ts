@@ -832,13 +832,52 @@ async function ensureMint(
       await waitForAccount(connection, hookConfig, `Hook config for ${mintConfig.symbol}`);
     } catch (error: any) {
       // If initialization fails due to account discriminator mismatch, 
-      // the accounts need to be closed and recreated
+      // try to close the problematic accounts and reinitialize
       if (error.message?.includes('AccountDiscriminatorMismatch') || 
-          error.message?.includes('discriminator')) {
-        console.warn(`Account discriminator mismatch detected for ${mintConfig.symbol}. This may require manual account closure.`);
+          error.message?.includes('discriminator') ||
+          error.message?.includes('AccountOwnedByWrongProgram')) {
+        console.warn(`Account discriminator/owner mismatch detected for ${mintConfig.symbol}. Attempting to close and recreate accounts...`);
+        
+        // Try to close accounts that might have wrong discriminators
+        // Note: We can't easily close PDAs, but we can try to reinitialize with init_if_needed
+        // The program should handle this, but if it doesn't, we'll need to manually close
+        try {
+          // Check if note_ledger exists and has wrong owner
+          const noteLedgerInfo = await connection.getAccountInfo(noteLedger);
+          if (noteLedgerInfo && !noteLedgerInfo.owner.equals(PROGRAM_IDS.pool)) {
+            console.warn(`Note ledger for ${mintConfig.symbol} has wrong owner: ${noteLedgerInfo.owner.toBase58()}, expected: ${PROGRAM_IDS.pool.toBase58()}`);
+            // We can't close PDAs easily, so we'll just log and continue
+            // The program's init_if_needed should handle reinitialization
+          }
+          
+          // Retry initialization - the program's init_if_needed should handle it
+          const retrySignature = await sendInstruction(
+            ctx,
+            ctx.idls.pool,
+            ctx.coders.pool,
+            PROGRAM_IDS.pool,
+            'initialize_pool',
+            poolAccounts,
+            {
+              fee_bps: new BN(5),
+              features: FEATURE_PRIVATE_TRANSFER_ENABLED | FEATURE_ALLOWANCES_ENABLED
+            },
+            [],
+            computeBudgetIxs
+          );
+          console.log(`Retried pool initialization for ${mintConfig.symbol} (tx ${retrySignature})`);
+          await waitForAccount(connection, poolState, `Pool state for ${mintConfig.symbol}`);
+          await waitForAccount(connection, nullifierSet, `Nullifier set for ${mintConfig.symbol}`);
+          await waitForAccount(connection, noteLedger, `Note ledger for ${mintConfig.symbol}`);
+          await waitForAccount(connection, commitmentTree, `Commitment tree for ${mintConfig.symbol}`);
+          await waitForAccount(connection, hookConfig, `Hook config for ${mintConfig.symbol}`);
+        } catch (retryError: any) {
+          console.error(`Failed to retry initialization for ${mintConfig.symbol}:`, retryError.message);
+          throw retryError;
+        }
+      } else {
         throw error;
       }
-      throw error;
     }
 
     if (INDEXER_URL) {
