@@ -2018,14 +2018,9 @@ pub struct Shield<'info> {
     /// CHECK: Validated and initialized manually to handle discriminator changes
     #[account(mut)]
     pub commitment_tree: UncheckedAccount<'info>,
-    #[account(
-        mut,
-        seeds = [seeds::NOTES, pool_state.load()?.origin_mint.as_ref()],
-        bump = pool_state.load()?.note_ledger_bump,
-        constraint = note_ledger.key() == pool_state.load()?.note_ledger @ PoolError::NoteLedgerMismatch,
-        constraint = note_ledger.load()?.pool == pool_state.key() @ PoolError::NoteLedgerMismatch,
-    )]
-    pub note_ledger: AccountLoader<'info, NoteLedger>,
+    /// CHECK: Validated and initialized manually to handle discriminator changes
+    #[account(mut)]
+    pub note_ledger: UncheckedAccount<'info>,
     /// CHECK: Validated in instruction (PDA derived from origin_mint)
     #[account(mut)]
     pub vault_state: UncheckedAccount<'info>,
