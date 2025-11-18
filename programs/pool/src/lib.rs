@@ -1058,6 +1058,11 @@ fn execute_private_transfer<'info>(
         args.public_inputs.clone(),
     )?;
 
+    // CRITICAL FIX: Validate that output commitments and amount commitments in args
+    // match what's in the proof's public inputs. This prevents attackers from
+    // appending arbitrary commitments that weren't part of the proof.
+    validate_transfer_public_inputs(&args)?;
+
     let origin_mint = pool_state.origin_mint;
     {
         let mut nullifier_set = nullifier_set_loader.load_mut()?;
@@ -3252,6 +3257,90 @@ fn u8_to_field_bytes(value: u8) -> [u8; 32] {
     let mut out = [0u8; 32];
     out[0] = value;
     out
+}
+
+// CRITICAL FIX: Validate transfer public inputs to ensure output commitments
+// match what's in the proof. This prevents attackers from appending arbitrary
+// commitments that weren't part of the proof.
+fn validate_transfer_public_inputs(args: &TransferArgs) -> Result<()> {
+    let fields = parse_field_elements(&args.public_inputs)?;
+    
+    // Expected structure from proof service: 
+    // [old_root, new_root, ...nullifiers, ...output_commitments, mint, pool]
+    // Note: The circuit's new_root currently only includes nullifiers, not output commitments
+    // TODO: Update circuit to include output commitments in new_root computation
+    
+    let num_nullifiers = args.nullifiers.len();
+    let num_outputs = args.output_commitments.len();
+    
+    // Minimum fields: old_root, new_root, nullifiers, output_commitments, mint, pool
+    let min_fields = 2 + num_nullifiers + num_outputs + 2;
+    require!(
+        fields.len() >= min_fields,
+        PoolError::InvalidPublicInputs
+    );
+    
+    // Validate old_root matches
+    if fields[0] != args.old_root {
+        return err!(PoolError::PublicInputMismatch);
+    }
+    
+    // Validate new_root matches (even though it doesn't include outputs yet)
+    if fields[1] != args.new_root {
+        return err!(PoolError::PublicInputMismatch);
+    }
+    
+    // Validate nullifiers match
+    let nullifier_start = 2;
+    let nullifier_end = nullifier_start + num_nullifiers;
+    for (i, nullifier) in args.nullifiers.iter().enumerate() {
+        if fields[nullifier_start + i] != *nullifier {
+            msg!(
+                "transfer: nullifier mismatch at index {} - proof={} args={}",
+                i,
+                hex::encode(fields[nullifier_start + i]),
+                hex::encode(*nullifier)
+            );
+            return err!(PoolError::PublicInputMismatch);
+        }
+    }
+    
+    // CRITICAL FIX: Validate output commitments from proof match args
+    // This ensures the commitments being appended were actually part of the proof
+    let output_start = nullifier_end;
+    let output_end = output_start + num_outputs;
+    
+    // Check if we have enough fields for outputs
+    require!(
+        fields.len() >= output_end,
+        PoolError::InvalidPublicInputs
+    );
+    
+    for (i, expected_commitment) in args.output_commitments.iter().enumerate() {
+        let proof_commitment = fields[output_start + i];
+        if proof_commitment != *expected_commitment {
+            msg!(
+                "transfer: output commitment mismatch at index {} - proof={} args={}",
+                i,
+                hex::encode(proof_commitment),
+                hex::encode(*expected_commitment)
+            );
+            msg!(
+                "transfer: public_inputs length={}, num_nullifiers={}, num_outputs={}, output_start={}",
+                fields.len(),
+                num_nullifiers,
+                num_outputs,
+                output_start
+            );
+            return err!(PoolError::PublicInputMismatch);
+        }
+    }
+    
+    // Note: output_amount_commitments are not currently in the proof's public inputs
+    // This is a limitation that should be addressed by updating the circuit
+    // For now, we validate what we can (output commitments)
+    
+    Ok(())
 }
 
 fn pubkey_to_field_bytes(pubkey: &Pubkey) -> [u8; 32] {
