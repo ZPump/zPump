@@ -235,10 +235,19 @@ pub mod ptf_factory {
         let clock = Clock::get()?;
         
         // CRITICAL FIX: Rate limiting - prevent rapid queue filling
-        require!(
-            clock.unix_timestamp >= state.last_action_time + FactoryState::MIN_TIME_BETWEEN_ACTIONS,
-            FactoryError::ActionRateLimitExceeded
-        );
+        // Handle migration case: if last_action_time is 0 (uninitialized from old accounts),
+        // allow first action without rate limiting, then set the timestamp
+        if state.last_action_time == 0 {
+            // Migration case: first action after upgrade, no rate limiting
+            state.last_action_time = clock.unix_timestamp;
+        } else {
+            // Normal case: enforce rate limiting
+            require!(
+                clock.unix_timestamp >= state.last_action_time + FactoryState::MIN_TIME_BETWEEN_ACTIONS,
+                FactoryError::ActionRateLimitExceeded
+            );
+            state.last_action_time = clock.unix_timestamp;
+        }
         
         let execute_after = clock
             .unix_timestamp
@@ -310,8 +319,7 @@ pub mod ptf_factory {
         
         // CRITICAL FIX: Track this action hash
         state.pending_action_hashes.push(action_hash.to_bytes());
-        // CRITICAL FIX: Update last_action_time for rate limiting
-        state.last_action_time = clock.unix_timestamp;
+        // Note: last_action_time already updated above in rate limiting check
 
         emit!(TimelockQueued {
             factory: state.key(),
