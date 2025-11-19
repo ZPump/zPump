@@ -39,6 +39,7 @@ pub mod ptf_factory {
             FactoryError::TimelockTooShort
         );
 
+        let clock = Clock::get()?;
         let state = &mut ctx.accounts.factory_state;
         state.authority = authority;
         state.default_fee_bps = default_fee_bps;
@@ -46,10 +47,12 @@ pub mod ptf_factory {
         state.paused = false;
         state.timelock_seconds = timelock_seconds;
         state.bump = ctx.bumps.factory_state;
-        state.last_updated_slot = Clock::get()?.slot;
+        state.last_updated_slot = clock.slot;
         // CRITICAL FIX: Initialize pending action tracking
         state.pending_action_hashes = Vec::new();
         state.last_action_sequence = 0;
+        // CRITICAL FIX: Initialize last_action_time for rate limiting
+        state.last_action_time = clock.unix_timestamp;
 
         emit!(FactoryInitialized {
             authority,
@@ -230,6 +233,13 @@ pub mod ptf_factory {
         require!(!state.paused, FactoryError::Paused);
 
         let clock = Clock::get()?;
+        
+        // CRITICAL FIX: Rate limiting - prevent rapid queue filling
+        require!(
+            clock.unix_timestamp >= state.last_action_time + FactoryState::MIN_TIME_BETWEEN_ACTIONS,
+            FactoryError::ActionRateLimitExceeded
+        );
+        
         let execute_after = clock
             .unix_timestamp
             .checked_add(state.timelock_seconds)
@@ -300,6 +310,8 @@ pub mod ptf_factory {
         
         // CRITICAL FIX: Track this action hash
         state.pending_action_hashes.push(action_hash.to_bytes());
+        // CRITICAL FIX: Update last_action_time for rate limiting
+        state.last_action_time = clock.unix_timestamp;
 
         emit!(TimelockQueued {
             factory: state.key(),
@@ -395,11 +407,13 @@ pub mod ptf_factory {
 
         // CRITICAL FIX: Recompute and verify action hash before execution
         // This ensures the action hasn't been tampered with after queuing
+        // MUST include salt to match queue hash: hash(factory || salt || action || execute_after)
         let action_bytes = entry.action
             .try_to_vec()
             .map_err(|_| error!(FactoryError::SerializationError))?;
         let expected_hash = hashv(&[
             state.key().as_ref(),
+            &entry.salt, // CRITICAL: Include salt to match queue hash
             &action_bytes,
             &entry.execute_after.to_le_bytes(),
         ]);
@@ -508,18 +522,29 @@ pub mod ptf_factory {
 
     pub fn cleanup_timelock_action(ctx: Context<CleanupTimelockAction>) -> Result<()> {
         let entry = &mut ctx.accounts.timelock_entry;
+        
+        // CRITICAL FIX: Verify entry hasn't been executed or canceled
         require!(!entry.executed, FactoryError::TimelockConsumed);
+        require!(!entry.canceled, FactoryError::ChangeCanceled);
 
         let clock = Clock::get()?;
+        
+        // CRITICAL FIX: Only allow cleanup of entries that are:
+        // 1. Past execute_after + grace period (30 days)
+        // 2. Not executed
+        // 3. Not canceled
+        // This ensures valid actions aren't prematurely cleaned up
+        let cleanup_threshold = entry
+            .execute_after
+            .checked_add(TIMELOCK_STALE_GRACE_SECONDS)
+            .ok_or(FactoryError::TimelockOverflow)?;
+        
         require!(
-            clock.unix_timestamp
-                >= entry
-                    .execute_after
-                    .checked_add(TIMELOCK_STALE_GRACE_SECONDS)
-                    .ok_or(FactoryError::TimelockOverflow)?,
+            clock.unix_timestamp >= cleanup_threshold,
             FactoryError::TimelockNotExpired
         );
 
+        // Now safe to mark as executed and canceled for cleanup
         entry.executed = true;
         entry.canceled = true;
 
@@ -816,12 +841,16 @@ pub struct FactoryState {
     // CRITICAL FIX: Track pending action hashes to prevent duplicates
     pub pending_action_hashes: Vec<[u8; 32]>,
     pub last_action_sequence: u64,
+    // CRITICAL FIX: Rate limiting - track last action time to prevent rapid queue filling
+    pub last_action_time: i64,
 }
 
 impl FactoryState {
     pub const MAX_PENDING_ACTIONS: usize = 50;
-    // SPACE = discriminator[8] + authority[32] + default_fee_bps[2] + default_features[1] + paused[1] + timelock_seconds[8] + bump[1] + last_updated_slot[8] + pending_action_hashes[4 + (32 * MAX_PENDING_ACTIONS)] + last_action_sequence[8]
-    pub const SPACE: usize = 8 + 32 + 2 + 1 + 1 + 8 + 1 + 8 + 4 + (32 * Self::MAX_PENDING_ACTIONS) + 8;
+    // Minimum time between actions (60 seconds) to prevent rapid queue filling
+    pub const MIN_TIME_BETWEEN_ACTIONS: i64 = 60;
+    // SPACE = discriminator[8] + authority[32] + default_fee_bps[2] + default_features[1] + paused[1] + timelock_seconds[8] + bump[1] + last_updated_slot[8] + pending_action_hashes[4 + (32 * MAX_PENDING_ACTIONS)] + last_action_sequence[8] + last_action_time[8]
+    pub const SPACE: usize = 8 + 32 + 2 + 1 + 1 + 8 + 1 + 8 + 4 + (32 * Self::MAX_PENDING_ACTIONS) + 8 + 8;
     pub const SEQUENCE_WARNING_THRESHOLD: u64 = u64::MAX - 1_000_000;
 }
 
@@ -1174,6 +1203,8 @@ pub enum FactoryError {
     TimelockOverflow,
     #[msg("E_TIMELOCK_CONSUMED")]
     TimelockConsumed,
+    #[msg("E_CHANGE_CANCELED")]
+    ChangeCanceled,
     #[msg("E_TIMELOCK_NOT_READY")]
     TimelockNotReady,
     #[msg("E_TIMELOCK_NOT_EXPIRED")]
@@ -1210,4 +1241,6 @@ pub enum FactoryError {
     TooManyPendingActions,
     #[msg("E_SEQUENCE_OVERFLOW")]
     SequenceOverflow,
+    #[msg("E_ACTION_RATE_LIMIT_EXCEEDED")]
+    ActionRateLimitExceeded,
 }

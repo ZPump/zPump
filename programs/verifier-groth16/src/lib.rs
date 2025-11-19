@@ -15,6 +15,11 @@ pub const MAX_PUBLIC_INPUTS_SIZE: usize = 2 * 1024;
 #[cfg(all(feature = "groth16-syscall", feature = "groth16-dev-skip"))]
 compile_error!("groth16-syscall and groth16-dev-skip cannot be enabled together");
 
+// CRITICAL FIX: Runtime warnings are logged when dev-skip is enabled
+// CI/CD MUST verify that production builds use groth16-syscall, NOT groth16-dev-skip
+// The compile-time check is intentionally lenient to allow local development
+// Production deployments MUST use: anchor build --features groth16-syscall
+
 // CRITICAL FIX: Runtime check in initialize_verifying_key will panic if dev-skip is enabled
 // This prevents deployment to production clusters. CI should also verify that production
 // builds use groth16-syscall, not groth16-dev-skip.

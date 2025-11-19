@@ -679,15 +679,25 @@ pub mod ptf_pool {
             }
         }
         
-        // If there's an active claim that's not stale, reject - it must be finalized first
-        // (This prevents creating a new shield while one is pending)
+        // CRITICAL FIX: If there's an active claim, check if it's stale or still valid
+        // A claim is considered stale if its old_root doesn't match the tree's current_root,
+        // meaning it can't be finalized. We deactivate stale claims to allow new shields.
+        // For valid claims (old_root matches current_root), we reject to prevent duplicate shields.
         if has_active_claim {
             let commitment_tree = load_commitment_tree()?;
             let claim_old_root = ctx.accounts.shield_claim.old_root;
             let tree_current_root = commitment_tree.current_root;
             
-            // Only reject if the claim is not stale (can potentially be finalized)
-            if claim_old_root == tree_current_root {
+            // CRITICAL FIX: Check if claim is stale (old_root doesn't match current_root)
+            // If stale, deactivate it to allow new shields. If valid, reject to prevent duplicates.
+            if claim_old_root != tree_current_root {
+                // Claim is stale - deactivate it
+                msg!("shield: claim timeout/stale (old_root mismatch), deactivating stale claim");
+                ctx.accounts.shield_claim.deactivate();
+                pool_state.pending_shield.deactivate();
+            } else {
+                // Claim is still valid (old_root matches current_root) - reject new shield
+                // This prevents duplicate shields while a valid one is pending finalization
                 return err!(PoolError::PendingShieldInFlight);
             }
         }
@@ -3155,6 +3165,9 @@ impl NullifierSet {
     // Vec will grow dynamically as nullifiers are added
     pub const BASE_SPACE: usize = 8 + 32 + 24 + 1 + 7; // 72 bytes base
     pub const NULLIFIER_SIZE: usize = 32; // Each nullifier is 32 bytes
+    // CRITICAL FIX: Maximum nullifier count to prevent DoS through account size limits
+    // ~3.2MB at max, leaves room for account overhead within Solana's 10MB limit
+    pub const MAX_NULLIFIERS: usize = 100_000;
     
     // Calculate space needed for a given number of nullifiers
     pub fn space_for(nullifier_count: usize) -> usize {
@@ -3184,14 +3197,35 @@ impl NullifierSet {
         
         // Calculate space needed after insertion
         let current_len = nullifier_set.nullifiers.len();
+        
+        // CRITICAL FIX: Check maximum nullifier count
+        require!(
+            current_len < Self::MAX_NULLIFIERS,
+            PoolError::NullifierSetFull
+        );
+        
         let current_space = Self::space_for(current_len);
         let new_space = Self::space_for(current_len + 1);
+        
+        // CRITICAL FIX: Pre-check rent requirement before starting reallocation
+        // This prevents unexpected transaction failures and DoS by exhausting payer funds
+        if new_space > current_space {
+            let rent_sysvar = Rent::get()?;
+            let additional_rent = rent_sysvar.minimum_balance(new_space)
+                .saturating_sub(rent_sysvar.minimum_balance(current_space));
+            
+            // Check payer has sufficient balance BEFORE starting reallocation
+            require!(
+                payer.lamports() >= additional_rent,
+                PoolError::InsufficientRent
+            );
+        }
         
         // Reallocate if needed
         if new_space > current_space {
             // Get the underlying AccountInfo for reallocation
             let account_info = nullifier_set.to_account_info();
-            // Calculate additional rent needed
+            // Reuse rent calculation from pre-check above
             let rent_sysvar = Rent::get()?;
             let additional_rent = rent_sysvar.minimum_balance(new_space)
                 .saturating_sub(rent_sysvar.minimum_balance(current_space));
@@ -4204,6 +4238,10 @@ pub enum PoolError {
     WhitelistFull,
     #[msg("E_UNAUTHORIZED")]
     Unauthorized,
+    #[msg("E_NULLIFIER_SET_FULL")]
+    NullifierSetFull,
+    #[msg("E_INSUFFICIENT_RENT")]
+    InsufficientRent,
 }
 
 fn ensure_mint_active(mapping: &AccountInfo) -> Result<()> {
