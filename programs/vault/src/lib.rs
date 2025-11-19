@@ -21,13 +21,19 @@ pub mod ptf_vault {
         state.origin_mint = ctx.accounts.origin_mint.key();
         state.pool_authority = pool_authority;
         state.bump = ctx.bumps.vault_state;
+        state.locked = false; // Initialize reentrancy guard
         Ok(())
     }
 
     pub fn deposit(ctx: Context<Deposit>, amount: u64) -> Result<()> {
         require!(amount > 0, VaultError::InvalidDepositAmount);
 
-        let vault_state = &ctx.accounts.vault_state;
+        let vault_state = &mut ctx.accounts.vault_state;
+        
+        // REENTRANCY GUARD: Check and set lock before any external calls
+        require!(!vault_state.locked, VaultError::ReentrancyDetected);
+        vault_state.locked = true;
+        
         require_keys_eq!(
             ctx.accounts.vault_token_account.mint,
             vault_state.origin_mint,
@@ -43,6 +49,9 @@ pub mod ptf_vault {
         #[allow(deprecated)]
         token_interface::transfer(cpi_ctx, amount)?;
 
+        // Release lock after successful transfer
+        vault_state.locked = false;
+
         emit!(VaultDeposit {
             origin_mint: vault_state.origin_mint,
             depositor: ctx.accounts.depositor.key(),
@@ -53,8 +62,19 @@ pub mod ptf_vault {
 
     pub fn release(ctx: Context<Release>, amount: u64) -> Result<()> {
         require!(amount > 0, VaultError::InvalidReleaseAmount);
-        let vault_state = &ctx.accounts.vault_state;
-        validate_pool_authority(&ctx.accounts.pool_authority, &vault_state.pool_authority)?;
+        
+        // Cache values before mutable borrow
+        let origin_mint = ctx.accounts.vault_state.origin_mint;
+        let pool_authority = ctx.accounts.vault_state.pool_authority;
+        let bump = ctx.accounts.vault_state.bump;
+        
+        let vault_state = &mut ctx.accounts.vault_state;
+        
+        // REENTRANCY GUARD: Check and set lock before any external calls
+        require!(!vault_state.locked, VaultError::ReentrancyDetected);
+        vault_state.locked = true;
+        
+        validate_pool_authority(&ctx.accounts.pool_authority, &pool_authority)?;
 
         // CRITICAL FIX: Explicitly validate vault has sufficient balance before releasing
         require!(
@@ -64,14 +84,14 @@ pub mod ptf_vault {
 
         let seeds = &[
             seeds::VAULT,
-            vault_state.origin_mint.as_ref(),
-            &[vault_state.bump],
+            origin_mint.as_ref(),
+            &[bump],
         ];
         let signer = &[&seeds[..]];
         let cpi_accounts = Transfer {
             from: ctx.accounts.vault_token_account.to_account_info(),
             to: ctx.accounts.destination_token_account.to_account_info(),
-            authority: ctx.accounts.vault_state.to_account_info(),
+            authority: vault_state.to_account_info(),
         };
         let cpi_ctx = CpiContext::new_with_signer(
             ctx.accounts.token_program.to_account_info(),
@@ -81,8 +101,11 @@ pub mod ptf_vault {
         #[allow(deprecated)]
         token_interface::transfer(cpi_ctx, amount)?;
 
+        // Release lock after successful transfer
+        vault_state.locked = false;
+
         emit!(VaultRelease {
-            origin_mint: vault_state.origin_mint,
+            origin_mint,
             destination: ctx.accounts.destination_token_account.owner,
             amount,
         });
@@ -325,10 +348,12 @@ pub struct VaultState {
     pub origin_mint: Pubkey,
     pub pool_authority: Pubkey,
     pub bump: u8,
+    pub locked: bool, // Reentrancy guard
 }
 
 impl VaultState {
-    pub const SPACE: usize = 8 + 32 + 32 + 1 + 7;
+    // SPACE: discriminator (8) + origin_mint (32) + pool_authority (32) + bump (1) + locked (1) + padding (6)
+    pub const SPACE: usize = 8 + 32 + 32 + 1 + 1 + 6;
 }
 
 // CRITICAL FIX: Pending authority change account for timelock system
@@ -418,6 +443,9 @@ pub enum VaultError {
     InvalidReleaseAmount,
     #[msg("E_INSUFFICIENT_BALANCE")]
     InsufficientBalance,
+    // CRITICAL FIX: Reentrancy protection
+    #[msg("E_REENTRANCY_DETECTED")]
+    ReentrancyDetected,
     // CRITICAL FIX: Error types for timelock-based authority changes
     #[msg("E_TIMELOCK_OVERFLOW")]
     TimelockOverflow,
