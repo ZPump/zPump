@@ -611,8 +611,11 @@ async function main() {
     TOKEN_PROGRAM_ID,
     ASSOCIATED_TOKEN_PROGRAM_ID
   );
-  const depositorInfo = await connection.getAccountInfo(depositorTokenAccount);
-  if (!depositorInfo) {
+  
+  // Ensure account exists before faucet (faucet might create it, but we want to control it)
+  const depositorInfo = await connection.getAccountInfo(depositorTokenAccount, 'confirmed');
+  if (!depositorInfo || !depositorInfo.owner.equals(TOKEN_PROGRAM_ID)) {
+    console.info('[test-01] Creating depositor token account...');
     const ix = createAssociatedTokenAccountInstruction(
       owner.publicKey,
       depositorTokenAccount,
@@ -622,8 +625,34 @@ async function main() {
       ASSOCIATED_TOKEN_PROGRAM_ID
     );
     await sendAndConfirmInstructions(connection, owner, [ix]);
+    // Wait for account to be fully initialized and confirmed
+    let retries = 0;
+    while (retries < 20) {
+      const accountInfo = await connection.getAccountInfo(depositorTokenAccount, 'confirmed');
+      if (accountInfo && accountInfo.owner.equals(TOKEN_PROGRAM_ID) && accountInfo.data.length >= 165) {
+        // Token account should be at least 165 bytes (standard SPL token account size)
+        console.info(`[test-01] Depositor token account initialized after ${retries + 1} attempts`);
+        break;
+      }
+      await new Promise(resolve => setTimeout(resolve, 200));
+      retries++;
+    }
+    const finalAccountInfo = await connection.getAccountInfo(depositorTokenAccount, 'confirmed');
+    if (!finalAccountInfo || !finalAccountInfo.owner.equals(TOKEN_PROGRAM_ID) || finalAccountInfo.data.length < 165) {
+      throw new Error(`Failed to initialize depositor token account: ${depositorTokenAccount.toBase58()}, owner=${finalAccountInfo?.owner.toBase58()}, dataLen=${finalAccountInfo?.data.length ?? 0}`);
+    }
+  } else {
+    console.info(`[test-01] Depositor token account already exists: ${depositorTokenAccount.toBase58()}`);
   }
+  
+  // Now fund the account - this should work since account exists
   await faucetToken(connection, originMintKey, owner.publicKey, WRAP_AMOUNT * 10n);
+  
+  // Verify account still exists and is valid after faucet
+  const postFaucetInfo = await connection.getAccountInfo(depositorTokenAccount, 'confirmed');
+  if (!postFaucetInfo || !postFaucetInfo.owner.equals(TOKEN_PROGRAM_ID)) {
+    throw new Error(`Depositor token account invalid after faucet: ${depositorTokenAccount.toBase58()}`);
+  }
 
   // Ensure shield claim is cleared and root is current before generating proof
   await waitForShieldClaimCleared(connection, shieldClaimKey);
@@ -665,6 +694,7 @@ async function main() {
   const shieldKeys = [
     { pubkey: poolStateKey, isSigner: false, isWritable: true },
     { pubkey: hookConfigKey, isSigner: false, isWritable: false },
+    { pubkey: hookWhitelistKey, isSigner: false, isWritable: true },
     { pubkey: nullifierSetKey, isSigner: false, isWritable: true },
     { pubkey: commitmentTreeKey, isSigner: false, isWritable: true },
     { pubkey: noteLedgerKey, isSigner: false, isWritable: true },
@@ -688,7 +718,6 @@ async function main() {
     { pubkey: mintMappingKey, isSigner: false, isWritable: false },
     { pubkey: VAULT_PROGRAM_ID, isSigner: false, isWritable: false },
     { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
-    { pubkey: SYSVAR_INSTRUCTIONS_PUBKEY, isSigner: false, isWritable: false },
     { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
     { pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false }
   );
@@ -914,6 +943,7 @@ async function main() {
   const shieldKeys2 = [
     { pubkey: poolStateKey, isSigner: false, isWritable: true },
     { pubkey: hookConfigKey, isSigner: false, isWritable: false },
+    { pubkey: hookWhitelistKey, isSigner: false, isWritable: true },
     { pubkey: nullifierSetKey, isSigner: false, isWritable: true },
     { pubkey: commitmentTreeKey, isSigner: false, isWritable: true },
     { pubkey: noteLedgerKey, isSigner: false, isWritable: true },
@@ -937,7 +967,6 @@ async function main() {
     { pubkey: mintMappingKey, isSigner: false, isWritable: false },
     { pubkey: VAULT_PROGRAM_ID, isSigner: false, isWritable: false },
     { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
-    { pubkey: SYSVAR_INSTRUCTIONS_PUBKEY, isSigner: false, isWritable: false },
     { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
     { pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false }
   );
@@ -1144,6 +1173,7 @@ async function main() {
   const shieldKeys3 = [
     { pubkey: poolStateKey, isSigner: false, isWritable: true },
     { pubkey: hookConfigKey, isSigner: false, isWritable: false },
+    { pubkey: hookWhitelistKey, isSigner: false, isWritable: true },
     { pubkey: nullifierSetKey, isSigner: false, isWritable: true },
     { pubkey: commitmentTreeKey, isSigner: false, isWritable: true },
     { pubkey: noteLedgerKey, isSigner: false, isWritable: true },
@@ -1167,7 +1197,6 @@ async function main() {
     { pubkey: mintMappingKey, isSigner: false, isWritable: false },
     { pubkey: VAULT_PROGRAM_ID, isSigner: false, isWritable: false },
     { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
-    { pubkey: SYSVAR_INSTRUCTIONS_PUBKEY, isSigner: false, isWritable: false },
     { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
     { pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false }
   );
@@ -1383,6 +1412,7 @@ async function main() {
   const shieldKeys4 = [
     { pubkey: poolStateKey, isSigner: false, isWritable: true },
     { pubkey: hookConfigKey, isSigner: false, isWritable: false },
+    { pubkey: hookWhitelistKey, isSigner: false, isWritable: true },
     { pubkey: nullifierSetKey, isSigner: false, isWritable: true },
     { pubkey: commitmentTreeKey, isSigner: false, isWritable: true },
     { pubkey: noteLedgerKey, isSigner: false, isWritable: true },
@@ -1406,7 +1436,6 @@ async function main() {
     { pubkey: mintMappingKey, isSigner: false, isWritable: false },
     { pubkey: VAULT_PROGRAM_ID, isSigner: false, isWritable: false },
     { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
-    { pubkey: SYSVAR_INSTRUCTIONS_PUBKEY, isSigner: false, isWritable: false },
     { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
     { pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false }
   );
@@ -1587,6 +1616,23 @@ async function main() {
   console.info('[test-11] Testing insufficient allowance rejection (edge case)');
   // Ensure mint_mapping is initialized before fifth shield
   await waitForMintMappingInitialized(connection, originMintKey);
+  // Verify depositor token account is still valid before fifth shield
+  const depositorInfo5 = await connection.getAccountInfo(depositorTokenAccount, 'confirmed');
+  if (!depositorInfo5 || !depositorInfo5.owner.equals(TOKEN_PROGRAM_ID)) {
+    console.info('[test-11] Recreating depositor token account...');
+    const ix = createAssociatedTokenAccountInstruction(
+      owner.publicKey,
+      depositorTokenAccount,
+      owner.publicKey,
+      originMintKey,
+      TOKEN_PROGRAM_ID,
+      ASSOCIATED_TOKEN_PROGRAM_ID
+    );
+    await sendAndConfirmInstructions(connection, owner, [ix]);
+    await new Promise(resolve => setTimeout(resolve, 500));
+  }
+  // Ensure account has sufficient balance
+  await faucetToken(connection, originMintKey, owner.publicKey, WRAP_AMOUNT * 10n);
   // Refresh root before fifth shield
   const rootBeforeShield5 = await fetchPoolStateRoot(connection, mintConfig.poolId);
   currentRoot = canonicalizeHex(rootBeforeShield5.root);
@@ -1619,6 +1665,7 @@ async function main() {
   const shieldKeys5 = [
     { pubkey: poolStateKey, isSigner: false, isWritable: true },
     { pubkey: hookConfigKey, isSigner: false, isWritable: false },
+    { pubkey: hookWhitelistKey, isSigner: false, isWritable: true },
     { pubkey: nullifierSetKey, isSigner: false, isWritable: true },
     { pubkey: commitmentTreeKey, isSigner: false, isWritable: true },
     { pubkey: noteLedgerKey, isSigner: false, isWritable: true },
@@ -1642,7 +1689,6 @@ async function main() {
     { pubkey: mintMappingKey, isSigner: false, isWritable: false },
     { pubkey: VAULT_PROGRAM_ID, isSigner: false, isWritable: false },
     { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
-    { pubkey: SYSVAR_INSTRUCTIONS_PUBKEY, isSigner: false, isWritable: false },
     { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
     { pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false }
   );
