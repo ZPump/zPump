@@ -5,9 +5,10 @@ The `ptf_vault` program manages custodial SPL tokens. Previous critical issues h
 
 ## Security Vulnerabilities
 
-### 1. **MEDIUM: Lock State Not Released on CPI Failure**
-**Severity:** MEDIUM  
-**Location:** `deposit()` and `release()` functions (lines 28-113)
+### 1. **MEDIUM: Lock State Not Released on CPI Failure** ❌ NOT FIXED
+**Severity:** MEDIUM (HIGH priority for reliability)  
+**Location:** `deposit()` and `release()` functions (lines 28-113)  
+**Status:** ❌ **NOT FIXED**
 
 **Description:**
 The reentrancy lock (`vault_state.locked = true`) is set before CPI calls but only released on successful completion. If the token transfer CPI fails, the lock remains set, permanently DoS'ing the vault.
@@ -18,14 +19,7 @@ The reentrancy lock (`vault_state.locked = true`) is set before CPI calls but on
 - Requires manual intervention or program upgrade
 
 **Recommendation:**
-Use a try-finally pattern or ensure lock is always released:
-
-```rust
-vault_state.locked = true;
-let result = token_interface::transfer(cpi_ctx, amount);
-vault_state.locked = false; // Always release, even on error
-result?; // Propagate error after releasing lock
-```
+Use a try-finally pattern or guard struct to always release lock. See `AuditMitigation/02-VaultLockRelease.md`.
 
 ### 2. **LOW: No Validation That Pending Authority Change Is For Same Vault**
 **Severity:** LOW  

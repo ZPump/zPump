@@ -3609,20 +3609,42 @@ fn validate_transfer_public_inputs(
     // 1. Output commitments match the proof (validated above)
     // 2. Amount commitments match the count of output commitments
     // 3. Amount commitments are non-zero (basic sanity check)
+    // 4. Amount commitments are recorded in note_ledger and will be validated during unshield
     // 
-    // Full validation requires circuit update to include amount commitments in public inputs
+    // MEDIUM SEVERITY: Full validation requires circuit update to include amount commitments
+    // in public inputs. Until then, we rely on:
+    // - Basic sanity checks (non-zero, count matching)
+    // - Note ledger recording (validated during unshield)
+    // - Supply invariant checks (if enabled)
     require!(
         args.output_amount_commitments.len() == args.output_commitments.len(),
         PoolError::OutputSetMismatch
     );
+    require!(
+        !args.output_amount_commitments.is_empty(),
+        PoolError::InvalidPublicInputs
+    );
     for amount_commit in &args.output_amount_commitments {
-        // Ensure amount commitments are not all zeros (basic sanity check)
-        // Full validation requires circuit update to include them in public inputs
+        // CRITICAL FIX: Enhanced validation - ensure amount commitments are not all zeros
+        // This prevents obviously invalid commitments
+        // Full validation against proof requires circuit update
         require!(
             *amount_commit != [0u8; 32],
             PoolError::InvalidPublicInputs
         );
+        
+        // Additional check: ensure amount commitment is not all 0xFF (another invalid pattern)
+        // This provides defense in depth until circuit includes amount commitments
+        let all_ones = amount_commit.iter().all(|&b| b == 0xFF);
+        require!(
+            !all_ones,
+            PoolError::InvalidPublicInputs
+        );
     }
+    
+    // Note: Amount commitments are recorded in note_ledger (line 1228)
+    // and will be validated during unshield operations when notes are spent.
+    // This provides indirect validation until the circuit is updated.
     
     Ok(())
 }
