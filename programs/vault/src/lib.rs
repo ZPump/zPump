@@ -46,11 +46,15 @@ pub mod ptf_vault {
             authority: ctx.accounts.depositor.to_account_info(),
         };
         let cpi_ctx = CpiContext::new(ctx.accounts.token_program.to_account_info(), cpi_accounts);
-        #[allow(deprecated)]
-        token_interface::transfer(cpi_ctx, amount)?;
-
-        // Release lock after successful transfer
-        vault_state.locked = false;
+        
+        // CRITICAL FIX: Always release lock, even if CPI fails
+        // This prevents permanent DoS if token transfer fails
+        let transfer_result = {
+            #[allow(deprecated)]
+            token_interface::transfer(cpi_ctx, amount)
+        };
+        vault_state.locked = false; // Always release lock
+        transfer_result?; // Propagate error after releasing lock
 
         emit!(VaultDeposit {
             origin_mint: vault_state.origin_mint,
@@ -98,11 +102,15 @@ pub mod ptf_vault {
             cpi_accounts,
             signer,
         );
-        #[allow(deprecated)]
-        token_interface::transfer(cpi_ctx, amount)?;
-
-        // Release lock after successful transfer
-        vault_state.locked = false;
+        
+        // CRITICAL FIX: Always release lock, even if CPI fails
+        // This prevents permanent DoS if token transfer fails
+        let transfer_result = {
+            #[allow(deprecated)]
+            token_interface::transfer(cpi_ctx, amount)
+        };
+        vault_state.locked = false; // Always release lock
+        transfer_result?; // Propagate error after releasing lock
 
         emit!(VaultRelease {
             origin_mint,

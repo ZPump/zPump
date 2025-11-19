@@ -1,89 +1,58 @@
-# Security Audit: ptf_factory (Post-Fix)
+# Security Audit: ptf_factory (Post-Fix Verification)
 
 ## Overview
-The `ptf_factory` program manages mint mappings, creates twin mints, and handles timelock actions. Previous critical issues have been addressed with hash collision fixes, size limits, and cleanup functions.
+The `ptf_factory` program manages mint mappings, creates twin mints, and handles timelock actions. Critical issues have been addressed with hash collision fixes, size limits, cleanup functions, and rate limiting.
 
 ## Security Vulnerabilities
 
-### 1. **CRITICAL: Action Hash Validation Missing Salt in Execute**
+### 1. **CRITICAL: Action Hash Validation Missing Salt in Execute** ✅ FIXED
 **Severity:** CRITICAL  
-**Location:** `execute_timelock_action()` function (lines 396-410)
+**Location:** `execute_timelock_action()` function (line 416)  
+**Status:** ✅ **VERIFIED FIXED**
 
-**Description:**
-The action hash recomputed during execution (lines 401-405) does NOT include the salt, but the hash stored during queuing (line 243) DOES include salt. This means:
-- Queue: `hash(factory || salt || action || execute_after)`
-- Execute: `hash(factory || action || execute_after)` (MISSING SALT!)
+**Fix Verification:**
+Salt is now correctly included in hash recomputation: `&entry.salt,` (line 416)
 
-This mismatch will cause ALL execution attempts to fail, permanently locking all timelock actions.
-
-**Impact:**
-- All timelock actions become unexecutable
-- Permanent DoS on factory operations
-- Requires emergency upgrade
-
-**Recommendation:**
-Include salt in hash recomputation:
-
-```rust
-let expected_hash = hashv(&[
-    state.key().as_ref(),
-    &entry.salt, // ADD THIS LINE
-    &action_bytes,
-    &entry.execute_after.to_le_bytes(),
-]);
-```
-
-### 2. **HIGH: No Rate Limiting on Timelock Actions**
+### 2. **HIGH: No Rate Limiting on Timelock Actions** ✅ FIXED
 **Severity:** HIGH  
-**Location:** `queue_timelock_action()` function (lines 224-311)
+**Location:** `queue_timelock_action()` function (lines 238-241, 314)  
+**Status:** ✅ **VERIFIED FIXED**
 
-**Description:**
-While there's a maximum pending actions check (50), there's no rate limiting on how quickly actions can be queued. An attacker could rapidly fill the queue with 50 actions and then cancel them, effectively blocking legitimate operations.
+**Fix Verification:**
+- `last_action_time` field added to `FactoryState` (line 845)
+- Rate limiting check before queue (lines 238-241)
+- `last_action_time` updated after queue (line 314)
+- `MIN_TIME_BETWEEN_ACTIONS = 60` seconds (line 851)
 
-**Impact:**
-- Temporary DoS by filling pending action queue
-- Legitimate operations blocked
-- Requires waiting for timelock expiration or cleanup
-
-**Recommendation:**
-Add rate limiting per authority or minimum time between actions:
-
-```rust
-// Store last_action_time in FactoryState
-require!(
-    clock.unix_timestamp >= state.last_action_time + MIN_TIME_BETWEEN_ACTIONS,
-    FactoryError::ActionRateLimitExceeded
-);
-state.last_action_time = clock.unix_timestamp;
-```
-
-### 3. **HIGH: Timelock Entry Can Be Cleaned Up While Still Valid**
+### 3. **HIGH: Timelock Entry Can Be Cleaned Up While Still Valid** ✅ FIXED
 **Severity:** HIGH  
-**Location:** `cleanup_timelock_action()` function (lines 509-536)
+**Location:** `cleanup_timelock_action()` function (lines 526-545)  
+**Status:** ✅ **VERIFIED FIXED**
 
-**Description:**
-The cleanup function only checks if 30 days have passed since `execute_after`, but doesn't verify the entry hasn't been executed or canceled. While `require!(!entry.executed)` exists, the cleanup sets `entry.executed = true` and `entry.canceled = true` even if the entry was never executed but is still within valid execution window.
+**Fix Verification:**
+- Checks `!entry.executed` and `!entry.canceled` before cleanup (lines 527-528)
+- Validates cleanup threshold (execute_after + 30 days) (lines 537-545)
 
-**Impact:**
-- Valid actions could be prematurely cleaned up
-- Loss of ability to execute legitimate timelock actions
-- State inconsistency
-
-**Recommendation:**
-Only allow cleanup of entries that are truly stale (past execute_after + grace period) AND not canceled/executed:
-
-```rust
-require!(!entry.executed && !entry.canceled, FactoryError::TimelockConsumed);
-require!(
-    clock.unix_timestamp >= entry.execute_after.checked_add(TIMELOCK_STALE_GRACE_SECONDS)
-        .ok_or(FactoryError::TimelockOverflow)?,
-    FactoryError::TimelockNotExpired
-);
-```
-
-### 4. **MEDIUM: Mint PTKN Doesn't Validate Pool Authority Is Signer in Context**
+### 4. **MEDIUM: Factory State Migration Issue** 🔍 NEW
 **Severity:** MEDIUM  
-**Location:** `mint_ptkn()` function (lines 538-610)
+**Location:** `initialize_factory()` function (lines 28-55)  
+**Status:** 🔍 **NEW ISSUE DISCOVERED**
+
+**Description:**
+If `FactoryState` already exists from a previous deployment, initialization will fail when trying to add the `last_action_time` field. Existing accounts won't have this field, causing deserialization errors.
+
+**Impact:**
+- Cannot upgrade existing factory deployments
+- Breaking change requiring redeployment
+- Loss of existing configuration
+
+**Recommendation:**
+Add migration instruction or handle missing field gracefully. See `AuditMitigation/03-FactoryStateMigration.md`.
+
+### 5. **MEDIUM: Mint PTKN Doesn't Validate Pool Authority Is Signer in Context**
+**Severity:** MEDIUM  
+**Location:** `mint_ptkn()` function (lines 538-610)  
+**Status:** ❌ **REMAINING**
 
 **Description:**
 The function checks `pool_authority.is_signer` but doesn't verify that the pool_authority provided in the accounts context is actually the signer. This relies on Anchor's constraint, but explicit validation would be clearer.
@@ -95,9 +64,10 @@ The function checks `pool_authority.is_signer` but doesn't verify that the pool_
 **Recommendation:**
 Add explicit signer validation in the accounts struct constraint or in the instruction body.
 
-### 5. **LOW: No Maximum Size Limit on Pending Action Hashes Vector**
+### 6. **LOW: No Maximum Size Limit on Pending Action Hashes Vector**
 **Severity:** LOW  
-**Location:** `FactoryState` struct (line 817)
+**Location:** `FactoryState` struct (line 842)  
+**Status:** ❌ **REMAINING**
 
 **Description:**
 While `MAX_PENDING_ACTIONS` limits additions, the vector itself could theoretically grow if removals fail or are skipped. The space calculation accounts for 50 entries, but if the vector somehow exceeds this, account reallocation could fail.
@@ -108,4 +78,19 @@ While `MAX_PENDING_ACTIONS` limits additions, the vector itself could theoretica
 
 **Recommendation:**
 Add explicit bounds checking when removing from vector to ensure it never exceeds MAX_PENDING_ACTIONS.
+
+### 7. **LOW: Rate Limiting Affects All Authorities** 🔍 NEW
+**Severity:** LOW  
+**Location:** `queue_timelock_action()` function (line 239)  
+**Status:** 🔍 **NEW ISSUE DISCOVERED**
+
+**Description:**
+Rate limiting is global per factory, not per authority. If multiple authorities exist (via upgrades), they share the same rate limit. One authority can block another by queuing actions rapidly.
+
+**Impact:**
+- One authority can block another
+- Operational limitation if multi-authority support is planned
+
+**Recommendation:**
+Consider per-authority rate limiting if multi-authority support is planned.
 

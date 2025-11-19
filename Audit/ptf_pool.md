@@ -43,60 +43,42 @@ Same issue as transfer - the unshield circuit's new_root computation includes ch
 **Recommendation:**
 Ensure circuit's new_root computation exactly matches tree's root computation, or add explicit validation to ensure they match.
 
-### 3. **HIGH: Nullifier Set Reallocation Can Exhaust Payer Funds**
+### 3. **HIGH: Nullifier Set Reallocation Can Exhaust Payer Funds** ✅ FIXED
 **Severity:** HIGH  
-**Location:** `NullifierSet::insert()` function (lines 3199-3224)
+**Location:** `NullifierSet::insert()` function (lines 3210-3222)  
+**Status:** ✅ **VERIFIED FIXED**
 
-**Description:**
-When nullifier set needs to grow, it transfers rent from payer (lines 3200-3213). If payer doesn't have sufficient funds or if many nullifiers are inserted in one transaction, the payer could be drained or the transaction could fail unexpectedly.
+**Fix Verification:**
+- Pre-check rent requirement before reallocation (lines 3210-3222)
+- Error `InsufficientRent` added (line 4244)
+- Prevents unexpected transaction failures
+
+### 4. **HIGH: No Maximum Limit on Nullifier Set Size** ✅ FIXED
+**Severity:** HIGH  
+**Location:** `NullifierSet` struct (line 3170)  
+**Status:** ✅ **VERIFIED FIXED**
+
+**Fix Verification:**
+- `MAX_NULLIFIERS = 100_000` defined (line 3170)
+- Check added before insertion (lines 3202-3205)
+- Error `NullifierSetFull` added (line 4242)
+
+### 5. **HIGH: Shield Finalization Can Still Be Bypassed in Edge Cases** ⚠️ PARTIALLY FIXED
+**Severity:** HIGH  
+**Location:** `shield()` function (lines 682-703)  
+**Status:** ⚠️ **PARTIALLY FIXED**
+
+**Fix Verification:**
+- Logic checks for stale claims using root mismatch (lines 686-703)
+- Deactivates stale claims before allowing new shield
+- **Issue:** Uses root mismatch instead of explicit timeout (slots-based). Root mismatch check works but timeout would be more explicit.
 
 **Impact:**
-- DoS by exhausting payer's SOL balance
-- Unexpected transaction failures
-- Poor UX for legitimate users
+- Prevents duplicate shields using root mismatch detection
+- Root mismatch check is functionally correct but less explicit than timeout
 
 **Recommendation:**
-- Add maximum growth per transaction
-- Consider requiring prepayment or separate funding account
-- Add checks before starting transaction to estimate cost
-
-### 4. **HIGH: No Maximum Limit on Nullifier Set Size**
-**Severity:** HIGH  
-**Location:** `NullifierSet` struct (lines 3147-3151)
-
-**Description:**
-While Solana has a 10MB account limit, there's no explicit maximum on nullifier set size. With 32 bytes per nullifier, this allows ~312,500 nullifiers before hitting account limit. Operations become slower as set grows, and binary search becomes expensive.
-
-**Impact:**
-- DoS through account size limits
-- Performance degradation as set grows
-- Potential for hitting Solana account size limits
-
-**Recommendation:**
-Add explicit maximum nullifier count:
-
-```rust
-pub const MAX_NULLIFIERS: usize = 100_000; // ~3.2MB, leaves room for account overhead
-require!(
-    nullifier_set.nullifiers.len() < MAX_NULLIFIERS,
-    PoolError::NullifierSetFull
-);
-```
-
-### 5. **HIGH: Shield Finalization Can Still Be Bypassed in Edge Cases**
-**Severity:** HIGH  
-**Location:** `shield()` function (lines 655-699)
-
-**Description:**
-The code detects stuck states and deactivates pending_shield, but this could allow a new shield to proceed even if the previous one is still valid but not yet finalized. The logic at lines 684-693 only rejects if claim is not stale, but there's a race condition window.
-
-**Impact:**
-- Potential for duplicate shields
-- State inconsistency
-- Double-spending risk
-
-**Recommendation:**
-Add explicit timeout check before allowing new shield:
+Consider adding explicit timeout check in addition to root mismatch for clarity and defense in depth.
 
 ```rust
 if has_active_claim {

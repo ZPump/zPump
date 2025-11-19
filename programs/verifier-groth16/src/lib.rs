@@ -11,6 +11,9 @@ const PTF_FACTORY_PROGRAM_ID: Pubkey = pubkey!("4z618BY2dXGqAUiegqDt8omo3e81TSdX
 pub const MAX_PROOF_SIZE: usize = 10 * 1024;
 /// Maximum serialized public input byte length (~2KB supports >60 field elements)
 pub const MAX_PUBLIC_INPUTS_SIZE: usize = 2 * 1024;
+/// CRITICAL FIX: Minimum supported version for verifying keys
+/// This allows deprecation of old/insecure circuit versions
+pub const MIN_SUPPORTED_VERSION: u8 = 1;
 
 #[cfg(all(feature = "groth16-syscall", feature = "groth16-dev-skip"))]
 compile_error!("groth16-syscall and groth16-dev-skip cannot be enabled together");
@@ -53,6 +56,13 @@ pub mod ptf_verifier_groth16 {
         require!(
             verifying_key_id != [0u8; 32],
             VerifierError::InvalidVerifyingKeyId
+        );
+
+        // CRITICAL FIX: Validate minimum version before initialization
+        // This prevents old/insecure verifying keys from being created
+        require!(
+            version >= MIN_SUPPORTED_VERSION,
+            VerifierError::VersionTooOld
         );
 
         // CRITICAL FIX: Only factory_state PDA can create verifying keys
@@ -127,6 +137,14 @@ pub mod ptf_verifier_groth16 {
             vk.verifying_key_id == verifying_key_id,
             VerifierError::InvalidVerifyingKeyId,
         );
+        
+        // CRITICAL FIX: Validate minimum version before verification
+        // This prevents old/insecure verifying keys from being used
+        require!(
+            vk.version >= MIN_SUPPORTED_VERSION,
+            VerifierError::VersionTooOld
+        );
+        
         require!(verify_account_hash(vk), VerifierError::HashMismatch,);
 
         require!(
@@ -255,6 +273,8 @@ pub enum VerifierError {
     ProofTooLarge,
     #[msg("public inputs exceed maximum allowed size")]
     PublicInputsTooLarge,
+    #[msg("verifying key version is too old and no longer supported")]
+    VersionTooOld,
 }
 
 fn verify_account_hash(account: &VerifyingKeyAccount) -> bool {

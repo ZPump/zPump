@@ -5,12 +5,19 @@ The `ptf_verifier_groth16` program verifies Groth16 zero-knowledge proofs. Previ
 
 ## Security Vulnerabilities
 
-### 1. **CRITICAL: Dev-Skip Feature Still Present in Production Build**
+### 1. **CRITICAL: Dev-Skip Feature Still Present in Production Build** ❌ NOT FULLY FIXED
 **Severity:** CRITICAL  
-**Location:** `groth16_verify()` function (lines 271-281)
+**Location:** `groth16_verify()` function (lines 275-286)  
+**Status:** ❌ **NOT FULLY FIXED**
 
 **Description:**
 While warnings are logged, the dev-skip feature can still be compiled into production builds if `groth16-dev-skip` feature is enabled. The compile-time check only prevents both features together, but doesn't prevent dev-skip alone from being enabled.
+
+**Current State:**
+- ✅ Warnings logged when dev-skip enabled
+- ✅ Compile-time check prevents both features together
+- ❌ No compile-time check preventing dev-skip alone in production
+- ⚠️ Relies on CI/CD to catch accidental enablement
 
 **Impact:**
 - Complete bypass of proof verification if deployed with dev-skip
@@ -18,7 +25,7 @@ While warnings are logged, the dev-skip feature can still be compiled into produ
 - Total loss of funds
 
 **Recommendation:**
-Add runtime panic in production builds or CI check that fails if dev-skip is enabled:
+Add compile-time check that panics if dev-skip enabled in non-test builds. See `AuditMitigation/01-VerifierDevSkipCompileTime.md`.
 
 ```rust
 #[cfg(all(feature = "groth16-dev-skip", not(test)))]
