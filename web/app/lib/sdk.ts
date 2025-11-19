@@ -614,6 +614,7 @@ export async function wrap(params: WrapParams): Promise<string> {
   const shieldKeys = [
     { pubkey: poolState, isSigner: false, isWritable: true },
     { pubkey: hookConfig, isSigner: false, isWritable: false },
+    { pubkey: hookWhitelist, isSigner: false, isWritable: true },
     { pubkey: nullifierSet, isSigner: false, isWritable: true },
     { pubkey: commitmentTreeKey, isSigner: false, isWritable: true },
     { pubkey: noteLedger, isSigner: false, isWritable: true },
@@ -638,7 +639,6 @@ export async function wrap(params: WrapParams): Promise<string> {
     { pubkey: mintMappingKey, isSigner: false, isWritable: false },
     { pubkey: VAULT_PROGRAM_ID, isSigner: false, isWritable: false },
     { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
-    { pubkey: SYSVAR_INSTRUCTIONS_PUBKEY, isSigner: false, isWritable: false },
     { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
     { pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false }
   );

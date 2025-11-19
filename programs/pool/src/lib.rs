@@ -572,28 +572,8 @@ pub mod ptf_pool {
             );
         }
         
-        // CRITICAL FIX: Validate and initialize note_ledger manually
-        // This handles the case where the account structure changed and needs reinitialization
-        let (expected_note_ledger, expected_note_ledger_bump) = Pubkey::find_program_address(
-            &[seeds::NOTES, pool_state.origin_mint.as_ref()],
-            &crate::ID,
-        );
-        require_keys_eq!(
-            ctx.accounts.note_ledger.key(),
-            expected_note_ledger,
-            PoolError::NoteLedgerMismatch
-        );
-        
-        // Validate note_ledger owner and pool match
-        require_keys_eq!(
-            *ctx.accounts.note_ledger.owner,
-            crate::ID,
-            PoolError::NoteLedgerMismatch
-        );
-        // Create AccountLoader for note_ledger - we'll use it later
-        // We need to store it in a way that lives for the function lifetime
-        // Since we can't store it directly, we'll create it when needed
-        // For now, we'll just validate it exists and is correct
+        // note_ledger is now handled by Anchor's init_if_needed constraint
+        // No manual validation needed - Anchor will initialize if needed
         
         // CRITICAL FIX: Validate and initialize commitment_tree manually
         // This handles the case where the account structure changed and needs reinitialization
@@ -918,7 +898,7 @@ pub mod ptf_pool {
 
         drop(pool_state);
 
-        // Pass UncheckedAccount directly - process_shield_finalize_ledger now accepts it
+        // Pass AccountLoader directly - process_shield_finalize_ledger now accepts &AccountLoader
         process_shield_finalize_ledger(
             pool_loader,
             &ctx.accounts.hook_config,
@@ -2042,9 +2022,14 @@ pub struct Shield<'info> {
     /// CHECK: Validated and initialized manually to handle discriminator changes
     #[account(mut)]
     pub commitment_tree: UncheckedAccount<'info>,
-    /// CHECK: Validated and initialized manually to handle discriminator changes
-    #[account(mut)]
-    pub note_ledger: UncheckedAccount<'info>,
+    #[account(
+        init_if_needed,
+        payer = payer,
+        seeds = [seeds::NOTES, pool_state.load()?.origin_mint.as_ref()],
+        bump,
+        space = NoteLedger::SPACE,
+    )]
+    pub note_ledger: AccountLoader<'info, NoteLedger>,
     /// CHECK: Validated in instruction (PDA derived from origin_mint)
     #[account(mut)]
     pub vault_state: UncheckedAccount<'info>,
@@ -2120,9 +2105,12 @@ pub struct ShieldFinalizeLedger<'info> {
         constraint = hook_config.load()?.pool == pool_state.key() @ PoolError::HookConfigInvalid,
     )]
     pub hook_config: AccountLoader<'info, HookConfig>,
-    /// CHECK: Validated and initialized manually to handle discriminator changes
-    #[account(mut)]
-    pub note_ledger: UncheckedAccount<'info>,
+    #[account(
+        seeds = [seeds::NOTES, pool_state.load()?.origin_mint.as_ref()],
+        bump = pool_state.load()?.note_ledger_bump,
+        constraint = note_ledger.load()?.pool == pool_state.key() @ PoolError::NoteLedgerMismatch,
+    )]
+    pub note_ledger: AccountLoader<'info, NoteLedger>,
     #[account(
         mut,
         seeds = [seeds::CLAIM, pool_state.key().as_ref()],
@@ -3608,7 +3596,7 @@ fn validate_transfer_public_inputs(
 fn process_shield_finalize_ledger<'info>(
     pool_loader: &AccountLoader<'info, PoolState>,
     hook_config: &AccountLoader<'info, HookConfig>,
-    note_ledger: &UncheckedAccount<'info>,
+    note_ledger: &AccountLoader<'info, NoteLedger>,
     shield_claim: &mut Account<'info, ShieldClaim>,
     hook_whitelist: &Account<'info, HookWhitelist>,
     remaining_accounts: &[AccountInfo<'info>],
@@ -3645,50 +3633,16 @@ fn process_shield_finalize_ledger<'info>(
         (hook_enabled, pool_state.bump, pool_state.origin_mint)
     };
 
-    // Convert UncheckedAccount to AccountLoader for loading
-    // We'll create the loader inline in each block using the account info directly
-    // The account info from UncheckedAccount lives for 'info, so we can use it
+    // Load note_ledger and record shield
     #[cfg(feature = "invariant_checks")]
     let requires_invariant = {
-        // Create AccountLoader directly from UncheckedAccount's account info
-        // The account info lives for 'info, so this should work
-        let account_info = note_ledger.to_account_info();
-        // We need to ensure the account info lives long enough
-        // Since it's from UncheckedAccount, it should live for 'info
-        // But AccountLoader::try_from requires a reference that lives for 'info
-        // The issue is that to_account_info() returns a temporary
-        // We need to use the account info directly without storing it
-        // Actually, UncheckedAccount has an internal AccountInfo that lives for 'info
-        // We can access it directly
-        // Use the account info directly - UncheckedAccount's account info lives for 'info
-        let account_info = note_ledger.to_account_info();
-        // We can't use AccountLoader::try_from due to lifetime constraints
-        // Instead, we'll manually deserialize NoteLedger from the account data
-        // NoteLedger uses AccountLoader, so we need to work with the raw data
-        let mut account_data = account_info.try_borrow_mut_data()?;
-        // Skip discriminator (8 bytes)
-        if account_data.len() < 8 {
-            return err!(PoolError::NoteLedgerMismatch);
-        }
-        // Deserialize NoteLedger manually
-        let ledger = NoteLedger::try_deserialize_mut(&mut &mut account_data[8..])
-            .map_err(|_| PoolError::NoteLedgerMismatch)?;
-        let mut ledger = ledger;
-        let mut ledger = loader.load_mut()?;
+        let mut ledger = note_ledger.load_mut()?;
         ledger.record_shield(pending.amount, pending.amount_commit)?;
         ledger.should_enforce_invariant(pending.amount)
     };
     #[cfg(not(feature = "invariant_checks"))]
     let requires_invariant = {
-        // Use AccountLoader::try_from with the account info directly
-        // The account info from UncheckedAccount lives for 'info, so this should work
-        // We'll create the loader inline and use it immediately
-        let account_info = note_ledger.to_account_info();
-        // Create AccountLoader - the account info lives for 'info
-        // We need to ensure it lives long enough by using it directly in the block
-        let loader = AccountLoader::<NoteLedger>::try_from(&account_info)
-            .map_err(|_| PoolError::NoteLedgerMismatch)?;
-        let mut ledger = loader.load_mut()?;
+        let mut ledger = note_ledger.load_mut()?;
         ledger.record_shield(pending.amount, pending.amount_commit)?;
         false
     };
