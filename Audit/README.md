@@ -1,159 +1,215 @@
-# zPump Smart Contract Security Audit Report (Post-Fix Verification)
+# zPump Smart Contract Security Audit
 
-## Executive Summary
+This directory contains a comprehensive security audit of all smart contracts in the zPump protocol. Each contract has its own folder with detailed security concerns documented.
 
-This report verifies fixes applied to address security vulnerabilities identified in the previous audit. Overall, **5 out of 9 critical/high issues have been fully fixed**, with **1 partially fixed** and **3 remaining**.
+## Audit Structure
 
-**Total Vulnerabilities Found:** 20  
-**Fixes Verified:** 5 ✅  
-**Fixes Partially Complete:** 1 ⚠️  
-**Fixes Remaining:** 3 ❌  
-**New Issues Found:** 2 🔍
+```
+Audit/
+├── ptf_pool/              # Main pool program security concerns
+├── ptf_factory/           # Factory program security concerns
+├── ptf_vault/             # Vault program security concerns
+├── ptf_verifier_groth16/  # Verifier program security concerns
+├── unchecked-account-usage-pattern.md      # Shared: UncheckedAccount without validation
+├── hardcoded-program-ids.md                # Shared: Hardcoded program IDs
+├── no-authority-change-mechanisms.md       # Shared: No authority change mechanisms
+├── manual-byte-level-account-reads.md      # Shared: Manual byte-level account reads
+├── bump-seed-validation-issues.md         # Shared: Bump seed validation issues
+├── missing-account-ownership-validation.md # Shared: Missing account ownership validation
+└── README.md              # This file
+```
 
-- **CRITICAL Remaining:** 2
-- **HIGH Remaining:** 1  
-- **MEDIUM Remaining:** 3
-- **LOW:** 3
-- **INFORMATIONAL:** 2
+## Severity Levels
 
-## Fixes Verified as COMPLETE ✅
+- **CRITICAL**: Immediate threat to system security, could lead to complete compromise or fund loss
+- **HIGH**: Significant security risk, could lead to substantial fund loss or system compromise
+- **MEDIUM**: Moderate security risk, could lead to limited fund loss or system disruption
+- **LOW**: Minor security risk, unlikely to cause significant harm
 
-### 1. [FACTORY] Action Hash Validation Missing Salt in Execute
-**Status:** ✅ **FIXED**  
-**Location:** `programs/factory/src/lib.rs:416`  
-Salt is now correctly included in hash recomputation during execution.
+## Contract Audits
 
-### 2. [FACTORY] No Rate Limiting on Timelock Actions
-**Status:** ✅ **FIXED**  
-**Location:** `programs/factory/src/lib.rs:238-241, 314, 845, 851`  
-60-second rate limiting implemented with `last_action_time` field.
+### ptf_pool (27 security concerns)
 
-### 3. [FACTORY] Timelock Entry Can Be Cleaned Up While Still Valid
-**Status:** ✅ **FIXED**  
-**Location:** `programs/factory/src/lib.rs:526-545`  
-Cleanup now validates entry hasn't been executed/canceled and checks 30-day threshold.
+1. **reentrancy-in-shield-pipeline.md** (HIGH) - Race conditions in multi-step shield pipeline
+2. **root-manipulation.md** (CRITICAL) - Merkle root manipulation and validation issues
+3. **nullifier-reuse-prevention.md** (CRITICAL) - Nullifier reuse prevention mechanisms
+4. **commitment-validation.md** (CRITICAL) - Commitment forging and validation issues
+5. **nullifiers-recorded-before-cpi.md** (HIGH) - Nullifiers recorded before CPI, causing fund loss if CPI fails
+6. **pool-reinitialization-risk.md** (HIGH) - Pool can be reinitialized, resetting critical state
+7. **no-authority-change-mechanism.md** (HIGH) - No mechanism to change pool authority if compromised
+8. **hook-execution-security.md** (HIGH) - Hook execution security risks
+9. **account-initialization-race-conditions.md** (HIGH) - Race conditions in account initialization
+10. **account-data-corruption.md** (HIGH) - Account data corruption and validation issues
+11. **public-input-parsing-vulnerabilities.md** (HIGH) - Public input parsing security issues
+12. **shield-claim-state-machine.md** (HIGH) - Shield claim state machine vulnerabilities
+13. **pda-seed-manipulation.md** (HIGH) - PDA seed manipulation and validation
+14. **supply-invariant-edge-cases.md** (HIGH) - Supply invariant edge cases and failures
+15. **live-value-accounting.md** (HIGH) - Live value accounting and consistency
+16. **root-history-overflow.md** (MEDIUM) - Root history overflow causes old proofs to become invalid
+17. **no-protocol-fees-withdrawal.md** (MEDIUM) - No mechanism to withdraw accumulated protocol fees
+18. **hook-invocation-failure-handling.md** (MEDIUM) - Hook invocation failures can block operations
+19. **allowance-exploitation.md** (MEDIUM) - Allowance system vulnerabilities
+20. **integer-overflow-underflow.md** (MEDIUM) - Arithmetic overflow/underflow vulnerabilities
+21. **invariant-check-sampling-exploitation.md** (MEDIUM) - Invariant check sampling bypass
+22. **compute-budget-exhaustion.md** (MEDIUM) - Compute budget exhaustion and DoS
+23. **fee-calculation-manipulation.md** (MEDIUM) - Fee calculation and manipulation vulnerabilities
+24. **protocol-fees-overflow.md** (MEDIUM) - Protocol fees overflow and accumulation
+25. **information-leakage.md** (MEDIUM) - Information leakage through logs and events
+26. **twin-mint-authority-security.md** (MEDIUM) - Twin mint authority security issues
+27. **multiple-account-loads-in-constraints.md** (MEDIUM) - Multiple account loads in constraints increase compute usage
 
-### 4. [POOL] Nullifier Set Reallocation Can Exhaust Payer Funds
-**Status:** ✅ **FIXED**  
-**Location:** `programs/pool/src/lib.rs:3210-3222`  
-Pre-check added for rent requirement before reallocation.
+### ptf_factory (17 security concerns)
 
-### 5. [POOL] No Maximum Limit on Nullifier Set Size
-**Status:** ✅ **FIXED**  
-**Location:** `programs/pool/src/lib.rs:3170, 3202-3205`  
-Maximum of 100,000 nullifiers enforced.
+1. **timelock-bypass.md** (HIGH) - Timelock mechanism bypass vulnerabilities
+2. **authority-compromise.md** (CRITICAL) - Authority compromise risks
+3. **no-authority-change-mechanism.md** (CRITICAL) - No mechanism to change factory authority
+4. **no-origin-mint-validation.md** (HIGH) - No validation that origin_mint is a valid mint account
+5. **no-verifier-program-validation.md** (HIGH) - No validation of verifier program account
+6. **freeze-thaw-bypass-timelock.md** (HIGH) - Freeze/thaw operations bypass timelock
+7. **pause-unpause-bypass-timelock.md** (HIGH) - Pause/unpause operations bypass timelock
+8. **register-mint-allows-updates.md** (MEDIUM) - Register mint allows updates without proper validation
+9. **cleanup-timelock-no-authorization.md** (MEDIUM) - Cleanup timelock action has no authorization
+10. **hardcoded-pool-program-id.md** (MEDIUM) - Hardcoded pool program ID prevents upgrades
+11. **load-mint-state-error-handling.md** (MEDIUM) - Confusing error handling masks real issues
+12. **mint-registration-security.md** (MEDIUM) - Mint registration security issues
+13. **verifying-key-size-dos.md** (MEDIUM) - Verifying key size DoS attack
+14. **register-mint-without-timelock.md** (MEDIUM) - Mint registration bypasses timelock
+15. **pending-action-hashes-inefficiency.md** (MEDIUM) - Inefficient vector operations for pending actions
+16. **rate-limiting-bypass-migration.md** (MEDIUM) - Rate limiting bypass during migration
+17. **sequence-overflow-edge-case.md** (LOW) - Sequence overflow edge case at u64::MAX
 
-## Fixes Partially Complete ⚠️
+### ptf_vault (16 security concerns)
 
-### 6. [POOL] Shield Finalization Can Still Be Bypassed in Edge Cases
-**Status:** ⚠️ **PARTIALLY FIXED**  
-**Location:** `programs/pool/src/lib.rs:682-703`  
-Stale claim detection added using root mismatch, but no explicit timeout. Root mismatch check works but timeout would be more explicit.
+1. **reentrancy-protection.md** (HIGH) - Reentrancy protection mechanisms
+2. **authority-change-security.md** (CRITICAL) - Authority change timelock security
+3. **insufficient-balance-check.md** (MEDIUM) - Balance validation edge cases
+4. **pool-authority-validation-initialization.md** (HIGH) - No validation of pool authority during initialization
+5. **new-authority-validation.md** (HIGH) - No validation of new authority in authority change proposals
+6. **stale-pending-authority-change.md** (MEDIUM) - Stale pending authority changes block new proposals
+7. **token-account-validation.md** (MEDIUM) - Insufficient validation of token account ownership
+8. **origin-mint-validation.md** (MEDIUM) - No validation of origin_mint during initialization
+9. **existing-pending-change-check.md** (MEDIUM) - Missing check for existing pending authority change
+10. **lock-recovery-mechanism.md** (MEDIUM) - Missing lock recovery mechanism for stuck locks
+11. **no-amount-limits.md** (LOW) - No maximum amount limits on deposits/releases
+12. **bump-seed-validation.md** (MEDIUM) - No validation of bump seeds in PDA derivation
+13. **authority-change-race-condition.md** (HIGH) - Race conditions in authority change mechanism
+14. **token-program-validation.md** (MEDIUM) - No validation of token program is valid SPL Token
+15. **account-closure-authorization.md** (MEDIUM) - Rent collection from account closure could incentivize attacks
+16. **no-expiration-on-pending-changes.md** (MEDIUM) - Pending authority changes don't expire
 
-## Critical Issues Remaining ❌
+### ptf_verifier_groth16 (18 security concerns)
 
-### 1. [VERIFIER] Dev-Skip Feature Still Present in Production Build
-**Contract:** ptf_verifier_groth16  
-**Severity:** CRITICAL  
-**Status:** ❌ **NOT FULLY FIXED**  
-**Impact:** Complete bypass of proof verification if deployed with dev-skip enabled
+1. **dev-skip-production-risk.md** (CRITICAL) - Dev-skip feature production deployment risk
+2. **verifying-key-authority.md** (CRITICAL) - Verifying key authority and validation
+3. **proof-validation-bypass.md** (CRITICAL) - Proof validation bypass vulnerabilities
+4. **no-verifying-key-format-validation.md** (HIGH) - No validation of verifying key format during registration
+5. **hardcoded-factory-program-id.md** (HIGH) - Hardcoded factory program ID prevents upgrades
+6. **no-verifying-key-update-mechanism.md** (HIGH) - No mechanism to update or revoke compromised keys
+7. **account-space-calculation-mismatch.md** (MEDIUM) - Account space calculation based on parameter, no validation of stored data
+8. **no-payer-authorization.md** (MEDIUM) - No authorization check for payer account
+9. **no-account-ownership-validation.md** (MEDIUM) - No explicit account ownership validation in verify_groth16
+10. **account-data-integrity-validation.md** (MEDIUM) - Insufficient validation of account data integrity beyond hash
+11. **hardcoded-factory-pda-seeds.md** (MEDIUM) - Hardcoded factory PDA seeds create upgrade risk
+12. **no-verifying-key-size-limit.md** (MEDIUM) - No maximum size limit on verifying keys
+13. **host-fallback-error-handling.md** (MEDIUM) - Host fallback uses unwrap_or which masks errors
+14. **syscall-return-value-handling.md** (MEDIUM) - Syscall return values are not properly handled or logged
+15. **no-bump-seed-validation.md** (MEDIUM) - No explicit validation of bump seeds
+16. **no-verifying-key-id-hash-relationship.md** (LOW) - No validation of relationship between verifying_key_id and hash
+17. **no-circuit-tag-validation.md** (LOW) - No validation of circuit_tag parameter
+18. **version-overflow-edge-case.md** (LOW) - Version field is u8, limiting to 256 versions
 
-**Current State:**
-- Warnings logged when dev-skip enabled
-- Compile-time check prevents both features together
-- ❌ No compile-time check preventing dev-skip alone in production
-- ⚠️ Relies on CI/CD to catch accidental enablement
+## Summary Statistics
 
-**Recommendation:** Add compile-time check that panics if dev-skip enabled in non-test builds.
+- **Total Security Concerns**: 78
+- **CRITICAL**: 9 concerns
+- **HIGH**: 29 concerns
+- **MEDIUM**: 35 concerns
+- **LOW**: 5 concerns
 
-### 2. [POOL] Transfer Circuit Root Mismatch Still Exists
-**Contract:** ptf_pool  
-**Severity:** CRITICAL  
-**Status:** ⚠️ **ACKNOWLEDGED** (Circuit-level fix required)  
-**Impact:** Proof validation doesn't match actual tree state
+## Shared Design Flaws
 
-**Note:** This requires circuit update and new trusted setup. Cannot be fixed at program level. TODO comments acknowledge the issue.
+These design flaws appear across multiple contracts and represent systemic security issues:
 
-### 3. [POOL] Unshield Circuit Root Mismatch Still Exists
-**Contract:** ptf_pool  
-**Severity:** CRITICAL  
-**Status:** ⚠️ **ACKNOWLEDGED** (Circuit-level fix required)  
-**Impact:** Same as transfer - proof validation mismatch
+1. **unchecked-account-usage-pattern.md** (HIGH) - Widespread use of `UncheckedAccount` without validation across all contracts
+2. **hardcoded-program-ids.md** (HIGH) - Hardcoded program IDs prevent upgrades and multi-instance support
+3. **no-authority-change-mechanisms.md** (CRITICAL) - No way to change authority if compromised or lost
+4. **manual-byte-level-account-reads.md** (HIGH) - Manual byte reads create security vulnerabilities
+5. **bump-seed-validation-issues.md** (MEDIUM) - Stored bump seeds not validated against actual PDA derivation
+6. **missing-account-ownership-validation.md** (MEDIUM) - Missing explicit account ownership validation across multiple contracts
 
-## High Priority Remaining
+These shared flaws should be addressed systematically across all contracts as they represent fundamental design issues that create vulnerabilities in multiple places.
 
-### 4. [VAULT] Lock State Not Released on CPI Failure
-**Contract:** ptf_vault  
-**Severity:** MEDIUM (HIGH priority for reliability)  
-**Status:** ❌ **NOT FIXED**  
-**Impact:** Permanent DoS if token transfer fails
+## Key Findings
 
-**Recommendation:** Use try-finally pattern or guard struct to always release lock.
+### Most Critical Issues
 
-## New Issues Discovered 🔍
+1. **Dev-Skip Production Risk**: If the `groth16-dev-skip` feature is accidentally deployed to production, all proof verification is bypassed, completely compromising the system.
 
-### 5. [FACTORY] Factory State Migration Issue
-**Severity:** MEDIUM  
-**Status:** 🔍 **NEW ISSUE**  
-**Impact:** Cannot upgrade existing factory deployments due to new `last_action_time` field
+2. **Root Manipulation**: Merkle root manipulation could allow attackers to create fake commitments and drain pools.
 
-**Description:** Existing `FactoryState` accounts don't have `last_action_time` field. Loading these accounts will fail or return wrong values.
+3. **Nullifier Reuse**: If nullifiers can be reused, double-spending attacks become possible.
 
-**Recommendation:** Add migration instruction or handle missing field gracefully.
+4. **Authority Compromise**: Single authority points of failure in factory and vault programs.
 
-### 6. [FACTORY] Rate Limiting Affects All Authorities
-**Severity:** LOW  
-**Status:** 🔍 **NEW ISSUE**  
-**Impact:** Rate limiting is global per factory, not per authority
+5. **No Authority Change Mechanism**: Factory has no way to change authority if compromised or lost, creating permanent lockout risk.
 
-**Description:** If multiple authorities exist, they share the same rate limit. One authority can block another.
+6. **Verifying Key Security**: If verifying keys can be manipulated, malicious keys could accept invalid proofs.
 
-**Recommendation:** Consider per-authority rate limiting if multi-authority support is planned.
+7. **Account Data Corruption**: Manual byte-level reads without proper validation could lead to security vulnerabilities.
 
-## Medium Severity Remaining
+8. **Commitment Forging**: If commitment validation is insufficient, attackers could forge commitments.
 
-### 7. [VAULT] Lock State Not Released on CPI Failure
-See High Priority above.
+9. **Proof Validation Bypass**: If proof validation can be bypassed, attackers could use fake proofs.
 
-### 8. [POOL] Public Input Size Limit May Be Too Large
-**Status:** ❌ Remaining  
-10KB limit may allow DoS through expensive parsing.
+10. **Public Input Parsing**: Vulnerabilities in parsing public inputs from proofs could allow security bypasses.
 
-### 9. [POOL] Amount Commitments Not Fully Validated in Transfer
-**Status:** ❌ Remaining  
-Amount commitments not in proof's public inputs.
+11. **Shield Claim State Machine**: Complex state machine with many edge cases could be exploited.
 
-### 10. [FACTORY] Mint PTKN Doesn't Validate Pool Authority Is Signer in Context
-**Status:** ❌ Remaining  
-Relies on Anchor constraints rather than explicit validation.
+12. **Timelock Bypasses**: Multiple operations (freeze/thaw, pause/unpause, register_mint) bypass timelock protections.
 
-### 11. [VERIFIER] Verifying Key Hash Validation Happens After Account Initialization
-**Status:** ❌ Remaining  
-Account state could be inconsistent if validation fails.
+### Recommended Immediate Actions
 
-## Low Severity Remaining
+1. **Implement Multi-Signature**: Add multi-signature requirements for all critical operations (authority changes, verifying key creation, etc.)
 
-### 12. [VAULT] No Validation That Pending Authority Change Is For Same Vault
-**Status:** ❌ Remaining
+2. **Strengthen Timelocks**: Enhance timelock mechanisms with additional validation and expiration. Require all critical operations (freeze/thaw, pause/unpause, register_mint) to go through timelock.
 
-### 13. [POOL] Hook Whitelist Contains() Is O(n) Linear Search
-**Status:** ❌ Remaining
+3. **Improve Root Validation**: Implement stricter root validation and reconciliation mechanisms.
 
-### 14. [POOL] No Maximum Size Validation on Output Commitments
-**Status:** ❌ Remaining
+4. **Enhance Nullifier Tracking**: Improve nullifier set management to prevent DoS and ensure integrity.
 
-## Critical Issues Requiring Immediate Attention
+5. **Production Safety Checks**: Add hard failures and cluster detection to prevent dev-skip in production.
 
-1. **Verifier Dev-Skip Compile-Time Protection** - Must prevent accidental deployment
-2. **Vault Lock Release on Error** - Prevents permanent DoS
-3. **Factory State Migration** - Blocks upgrades to existing deployments
-4. **Pool Circuit Root Mismatches** - Requires circuit update (long-term fix)
+6. **Account Validation**: Strengthen account data validation and use Anchor types instead of manual byte reads.
 
-## Summary
+7. **Invariant Check Improvements**: Enhance sampling mechanism to prevent predictable bypass.
 
-**Progress:** 56% of critical/high issues fixed (5/9)  
-**Remaining Critical:** 2  
-**Remaining High:** 1  
-**New Issues:** 2
+8. **Compute Budget Management**: Implement better compute budget monitoring and limits.
 
-**Recommendation:** Fix remaining critical issues (#1, #4) before production deployment. Plan circuit update for root mismatch fixes in next major version.
+9. **Comprehensive Testing**: Add extensive tests for all edge cases and attack scenarios.
+
+10. **Monitoring and Alerting**: Implement comprehensive logging and monitoring for all critical operations.
+
+11. **Authority Change Mechanism**: Implement timelock-based authority change mechanism to allow recovery from key compromise or loss.
+
+## Audit Methodology
+
+Each security concern document includes:
+
+1. **Severity Rating**: Critical, High, Medium, or Low
+2. **Description**: Detailed explanation of the vulnerability
+3. **Vulnerability Details**: Technical analysis of the issue
+4. **Exploitation Scenario**: Step-by-step attack scenario
+5. **Code References**: Specific code locations and line numbers
+6. **Mitigation**: Detailed recommendations for fixing the issue
+7. **Recommended Code Changes**: Example code showing how to implement fixes
+
+## Notes
+
+- This audit is based on static code analysis and review of the codebase as of the audit date.
+- Some vulnerabilities may have already been addressed in the code (noted as "CRITICAL FIX" in comments).
+- Recommendations should be reviewed and tested thoroughly before implementation.
+- Consider engaging a professional security audit firm for additional validation.
+
+## Contact
+
+For questions about this audit or to report additional security concerns, please contact the development team.
