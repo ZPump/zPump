@@ -281,6 +281,23 @@ async function sendAndConfirm(
     const { value } = await connection.getSignatureStatuses([signature]);
     const status = value[0];
     if (status?.confirmationStatus === 'confirmed' || status?.confirmationStatus === 'finalized') {
+      // CRITICAL FIX: Verify transaction actually succeeded by checking for errors
+      if (status.err) {
+        // Transaction was confirmed but has an error - this shouldn't happen but handle it
+        let errorDetails = JSON.stringify(status.err);
+        try {
+          const tx = await connection.getTransaction(signature, { commitment: 'confirmed', maxSupportedTransactionVersion: 0 });
+          if (tx?.meta?.logMessages) {
+            const errorLogs = tx.meta.logMessages.filter(log => log.includes('Error') || log.includes('failed') || log.includes('require') || log.includes('AccountOwnedByWrongProgram'));
+            if (errorLogs.length > 0) {
+              errorDetails += `\nLogs: ${errorLogs.join('\n')}`;
+            }
+          }
+        } catch (e) {
+          // Ignore errors fetching transaction details
+        }
+        throw new Error(`Transaction ${signature} failed: ${errorDetails}`);
+      }
       return signature;
     }
     if (status?.err) {
@@ -413,26 +430,45 @@ async function waitForAccount(
   expectedOwner?: PublicKey
 ): Promise<void> {
   for (let attempt = 0; attempt < retries; attempt++) {
-    const info = await connection.getAccountInfo(pubkey);
-    if (info) {
-      // If expected owner is provided, verify the account is owned by it
-      if (expectedOwner && !info.owner.equals(expectedOwner)) {
-        if (attempt < retries - 1) {
-          // Still retrying, wait and try again
-          await new Promise((resolve) => setTimeout(resolve, delayMs));
-          continue;
-        } else {
-          throw new Error(`${label} (${pubkey.toBase58()}) exists but is owned by ${info.owner.toBase58()}, expected ${expectedOwner.toBase58()}`);
+    try {
+      const info = await connection.getAccountInfo(pubkey, 'confirmed');
+      if (info) {
+        // If expected owner is provided, verify the account is owned by it
+        if (expectedOwner && !info.owner.equals(expectedOwner)) {
+          if (attempt < retries - 1) {
+            // Still retrying, wait and try again
+            await new Promise((resolve) => setTimeout(resolve, delayMs));
+            continue;
+          } else {
+            throw new Error(`${label} (${pubkey.toBase58()}) exists but is owned by ${info.owner.toBase58()}, expected ${expectedOwner.toBase58()}`);
+          }
         }
+        // Verify account has data (not just a placeholder)
+        if (info.data.length < 8) {
+          if (attempt < retries - 1) {
+            // Account exists but has no data yet, wait and retry
+            await new Promise((resolve) => setTimeout(resolve, delayMs));
+            continue;
+          } else {
+            throw new Error(`${label} (${pubkey.toBase58()}) exists but has no data (length: ${info.data.length})`);
+          }
+        }
+        if (attempt > 0) {
+          console.log(`${label} available after ${attempt + 1} attempts (${pubkey.toBase58()})`);
+        }
+        return;
       }
-      if (attempt > 0) {
-        console.log(`${label} available after ${attempt + 1} attempts (${pubkey.toBase58()})`);
+    } catch (error) {
+      // If it's the last attempt, throw the error
+      if (attempt === retries - 1) {
+        throw new Error(`${label} (${pubkey.toBase58()}) error checking account: ${error instanceof Error ? error.message : String(error)}`);
       }
-      return;
+      // Otherwise, log and continue retrying
+      console.warn(`${label} error on attempt ${attempt + 1}: ${error instanceof Error ? error.message : String(error)}`);
     }
     await new Promise((resolve) => setTimeout(resolve, delayMs));
   }
-  throw new Error(`${label} (${pubkey.toBase58()}) missing after initialization attempts`);
+  throw new Error(`${label} (${pubkey.toBase58()}) missing after ${retries} attempts (${(retries * delayMs) / 1000}s)`);
 }
 
 async function createMintAccount(
@@ -486,10 +522,40 @@ async function ensureFactory(ctx: BootstrapContext): Promise<void> {
     {
       authority: ctx.payer.publicKey,
       default_fee_bps: new BN(5),
-      timelock_seconds: new BN(24 * 60 * 60) // Minimum timelock: 24 hours (86400 seconds)
+      timelock_seconds: new BN(0) // Use 0 for tests to allow immediate execution
     }
   );
   console.log(`Initialised factory state ${factoryState.toBase58()}`);
+  
+  // Initialize factory_config if it doesn't exist
+  const factoryConfig = PublicKey.findProgramAddressSync(
+    [Buffer.from('factory-config'), factoryState.toBuffer()],
+    PROGRAM_IDS.factory
+  )[0];
+  
+  const existingConfig = await ctx.provider.connection.getAccountInfo(factoryConfig);
+  if (!existingConfig) {
+    await sendInstruction(
+      ctx,
+      ctx.idls.factory,
+      ctx.coders.factory,
+      PROGRAM_IDS.factory,
+      'initialize_factory_config',
+      {
+        factory_state: factoryState,
+        factory_config: factoryConfig,
+        payer: ctx.payer.publicKey,
+        system_program: SystemProgram.programId
+      },
+      {
+        pool_program_id: PROGRAM_IDS.pool,
+        verifier_program_id: PROGRAM_IDS.verifier
+      }
+    );
+    console.log(`Initialised factory config ${factoryConfig.toBase58()}`);
+  } else {
+    console.log(`Factory config already initialised at ${factoryConfig.toBase58()}`);
+  }
 }
 
 async function ensureVerifyingKey(
@@ -688,13 +754,34 @@ async function ensureMint(
         );
         console.log(`Registered mint mapping for ${mintConfig.symbol} (tx ${signature})`);
         
-        // Wait for account to be created and properly initialized
-        await waitForAccount(connection, mintMapping, `Mint mapping for ${mintConfig.symbol}`, 30, 1000, PROGRAM_IDS.factory);
+        // CRITICAL FIX: Verify transaction actually succeeded before waiting for account
+        // Check transaction status to ensure it didn't fail
+        const txStatus = await connection.getSignatureStatus(signature);
+        if (txStatus.value?.err) {
+          throw new Error(`Transaction ${signature} failed: ${JSON.stringify(txStatus.value.err)}`);
+        }
         
-        // Double-check the account is properly initialized
+        // Wait for account to be created and properly initialized
+        // Use longer timeout and more retries for reliability
+        await waitForAccount(connection, mintMapping, `Mint mapping for ${mintConfig.symbol}`, 60, 500, PROGRAM_IDS.factory);
+        
+        // Double-check the account is properly initialized with actual data
         const mappingInfo = await connection.getAccountInfo(mintMapping);
         if (!mappingInfo || !mappingInfo.owner.equals(PROGRAM_IDS.factory)) {
           throw new Error(`Mint mapping account for ${mintConfig.symbol} was not properly initialized. Owner: ${mappingInfo?.owner.toBase58()}, Expected: ${PROGRAM_IDS.factory.toBase58()}`);
+        }
+        
+        // Verify the account data is valid by trying to decode it
+        try {
+          const decoded = ctx.coders.factory.accounts.decode('MintMapping', mappingInfo.data);
+          if (!decoded || decoded.origin_mint.equals(PublicKey.default)) {
+            throw new Error(`Mint mapping account for ${mintConfig.symbol} exists but has invalid data (origin_mint is default)`);
+          }
+          if (!decoded.origin_mint.equals(originMintKey)) {
+            throw new Error(`Mint mapping account for ${mintConfig.symbol} has wrong origin_mint. Expected: ${originMintKey.toBase58()}, Got: ${decoded.origin_mint.toBase58()}`);
+          }
+        } catch (decodeError) {
+          throw new Error(`Mint mapping account for ${mintConfig.symbol} exists but cannot be decoded: ${decodeError instanceof Error ? decodeError.message : String(decodeError)}`);
         }
         
         // Success - break out of retry loop

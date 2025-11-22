@@ -28,6 +28,11 @@ mod poseidon;
 declare_id!("7kbUWzeTPY6qb1mFJC1ZMRmTZAdaHC27yukc3Czj7fKh");
 
 const DEFAULT_CANOPY_DEPTH: u8 = 8;
+// CRITICAL SECURITY: Maximum amounts to prevent overflow in calculations
+// 1 quadrillion (10^15) is a reasonable limit that prevents overflow while allowing large transactions
+const MAX_SHIELD_AMOUNT: u64 = 1_000_000_000_000_000; // 1 quadrillion
+const MAX_UNSHIELD_AMOUNT: u64 = 1_000_000_000_000_000; // 1 quadrillion
+const MAX_TRANSFER_AMOUNT: u64 = 1_000_000_000_000_000; // 1 quadrillion
 
 #[program]
 pub mod ptf_pool {
@@ -140,6 +145,33 @@ pub mod ptf_pool {
 
         msg!("init_pool stage: before_pool_state_load");
         let pool_key = ctx.accounts.pool_state.key();
+        
+        // CRITICAL SECURITY FIX: Prevent pool reinitialization
+        // Check if pool is already initialized by checking account data length and discriminator
+        // If account has valid data (length >= 8 + minimum PoolState size), it's initialized
+        let pool_account_info = ctx.accounts.pool_state.to_account_info();
+        if pool_account_info.data_len() >= 8 {
+            // Account has data - check if it has valid discriminator (first 8 bytes)
+            let data = pool_account_info.try_borrow_data()?;
+            if data.len() >= 8 {
+                // Check if discriminator matches PoolState (non-zero means initialized)
+                let discriminator = &data[0..8];
+                // If discriminator is not all zeros, account is initialized
+                if discriminator.iter().any(|&b| b != 0) {
+                    // Try to load to check origin_mint
+                    drop(data);
+                    if let Ok(existing_state) = ctx.accounts.pool_state.load() {
+                        if existing_state.origin_mint != Pubkey::default() {
+                            // Pool is already initialized - reject reinitialization
+                            return err!(PoolError::PoolAlreadyInitialized);
+                        }
+                    }
+                }
+            } else {
+                drop(data);
+            }
+        }
+        
         let mut pool_state = ctx.accounts.pool_state.load_init()?;
         msg!("init_pool stage: after_pool_state_load");
         pool_state.origin_mint = vault_origin;
@@ -356,6 +388,45 @@ pub mod ptf_pool {
         Ok(())
     }
 
+    /// Change the pool authority
+    /// CRITICAL SECURITY: Only the current authority can change to a new authority
+    pub fn change_authority(
+        ctx: Context<ChangeAuthority>,
+        new_authority: Pubkey,
+    ) -> Result<()> {
+        // Validate new authority is not default
+        require!(
+            new_authority != Pubkey::default(),
+            PoolError::InvalidAuthority
+        );
+        
+        let mut pool_state = ctx.accounts.pool_state.load_mut()?;
+        let old_authority = pool_state.authority;
+        
+        // Validate new authority is different (has_one constraint already validates current authority)
+        require_keys_neq!(
+            new_authority,
+            old_authority,
+            PoolError::AuthorityUnchanged
+        );
+        
+        // Update authority
+        pool_state.authority = new_authority;
+        
+        // Update hook whitelist authority if it exists
+        if let Some(mut hook_whitelist) = ctx.accounts.hook_whitelist.as_mut() {
+            hook_whitelist.authority = new_authority;
+        }
+        
+        emit!(AuthorityChanged {
+            origin_mint: pool_state.origin_mint,
+            old_authority,
+            new_authority,
+        });
+        
+        Ok(())
+    }
+
     pub fn configure_hooks(ctx: Context<ConfigureHooks>, args: HookConfigArgs) -> Result<()> {
         let mut pool_state = ctx.accounts.pool_state.load_mut()?;
         require!(
@@ -510,6 +581,14 @@ pub mod ptf_pool {
             return err!(PoolError::MintMappingCorrupt);
         }
         ensure_mint_active(&mint_mapping_info)?;
+        
+        // CRITICAL SECURITY: Validate amount to prevent overflow
+        require!(
+            args.amount <= MAX_SHIELD_AMOUNT,
+            PoolError::AmountTooLarge
+        );
+        require!(args.amount > 0, PoolError::AmountTooLarge);
+        
         let pool_loader = &ctx.accounts.pool_state;
         msg!("shield: got pool_loader");
         let mut pool_state = pool_loader.load_mut()?;
@@ -524,127 +603,42 @@ pub mod ptf_pool {
             hook_whitelist.bump = ctx.bumps.hook_whitelist;
         }
         
-        // CRITICAL FIX: Validate and initialize nullifier_set manually
-        // This handles the case where the account structure changed and needs reinitialization
-        let (expected_nullifier_set, expected_bump) = Pubkey::find_program_address(
-            &[seeds::NULLIFIERS, pool_state.origin_mint.as_ref()],
-            &crate::ID,
-        );
-        require_keys_eq!(
-            ctx.accounts.nullifier_set.key(),
-            expected_nullifier_set,
-            PoolError::NullifierSetMismatch
-        );
-        
-        // Initialize if account doesn't exist
-        if ctx.accounts.nullifier_set.owner == &anchor_lang::solana_program::system_program::ID {
-            // Account doesn't exist - initialize it
-            let space = NullifierSet::BASE_SPACE;
-            let rent = Rent::get()?;
-            let lamports = rent.minimum_balance(space);
-            
-            **ctx.accounts.nullifier_set.try_borrow_mut_lamports()? = lamports;
-            ctx.accounts.nullifier_set.assign(&crate::ID);
-            ctx.accounts.nullifier_set.realloc(space, false)?;
-            
-            let mut nullifier_set_data = ctx.accounts.nullifier_set.try_borrow_mut_data()?;
-            let mut nullifier_set = NullifierSet::try_deserialize(&mut &nullifier_set_data[..])
-                .map_err(|_| PoolError::NullifierSetMismatch)?;
-            nullifier_set.init(pool_loader.key(), expected_bump);
-            nullifier_set.try_serialize(&mut &mut nullifier_set_data[..])?;
+        // CRITICAL SECURITY FIX: Use Anchor's init_if_needed for nullifier_set and commitment_tree
+        // Anchor handles initialization atomically, preventing race conditions
+        // If accounts were just initialized, we need to set their initial state
+        let nullifier_set_bump = ctx.bumps.nullifier_set;
+        if ctx.accounts.nullifier_set.pool == Pubkey::default() {
+            // Account was just initialized - set initial state
+            ctx.accounts.nullifier_set.init(pool_loader.key(), nullifier_set_bump);
         } else {
-            // Account exists - validate it's owned by our program
+            // Account exists - validate it belongs to this pool
             require_keys_eq!(
-                *ctx.accounts.nullifier_set.owner,
-                crate::ID,
-                PoolError::NullifierSetMismatch
-            );
-            // Try to deserialize to validate discriminator and pool
-            // We can't use Account::try_from here because it requires a long-lived reference
-            // Instead, we'll validate by trying to deserialize the data directly
-            let nullifier_set_data = ctx.accounts.nullifier_set.try_borrow_data()?;
-            let nullifier_set = NullifierSet::try_deserialize(&mut &nullifier_set_data[..])
-                .map_err(|_| PoolError::NullifierSetMismatch)?;
-            require_keys_eq!(
-                nullifier_set.pool,
+                ctx.accounts.nullifier_set.pool,
                 pool_loader.key(),
                 PoolError::NullifierSetMismatch
             );
         }
         
-        // note_ledger is now handled by Anchor's init_if_needed constraint
-        // No manual validation needed - Anchor will initialize if needed
-        
-        // CRITICAL FIX: Validate and initialize commitment_tree manually
-        // This handles the case where the account structure changed and needs reinitialization
-        let (expected_commitment_tree, expected_tree_bump) = Pubkey::find_program_address(
-            &[seeds::TREE, pool_state.origin_mint.as_ref()],
-            &crate::ID,
-        );
-        require_keys_eq!(
-            ctx.accounts.commitment_tree.key(),
-            expected_commitment_tree,
-            PoolError::CommitmentTreeMismatch
-        );
-        
-        // For UncheckedAccount with ZeroCopy, we can load it directly
-        // CommitmentTree uses zero_copy, so we can use load_deref_mut or manual deserialization
-        // We'll create a helper function to load it when needed
-        let load_commitment_tree = || -> Result<&CommitmentTree> {
-            let account_info = ctx.accounts.commitment_tree.to_account_info();
-            require_keys_eq!(
-                *account_info.owner,
-                crate::ID,
-                PoolError::CommitmentTreeMismatch
-            );
-            // For ZeroCopy, we can use bytemuck or direct pointer access
-            // Anchor provides load_deref for ZeroCopy accounts
-            let data = account_info.try_borrow_data()?;
-            if data.len() < 8 + std::mem::size_of::<CommitmentTree>() {
-                return err!(PoolError::CommitmentTreeMismatch);
-            }
-            // Skip discriminator (8 bytes) and cast to CommitmentTree
-            unsafe {
-                let ptr = data.as_ptr().add(8) as *const CommitmentTree;
-                Ok(&*ptr)
-            }
-        };
-        
-        let load_commitment_tree_mut = || -> Result<&mut CommitmentTree> {
-            let account_info = ctx.accounts.commitment_tree.to_account_info();
-            require_keys_eq!(
-                *account_info.owner,
-                crate::ID,
-                PoolError::CommitmentTreeMismatch
-            );
-            let mut data = account_info.try_borrow_mut_data()?;
-            if data.len() < 8 + std::mem::size_of::<CommitmentTree>() {
-                return err!(PoolError::CommitmentTreeMismatch);
-            }
-            unsafe {
-                let ptr = data.as_mut_ptr().add(8) as *mut CommitmentTree;
-                Ok(&mut *ptr)
-            }
-        };
+        // Commitment tree is handled by Anchor's init_if_needed
+        // If it was just initialized, it will be in default state which is correct
+        // We'll validate it when we use it
         
         let expected_pool = pool_loader.key();
         let claim_bump = {
             let shield_claim = &mut ctx.accounts.shield_claim;
-            // Initialize if new account (pool is default/uninitialized)
-            if shield_claim.pool == Pubkey::default() {
+            // Initialize if new account (pool is default/uninitialized) or if pool doesn't match (stale account)
+            if shield_claim.pool == Pubkey::default() || shield_claim.pool != expected_pool {
+                // Account is new or stale - initialize/reset it
                 shield_claim.pool = expected_pool;
                 // Bump is set automatically by Anchor's init_if_needed constraint
                 // CRITICAL: We must set the bump field explicitly from ctx.bumps
                 // Anchor doesn't automatically populate the bump field in the account struct
                 shield_claim.bump = ctx.bumps.shield_claim;
+                // Reset status to inactive for new/stale accounts
+                shield_claim.status = ShieldClaim::STATUS_INACTIVE;
                 shield_claim.bump
             } else {
-                // For existing accounts, require pool matches
-                require_keys_eq!(
-                    shield_claim.pool,
-                    expected_pool,
-                    PoolError::ShieldClaimMismatch
-                );
+                // Account exists and pool matches - use existing bump
                 shield_claim.bump
             }
         };
@@ -665,7 +659,7 @@ pub mod ptf_pool {
         // In this case, we deactivate pending_shield to allow new shields to proceed.
         // This is safe because the stale shield claim can't be finalized anyway.
         if !pool_state.pending_shield.is_inactive() && has_active_claim {
-            let commitment_tree = load_commitment_tree()?;
+            let commitment_tree = ctx.accounts.commitment_tree.load()?;
             let claim_old_root = ctx.accounts.shield_claim.old_root;
             let tree_current_root = commitment_tree.current_root;
             
@@ -684,7 +678,7 @@ pub mod ptf_pool {
         // meaning it can't be finalized. We deactivate stale claims to allow new shields.
         // For valid claims (old_root matches current_root), we reject to prevent duplicate shields.
         if has_active_claim {
-            let commitment_tree = load_commitment_tree()?;
+            let commitment_tree = ctx.accounts.commitment_tree.load()?;
             let claim_old_root = ctx.accounts.shield_claim.old_root;
             let tree_current_root = commitment_tree.current_root;
             
@@ -801,7 +795,7 @@ pub mod ptf_pool {
             PoolError::CommitmentTreeMismatch,
         );
 
-        let commitment_tree_data = load_commitment_tree()?;
+        let commitment_tree_data = ctx.accounts.commitment_tree.load()?;
         require!(
             commitment_tree_data.current_root == pool_state.current_root,
             PoolError::RootMismatch,
@@ -1304,6 +1298,14 @@ fn process_unshield<'info>(
 ) -> Result<()> {
     // Check mint status first - must be active
     ensure_mint_active(&ctx.accounts.mint_mapping.to_account_info())?;
+    
+    // CRITICAL SECURITY: Validate amount to prevent overflow
+    require!(
+        args.amount <= MAX_UNSHIELD_AMOUNT,
+        PoolError::AmountTooLarge
+    );
+    require!(args.amount > 0, PoolError::AmountTooLarge);
+    
     // CRITICAL: Cache ALL account fields and AccountInfos BEFORE taking ANY mutable borrows
     // Accessing ctx.accounts while holding mutable borrows causes access violations
     let decimals = ctx.accounts.mint_mapping.decimals;
@@ -1433,22 +1435,10 @@ fn process_unshield<'info>(
         args.public_inputs.clone(),
     )?;
 
-    // CRITICAL FIX: Record nullifiers immediately after proof verification
-    // This prevents replay attacks by marking notes as spent
-    // Must happen before touching the commitment tree to ensure atomicity
-    {
-        let payer_account_info = ctx.accounts.payer.to_account_info();
-        let system_program_account_info = ctx.accounts.system_program.to_account_info();
-        // nullifier_set is already an Account, use it directly
-        for nullifier in &args.nullifiers {
-            NullifierSet::insert(&mut ctx.accounts.nullifier_set, &payer_account_info, &system_program_account_info, *nullifier)
-                .map_err(|_| PoolError::NullifierReuse)?;
-            emit!(PTFNullifierUsed {
-                mint: origin_mint,
-                nullifier: *nullifier,
-            });
-        }
-    }
+    // CRITICAL SECURITY FIX: Do NOT record nullifiers here - they must be recorded AFTER
+    // successful CPI to vault/factory. If CPI fails, nullifiers should not be recorded,
+    // otherwise notes become permanently unspendable even though no tokens were released.
+    // Nullifiers will be recorded after CPI succeeds (see below after line 1654).
 
     let pool_account_key = pool_loader.key();
     let fee = validate_unshield_public_inputs(
@@ -1615,9 +1605,24 @@ fn process_unshield<'info>(
                 PoolError::TwinMintMismatch,
             );
             let signer_seeds: [&[u8]; 3] = [seeds::POOL, origin_mint.as_ref(), &[pool_bump]];
+            
+            // Derive factory_config PDA (optional - factory will handle if not initialized)
+            let (factory_config_pda, _factory_config_bump) = Pubkey::find_program_address(
+                &[b"factory-config", factory_state_key.as_ref()],
+                &ptf_factory::ID,
+            );
+            
+            // Try to find factory_config in remaining_accounts, otherwise use factory_state as placeholder
+            // The factory instruction will check if factory_config exists and handle None gracefully
+            let factory_config_account_info = ctx.remaining_accounts.iter()
+                .find(|acc| acc.key() == factory_config_pda)
+                .cloned()
+                .unwrap_or_else(|| factory_state_account_info.clone());
+            
             let factory_accounts = ptf_factory::cpi::accounts::MintPtkn {
                 factory_state: factory_state_account_info,
                 mint_mapping: mint_mapping_account_info,
+                factory_config: Some(factory_config_account_info),
                 pool_authority: pool_state_account_info,
                 ptkn_mint: twin_mint_account_info,
                 destination_token_account: destination_token_account_account_info,
@@ -1635,6 +1640,24 @@ fn process_unshield<'info>(
                 destination: destination_owner,
                 amount: args.amount,
                 fee,
+            });
+        }
+    }
+
+    // CRITICAL SECURITY FIX: Record nullifiers AFTER successful CPI to vault/factory
+    // This ensures that if CPI fails, nullifiers are not recorded, preventing permanent fund loss.
+    // If CPI succeeds, we record nullifiers to prevent replay attacks.
+    // Solana's transaction atomicity ensures that if CPI fails, the entire transaction rolls back,
+    // so nullifiers won't be recorded even if we reach this point.
+    {
+        let payer_account_info = ctx.accounts.payer.to_account_info();
+        let system_program_account_info = ctx.accounts.system_program.to_account_info();
+        for nullifier in &args.nullifiers {
+            NullifierSet::insert(&mut ctx.accounts.nullifier_set, &payer_account_info, &system_program_account_info, *nullifier)
+                .map_err(|_| PoolError::NullifierReuse)?;
+            emit!(PTFNullifierUsed {
+                mint: origin_mint,
+                nullifier: *nullifier,
             });
         }
     }
@@ -2005,6 +2028,25 @@ pub struct UpdateAuthority<'info> {
 }
 
 #[derive(Accounts)]
+pub struct ChangeAuthority<'info> {
+    #[account(
+        mut,
+        seeds = [seeds::POOL, pool_state.load()?.origin_mint.as_ref()],
+        bump = pool_state.load()?.bump,
+        has_one = authority @ PoolError::Unauthorized
+    )]
+    pub pool_state: AccountLoader<'info, PoolState>,
+    pub authority: Signer<'info>,
+    /// CHECK: Optional hook whitelist - may not exist for all pools
+    #[account(
+        mut,
+        seeds = [b"hook-whitelist", pool_state.load()?.origin_mint.as_ref()],
+        bump
+    )]
+    pub hook_whitelist: Option<Account<'info, HookWhitelist>>,
+}
+
+#[derive(Accounts)]
 pub struct Shield<'info> {
     #[account(
         mut,
@@ -2026,12 +2068,26 @@ pub struct Shield<'info> {
         space = HookWhitelist::SPACE,
     )]
     pub hook_whitelist: Account<'info, HookWhitelist>,
-    /// CHECK: Validated and initialized manually to handle discriminator changes
-    #[account(mut)]
-    pub nullifier_set: UncheckedAccount<'info>,
-    /// CHECK: Validated and initialized manually to handle discriminator changes
-    #[account(mut)]
-    pub commitment_tree: UncheckedAccount<'info>,
+    /// CRITICAL SECURITY FIX: Use init_if_needed to prevent race conditions
+    /// Anchor handles initialization atomically, preventing concurrent initialization attempts
+    #[account(
+        init_if_needed,
+        payer = payer,
+        seeds = [seeds::NULLIFIERS, pool_state.load()?.origin_mint.as_ref()],
+        bump,
+        space = NullifierSet::BASE_SPACE,
+    )]
+    pub nullifier_set: Account<'info, NullifierSet>,
+    /// CRITICAL SECURITY FIX: Use init_if_needed to prevent race conditions
+    /// Anchor handles initialization atomically, preventing concurrent initialization attempts
+    #[account(
+        init_if_needed,
+        payer = payer,
+        seeds = [seeds::TREE, pool_state.load()?.origin_mint.as_ref()],
+        bump,
+        space = CommitmentTree::SPACE,
+    )]
+    pub commitment_tree: AccountLoader<'info, CommitmentTree>,
     #[account(
         init_if_needed,
         payer = payer,
@@ -2970,10 +3026,22 @@ impl PoolState {
     }
 
     pub fn calculate_fee(&self, amount: u64) -> Result<u64> {
-        let fee = (amount as u128)
-            .checked_mul(self.fee_bps as u128)
+        // CRITICAL SECURITY: Use 128-bit intermediate to prevent overflow
+        // amount * fee_bps can be up to u64::MAX * 10000, which fits in u128
+        let amount_128 = amount as u128;
+        let fee_bps_128 = self.fee_bps as u128;
+        let fee = amount_128
+            .checked_mul(fee_bps_128)
             .ok_or(PoolError::AmountOverflow)?
-            / 10_000u128;
+            .checked_div(10_000u128)
+            .ok_or(PoolError::AmountOverflow)?;
+        
+        // Ensure result fits in u64
+        require!(
+            fee <= u64::MAX as u128,
+            PoolError::AmountOverflow
+        );
+        
         Ok(fee as u64)
     }
 }
@@ -4135,6 +4203,13 @@ pub struct FeaturesUpdated {
     pub features: u8,
 }
 
+#[event]
+pub struct AuthorityChanged {
+    pub origin_mint: Pubkey,
+    pub old_authority: Pubkey,
+    pub new_authority: Pubkey,
+}
+
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy)]
 pub enum UnshieldMode {
     Origin = 0,
@@ -4152,6 +4227,8 @@ pub enum HookAccountMode {
 pub enum PoolError {
     #[msg("E_INVALID_FEE_BPS")]
     InvalidFeeBps,
+    #[msg("E_POOL_ALREADY_INITIALIZED")]
+    PoolAlreadyInitialized,
     #[msg("E_VERIFIER_MISMATCH")]
     VerifierMismatch,
     #[msg("E_VERIFYING_KEY_HASH_MISMATCH")]
@@ -4170,6 +4247,8 @@ pub enum PoolError {
     // The bloom filter has no capacity limit, so this error is obsolete
     #[msg("E_AMOUNT_OVERFLOW")]
     AmountOverflow,
+    #[msg("E_AMOUNT_TOO_LARGE")]
+    AmountTooLarge,
     #[msg("E_INSUFFICIENT_LIQUIDITY")]
     InsufficientLiquidity,
     #[msg("E_FEATURE_DISABLED")]
@@ -4260,6 +4339,10 @@ pub enum PoolError {
     WhitelistFull,
     #[msg("E_UNAUTHORIZED")]
     Unauthorized,
+    #[msg("E_INVALID_AUTHORITY")]
+    InvalidAuthority,
+    #[msg("E_AUTHORITY_UNCHANGED")]
+    AuthorityUnchanged,
     #[msg("E_NULLIFIER_SET_FULL")]
     NullifierSetFull,
     #[msg("E_INSUFFICIENT_RENT")]
