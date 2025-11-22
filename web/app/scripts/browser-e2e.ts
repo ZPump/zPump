@@ -281,20 +281,125 @@ async function freezeMintOnChain(params: {
   mintMapping: PublicKey;
 }): Promise<void> {
   const { connection, authority, factoryState, mintMapping } = params;
-  const data = factoryCoder.instruction.encode('freeze_mapping', {});
-  const keys = [
+  
+  // Freeze now requires timelock - queue and execute the action
+  // Since timelock_seconds is 0 in tests, we can execute immediately after queueing
+  const salt = new Uint8Array(32);
+  crypto.getRandomValues(salt);
+  
+  // Get origin_mint from mint mapping account
+  const mintMappingAccount = await connection.getAccountInfo(mintMapping);
+  if (!mintMappingAccount) throw new Error('Mint mapping not found');
+  const originMint = new PublicKey(mintMappingAccount.data.slice(8, 40));
+  
+  // Get factory state to find sequence number for timelock entry PDA
+  // Re-read to ensure we have the latest sequence after any previous actions
+  let factoryStateAccount = await connection.getAccountInfo(factoryState, 'confirmed');
+  if (!factoryStateAccount) throw new Error('Factory state not found');
+  let factoryStateData = factoryCoder.accounts.decode('FactoryState', factoryStateAccount.data);
+  // Handle BN or number - Anchor returns BN for u64
+  let lastSequence = factoryStateData.lastActionSequence;
+  let currentSequence: number;
+  if (lastSequence === null || lastSequence === undefined) {
+    currentSequence = 0;
+  } else if (typeof lastSequence === 'object' && 'toNumber' in lastSequence && typeof lastSequence.toNumber === 'function') {
+    currentSequence = lastSequence.toNumber();
+  } else if (typeof lastSequence === 'bigint') {
+    currentSequence = Number(lastSequence);
+  } else {
+    currentSequence = Number(lastSequence) || 0;
+  }
+  if (isNaN(currentSequence)) {
+    throw new Error(`Invalid sequence number: ${JSON.stringify(lastSequence)}`);
+  }
+  // CRITICAL: Anchor's PDA constraint in QueueTimelockAction reads factory_state.last_action_sequence BEFORE the instruction runs
+  // The program sets entry.sequence = last_action_sequence (matches the PDA)
+  // For executing, Anchor's constraint uses timelock_entry.sequence (which equals currentSequence)
+  // So we use the same sequence for both queueing and executing
+  const sequenceToUse = currentSequence;
+  
+  // Convert sequence to little-endian u64 bytes
+  const sequenceBuffer = Buffer.allocUnsafe(8);
+  sequenceBuffer.writeBigUInt64LE(BigInt(sequenceToUse), 0);
+  
+  // Derive timelock entry PDA (same for queueing and executing, since entry.sequence matches PDA)
+  const [timelockEntry] = PublicKey.findProgramAddressSync(
+    [
+      Buffer.from('timelock'),
+      factoryState.toBuffer(),
+      sequenceBuffer
+    ],
+    FACTORY_PROGRAM_ID
+  );
+  
+  // Queue timelock action
+  // Anchor expects enum variants to match IDL exactly (PascalCase)
+  const queueData = factoryCoder.instruction.encode('queue_timelock_action', {
+    salt: Array.from(salt),
+    action: {
+      FreezeMint: {
+        origin_mint: originMint
+      }
+    }
+  });
+  
+  // Account order from IDL: factory_state, authority, timelock_entry, payer, system_program, mint_mapping, origin_mint, ptkn_mint, token_program, rent
+  // All accounts must be present in order, even if optional
+  const queueKeys = [
     { pubkey: factoryState, isSigner: false, isWritable: true },
-    { pubkey: authority.publicKey, isSigner: true, isWritable: true },
-    { pubkey: mintMapping, isSigner: false, isWritable: true }
+    { pubkey: authority.publicKey, isSigner: true, isWritable: false },
+    { pubkey: timelockEntry, isSigner: false, isWritable: true },
+    { pubkey: authority.publicKey, isSigner: true, isWritable: true }, // payer
+    { pubkey: SystemProgram.programId, isSigner: false, isWritable: false }, // system_program
+    { pubkey: mintMapping, isSigner: false, isWritable: false }, // mint_mapping (optional but required for FreezeMint)
+    { pubkey: originMint, isSigner: false, isWritable: false }, // origin_mint (optional but required for FreezeMint)
+    { pubkey: mintMapping, isSigner: false, isWritable: true }, // ptkn_mint (optional, use mintMapping as placeholder since it's writable)
+    { pubkey: new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA'), isSigner: false, isWritable: false }, // token_program (optional, use actual token program ID)
+    { pubkey: new PublicKey('SysvarRent111111111111111111111111111111111'), isSigner: false, isWritable: false } // rent (optional, placeholder)
   ];
+  
   await sendAndConfirmInstructions(
     connection,
     authority,
     [
       new TransactionInstruction({
         programId: FACTORY_PROGRAM_ID,
-        keys,
-        data
+        keys: queueKeys,
+        data: queueData
+      })
+    ]
+  );
+  
+  // Execute immediately (timelock_seconds is 0 in tests)
+  // Use the same timelockEntry PDA that was used for queueing
+  const executeData = factoryCoder.instruction.encode('execute_timelock_action', {});
+  // Derive factory_config PDA (optional - may not exist, but we need to provide it)
+  const [factoryConfigPda] = PublicKey.findProgramAddressSync(
+    [Buffer.from('factory-config'), factoryState.toBuffer()],
+    FACTORY_PROGRAM_ID
+  );
+  // Account order from IDL: factory_state, timelock_entry, mint_mapping, ptkn_mint, token_program, factory_config, executor, rent
+  // All accounts must be present in order, even if optional
+  // Use the same timelockEntry PDA (entry.sequence matches the PDA it was created at)
+  const executeKeys = [
+    { pubkey: factoryState, isSigner: false, isWritable: true },
+    { pubkey: timelockEntry, isSigner: false, isWritable: true },
+    { pubkey: mintMapping, isSigner: false, isWritable: true },
+    { pubkey: mintMapping, isSigner: false, isWritable: true }, // ptkn_mint (optional, use mintMapping as placeholder)
+    { pubkey: new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA'), isSigner: false, isWritable: false }, // token_program (optional, use actual token program ID)
+    { pubkey: factoryConfigPda, isSigner: false, isWritable: true }, // factory_config (optional, use actual PDA even if not initialized)
+    { pubkey: authority.publicKey, isSigner: true, isWritable: true }, // executor
+    { pubkey: new PublicKey('SysvarRent111111111111111111111111111111111'), isSigner: false, isWritable: false } // rent sysvar
+  ];
+  
+  await sendAndConfirmInstructions(
+    connection,
+    authority,
+    [
+      new TransactionInstruction({
+        programId: FACTORY_PROGRAM_ID,
+        keys: executeKeys,
+        data: executeData
       })
     ]
   );
@@ -307,20 +412,158 @@ async function thawMintOnChain(params: {
   mintMapping: PublicKey;
 }): Promise<void> {
   const { connection, authority, factoryState, mintMapping } = params;
-  const data = factoryCoder.instruction.encode('thaw_mapping', {});
-  const keys = [
+  
+  // Thaw now requires timelock - queue and execute the action
+  // Since timelock_seconds is 0 in tests, we can execute immediately after queueing
+  const salt = new Uint8Array(32);
+  crypto.getRandomValues(salt);
+  
+  // Get origin_mint from mint mapping account
+  const mintMappingAccount = await connection.getAccountInfo(mintMapping);
+  if (!mintMappingAccount) throw new Error('Mint mapping not found');
+  const originMint = new PublicKey(mintMappingAccount.data.slice(8, 40));
+  
+  // Wait to ensure previous actions are fully confirmed and rate limiting has passed
+  // Rate limiting requires MIN_TIME_BETWEEN_ACTIONS (60 seconds) between actions
+  // For tests, we'll wait 65 seconds to be safe
+  console.log('[thawMintOnChain] Waiting 65 seconds to satisfy rate limiting...');
+  await sleep(65000);
+  
+  // Get factory state to find sequence number for timelock entry PDA
+  // Re-read multiple times to ensure we have the latest sequence after any previous actions
+  let factoryStateAccount: any = null;
+  let factoryStateData: any = null;
+  let lastSequence: any = null;
+  let retries = 10;
+  let lastSeqNum = -1;
+  while (retries > 0) {
+    factoryStateAccount = await connection.getAccountInfo(factoryState, 'confirmed');
+    if (!factoryStateAccount) throw new Error('Factory state not found');
+    factoryStateData = factoryCoder.accounts.decode('FactoryState', factoryStateAccount.data);
+    lastSequence = factoryStateData.lastActionSequence;
+    const seqNum = typeof lastSequence === 'object' && 'toNumber' in lastSequence ? lastSequence.toNumber() : Number(lastSequence) || 0;
+    console.log(`[thawMintOnChain] Retry ${11 - retries}: sequence = ${seqNum}`);
+    // If sequence hasn't changed from last read, wait and retry (state might not be updated yet)
+    if (seqNum === lastSeqNum && retries > 1) {
+      await sleep(300);
+      retries--;
+      continue;
+    }
+    lastSeqNum = seqNum;
+    // If we got a sequence value (even if 0), use it on last retry
+    if (retries === 1) {
+      break;
+    }
+    // Wait a bit to see if sequence changes
+    await sleep(200);
+    retries--;
+  }
+  let currentSequence: number;
+  if (lastSequence === null || lastSequence === undefined) {
+    currentSequence = 0;
+  } else if (typeof lastSequence === 'object' && 'toNumber' in lastSequence && typeof lastSequence.toNumber === 'function') {
+    currentSequence = lastSequence.toNumber();
+  } else if (typeof lastSequence === 'bigint') {
+    currentSequence = Number(lastSequence);
+  } else {
+    currentSequence = Number(lastSequence) || 0;
+  }
+  if (isNaN(currentSequence)) {
+    throw new Error(`Invalid sequence number: ${JSON.stringify(lastSequence)}`);
+  }
+  // CRITICAL: Anchor's PDA constraint in QueueTimelockAction reads factory_state.last_action_sequence BEFORE the instruction runs
+  // The program sets entry.sequence = last_action_sequence (matches the PDA)
+  // For executing, Anchor's constraint uses timelock_entry.sequence (which equals currentSequence)
+  // So we use the same sequence for both queueing and executing
+  // If sequence is still 0 after retries, the freeze action might have used sequence 0
+  // In that case, we should use sequence 1 for the thaw action (sequence was incremented after freeze)
+  // But if we're reading 0, it means the state hasn't updated yet, so we'll use 1 anyway
+  const sequenceToUse = currentSequence === 0 ? 1 : currentSequence;
+  console.log(`[thawMintOnChain] Read sequence: ${currentSequence}, using: ${sequenceToUse} for timelock entry PDA`);
+  
+  // Convert sequence to little-endian u64 bytes
+  const sequenceBuffer = Buffer.allocUnsafe(8);
+  sequenceBuffer.writeBigUInt64LE(BigInt(sequenceToUse), 0);
+  
+  // Derive timelock entry PDA (same for queueing and executing, since entry.sequence matches PDA)
+  const [timelockEntry] = PublicKey.findProgramAddressSync(
+    [
+      Buffer.from('timelock'),
+      factoryState.toBuffer(),
+      sequenceBuffer
+    ],
+    FACTORY_PROGRAM_ID
+  );
+  console.log(`[thawMintOnChain] Derived timelock entry PDA: ${timelockEntry.toBase58()}`);
+  
+  // Queue timelock action
+  // Anchor expects enum variants to match IDL exactly (PascalCase)
+  const queueData = factoryCoder.instruction.encode('queue_timelock_action', {
+    salt: Array.from(salt),
+    action: {
+      ThawMint: {
+        origin_mint: originMint
+      }
+    }
+  });
+  
+  // Account order from IDL: factory_state, authority, timelock_entry, payer, system_program, mint_mapping, origin_mint, ptkn_mint, token_program, rent
+  // All accounts must be present in order, even if optional
+  const queueKeys = [
     { pubkey: factoryState, isSigner: false, isWritable: true },
-    { pubkey: authority.publicKey, isSigner: true, isWritable: true },
-    { pubkey: mintMapping, isSigner: false, isWritable: true }
+    { pubkey: authority.publicKey, isSigner: true, isWritable: false },
+    { pubkey: timelockEntry, isSigner: false, isWritable: true },
+    { pubkey: authority.publicKey, isSigner: true, isWritable: true }, // payer
+    { pubkey: SystemProgram.programId, isSigner: false, isWritable: false }, // system_program
+    { pubkey: mintMapping, isSigner: false, isWritable: false }, // mint_mapping (optional but required for FreezeMint)
+    { pubkey: originMint, isSigner: false, isWritable: false }, // origin_mint (optional but required for FreezeMint)
+    { pubkey: mintMapping, isSigner: false, isWritable: true }, // ptkn_mint (optional, use mintMapping as placeholder since it's writable)
+    { pubkey: new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA'), isSigner: false, isWritable: false }, // token_program (optional, use actual token program ID)
+    { pubkey: new PublicKey('SysvarRent111111111111111111111111111111111'), isSigner: false, isWritable: false } // rent (optional, placeholder)
   ];
+  
   await sendAndConfirmInstructions(
     connection,
     authority,
     [
       new TransactionInstruction({
         programId: FACTORY_PROGRAM_ID,
-        keys,
-        data
+        keys: queueKeys,
+        data: queueData
+      })
+    ]
+  );
+  
+  // Execute immediately (timelock_seconds is 0 in tests)
+  // Use the same timelockEntry PDA that was used for queueing
+  const executeData = factoryCoder.instruction.encode('execute_timelock_action', {});
+  // Derive factory_config PDA (optional - may not exist, but we need to provide it)
+  const [factoryConfigPda] = PublicKey.findProgramAddressSync(
+    [Buffer.from('factory-config'), factoryState.toBuffer()],
+    FACTORY_PROGRAM_ID
+  );
+  // Account order from IDL: factory_state, timelock_entry, mint_mapping, ptkn_mint, token_program, factory_config, executor, rent
+  // All accounts must be present in order, even if optional
+  // Use the same timelockEntry PDA (entry.sequence matches the PDA it was created at)
+  const executeKeys = [
+    { pubkey: factoryState, isSigner: false, isWritable: true },
+    { pubkey: timelockEntry, isSigner: false, isWritable: true },
+    { pubkey: mintMapping, isSigner: false, isWritable: true },
+    { pubkey: mintMapping, isSigner: false, isWritable: true }, // ptkn_mint (optional, use mintMapping as placeholder)
+    { pubkey: new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA'), isSigner: false, isWritable: false }, // token_program (optional, use actual token program ID)
+    { pubkey: factoryConfigPda, isSigner: false, isWritable: true }, // factory_config (optional, use actual PDA even if not initialized)
+    { pubkey: authority.publicKey, isSigner: true, isWritable: true }, // executor
+    { pubkey: new PublicKey('SysvarRent111111111111111111111111111111111'), isSigner: false, isWritable: false } // rent sysvar
+  ];
+  
+  await sendAndConfirmInstructions(
+    connection,
+    authority,
+    [
+      new TransactionInstruction({
+        programId: FACTORY_PROGRAM_ID,
+        keys: executeKeys,
+        data: executeData
       })
     ]
   );
