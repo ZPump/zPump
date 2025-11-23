@@ -2140,7 +2140,17 @@ fn process_unshield<'info>(
             };
 
             let signer_seeds: [&[u8]; 3] = [seeds::POOL, origin_mint.as_ref(), &[pool_bump]];
-            invoke_signed(&ix, &infos, &[&signer_seeds])?;
+            
+            // CRITICAL FIX: Enhanced hook failure handling with detailed error context
+            invoke_signed(&ix, &infos, &[&signer_seeds])
+                .map_err(|e| {
+                    msg!("Hook execution failed for program: {}", target_program);
+                    msg!("Hook type: PostUnshield");
+                    msg!("Pool: {}", pool_key);
+                    msg!("Destination: {}", destination_owner);
+                    msg!("Error: {:?}", e);
+                    PoolError::HookExecutionFailed
+                })?;
 
             emit!(PTFHookPostUnshield {
                 mint: origin_mint,
@@ -4715,7 +4725,17 @@ fn process_shield_finalize_ledger<'info>(
                 };
 
                 let signer_seeds: [&[u8]; 3] = [seeds::POOL, origin_mint.as_ref(), &[pool_bump]];
-                invoke_signed(&ix, &infos, &[&signer_seeds])?;
+                
+                // CRITICAL FIX: Enhanced hook failure handling with detailed error context
+                invoke_signed(&ix, &infos, &[&signer_seeds])
+                    .map_err(|e| {
+                        msg!("Hook execution failed for program: {}", target_program);
+                        msg!("Hook type: PostShield");
+                        msg!("Pool: {}", pool_key);
+                        msg!("Depositor: {}", pending.depositor);
+                        msg!("Error: {:?}", e);
+                        PoolError::HookExecutionFailed
+                    })?;
             }
         }
         // If hook_config.load() failed, hooks aren't actually enabled, so skip hook execution
@@ -5276,6 +5296,8 @@ pub enum PoolError {
     HookNotWhitelisted,
     #[msg("E_HOOK_REENTRANCY_DETECTED")]
     HookReentrancyDetected,
+    #[msg("E_HOOK_EXECUTION_FAILED")]
+    HookExecutionFailed,
     #[msg("E_HOOK_ALREADY_WHITELISTED")]
     HookAlreadyWhitelisted,
     #[msg("E_WHITELIST_FULL")]
