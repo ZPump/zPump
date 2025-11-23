@@ -5,6 +5,7 @@ use sha3::{Digest, Keccak256};
 declare_id!("3aCv39mCRFH9BGJskfXqwQoWzW1ULq2yXEbEwGgKtLgg");
 
 // Factory program ID - only factory can create verifying keys
+// CRITICAL FIX: Keep hardcoded for backward compatibility, but prefer VerifierConfig
 const PTF_FACTORY_PROGRAM_ID: Pubkey = pubkey!("4z618BY2dXGqAUiegqDt8omo3e81TSdXRHt64ikX1bTy");
 
 /// Maximum Groth16 proof byte length (~10KB leaves plenty of headroom over 192-byte proofs)
@@ -87,17 +88,24 @@ pub mod ptf_verifier_groth16 {
             VerifierError::UnauthorizedAuthority
         );
         
+        // CRITICAL FIX: Use config if available, otherwise fallback to hardcoded (backward compatibility)
+        let factory_program_id = if let Some(config) = ctx.accounts.verifier_config.as_ref() {
+            config.factory_program_id
+        } else {
+            PTF_FACTORY_PROGRAM_ID
+        };
+        
         // Verify authority is owned by factory program
         require_keys_eq!(
             *ctx.accounts.authority.owner,
-            PTF_FACTORY_PROGRAM_ID,
+            factory_program_id,
             VerifierError::UnauthorizedAuthority
         );
         
         // CRITICAL FIX: Verify authority is specifically the factory_state PDA
         let (expected_factory_state, _) = Pubkey::find_program_address(
-            &[b"factory", PTF_FACTORY_PROGRAM_ID.as_ref()],
-            &PTF_FACTORY_PROGRAM_ID,
+            &[b"factory", factory_program_id.as_ref()],
+            &factory_program_id,
         );
         require_keys_eq!(
             ctx.accounts.authority.key(),
@@ -385,6 +393,68 @@ pub mod ptf_verifier_groth16 {
         
         Ok(())
     }
+    
+    // CRITICAL FIX: Initialize verifier config to store factory program ID
+    pub fn initialize_verifier_config(
+        ctx: Context<InitializeVerifierConfig>,
+        factory_program_id: Pubkey,
+    ) -> Result<()> {
+        // Validate factory program ID is executable
+        require!(
+            ctx.accounts.factory_program.executable,
+            VerifierError::InvalidProgramId
+        );
+        require_keys_eq!(
+            ctx.accounts.factory_program.key(),
+            factory_program_id,
+            VerifierError::InvalidProgramId
+        );
+        
+        let config = &mut ctx.accounts.verifier_config;
+        config.factory_program_id = factory_program_id;
+        config.authority = ctx.accounts.authority.key();
+        config.bump = ctx.bumps.verifier_config;
+        
+        emit!(VerifierConfigInitialized {
+            factory_program_id,
+            authority: config.authority,
+        });
+        
+        Ok(())
+    }
+    
+    // CRITICAL FIX: Update factory program ID (requires authority)
+    pub fn update_factory_program_id(
+        ctx: Context<UpdateFactoryProgramId>,
+        new_factory_program_id: Pubkey,
+    ) -> Result<()> {
+        require_keys_eq!(
+            ctx.accounts.authority.key(),
+            ctx.accounts.verifier_config.authority,
+            VerifierError::UnauthorizedAuthority
+        );
+        
+        // Validate new program ID
+        require!(
+            ctx.accounts.new_factory_program.executable,
+            VerifierError::InvalidProgramId
+        );
+        require_keys_eq!(
+            ctx.accounts.new_factory_program.key(),
+            new_factory_program_id,
+            VerifierError::InvalidProgramId
+        );
+        
+        let old_id = ctx.accounts.verifier_config.factory_program_id;
+        ctx.accounts.verifier_config.factory_program_id = new_factory_program_id;
+        
+        emit!(FactoryProgramIdUpdated {
+            old_factory_program_id: old_id,
+            new_factory_program_id,
+        });
+        
+        Ok(())
+    }
 }
 
 #[derive(Accounts)]
@@ -411,6 +481,9 @@ pub struct InitializeVerifyingKey<'info> {
     pub verifier_state: Account<'info, VerifyingKeyAccount>,
     /// Governance or authority that owns this verifying key.
     pub authority: Signer<'info>,
+    /// CRITICAL FIX: Optional verifier config - if provided, uses stored factory_program_id
+    /// CHECK: Validated in instruction if provided
+    pub verifier_config: Option<Account<'info, VerifierConfig>>,
     #[account(mut)]
     pub payer: Signer<'info>,
     pub system_program: Program<'info, System>,
@@ -461,6 +534,37 @@ pub struct RevokeVerifyingKey<'info> {
     pub authority: Signer<'info>,
 }
 
+#[derive(Accounts)]
+pub struct InitializeVerifierConfig<'info> {
+    #[account(
+        init,
+        payer = payer,
+        seeds = [b"verifier-config", crate::ID.as_ref()],
+        bump,
+        space = VerifierConfig::SPACE,
+    )]
+    pub verifier_config: Account<'info, VerifierConfig>,
+    pub authority: Signer<'info>,
+    /// CHECK: Validated in instruction to be executable
+    pub factory_program: AccountInfo<'info>,
+    #[account(mut)]
+    pub payer: Signer<'info>,
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct UpdateFactoryProgramId<'info> {
+    #[account(
+        mut,
+        seeds = [b"verifier-config", crate::ID.as_ref()],
+        bump = verifier_config.bump,
+    )]
+    pub verifier_config: Account<'info, VerifierConfig>,
+    pub authority: Signer<'info>,
+    /// CHECK: Validated in instruction to be executable
+    pub new_factory_program: AccountInfo<'info>,
+}
+
 #[account]
 pub struct VerifyingKeyAccount {
     pub authority: Pubkey,
@@ -472,6 +576,19 @@ pub struct VerifyingKeyAccount {
     pub verifying_key: Vec<u8>,
     pub revoked: bool, // CRITICAL FIX: Track revocation status
     pub revoked_at: Option<i64>, // CRITICAL FIX: Track when revoked
+}
+
+// CRITICAL FIX: Configuration account to store factory program ID
+#[account]
+pub struct VerifierConfig {
+    pub factory_program_id: Pubkey,
+    pub authority: Pubkey,
+    pub bump: u8,
+}
+
+impl VerifierConfig {
+    // SPACE = discriminator[8] + factory_program_id[32] + authority[32] + bump[1]
+    pub const SPACE: usize = 8 + 32 + 32 + 1;
 }
 
 impl VerifyingKeyAccount {
@@ -511,6 +628,18 @@ pub struct VerifyingKeyUpdated {
 pub struct VerifyingKeyRevoked {
     pub verifying_key_id: [u8; 32],
     pub revoked_at: i64,
+}
+
+#[event]
+pub struct VerifierConfigInitialized {
+    pub factory_program_id: Pubkey,
+    pub authority: Pubkey,
+}
+
+#[event]
+pub struct FactoryProgramIdUpdated {
+    pub old_factory_program_id: Pubkey,
+    pub new_factory_program_id: Pubkey,
 }
 
 #[error_code]
@@ -556,6 +685,8 @@ pub enum VerifierError {
     AccountSizeMismatch,
     #[msg("proof format is invalid")]
     InvalidProofFormat,
+    #[msg("invalid program ID")]
+    InvalidProgramId,
 }
 
 fn verify_account_hash(account: &VerifyingKeyAccount) -> bool {

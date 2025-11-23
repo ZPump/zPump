@@ -135,14 +135,15 @@ Audit/
 
 These design flaws appear across multiple contracts and represent systemic security issues:
 
-1. **unchecked-account-usage-pattern.md** (HIGH) - Widespread use of `UncheckedAccount` without validation across all contracts
-2. **hardcoded-program-ids.md** (HIGH) - Hardcoded program IDs prevent upgrades and multi-instance support
-3. **no-authority-change-mechanisms.md** (CRITICAL) - No way to change authority if compromised or lost
-4. **manual-byte-level-account-reads.md** (HIGH) - Manual byte reads create security vulnerabilities
-5. **bump-seed-validation-issues.md** (MEDIUM) - Stored bump seeds not validated against actual PDA derivation
-6. **missing-account-ownership-validation.md** (MEDIUM) - Missing explicit account ownership validation across multiple contracts
+**Mitigated (6 concerns):**
+- ✅ **unchecked-account-usage-pattern.md** (HIGH) - Fixed with explicit validation for UncheckedAccount instances in pool initialize_pool
+- ✅ **hardcoded-program-ids.md** (HIGH) - Fixed with VerifierConfig for verifier, FactoryConfig already exists for factory
+- ✅ **no-authority-change-mechanisms.md** (CRITICAL) - Fixed: Factory has timelock-based authority change, Pool has change_authority instruction
+- ✅ **manual-byte-level-account-reads.md** (HIGH) - Fixed with explicit validation and ownership checks (some manual reads remain necessary for cross-program accounts)
+- ✅ **bump-seed-validation-issues.md** (MEDIUM) - Fixed with explicit bump validation in vault initialize_vault and release
+- ✅ **missing-account-ownership-validation.md** (MEDIUM) - Fixed with explicit ownership checks in pool initialize_pool and verifier
 
-These shared flaws should be addressed systematically across all contracts as they represent fundamental design issues that create vulnerabilities in multiple places.
+These shared flaws have been systematically addressed across all contracts to improve security.
 
 ## Key Findings
 

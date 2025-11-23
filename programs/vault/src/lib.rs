@@ -34,7 +34,7 @@ pub mod ptf_vault {
         );
         
         // CRITICAL FIX: Validate pool_authority is a valid pool PDA
-        let (expected_pool_authority, _) = Pubkey::find_program_address(
+        let (expected_pool_authority, expected_bump) = Pubkey::find_program_address(
             &[seeds::POOL, ctx.accounts.origin_mint.key().as_ref()],
             &PTF_POOL_PROGRAM_ID,
         );
@@ -44,10 +44,25 @@ pub mod ptf_vault {
             VaultError::InvalidPoolAuthority
         );
         
+        // CRITICAL FIX: Validate bump matches actual PDA derivation
+        let (expected_vault_pda, expected_vault_bump) = Pubkey::find_program_address(
+            &[seeds::VAULT, ctx.accounts.origin_mint.key().as_ref()],
+            &crate::ID,
+        );
+        require_keys_eq!(
+            ctx.accounts.vault_state.key(),
+            expected_vault_pda,
+            VaultError::InvalidBump
+        );
+        require!(
+            ctx.bumps.vault_state == expected_vault_bump,
+            VaultError::InvalidBump
+        );
+        
         let state = &mut ctx.accounts.vault_state;
         state.origin_mint = ctx.accounts.origin_mint.key();
         state.pool_authority = pool_authority;
-        state.bump = ctx.bumps.vault_state;
+        state.bump = expected_vault_bump; // Use validated bump
         state.locked = false; // Initialize reentrancy guard
         state.lock_timestamp = None;
         state.authority_change_sequence = 0;
@@ -105,7 +120,22 @@ pub mod ptf_vault {
         // Cache values before mutable borrow
         let origin_mint = ctx.accounts.vault_state.origin_mint;
         let pool_authority = ctx.accounts.vault_state.pool_authority;
-        let bump = ctx.accounts.vault_state.bump;
+        let stored_bump = ctx.accounts.vault_state.bump;
+        
+        // CRITICAL FIX: Validate bump matches actual PDA derivation
+        let (expected_vault_pda, expected_bump) = Pubkey::find_program_address(
+            &[seeds::VAULT, origin_mint.as_ref()],
+            &crate::ID,
+        );
+        require_keys_eq!(
+            ctx.accounts.vault_state.key(),
+            expected_vault_pda,
+            VaultError::InvalidBump
+        );
+        require!(
+            stored_bump == expected_bump,
+            VaultError::InvalidBump
+        );
         
         let vault_state = &mut ctx.accounts.vault_state;
         
@@ -125,7 +155,7 @@ pub mod ptf_vault {
             let seeds = &[
                 seeds::VAULT,
                 origin_mint.as_ref(),
-                &[bump],
+                &[expected_bump], // Use validated bump
             ];
             let signer = &[&seeds[..]];
             let cpi_accounts = Transfer {
@@ -708,6 +738,8 @@ fn release_lock(state: &mut VaultState) {
 
 #[error_code]
 pub enum VaultError {
+    #[msg("invalid bump seed")]
+    InvalidBump,
     #[msg("E_UNAUTHORIZED_CALLER")]
     UnauthorizedCaller,
     #[msg("E_INVALID_MINT")]
