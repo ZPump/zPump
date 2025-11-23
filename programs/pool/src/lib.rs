@@ -3412,7 +3412,9 @@ pub struct PoolState {
 
 impl PoolState {
     // CRITICAL FIX: Expanded from 16 to 32 to prevent overflow and allow more root history
-    pub const MAX_ROOTS: usize = 32;
+    // CRITICAL FIX: Increased from 16 to 64 to prevent root history overflow
+    // This allows more historical roots to be tracked, reducing the risk of fund locking
+    pub const MAX_ROOTS: usize = 64;
     // CRITICAL FIX: Root expiration time (7 days in seconds) to prevent replay attacks
     pub const ROOT_EXPIRATION_SECONDS: i64 = 7 * 24 * 60 * 60; // 7 days
     pub const SPACE: usize = 8 + core::mem::size_of::<PoolState>() + 64;
@@ -3423,6 +3425,13 @@ impl PoolState {
         let timestamp = clock.unix_timestamp;
         
         if self.roots_len as usize >= Self::MAX_ROOTS {
+            // CRITICAL FIX: Log warning when root history overflows
+            // This helps identify when users might be affected by root expiration
+            msg!(
+                "WARNING: Root history overflow - oldest root will be lost (current len: {}, max: {})",
+                self.roots_len,
+                Self::MAX_ROOTS
+            );
             // Shift all entries left, dropping the oldest
             for idx in 1..Self::MAX_ROOTS {
                 self.recent_roots[idx - 1] = self.recent_roots[idx];
@@ -3455,8 +3464,16 @@ impl PoolState {
                 if root_age <= Self::ROOT_EXPIRATION_SECONDS {
                     return true;
                 }
-                // Root expired, but we still check it to maintain consistency
-                // The expiration is mainly for preventing very old replay attacks
+                // Root expired, but we still allow it to prevent fund locking
+                // Log warning for monitoring
+                msg!(
+                    "WARNING: Root validation found expired root (age: {} seconds, max: {})",
+                    root_age,
+                    Self::ROOT_EXPIRATION_SECONDS
+                );
+                // For now, allow expired roots to prevent fund locking
+                // TODO: After migration period, consider rejecting expired roots
+                return true;
             }
         }
         false
