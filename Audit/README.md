@@ -78,24 +78,26 @@ Audit/
 16. **rate-limiting-bypass-migration.md** (MEDIUM) - Rate limiting bypass during migration
 17. **sequence-overflow-edge-case.md** (LOW) - Sequence overflow edge case at u64::MAX
 
-### ptf_vault (16 security concerns)
+### ptf_vault (6 remaining security concerns)
 
-1. **reentrancy-protection.md** (HIGH) - Reentrancy protection mechanisms
-2. **authority-change-security.md** (CRITICAL) - Authority change timelock security
-3. **insufficient-balance-check.md** (MEDIUM) - Balance validation edge cases
-4. **pool-authority-validation-initialization.md** (HIGH) - No validation of pool authority during initialization
-5. **new-authority-validation.md** (HIGH) - No validation of new authority in authority change proposals
-6. **stale-pending-authority-change.md** (MEDIUM) - Stale pending authority changes block new proposals
-7. **token-account-validation.md** (MEDIUM) - Insufficient validation of token account ownership
-8. **origin-mint-validation.md** (MEDIUM) - No validation of origin_mint during initialization
-9. **existing-pending-change-check.md** (MEDIUM) - Missing check for existing pending authority change
-10. **lock-recovery-mechanism.md** (MEDIUM) - Missing lock recovery mechanism for stuck locks
-11. **no-amount-limits.md** (LOW) - No maximum amount limits on deposits/releases
-12. **bump-seed-validation.md** (MEDIUM) - No validation of bump seeds in PDA derivation
-13. **authority-change-race-condition.md** (HIGH) - Race conditions in authority change mechanism
-14. **token-program-validation.md** (MEDIUM) - No validation of token program is valid SPL Token
-15. **account-closure-authorization.md** (MEDIUM) - Rent collection from account closure could incentivize attacks
-16. **no-expiration-on-pending-changes.md** (MEDIUM) - Pending authority changes don't expire
+1. **insufficient-balance-check.md** (MEDIUM) - Balance validation edge cases
+2. **token-account-validation.md** (MEDIUM) - Insufficient validation of token account ownership
+3. **no-amount-limits.md** (LOW) - No maximum amount limits on deposits/releases
+4. **bump-seed-validation.md** (MEDIUM) - No validation of bump seeds in PDA derivation
+5. **account-closure-authorization.md** (MEDIUM) - Rent collection from account closure could incentivize attacks
+
+**Mitigated (11 concerns):**
+- ✅ reentrancy-protection.md (HIGH) - Fixed with lock timeout and recovery mechanism
+- ✅ authority-change-security.md (CRITICAL) - Fixed with integrity hash, expiration, rate limiting
+- ✅ pool-authority-validation-initialization.md (HIGH) - Fixed with validation in initialize_vault
+- ✅ new-authority-validation.md (HIGH) - Fixed with validation in propose_authority_change
+- ✅ stale-pending-authority-change.md (MEDIUM) - Fixed with expiration and cleanup function
+- ✅ origin-mint-validation.md (MEDIUM) - Fixed with InterfaceAccount<Mint>
+- ✅ existing-pending-change-check.md (MEDIUM) - Fixed with init constraint handling
+- ✅ lock-recovery-mechanism.md (MEDIUM) - Fixed with recover_lock function
+- ✅ authority-change-race-condition.md (HIGH) - Fixed with sequence numbers and integrity checks
+- ✅ token-program-validation.md (MEDIUM) - Fixed with validate_token_program function
+- ✅ no-expiration-on-pending-changes.md (MEDIUM) - Fixed with expires_at field
 
 ### ptf_verifier_groth16 (18 security concerns)
 
