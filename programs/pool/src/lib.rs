@@ -289,14 +289,33 @@ pub mod ptf_pool {
                 raw_ptkn_mint,
                 PoolError::TwinMintMismatch,
             );
-            // Read decimals from mint (offset 44 for Token-2022, or 44 for standard)
+            
+            // CRITICAL FIX: Validate twin mint is Token-2022 program
+            // Token-2022 program ID: TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb
+            use anchor_lang::solana_program::pubkey;
+            const TOKEN_2022_PROGRAM_ID: Pubkey = pubkey!("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb");
+            require_keys_eq!(
+                *twin_mint_info.owner,
+                TOKEN_2022_PROGRAM_ID,
+                PoolError::TwinMintMismatch,
+            );
+            
+            // Read mint data with comprehensive validation
             let twin_data = twin_mint_info.try_borrow_data()?;
-            if twin_data.len() < 44 {
-                return err!(PoolError::TwinMintDecimalsMismatch);
-            }
+            // Mint layout: mint_authority[36] + supply[8] + decimals[1] + is_initialized[1] + freeze_authority[36] + ...
+            // Minimum size: 36 + 8 + 1 + 1 + 36 = 82 bytes
+            require!(
+                twin_data.len() >= 82,
+                PoolError::TwinMintDecimalsMismatch
+            );
+            
             let twin_decimals = twin_data[44];
+            
             // Read mint_authority (offset 0-36, COption<Pubkey>)
             let mint_auth_bytes: [u8; 36] = twin_data[0..36].try_into().map_err(|_| PoolError::TwinMintDecimalsMismatch)?;
+            
+            // Read freeze_authority (offset 36-72, COption<Pubkey>)
+            let freeze_auth_bytes: [u8; 36] = twin_data[36..72].try_into().map_err(|_| PoolError::TwinMintDecimalsMismatch)?;
             drop(twin_data);
             
             // Read origin_mint decimals
@@ -312,7 +331,7 @@ pub mod ptf_pool {
                 PoolError::TwinMintDecimalsMismatch,
             );
             
-            // Check mint_authority (first 4 bytes are the COption tag)
+            // CRITICAL FIX: Validate mint_authority must be factory PDA
             if mint_auth_bytes[0] != 0 {
                 // Some variant - extract Pubkey from bytes 4-36
                 let auth_bytes: [u8; 32] = mint_auth_bytes[4..36].try_into().map_err(|_| PoolError::TwinMintAuthorityMismatch)?;
@@ -325,6 +344,21 @@ pub mod ptf_pool {
             } else {
                 return err!(PoolError::TwinMintAuthorityMismatch);
             }
+            
+            // CRITICAL FIX: Validate freeze_authority must be None or factory PDA
+            if freeze_auth_bytes[0] != 0 {
+                // Some variant - extract Pubkey from bytes 4-36
+                let freeze_auth_bytes_pubkey: [u8; 32] = freeze_auth_bytes[4..36].try_into().map_err(|_| PoolError::TwinMintAuthorityMismatch)?;
+                let freeze_auth = Pubkey::new_from_array(freeze_auth_bytes_pubkey);
+                // Only allow factory PDA as freeze authority
+                require_keys_eq!(
+                    freeze_auth,
+                    ctx.accounts.factory_state.key(),
+                    PoolError::TwinMintAuthorityMismatch,
+                );
+            }
+            // None is acceptable for freeze authority
+            
             pool_state.twin_mint = twin_mint_info.key();
             pool_state.twin_mint_enabled = true;
         } else {
