@@ -2016,6 +2016,11 @@ fn process_unshield<'info>(
             )
         };
         if post_unshield_enabled && target_program != Pubkey::default() {
+            // CRITICAL FIX: Reentrancy protection - prevent hooks from calling back into pool
+            require!(
+                target_program != pool_key,
+                PoolError::HookReentrancyDetected
+            );
             // CRITICAL FIX: Verify hook is still whitelisted at execution time
             require!(
                 ctx.accounts.hook_whitelist.is_allowed(&target_program),
@@ -4278,6 +4283,11 @@ fn process_shield_finalize_ledger<'info>(
                 cfg.post_shield_enabled,
             );
             if post_shield_enabled && target_program != Pubkey::default() {
+                // CRITICAL FIX: Reentrancy protection - prevent hooks from calling back into pool
+                require!(
+                    target_program != pool_loader.key(),
+                    PoolError::HookReentrancyDetected
+                );
                 require!(
                     hook_whitelist.is_allowed(&target_program),
                     PoolError::HookNotWhitelisted
@@ -4866,6 +4876,8 @@ pub enum PoolError {
     NullifierSetMismatch,
     #[msg("E_HOOK_NOT_WHITELISTED")]
     HookNotWhitelisted,
+    #[msg("E_HOOK_REENTRANCY_DETECTED")]
+    HookReentrancyDetected,
     #[msg("E_HOOK_ALREADY_WHITELISTED")]
     HookAlreadyWhitelisted,
     #[msg("E_WHITELIST_FULL")]
