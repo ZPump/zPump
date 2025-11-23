@@ -741,7 +741,7 @@ pub mod ptf_pool {
             let mut cursor = std::io::Cursor::new(&mut nullifier_set_data[..]);
             nullifier_set.serialize(&mut cursor).map_err(|_| PoolError::NullifierSetMismatch)?;
         } else {
-            // Validate existing nullifier_set
+            // CRITICAL FIX: Validate existing nullifier_set and its bump seed
             let nullifier_set_data = ctx.accounts.nullifier_set.try_borrow_data()?;
             if nullifier_set_data.len() >= 8 + 32 {
                 let pool_bytes: [u8; 32] = nullifier_set_data[8..40].try_into().map_err(|_| PoolError::NullifierSetMismatch)?;
@@ -757,7 +757,7 @@ pub mod ptf_pool {
         
         // CRITICAL SECURITY FIX: Initialize commitment_tree if it was just created
         // Anchor's init_if_needed creates the account but doesn't initialize the data structure
-        // We need to call init() to properly set up the tree
+        // CRITICAL FIX: Validate commitment_tree PDA and bump seed
         let commitment_tree_bump = ctx.bumps.commitment_tree;
         {
             let mut commitment_tree = ctx.accounts.commitment_tree.load_mut()?;
@@ -772,11 +772,16 @@ pub mod ptf_pool {
                     pool_loader.key(),
                     PoolError::CommitmentTreeMismatch
                 );
+                // CRITICAL FIX: Validate stored bump matches derived bump
+                require!(
+                    commitment_tree.bump == commitment_tree_bump,
+                    PoolError::InvalidBump
+                );
             }
         }
         
-        // Validate note_ledger manually (converted from AccountLoader to UncheckedAccount to reduce stack usage)
-        let (expected_note_ledger, _) = Pubkey::find_program_address(
+        // CRITICAL FIX: Validate note_ledger PDA and bump seed
+        let (expected_note_ledger, expected_note_ledger_bump) = Pubkey::find_program_address(
             &[seeds::NOTES, pool_state.origin_mint.as_ref()],
             ctx.program_id,
         );
@@ -784,6 +789,11 @@ pub mod ptf_pool {
             ctx.accounts.note_ledger.key(),
             expected_note_ledger,
             PoolError::NoteLedgerMismatch,
+        );
+        // CRITICAL FIX: Validate stored bump matches derived bump
+        require!(
+            pool_state.note_ledger_bump == expected_note_ledger_bump,
+            PoolError::InvalidBump
         );
         
         // Validate note_ledger pool matches
@@ -4946,6 +4956,8 @@ pub enum PoolError {
     InvalidFieldElement,
     #[msg("E_INVALID_STATE_TRANSITION")]
     InvalidStateTransition,
+    #[msg("E_INVALID_BUMP")]
+    InvalidBump,
     #[msg("E_PUBLIC_INPUTS_TOO_LARGE")]
     PublicInputsTooLarge,
     #[msg("E_PUBLIC_INPUT_MISMATCH")]
