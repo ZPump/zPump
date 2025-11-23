@@ -7,6 +7,82 @@
   },
   "instructions": [
     {
+      "name": "add_hook_to_whitelist",
+      "discriminator": [
+        231,
+        240,
+        132,
+        47,
+        243,
+        237,
+        52,
+        202
+      ],
+      "accounts": [
+        {
+          "name": "hook_whitelist",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  104,
+                  111,
+                  111,
+                  107,
+                  45,
+                  119,
+                  104,
+                  105,
+                  116,
+                  101,
+                  108,
+                  105,
+                  115,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "pool_state"
+              }
+            ]
+          }
+        },
+        {
+          "name": "pool_state",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  111,
+                  111,
+                  108
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "pool_state"
+              }
+            ]
+          }
+        },
+        {
+          "name": "authority",
+          "signer": true
+        }
+      ],
+      "args": [
+        {
+          "name": "hook_program",
+          "type": "pubkey"
+        }
+      ]
+    },
+    {
       "name": "approve_allowance",
       "discriminator": [
         100,
@@ -94,6 +170,91 @@
               "name": "ApproveAllowanceArgs"
             }
           }
+        }
+      ]
+    },
+    {
+      "name": "change_authority",
+      "docs": [
+        "Change the pool authority",
+        "CRITICAL SECURITY: Only the current authority can change to a new authority"
+      ],
+      "discriminator": [
+        50,
+        106,
+        66,
+        104,
+        99,
+        118,
+        145,
+        88
+      ],
+      "accounts": [
+        {
+          "name": "pool_state",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  111,
+                  111,
+                  108
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "pool_state"
+              }
+            ]
+          }
+        },
+        {
+          "name": "authority",
+          "signer": true,
+          "relations": [
+            "pool_state"
+          ]
+        },
+        {
+          "name": "hook_whitelist",
+          "writable": true,
+          "optional": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  104,
+                  111,
+                  111,
+                  107,
+                  45,
+                  119,
+                  104,
+                  105,
+                  116,
+                  101,
+                  108,
+                  105,
+                  115,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "pool_state"
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "new_authority",
+          "type": "pubkey"
         }
       ]
     },
@@ -574,6 +735,10 @@
           "signer": true
         },
         {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        },
+        {
           "name": "rent",
           "address": "SysvarRent111111111111111111111111111111111"
         }
@@ -586,6 +751,82 @@
               "name": "TransferArgs"
             }
           }
+        }
+      ]
+    },
+    {
+      "name": "remove_hook_from_whitelist",
+      "discriminator": [
+        49,
+        76,
+        86,
+        187,
+        107,
+        94,
+        106,
+        54
+      ],
+      "accounts": [
+        {
+          "name": "hook_whitelist",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  104,
+                  111,
+                  111,
+                  107,
+                  45,
+                  119,
+                  104,
+                  105,
+                  116,
+                  101,
+                  108,
+                  105,
+                  115,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "pool_state"
+              }
+            ]
+          }
+        },
+        {
+          "name": "pool_state",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  111,
+                  111,
+                  108
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "pool_state"
+              }
+            ]
+          }
+        },
+        {
+          "name": "authority",
+          "signer": true
+        }
+      ],
+      "args": [
+        {
+          "name": "hook_program",
+          "type": "pubkey"
         }
       ]
     },
@@ -877,8 +1118,42 @@
           }
         },
         {
-          "name": "nullifier_set",
+          "name": "hook_whitelist",
           "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  104,
+                  111,
+                  111,
+                  107,
+                  45,
+                  119,
+                  104,
+                  105,
+                  116,
+                  101,
+                  108,
+                  105,
+                  115,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "pool_state"
+              }
+            ]
+          }
+        },
+        {
+          "name": "nullifier_set",
+          "docs": [
+            "CRITICAL SECURITY FIX: Use init_if_needed to prevent race conditions",
+            "Anchor handles initialization atomically, preventing concurrent initialization attempts"
+          ],
           "pda": {
             "seeds": [
               {
@@ -900,6 +1175,10 @@
         },
         {
           "name": "commitment_tree",
+          "docs": [
+            "CRITICAL SECURITY FIX: Use init_if_needed to prevent race conditions",
+            "Anchor handles initialization atomically, preventing concurrent initialization attempts"
+          ],
           "writable": true,
           "pda": {
             "seeds": [
@@ -921,7 +1200,6 @@
         },
         {
           "name": "note_ledger",
-          "writable": true,
           "pda": {
             "seeds": [
               {
@@ -1056,10 +1334,6 @@
         },
         {
           "name": "token_program"
-        },
-        {
-          "name": "instructions",
-          "address": "Sysvar1nstructions1111111111111111111111111"
         },
         {
           "name": "system_program",
@@ -1226,7 +1500,6 @@
         },
         {
           "name": "note_ledger",
-          "writable": true,
           "pda": {
             "seeds": [
               {
@@ -1581,6 +1854,10 @@
           "signer": true
         },
         {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        },
+        {
           "name": "rent",
           "address": "SysvarRent111111111111111111111111111111111"
         }
@@ -1929,6 +2206,10 @@
         },
         {
           "name": "token_program"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
         },
         {
           "name": "payer",
@@ -2286,6 +2567,10 @@
           "name": "token_program"
         },
         {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        },
+        {
           "name": "payer",
           "writable": true,
           "signer": true
@@ -2303,6 +2588,78 @@
               "name": "UnshieldArgs"
             }
           }
+        }
+      ]
+    },
+    {
+      "name": "withdraw_protocol_fees",
+      "docs": [
+        "Withdraw accumulated protocol fees",
+        "CRITICAL FIX: Allows protocol to collect accumulated fees"
+      ],
+      "discriminator": [
+        11,
+        68,
+        165,
+        98,
+        18,
+        208,
+        134,
+        73
+      ],
+      "accounts": [
+        {
+          "name": "authority",
+          "signer": true,
+          "relations": [
+            "pool_state"
+          ]
+        },
+        {
+          "name": "pool_state",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  111,
+                  111,
+                  108
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "pool_state"
+              }
+            ]
+          }
+        },
+        {
+          "name": "vault_state",
+          "writable": true
+        },
+        {
+          "name": "vault_token_account",
+          "writable": true
+        },
+        {
+          "name": "destination_token_account",
+          "writable": true
+        },
+        {
+          "name": "vault_program",
+          "address": "9g6ZodQwxK8MN6MX3dbvFC3E7vGVqFtKZEHY7PByRAuh"
+        },
+        {
+          "name": "token_program"
+        }
+      ],
+      "args": [
+        {
+          "name": "amount",
+          "type": "u64"
         }
       ]
     }
@@ -2467,6 +2824,19 @@
   ],
   "events": [
     {
+      "name": "AuthorityChanged",
+      "discriminator": [
+        31,
+        19,
+        174,
+        152,
+        4,
+        82,
+        215,
+        226
+      ]
+    },
+    {
       "name": "FeaturesUpdated",
       "discriminator": [
         103,
@@ -2516,6 +2886,32 @@
         95,
         253,
         85
+      ]
+    },
+    {
+      "name": "HookProgramRemoved",
+      "discriminator": [
+        189,
+        103,
+        254,
+        237,
+        142,
+        80,
+        253,
+        144
+      ]
+    },
+    {
+      "name": "HookProgramWhitelisted",
+      "discriminator": [
+        173,
+        91,
+        50,
+        44,
+        231,
+        253,
+        15,
+        116
       ]
     },
     {
@@ -2660,268 +3056,421 @@
         254,
         229
       ]
+    },
+    {
+      "name": "ProtocolFeesWithdrawn",
+      "discriminator": [
+        202,
+        213,
+        134,
+        216,
+        108,
+        14,
+        84,
+        99
+      ]
     }
   ],
   "errors": [
     {
       "code": 6000,
+      "name": "InvalidAccountOwner",
+      "msg": "account is not owned by expected program"
+    },
+    {
+      "code": 6001,
       "name": "InvalidFeeBps",
       "msg": "E_INVALID_FEE_BPS"
     },
     {
-      "code": 6001,
+      "code": 6002,
+      "name": "PoolAlreadyInitialized",
+      "msg": "E_POOL_ALREADY_INITIALIZED"
+    },
+    {
+      "code": 6003,
       "name": "VerifierMismatch",
       "msg": "E_VERIFIER_MISMATCH"
     },
     {
-      "code": 6002,
+      "code": 6004,
       "name": "VerifyingKeyHashMismatch",
       "msg": "E_VERIFYING_KEY_HASH_MISMATCH"
     },
     {
-      "code": 6003,
+      "code": 6005,
       "name": "InvalidPublicInputs",
       "msg": "E_INVALID_PUBLIC_INPUTS"
     },
     {
-      "code": 6004,
+      "code": 6006,
+      "name": "InvalidFieldElement",
+      "msg": "E_INVALID_FIELD_ELEMENT"
+    },
+    {
+      "code": 6007,
+      "name": "InvalidStateTransition",
+      "msg": "E_INVALID_STATE_TRANSITION"
+    },
+    {
+      "code": 6008,
+      "name": "InvalidBump",
+      "msg": "E_INVALID_BUMP"
+    },
+    {
+      "code": 6009,
+      "name": "PublicInputsTooLarge",
+      "msg": "E_PUBLIC_INPUTS_TOO_LARGE"
+    },
+    {
+      "code": 6010,
       "name": "PublicInputMismatch",
       "msg": "E_PUBLIC_INPUT_MISMATCH"
     },
     {
-      "code": 6005,
+      "code": 6011,
       "name": "UnknownRoot",
       "msg": "E_UNKNOWN_ROOT"
     },
     {
-      "code": 6006,
+      "code": 6012,
       "name": "NullifierReuse",
       "msg": "E_NULLIFIER_REUSE"
     },
     {
-      "code": 6007,
+      "code": 6013,
       "name": "AmountOverflow",
       "msg": "E_AMOUNT_OVERFLOW"
     },
     {
-      "code": 6008,
+      "code": 6014,
+      "name": "InvalidAmount",
+      "msg": "E_INVALID_AMOUNT"
+    },
+    {
+      "code": 6015,
+      "name": "AmountTooLarge",
+      "msg": "E_AMOUNT_TOO_LARGE"
+    },
+    {
+      "code": 6016,
       "name": "InsufficientLiquidity",
       "msg": "E_INSUFFICIENT_LIQUIDITY"
     },
     {
-      "code": 6009,
+      "code": 6017,
+      "name": "InsufficientFees",
+      "msg": "E_INSUFFICIENT_FEES"
+    },
+    {
+      "code": 6018,
       "name": "FeatureDisabled",
       "msg": "E_FEATURE_DISABLED"
     },
     {
-      "code": 6010,
+      "code": 6019,
       "name": "MintFrozen",
       "msg": "E_MINT_FROZEN"
     },
     {
-      "code": 6011,
+      "code": 6020,
       "name": "ShieldFinalizationRequired",
       "msg": "E_SHIELD_FINALIZATION_REQUIRED"
     },
     {
-      "code": 6012,
+      "code": 6021,
       "name": "MismatchedVaultAuthority",
       "msg": "E_VAULT_AUTHORITY_MISMATCH"
     },
     {
-      "code": 6013,
+      "code": 6022,
       "name": "OriginMintMismatch",
       "msg": "E_ORIGIN_MINT_MISMATCH"
     },
     {
-      "code": 6014,
+      "code": 6023,
       "name": "MintMappingCorrupt",
       "msg": "E_MINT_MAPPING_CORRUPT"
     },
     {
-      "code": 6015,
+      "code": 6024,
+      "name": "AccountDataTooShort",
+      "msg": "E_ACCOUNT_DATA_TOO_SHORT"
+    },
+    {
+      "code": 6025,
+      "name": "InvalidAccountDiscriminator",
+      "msg": "E_INVALID_ACCOUNT_DISCRIMINATOR"
+    },
+    {
+      "code": 6026,
+      "name": "AccountDataCorrupt",
+      "msg": "E_ACCOUNT_DATA_CORRUPT"
+    },
+    {
+      "code": 6027,
       "name": "VaultTokenAccountMismatch",
       "msg": "E_VAULT_TOKEN_ACCOUNT_MISMATCH"
     },
     {
-      "code": 6016,
+      "code": 6028,
       "name": "InvalidDepositorAccount",
       "msg": "E_INVALID_DEPOSITOR_ACCOUNT"
     },
     {
-      "code": 6017,
+      "code": 6029,
       "name": "TwinMintMismatch",
       "msg": "E_TWIN_MINT_MISMATCH"
     },
     {
-      "code": 6018,
+      "code": 6030,
       "name": "TwinMintNotConfigured",
       "msg": "E_TWIN_MINT_NOT_CONFIGURED"
     },
     {
-      "code": 6019,
+      "code": 6031,
       "name": "TwinMintAuthorityMismatch",
       "msg": "E_TWIN_MINT_AUTHORITY_MISMATCH"
     },
     {
-      "code": 6020,
+      "code": 6032,
       "name": "TwinMintDecimalsMismatch",
       "msg": "E_TWIN_MINT_DECIMALS_MISMATCH"
     },
     {
-      "code": 6021,
+      "code": 6033,
       "name": "InvariantBreach",
       "msg": "E_INVARIANT_BREACH"
     },
     {
-      "code": 6022,
+      "code": 6034,
       "name": "HooksDisabled",
       "msg": "E_HOOKS_DISABLED"
     },
     {
-      "code": 6023,
+      "code": 6035,
       "name": "TooManyHookAccounts",
       "msg": "E_TOO_MANY_HOOK_ACCOUNTS"
     },
     {
-      "code": 6024,
+      "code": 6036,
       "name": "HookConfigInvalid",
       "msg": "E_HOOK_CONFIG_INVALID"
     },
     {
-      "code": 6025,
+      "code": 6037,
       "name": "HookAccountMismatch",
       "msg": "E_HOOK_ACCOUNT_MISMATCH"
     },
     {
-      "code": 6026,
+      "code": 6038,
       "name": "HookAccountMissing",
       "msg": "E_HOOK_ACCOUNT_MISSING"
     },
     {
-      "code": 6027,
+      "code": 6039,
       "name": "HookAccountUnexpected",
       "msg": "E_HOOK_ACCOUNT_UNEXPECTED"
     },
     {
-      "code": 6028,
+      "code": 6040,
       "name": "NoteLedgerMismatch",
       "msg": "E_NOTE_LEDGER_MISMATCH"
     },
     {
-      "code": 6029,
+      "code": 6041,
       "name": "CommitmentTreeMismatch",
       "msg": "E_TREE_MISMATCH"
     },
     {
-      "code": 6030,
+      "code": 6042,
       "name": "InvalidChangeNoteCount",
       "msg": "E_INVALID_CHANGE_NOTE_COUNT"
     },
     {
-      "code": 6031,
+      "code": 6043,
       "name": "OutputSetMismatch",
       "msg": "E_OUTPUT_SET_MISMATCH"
     },
     {
-      "code": 6032,
+      "code": 6044,
       "name": "CanopyDepthInvalid",
       "msg": "E_CANOPY_DEPTH_INVALID"
     },
     {
-      "code": 6033,
+      "code": 6045,
       "name": "TreeFull",
       "msg": "E_TREE_FULL"
     },
     {
-      "code": 6034,
+      "code": 6046,
       "name": "RootMismatch",
       "msg": "E_ROOT_MISMATCH"
     },
     {
-      "code": 6035,
+      "code": 6047,
+      "name": "RootDrift",
+      "msg": "E_ROOT_DRIFT"
+    },
+    {
+      "code": 6048,
       "name": "PendingShieldInFlight",
       "msg": "E_PENDING_SHIELD_IN_FLIGHT"
     },
     {
-      "code": 6036,
+      "code": 6049,
       "name": "NoPendingShield",
       "msg": "E_NO_PENDING_SHIELD"
     },
     {
-      "code": 6037,
+      "code": 6050,
       "name": "PendingShieldMismatch",
       "msg": "E_PENDING_SHIELD_MISMATCH"
     },
     {
-      "code": 6038,
+      "code": 6051,
       "name": "MissingShieldFinalize",
       "msg": "E_SHIELD_FINALIZE_MISSING"
     },
     {
-      "code": 6039,
+      "code": 6052,
       "name": "ShieldClaimMismatch",
       "msg": "E_SHIELD_CLAIM_MISMATCH"
     },
     {
-      "code": 6040,
+      "code": 6053,
       "name": "ShieldClaimStage",
       "msg": "E_SHIELD_CLAIM_STAGE"
     },
     {
-      "code": 6041,
+      "code": 6054,
       "name": "AllowancePoolMismatch",
       "msg": "E_ALLOWANCE_POOL_MISMATCH"
     },
     {
-      "code": 6042,
+      "code": 6055,
       "name": "AllowanceOwnerMismatch",
       "msg": "E_ALLOWANCE_OWNER_MISMATCH"
     },
     {
-      "code": 6043,
+      "code": 6056,
       "name": "AllowanceSpenderMismatch",
       "msg": "E_ALLOWANCE_SPENDER_MISMATCH"
     },
     {
-      "code": 6044,
+      "code": 6057,
       "name": "AllowanceMintMismatch",
       "msg": "E_ALLOWANCE_MINT_MISMATCH"
     },
     {
-      "code": 6045,
+      "code": 6058,
       "name": "AllowanceInsufficient",
       "msg": "E_ALLOWANCE_INSUFFICIENT"
     },
     {
-      "code": 6046,
+      "code": 6059,
       "name": "AllowanceAmountInvalid",
       "msg": "E_ALLOWANCE_AMOUNT_INVALID"
     },
     {
-      "code": 6047,
+      "code": 6060,
       "name": "AllowanceAmountMismatch",
       "msg": "E_ALLOWANCE_AMOUNT_MISMATCH"
     },
     {
-      "code": 6048,
+      "code": 6061,
+      "name": "AllowanceTooLarge",
+      "msg": "E_ALLOWANCE_TOO_LARGE"
+    },
+    {
+      "code": 6062,
+      "name": "AllowanceExpired",
+      "msg": "E_ALLOWANCE_EXPIRED"
+    },
+    {
+      "code": 6063,
+      "name": "InvalidExpiration",
+      "msg": "E_INVALID_EXPIRATION"
+    },
+    {
+      "code": 6064,
+      "name": "NullifierSetMismatch",
+      "msg": "E_NULLIFIER_SET_MISMATCH"
+    },
+    {
+      "code": 6065,
       "name": "HookNotWhitelisted",
       "msg": "E_HOOK_NOT_WHITELISTED"
     },
     {
-      "code": 6049,
+      "code": 6066,
+      "name": "HookReentrancyDetected",
+      "msg": "E_HOOK_REENTRANCY_DETECTED"
+    },
+    {
+      "code": 6067,
+      "name": "HookExecutionFailed",
+      "msg": "E_HOOK_EXECUTION_FAILED"
+    },
+    {
+      "code": 6068,
       "name": "HookAlreadyWhitelisted",
       "msg": "E_HOOK_ALREADY_WHITELISTED"
     },
     {
-      "code": 6050,
+      "code": 6069,
       "name": "WhitelistFull",
       "msg": "E_WHITELIST_FULL"
     },
     {
-      "code": 6051,
+      "code": 6070,
       "name": "Unauthorized",
       "msg": "E_UNAUTHORIZED"
+    },
+    {
+      "code": 6071,
+      "name": "InvalidAuthority",
+      "msg": "E_INVALID_AUTHORITY"
+    },
+    {
+      "code": 6072,
+      "name": "AuthorityUnchanged",
+      "msg": "E_AUTHORITY_UNCHANGED"
+    },
+    {
+      "code": 6073,
+      "name": "NullifierSetFull",
+      "msg": "E_NULLIFIER_SET_FULL"
+    },
+    {
+      "code": 6074,
+      "name": "InsufficientRent",
+      "msg": "E_INSUFFICIENT_RENT"
+    },
+    {
+      "code": 6075,
+      "name": "NullifierSetCorrupt",
+      "msg": "E_NULLIFIER_SET_CORRUPT"
+    },
+    {
+      "code": 6076,
+      "name": "InvalidCommitmentFormat",
+      "msg": "E_INVALID_COMMITMENT_FORMAT"
+    },
+    {
+      "code": 6077,
+      "name": "DuplicateCommitment",
+      "msg": "E_DUPLICATE_COMMITMENT"
+    },
+    {
+      "code": 6078,
+      "name": "CommitmentMismatch",
+      "msg": "E_COMMITMENT_MISMATCH"
+    },
+    {
+      "code": 6079,
+      "name": "OutputCountMismatch",
+      "msg": "E_OUTPUT_COUNT_MISMATCH"
     }
   ],
   "types": [
@@ -2955,6 +3504,12 @@
             "type": "i64"
           },
           {
+            "name": "expires_at",
+            "type": {
+              "option": "i64"
+            }
+          },
+          {
             "name": "bump",
             "type": "u8"
           },
@@ -2978,6 +3533,32 @@
           {
             "name": "amount",
             "type": "u64"
+          },
+          {
+            "name": "expires_at",
+            "type": {
+              "option": "i64"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "AuthorityChanged",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "origin_mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "old_authority",
+            "type": "pubkey"
+          },
+          {
+            "name": "new_authority",
+            "type": "pubkey"
           }
         ]
       }
@@ -3153,6 +3734,34 @@
           {
             "name": "last_action_sequence",
             "type": "u64"
+          },
+          {
+            "name": "last_action_time",
+            "type": "i64"
+          },
+          {
+            "name": "last_global_action_time",
+            "type": "i64"
+          },
+          {
+            "name": "multi_sig_signers",
+            "type": {
+              "vec": "pubkey"
+            }
+          },
+          {
+            "name": "multi_sig_threshold",
+            "type": "u8"
+          },
+          {
+            "name": "emergency_pause_signers",
+            "type": {
+              "vec": "pubkey"
+            }
+          },
+          {
+            "name": "emergency_pause_threshold",
+            "type": "u8"
           }
         ]
       }
@@ -3367,6 +3976,46 @@
       }
     },
     {
+      "name": "HookProgramRemoved",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "origin_mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "hook_program",
+            "type": "pubkey"
+          },
+          {
+            "name": "authority",
+            "type": "pubkey"
+          }
+        ]
+      }
+    },
+    {
+      "name": "HookProgramWhitelisted",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "origin_mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "hook_program",
+            "type": "pubkey"
+          },
+          {
+            "name": "authority",
+            "type": "pubkey"
+          }
+        ]
+      }
+    },
+    {
       "name": "HookRemovedFromWhitelist",
       "type": {
         "kind": "struct",
@@ -3512,10 +4161,6 @@
     },
     {
       "name": "NullifierSet",
-      "serialization": "bytemuckunsafe",
-      "repr": {
-        "kind": "c"
-      },
       "type": {
         "kind": "struct",
         "fields": [
@@ -3524,12 +4169,14 @@
             "type": "pubkey"
           },
           {
-            "name": "bloom",
+            "name": "nullifiers",
             "type": {
-              "array": [
-                "u8",
-                512
-              ]
+              "vec": {
+                "array": [
+                  "u8",
+                  32
+                ]
+              }
             }
           },
           {
@@ -3886,7 +4533,16 @@
                     32
                   ]
                 },
-                16
+                64
+              ]
+            }
+          },
+          {
+            "name": "recent_roots_timestamps",
+            "type": {
+              "array": [
+                "i64",
+                64
               ]
             }
           },
@@ -3949,6 +4605,30 @@
                 "name": "PendingShield"
               }
             }
+          },
+          {
+            "name": "shield_sequence",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ProtocolFeesWithdrawn",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "origin_mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "amount",
+            "type": "u64"
+          },
+          {
+            "name": "remaining",
+            "type": "u128"
           }
         ]
       }
@@ -4070,66 +4750,14 @@
                 32
               ]
             }
-          }
-        ]
-      }
-    },
-    {
-      "name": "PendingShield",
-      "type": {
-        "kind": "struct",
-        "fields": [
-          {
-            "name": "active",
-            "type": "u8"
           },
           {
-            "name": "old_root",
-            "type": {
-              "array": [
-                "u8",
-                32
-              ]
-            }
+            "name": "created_at",
+            "type": "i64"
           },
           {
-            "name": "new_root",
-            "type": {
-              "array": [
-                "u8",
-                32
-              ]
-            }
-          },
-          {
-            "name": "commitment",
-            "type": {
-              "array": [
-                "u8",
-                32
-              ]
-            }
-          },
-          {
-            "name": "amount_commit",
-            "type": {
-              "array": [
-                "u8",
-                32
-              ]
-            }
-          },
-          {
-            "name": "amount",
-            "type": "u64"
-          },
-          {
-            "name": "depositor",
-            "type": "pubkey"
-          },
-          {
-            "name": "next_index",
-            "type": "u64"
+            "name": "expires_at",
+            "type": "i64"
           }
         ]
       }
@@ -4312,6 +4940,26 @@
           {
             "name": "bump",
             "type": "u8"
+          },
+          {
+            "name": "locked",
+            "type": "bool"
+          },
+          {
+            "name": "lock_timestamp",
+            "type": {
+              "option": "i64"
+            }
+          },
+          {
+            "name": "authority_change_sequence",
+            "type": "u64"
+          },
+          {
+            "name": "last_authority_change_time",
+            "type": {
+              "option": "i64"
+            }
           }
         ]
       }
@@ -4363,6 +5011,16 @@
           {
             "name": "verifying_key",
             "type": "bytes"
+          },
+          {
+            "name": "revoked",
+            "type": "bool"
+          },
+          {
+            "name": "revoked_at",
+            "type": {
+              "option": "i64"
+            }
           }
         ]
       }

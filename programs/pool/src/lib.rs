@@ -1386,6 +1386,21 @@ pub mod ptf_pool {
     }
 
     pub fn approve_allowance(ctx: Context<ManageAllowance>, args: ApproveAllowanceArgs) -> Result<()> {
+        // CRITICAL FIX: Validate maximum allowance limit
+        require!(
+            args.amount <= AllowanceAccount::MAX_ALLOWANCE,
+            PoolError::AllowanceTooLarge
+        );
+        
+        // CRITICAL FIX: Validate expiration if provided
+        if let Some(expires_at) = args.expires_at {
+            let clock = Clock::get()?;
+            require!(
+                expires_at > clock.unix_timestamp,
+                PoolError::InvalidExpiration
+            );
+        }
+        
         write_allowance(
             &ctx.accounts.pool_state,
             &mut ctx.accounts.allowance,
@@ -1394,6 +1409,7 @@ pub mod ptf_pool {
             ctx.accounts.origin_mint.key(),
             ctx.bumps.allowance,
             args.amount,
+            args.expires_at,
         )
     }
 
@@ -1406,6 +1422,7 @@ pub mod ptf_pool {
             ctx.accounts.origin_mint.key(),
             ctx.bumps.allowance,
             0,
+            None, // CRITICAL FIX: Clear expiration on revocation
         )
     }
 
@@ -1442,6 +1459,16 @@ pub mod ptf_pool {
             );
             let pool_state = ctx.accounts.pool_state.load()?;
             require_keys_eq!(allowance.mint, pool_state.origin_mint, PoolError::AllowanceMintMismatch);
+            
+            // CRITICAL FIX: Check allowance expiration
+            let clock = Clock::get()?;
+            if let Some(expires_at) = allowance.expires_at {
+                require!(
+                    clock.unix_timestamp < expires_at,
+                    PoolError::AllowanceExpired
+                );
+            }
+            
             require!(
                 allowance.amount >= args.allowance_amount,
                 PoolError::AllowanceInsufficient
@@ -1450,7 +1477,7 @@ pub mod ptf_pool {
                 .amount
                 .checked_sub(args.allowance_amount)
                 .ok_or(PoolError::AllowanceInsufficient)?;
-            allowance.updated_at = Clock::get()?.unix_timestamp;
+            allowance.updated_at = clock.unix_timestamp;
             emit!(PTFAllowanceUpdated {
                 mint: allowance.mint,
                 owner: allowance.owner,
@@ -1613,6 +1640,7 @@ fn write_allowance(
     mint: Pubkey,
     bump: u8,
     amount: u64,
+    expires_at: Option<i64>, // CRITICAL FIX: Optional expiration timestamp
 ) -> Result<()> {
     let pool_state = pool_loader.load()?;
     let origin_mint = pool_state.origin_mint;
@@ -1626,6 +1654,7 @@ fn write_allowance(
         allowance_account.spender = spender;
         allowance_account.mint = mint;
         allowance_account.bump = bump;
+        allowance_account.expires_at = None; // Initialize to None
     } else {
         require_keys_eq!(allowance_account.pool, pool_key, PoolError::AllowancePoolMismatch);
         require_keys_eq!(allowance_account.owner, owner, PoolError::AllowanceOwnerMismatch);
@@ -1634,6 +1663,7 @@ fn write_allowance(
     }
     allowance_account.amount = amount;
     allowance_account.updated_at = Clock::get()?.unix_timestamp;
+    allowance_account.expires_at = expires_at; // CRITICAL FIX: Set expiration
     emit!(PTFAllowanceUpdated {
         mint,
         owner,
@@ -2942,6 +2972,7 @@ pub struct HookConfigArgs {
 #[derive(AnchorSerialize, AnchorDeserialize, Clone)]
 pub struct ApproveAllowanceArgs {
     pub amount: u64,
+    pub expires_at: Option<i64>, // CRITICAL FIX: Optional expiration timestamp
 }
 
 #[derive(AnchorSerialize, AnchorDeserialize, Clone)]
@@ -4997,12 +5028,14 @@ pub struct AllowanceAccount {
     pub mint: Pubkey,
     pub amount: u64,
     pub updated_at: i64,
+    pub expires_at: Option<i64>, // CRITICAL FIX: Optional expiration timestamp
     pub bump: u8,
     pub _reserved: [u8; 7],
 }
 
 impl AllowanceAccount {
-    pub const SPACE: usize = 8 + 32 * 4 + 8 + 8 + 1 + 7;
+    pub const SPACE: usize = 8 + 32 * 4 + 8 + 8 + 1 + 8 + 1 + 7; // Added 8 bytes for Option<i64>
+    pub const MAX_ALLOWANCE: u64 = 1_000_000_000_000; // 1 trillion max allowance (1 billion with 6 decimals)
 }
 
 #[cfg(feature = "idl-build")]
@@ -5290,6 +5323,12 @@ pub enum PoolError {
     AllowanceAmountInvalid,
     #[msg("E_ALLOWANCE_AMOUNT_MISMATCH")]
     AllowanceAmountMismatch,
+    #[msg("E_ALLOWANCE_TOO_LARGE")]
+    AllowanceTooLarge,
+    #[msg("E_ALLOWANCE_EXPIRED")]
+    AllowanceExpired,
+    #[msg("E_INVALID_EXPIRATION")]
+    InvalidExpiration,
     #[msg("E_NULLIFIER_SET_MISMATCH")]
     NullifierSetMismatch,
     #[msg("E_HOOK_NOT_WHITELISTED")]

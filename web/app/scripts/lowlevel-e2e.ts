@@ -1120,7 +1120,7 @@ async function main() {
   console.info('[test-05] Testing approve_allowance instruction (low-level)');
   const allowanceAmount = WRAP_AMOUNT;
   const approveData = poolCoder.instruction.encode('approve_allowance', {
-    args: { amount: new BN(allowanceAmount.toString()) }
+    args: { amount: new BN(allowanceAmount.toString()), expires_at: null }
   });
   const approveIx = new TransactionInstruction({
     programId: POOL_PROGRAM_ID,
