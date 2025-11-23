@@ -476,6 +476,72 @@ pub mod ptf_pool {
         Ok(())
     }
 
+    /// Withdraw accumulated protocol fees
+    /// CRITICAL FIX: Allows protocol to collect accumulated fees
+    pub fn withdraw_protocol_fees(
+        ctx: Context<WithdrawProtocolFees>,
+        amount: u64,
+    ) -> Result<()> {
+        require!(amount > 0, PoolError::InvalidAmount);
+        
+        let mut pool_state = ctx.accounts.pool_state.load_mut()?;
+        
+        // Validate authority
+        require_keys_eq!(
+            ctx.accounts.authority.key(),
+            pool_state.authority,
+            PoolError::Unauthorized
+        );
+        
+        // Validate amount doesn't exceed available fees
+        let amount_u128 = u128::from(amount);
+        require!(
+            amount_u128 <= pool_state.protocol_fees,
+            PoolError::InsufficientFees
+        );
+        
+        // Update protocol_fees
+        pool_state.protocol_fees = pool_state
+            .protocol_fees
+            .checked_sub(amount_u128)
+            .ok_or(PoolError::AmountOverflow)?;
+        
+        // CPI to vault to release tokens
+        let pool_bump = pool_state.bump;
+        let origin_mint = pool_state.origin_mint;
+        
+        let bump_array = [pool_bump];
+        let signer_seeds: [&[u8]; 3] = [
+            seeds::POOL,
+            origin_mint.as_ref(),
+            &bump_array,
+        ];
+        let signer_seeds_slice: &[&[u8]] = &signer_seeds;
+        let signer_seeds_for_cpi = [signer_seeds_slice];
+        
+        let cpi_accounts = ptf_vault::cpi::accounts::Release {
+            vault_state: ctx.accounts.vault_state.to_account_info(),
+            vault_token_account: ctx.accounts.vault_token_account.to_account_info(),
+            destination_token_account: ctx.accounts.destination_token_account.to_account_info(),
+            pool_authority: ctx.accounts.pool_state.to_account_info(),
+            token_program: ctx.accounts.token_program.to_account_info(),
+        };
+        let cpi_ctx = CpiContext::new_with_signer(
+            ctx.accounts.vault_program.to_account_info(),
+            cpi_accounts,
+            &signer_seeds_for_cpi,
+        );
+        ptf_vault::cpi::release(cpi_ctx, amount)?;
+        
+        emit!(ProtocolFeesWithdrawn {
+            origin_mint,
+            amount,
+            remaining: pool_state.protocol_fees,
+        });
+        
+        Ok(())
+    }
+
     /// Change the pool authority
     /// CRITICAL SECURITY: Only the current authority can change to a new authority
     pub fn change_authority(
@@ -2429,6 +2495,26 @@ pub struct UpdateAuthority<'info> {
     )]
     pub nullifier_set: Account<'info, NullifierSet>,
     pub rent: Sysvar<'info, Rent>,
+}
+
+#[derive(Accounts)]
+pub struct WithdrawProtocolFees<'info> {
+    pub authority: Signer<'info>,
+    #[account(
+        mut,
+        seeds = [seeds::POOL, pool_state.load()?.origin_mint.as_ref()],
+        bump = pool_state.load()?.bump,
+        has_one = authority
+    )]
+    pub pool_state: AccountLoader<'info, PoolState>,
+    #[account(mut)]
+    pub vault_state: Account<'info, ptf_vault::VaultState>,
+    #[account(mut)]
+    pub vault_token_account: InterfaceAccount<'info, TokenAccount>,
+    #[account(mut)]
+    pub destination_token_account: InterfaceAccount<'info, TokenAccount>,
+    pub vault_program: Program<'info, PtfVault>,
+    pub token_program: Interface<'info, TokenInterface>,
 }
 
 #[derive(Accounts)]
@@ -5032,6 +5118,13 @@ pub struct FeaturesUpdated {
 }
 
 #[event]
+pub struct ProtocolFeesWithdrawn {
+    pub origin_mint: Pubkey,
+    pub amount: u64,
+    pub remaining: u128,
+}
+
+#[event]
 pub struct AuthorityChanged {
     pub origin_mint: Pubkey,
     pub old_authority: Pubkey,
@@ -5083,10 +5176,14 @@ pub enum PoolError {
     // The bloom filter has no capacity limit, so this error is obsolete
     #[msg("E_AMOUNT_OVERFLOW")]
     AmountOverflow,
+    #[msg("E_INVALID_AMOUNT")]
+    InvalidAmount,
     #[msg("E_AMOUNT_TOO_LARGE")]
     AmountTooLarge,
     #[msg("E_INSUFFICIENT_LIQUIDITY")]
     InsufficientLiquidity,
+    #[msg("E_INSUFFICIENT_FEES")]
+    InsufficientFees,
     #[msg("E_FEATURE_DISABLED")]
     FeatureDisabled,
     #[msg("E_MINT_FROZEN")]
