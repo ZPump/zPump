@@ -804,7 +804,7 @@ async function sendAllowanceInstruction(params: {
   } = params;
   const data =
     instruction === 'approve'
-      ? poolCoder.instruction.encode('approve_allowance', { args: { amount: new BN(amount.toString()) } })
+      ? poolCoder.instruction.encode('approve_allowance', { args: { amount: new BN(amount.toString()), expires_at: null } })
       : poolCoder.instruction.encode('revoke_allowance', { args: {} });
   const ix = new TransactionInstruction({
     programId: POOL_PROGRAM_ID,
