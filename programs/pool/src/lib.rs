@@ -54,6 +54,12 @@ pub mod ptf_pool {
             expected_mapping,
             PoolError::OriginMintMismatch,
         );
+        // CRITICAL FIX: Explicit account ownership validation
+        require_keys_eq!(
+            *ctx.accounts.mint_mapping.owner,
+            ptf_factory::ID,
+            PoolError::InvalidAccountOwner,
+        );
         
         // Validate factory_state PDA
         let (expected_factory, _) = Pubkey::find_program_address(
@@ -64,6 +70,12 @@ pub mod ptf_pool {
             ctx.accounts.factory_state.key(),
             expected_factory,
             PoolError::OriginMintMismatch,
+        );
+        // CRITICAL FIX: Explicit account ownership validation
+        require_keys_eq!(
+            *ctx.accounts.factory_state.owner,
+            ptf_factory::ID,
+            PoolError::InvalidAccountOwner,
         );
         
         // Read vault_state.origin_mint directly from bytes (offset 8 + 0 = 8)
@@ -141,6 +153,29 @@ pub mod ptf_pool {
             ctx.accounts.verifier_program.key(),
             ptf_verifier_groth16::ID,
             PoolError::VerifierMismatch,
+        );
+        // CRITICAL FIX: Validate verifier program is executable
+        require!(
+            ctx.accounts.verifier_program.executable,
+            PoolError::InvalidAccountOwner,
+        );
+        // CRITICAL FIX: Explicit account ownership validation
+        require_keys_eq!(
+            *ctx.accounts.verifier_program.owner,
+            anchor_lang::solana_program::bpf_loader_upgradeable::ID,
+            PoolError::InvalidAccountOwner,
+        );
+        // CRITICAL FIX: Explicit account ownership validation for verifying_key
+        require_keys_eq!(
+            *ctx.accounts.verifying_key.owner,
+            ptf_verifier_groth16::ID,
+            PoolError::InvalidAccountOwner,
+        );
+        // CRITICAL FIX: Explicit account ownership validation for vault_state
+        require_keys_eq!(
+            *ctx.accounts.vault_state.owner,
+            ptf_vault::ID,
+            PoolError::InvalidAccountOwner,
         );
 
         msg!("init_pool stage: before_pool_state_load");
@@ -4467,6 +4502,8 @@ pub enum HookAccountMode {
 
 #[error_code]
 pub enum PoolError {
+    #[msg("account is not owned by expected program")]
+    InvalidAccountOwner,
     #[msg("E_INVALID_FEE_BPS")]
     InvalidFeeBps,
     #[msg("E_POOL_ALREADY_INITIALIZED")]
