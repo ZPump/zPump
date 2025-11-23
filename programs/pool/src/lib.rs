@@ -1128,6 +1128,16 @@ pub mod ptf_pool {
             PoolError::RootMismatch
         );
 
+        // CRITICAL FIX: Validate proof and public input sizes before CPI to prevent DoS attacks
+        require!(
+            args.proof.len() <= MAX_PROOF_SIZE,
+            PoolError::ProofTooLarge
+        );
+        require!(
+            args.public_inputs.len() <= MAX_PUBLIC_INPUTS_SIZE,
+            PoolError::PublicInputsTooLarge
+        );
+
         let cpi_accounts = ptf_verifier_groth16::cpi::accounts::VerifyGroth16 {
             verifier_state: ctx.accounts.verifying_key.to_account_info(),
         };
@@ -1549,6 +1559,16 @@ fn execute_private_transfer<'info>(
         pool_state.validate_root_strict(&commitment_tree.current_root, &args.old_root)?;
     }
 
+    // CRITICAL FIX: Validate proof and public input sizes before CPI to prevent DoS attacks
+    require!(
+        args.proof.len() <= MAX_PROOF_SIZE,
+        PoolError::ProofTooLarge
+    );
+    require!(
+        args.public_inputs.len() <= MAX_PUBLIC_INPUTS_SIZE,
+        PoolError::PublicInputsTooLarge
+    );
+
     let cpi_accounts = ptf_verifier_groth16::cpi::accounts::VerifyGroth16 {
         verifier_state: verifying_key.to_account_info(),
     };
@@ -1844,6 +1864,16 @@ fn process_unshield<'info>(
         );
     }
     
+    // CRITICAL FIX: Validate proof and public input sizes before CPI to prevent DoS attacks
+    require!(
+        args.proof.len() <= MAX_PROOF_SIZE,
+        PoolError::ProofTooLarge
+    );
+    require!(
+        args.public_inputs.len() <= MAX_PUBLIC_INPUTS_SIZE,
+        PoolError::PublicInputsTooLarge
+    );
+    
     let cpi_accounts = ptf_verifier_groth16::cpi::accounts::VerifyGroth16 {
         verifier_state: verifying_key_account_info,
     };
@@ -1864,6 +1894,27 @@ fn process_unshield<'info>(
     // Nullifiers will be recorded after CPI succeeds (see below after line 1654).
 
     let pool_account_key = pool_loader.key();
+    // CRITICAL FIX: Calculate expected fee first (considering fee override if present)
+    let effective_fee_bps = if ctx.accounts.mint_mapping.has_fee_override {
+        ctx.accounts.mint_mapping.fee_bps_override
+    } else {
+        pool_state.fee_bps
+    };
+    let expected_fee = {
+        let amount_128 = args.amount as u128;
+        let fee_bps_128 = effective_fee_bps as u128;
+        let fee_128 = amount_128
+            .checked_mul(fee_bps_128)
+            .ok_or(PoolError::AmountOverflow)?
+            .checked_div(10_000u128)
+            .ok_or(PoolError::AmountOverflow)?;
+        require!(
+            fee_128 <= u64::MAX as u128,
+            PoolError::AmountOverflow
+        );
+        fee_128 as u64
+    };
+    
     let fee = validate_unshield_public_inputs(
         &pool_state,
         pool_account_key,
@@ -1872,6 +1923,12 @@ fn process_unshield<'info>(
         destination_owner,
         decimals,
     )?;
+    
+    // CRITICAL FIX: Validate fee from proof matches calculated fee to prevent manipulation
+    require!(
+        fee == expected_fee,
+        PoolError::PublicInputMismatch
+    );
     let total_spent = args
         .amount
         .checked_add(fee)
@@ -4365,6 +4422,8 @@ fn sha_branch(left: &[u8; 32], right: &[u8; 32]) -> [u8; 32] {
 
 // CRITICAL FIX: Maximum size for public inputs to prevent DoS attacks
 pub const MAX_PUBLIC_INPUTS_SIZE: usize = 10 * 1024; // 10KB
+// CRITICAL FIX: Maximum proof size to prevent DoS attacks (matches verifier limit)
+pub const MAX_PROOF_SIZE: usize = 10 * 1024; // 10KB
 
 // CRITICAL FIX: Validate field element is within valid range
 // Bn254 field modulus: p = 21888242871839275222246405745257275088548364400416034343698204186575808495617
@@ -5219,6 +5278,8 @@ pub enum PoolError {
     InvalidBump,
     #[msg("E_PUBLIC_INPUTS_TOO_LARGE")]
     PublicInputsTooLarge,
+    #[msg("E_PROOF_TOO_LARGE")]
+    ProofTooLarge,
     #[msg("E_PUBLIC_INPUT_MISMATCH")]
     PublicInputMismatch,
     #[msg("E_UNKNOWN_ROOT")]

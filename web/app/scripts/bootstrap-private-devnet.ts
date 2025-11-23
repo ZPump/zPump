@@ -558,6 +558,40 @@ async function ensureFactory(ctx: BootstrapContext): Promise<void> {
   }
 }
 
+async function ensureVerifierConfig(ctx: BootstrapContext): Promise<PublicKey> {
+  const [verifierConfig] = PublicKey.findProgramAddressSync(
+    [Buffer.from('verifier-config'), PROGRAM_IDS.verifier.toBuffer()],
+    PROGRAM_IDS.verifier
+  );
+
+  const info = await ctx.provider.connection.getAccountInfo(verifierConfig);
+  if (info) {
+    console.log(`VerifierConfig already exists: ${verifierConfig.toBase58()}`);
+    return verifierConfig;
+  }
+
+  // Initialize VerifierConfig with factory program ID
+  await sendInstruction(
+    ctx,
+    ctx.idls.verifier,
+    ctx.coders.verifier,
+    PROGRAM_IDS.verifier,
+    'initialize_verifier_config',
+    {
+      verifier_config: verifierConfig,
+      authority: ctx.payer.publicKey,
+      factory_program: PROGRAM_IDS.factory,
+      payer: ctx.payer.publicKey,
+      system_program: SystemProgram.programId
+    },
+    {
+      factory_program_id: PROGRAM_IDS.factory
+    }
+  );
+  console.log(`Initialized VerifierConfig: ${verifierConfig.toBase58()}`);
+  return verifierConfig;
+}
+
 async function ensureVerifyingKey(
   ctx: BootstrapContext,
   circuit: string,
@@ -589,6 +623,9 @@ async function ensureVerifyingKey(
   const hashBytes = keccak_256(binary);
   console.log(`Using verifying key hash ${Buffer.from(hashBytes).toString('hex')}`);
 
+  // CRITICAL FIX: Ensure VerifierConfig exists before creating verifying key
+  const verifierConfig = await ensureVerifierConfig(ctx);
+
   // CRITICAL FIX: Use factory program to create verifying keys
   // Only factory can create verifying keys now (security fix)
   const factoryState = PublicKey.findProgramAddressSync(
@@ -596,8 +633,7 @@ async function ensureVerifyingKey(
     PROGRAM_IDS.factory
   )[0];
   
-  // CRITICAL FIX: verifier_config is optional - don't pass it when not needed
-  // buildAccountMetas will skip optional accounts that aren't provided
+  // CRITICAL FIX: verifier_config is now required (no backwards compatibility)
   await sendInstruction(
     ctx,
     ctx.idls.factory,
@@ -608,8 +644,8 @@ async function ensureVerifyingKey(
       factory_state: factoryState,
       authority: ctx.payer.publicKey,
       verifier_program: PROGRAM_IDS.verifier,
+      verifier_config: verifierConfig,
       verifier_state: verifierState,
-      // verifier_config is optional - don't include it when not needed
       payer: ctx.payer.publicKey,
       system_program: SystemProgram.programId
     },

@@ -4,8 +4,9 @@ use sha3::{Digest, Keccak256};
 
 declare_id!("3aCv39mCRFH9BGJskfXqwQoWzW1ULq2yXEbEwGgKtLgg");
 
-// Factory program ID - only factory can create verifying keys
-// CRITICAL FIX: Keep hardcoded for backward compatibility, but prefer VerifierConfig
+// CRITICAL FIX: Factory program ID is now stored in VerifierConfig account
+// This allows factory upgrades and multi-factory support
+// The constant is kept as a fallback for initialization, but VerifierConfig should be used
 const PTF_FACTORY_PROGRAM_ID: Pubkey = pubkey!("4z618BY2dXGqAUiegqDt8omo3e81TSdXRHt64ikX1bTy");
 
 /// Maximum Groth16 proof byte length (~10KB leaves plenty of headroom over 192-byte proofs)
@@ -88,9 +89,9 @@ pub mod ptf_verifier_groth16 {
             VerifierError::UnauthorizedAuthority
         );
         
-        // CRITICAL FIX: Use hardcoded factory program ID for now
-        // TODO: Add VerifierConfig support later when needed
-        let factory_program_id = PTF_FACTORY_PROGRAM_ID;
+        // CRITICAL FIX: Use VerifierConfig to get factory program ID (removes hardcoded dependency)
+        // This allows factory upgrades and multi-factory support
+        let factory_program_id = ctx.accounts.verifier_config.factory_program_id;
         
         // Verify authority is owned by factory program
         require_keys_eq!(
@@ -476,6 +477,12 @@ pub struct InitializeVerifyingKey<'info> {
         owner = crate::ID @ VerifierError::InvalidAccountOwner,
     )]
     pub verifier_state: Account<'info, VerifyingKeyAccount>,
+    /// CRITICAL FIX: VerifierConfig stores the factory program ID (required, no backwards compatibility)
+    #[account(
+        seeds = [b"verifier-config", crate::ID.as_ref()],
+        bump = verifier_config.bump,
+    )]
+    pub verifier_config: Account<'info, VerifierConfig>,
     /// Governance or authority that owns this verifying key.
     pub authority: Signer<'info>,
     #[account(mut)]

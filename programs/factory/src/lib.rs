@@ -537,6 +537,7 @@ pub mod ptf_factory {
         let cpi_program = ctx.accounts.verifier_program.to_account_info();
         let cpi_accounts = ptf_verifier_groth16::cpi::accounts::InitializeVerifyingKey {
             verifier_state: ctx.accounts.verifier_state.to_account_info(),
+            verifier_config: ctx.accounts.verifier_config.to_account_info(), // CRITICAL FIX: Pass verifier_config
             authority: ctx.accounts.factory_state.to_account_info(), // Factory state PDA as authority (owned by factory program)
             payer: ctx.accounts.payer.to_account_info(),
             system_program: ctx.accounts.system_program.to_account_info(),
@@ -1153,6 +1154,8 @@ pub struct CreateVerifyingKey<'info> {
     pub authority: Signer<'info>,
     /// CHECK: Verifier program will validate
     pub verifier_program: UncheckedAccount<'info>,
+    /// CHECK: VerifierConfig account (required for factory program ID)
+    pub verifier_config: UncheckedAccount<'info>,
     /// CHECK: Will be initialized by verifier program
     #[account(mut)]
     pub verifier_state: UncheckedAccount<'info>,
