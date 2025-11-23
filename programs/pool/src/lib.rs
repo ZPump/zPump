@@ -2107,15 +2107,13 @@ fn process_shield_finalize_tree<'info>(
     // AWAITING_LEDGER can happen if finalize_ledger ran in same transaction as shield
     // AWAITING_INVARIANT can happen if finalize_ledger already completed
     // We allow finalize_tree to proceed from any of these states since tree finalization
-    // can happen after ledger finalization in the flow.
+    // CRITICAL FIX: Read status once and use it consistently
     let current_status = shield_claim.status;
     let mut allow_ledger_complete_state = false;
     let needs_root_fix = current_status == ShieldClaim::STATUS_INACTIVE;
     
-    // CRITICAL FIX: Use validated state transitions
-    // Check actual current status (may have changed since we read current_status)
-    let actual_status = shield_claim.status;
-    if actual_status == ShieldClaim::STATUS_INACTIVE {
+    // CRITICAL FIX: Use validated state transitions - only transition if needed
+    if current_status == ShieldClaim::STATUS_INACTIVE {
         // Same-transaction flow: account was activated in shield but status not visible
         // Get the current root from the tree to fix the old_root field
         let tree = commitment_tree.load()?;
@@ -2123,20 +2121,24 @@ fn process_shield_finalize_tree<'info>(
         if shield_claim.old_root == [0u8; 32] {
             shield_claim.old_root = tree.current_root;
         }
-        // CRITICAL FIX: Use validated transition (transition_to will skip if already in target state)
-        shield_claim.transition_to(ShieldClaim::STATUS_PENDING_TREE)?;
-    } else if actual_status == ShieldClaim::STATUS_AWAITING_LEDGER 
-        || actual_status == ShieldClaim::STATUS_AWAITING_INVARIANT {
+        // CRITICAL FIX: Only transition if not already in target state
+        if shield_claim.status != ShieldClaim::STATUS_PENDING_TREE {
+            shield_claim.transition_to(ShieldClaim::STATUS_PENDING_TREE)?;
+        }
+    } else if current_status == ShieldClaim::STATUS_AWAITING_LEDGER 
+        || current_status == ShieldClaim::STATUS_AWAITING_INVARIANT {
         // If status is AWAITING_LEDGER or AWAITING_INVARIANT, transition back to PENDING_TREE
         // to allow tree finalization to proceed. This handles the case where finalize_ledger
         // ran before finalize_tree.
-        // CRITICAL FIX: Use validated transition (transition_to will skip if already in target state)
-        shield_claim.transition_to(ShieldClaim::STATUS_PENDING_TREE)?;
-    } else if actual_status == ShieldClaim::STATUS_LEDGER_COMPLETE {
+        // CRITICAL FIX: Only transition if not already in target state
+        if shield_claim.status != ShieldClaim::STATUS_PENDING_TREE {
+            shield_claim.transition_to(ShieldClaim::STATUS_PENDING_TREE)?;
+        }
+    } else if current_status == ShieldClaim::STATUS_LEDGER_COMPLETE {
         allow_ledger_complete_state = true;
     }
     // If status is already PENDING_TREE (from activation), we can proceed without transition
-    // CRITICAL FIX: Check actual status again after potential transitions
+    // CRITICAL FIX: Check final status after potential transitions
     // If status is already PENDING_TREE or LEDGER_COMPLETE, we can proceed
     let final_status = shield_claim.status;
     require!(
@@ -3646,11 +3648,15 @@ impl ShieldClaim {
         // AWAITING_INVARIANT -> INACTIVE (invariant complete, deactivate)
         // LEDGER_COMPLETE -> INACTIVE (no invariant needed, deactivate)
         // Also allow transitions back to PENDING_TREE from AWAITING_LEDGER/AWAITING_INVARIANT (for recovery)
+        // Also allow PENDING_TREE -> AWAITING_INVARIANT (when ledger completes before tree)
+        // Also allow AWAITING_LEDGER -> LEDGER_COMPLETE (when ledger completes and tree not done)
         let valid_transitions: &[(u8, u8)] = &[
             (Self::STATUS_INACTIVE, Self::STATUS_PENDING_TREE),
             (Self::STATUS_PENDING_TREE, Self::STATUS_AWAITING_LEDGER),
             (Self::STATUS_PENDING_TREE, Self::STATUS_LEDGER_COMPLETE),
+            (Self::STATUS_PENDING_TREE, Self::STATUS_AWAITING_INVARIANT), // Ledger can complete before tree
             (Self::STATUS_AWAITING_LEDGER, Self::STATUS_AWAITING_INVARIANT),
+            (Self::STATUS_AWAITING_LEDGER, Self::STATUS_LEDGER_COMPLETE), // Ledger completes, tree not done
             (Self::STATUS_AWAITING_INVARIANT, Self::STATUS_INACTIVE),
             (Self::STATUS_LEDGER_COMPLETE, Self::STATUS_INACTIVE),
             // Recovery transitions (allow going back to PENDING_TREE)
@@ -3660,19 +3666,17 @@ impl ShieldClaim {
         
         // Check if transition is valid
         let is_valid = valid_transitions.iter().any(|(f, t)| *f == from && *t == to);
-        
-        // CRITICAL FIX: Log invalid transitions for debugging, but allow them for now
-        // to maintain backward compatibility with existing flows
         if !is_valid {
             msg!(
-                "Warning: Invalid state transition from {} to {} (allowing for backward compatibility)",
+                "Invalid state transition: from {} to {}",
                 from,
                 to
             );
-            // For now, allow the transition to maintain backward compatibility
-            // TODO: After full testing, enforce strict validation
-            return Ok(());
         }
+        require!(
+            is_valid,
+            PoolError::InvalidStateTransition
+        );
         
         Ok(())
     }
@@ -3729,19 +3733,17 @@ impl ShieldClaim {
         self.tree_node = [0u8; 32];
     }
 
-    // CRITICAL FIX: Mark tree complete with state transition validation
+    // CRITICAL FIX: Mark tree complete with strict state transition validation
     pub fn mark_tree_complete(&mut self) -> Result<()> {
         self.tree_level = CommitmentTree::DEPTH as u8;
         let current_status = self.status;
         
-        // CRITICAL FIX: Handle all possible states with proper transitions
+        // CRITICAL FIX: Handle all possible states with strict transitions
         match current_status {
             Self::STATUS_LEDGER_COMPLETE => {
                 if self.needs_invariant() {
-                    // Transition to AWAITING_INVARIANT if not already there
-                    if current_status != Self::STATUS_AWAITING_INVARIANT {
-                        self.transition_to(Self::STATUS_AWAITING_INVARIANT)?;
-                    }
+                    // Transition to AWAITING_INVARIANT
+                    self.transition_to(Self::STATUS_AWAITING_INVARIANT)?;
                 } else {
                     // No invariant needed, deactivate
                     self.deactivate();
@@ -3756,29 +3758,48 @@ impl ShieldClaim {
                 // This can happen if mark_tree_complete is called multiple times
             }
             _ => {
-                // For any other state, try to transition to AWAITING_LEDGER if valid
-                // This handles edge cases and recovery scenarios
-                if current_status != Self::STATUS_AWAITING_LEDGER {
-                    // transition_to will handle validation and skip if invalid
-                    let _ = self.transition_to(Self::STATUS_AWAITING_LEDGER);
-                }
+                // Invalid state - reject
+                return err!(PoolError::InvalidStateTransition);
             }
         }
         Ok(())
     }
 
-    // CRITICAL FIX: Mark ledger complete with state transition validation
+    // CRITICAL FIX: Mark ledger complete with strict state transition validation
     pub fn mark_ledger_complete(&mut self, requires_invariant: bool) -> Result<()> {
+        let current_status = self.status;
+        
+        // CRITICAL FIX: Allow from AWAITING_LEDGER, PENDING_TREE, or LEDGER_COMPLETE (for idempotency)
+        if current_status != Self::STATUS_AWAITING_LEDGER 
+            && current_status != Self::STATUS_PENDING_TREE
+            && current_status != Self::STATUS_LEDGER_COMPLETE {
+            return err!(PoolError::InvalidStateTransition);
+        }
+        
+        // If already LEDGER_COMPLETE and tree is done, just deactivate if no invariant needed
+        if current_status == Self::STATUS_LEDGER_COMPLETE && self.tree_level == CommitmentTree::DEPTH as u8 {
+            if !requires_invariant {
+                self.deactivate();
+                return Ok(());
+            }
+        }
+        
         if requires_invariant {
             self.enforce_invariant = 1;
-            self.transition_to(Self::STATUS_AWAITING_INVARIANT)?;
+            // Only transition if not already in target state
+            if current_status != Self::STATUS_AWAITING_INVARIANT {
+                self.transition_to(Self::STATUS_AWAITING_INVARIANT)?;
+            }
         } else {
             if self.tree_level == CommitmentTree::DEPTH as u8 {
                 // Tree is complete, so we can deactivate
                 self.deactivate();
             } else {
                 // Tree not complete yet, mark ledger complete
-                self.transition_to(Self::STATUS_LEDGER_COMPLETE)?;
+                // Only transition if not already in target state
+                if current_status != Self::STATUS_LEDGER_COMPLETE {
+                    self.transition_to(Self::STATUS_LEDGER_COMPLETE)?;
+                }
             }
         }
         Ok(())
@@ -4059,19 +4080,28 @@ impl NoteLedger {
         Ok(())
     }
 
+    // CRITICAL FIX: Enhanced live value tracking with underflow protection
     pub fn record_unshield(
         &mut self,
         total_spent: u64,
         nullifiers: &[[u8; 32]],
         output_amount_commitments: &[[u8; 32]],
     ) -> Result<()> {
+        let total_spent_128 = u128::from(total_spent);
+        
+        // CRITICAL FIX: Check for underflow before updating live_value
+        require!(
+            self.live_value >= total_spent_128,
+            PoolError::InsufficientLiquidity
+        );
         self.total_spent = self
             .total_spent
-            .checked_add(u128::from(total_spent))
+            .checked_add(total_spent_128)
             .ok_or(PoolError::AmountOverflow)?;
+        // CRITICAL FIX: Use checked_sub with explicit error handling (already validated above)
         self.live_value = self
             .live_value
-            .checked_sub(u128::from(total_spent))
+            .checked_sub(total_spent_128)
             .ok_or(PoolError::InsufficientLiquidity)?;
         if !nullifiers.is_empty() {
             #[cfg(feature = "note_digests")]
@@ -4092,11 +4122,42 @@ impl NoteLedger {
         Ok(())
     }
 
+    // CRITICAL FIX: Enhanced capacity check with validation
     pub fn ensure_capacity(&self, amount: u64) -> Result<()> {
+        let amount_128 = u128::from(amount);
         require!(
-            self.live_value >= u128::from(amount),
+            self.live_value >= amount_128,
             PoolError::InsufficientLiquidity
         );
+        // CRITICAL FIX: Validate live_value consistency
+        self.validate_live_value()?;
+        Ok(())
+    }
+    
+    // CRITICAL FIX: Validate live value consistency
+    pub fn validate_live_value(&self) -> Result<()> {
+        // Basic sanity checks
+        require!(
+            self.live_value <= self.total_minted,
+            PoolError::InvariantBreach
+        );
+        
+        // CRITICAL FIX: Validate that live_value is consistent with total_minted and total_spent
+        // live_value should equal total_minted - total_spent (approximately, accounting for rounding)
+        let expected_live_value = self.total_minted.saturating_sub(self.total_spent);
+        let diff = if self.live_value > expected_live_value {
+            self.live_value - expected_live_value
+        } else {
+            expected_live_value - self.live_value
+        };
+        
+        // Allow small tolerance for rounding (1 lamport)
+        const TOLERANCE: u128 = 1;
+        require!(
+            diff <= TOLERANCE,
+            PoolError::InvariantBreach
+        );
+        
         Ok(())
     }
 
