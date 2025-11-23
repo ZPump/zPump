@@ -99,26 +99,29 @@ Audit/
 - ✅ token-program-validation.md (MEDIUM) - Fixed with validate_token_program function
 - ✅ no-expiration-on-pending-changes.md (MEDIUM) - Fixed with expires_at field
 
-### ptf_verifier_groth16 (18 security concerns)
+### ptf_verifier_groth16 (8 remaining security concerns)
 
-1. **dev-skip-production-risk.md** (CRITICAL) - Dev-skip feature production deployment risk
-2. **verifying-key-authority.md** (CRITICAL) - Verifying key authority and validation
-3. **proof-validation-bypass.md** (CRITICAL) - Proof validation bypass vulnerabilities
-4. **no-verifying-key-format-validation.md** (HIGH) - No validation of verifying key format during registration
-5. **hardcoded-factory-program-id.md** (HIGH) - Hardcoded factory program ID prevents upgrades
-6. **no-verifying-key-update-mechanism.md** (HIGH) - No mechanism to update or revoke compromised keys
-7. **account-space-calculation-mismatch.md** (MEDIUM) - Account space calculation based on parameter, no validation of stored data
-8. **no-payer-authorization.md** (MEDIUM) - No authorization check for payer account
-9. **no-account-ownership-validation.md** (MEDIUM) - No explicit account ownership validation in verify_groth16
-10. **account-data-integrity-validation.md** (MEDIUM) - Insufficient validation of account data integrity beyond hash
-11. **hardcoded-factory-pda-seeds.md** (MEDIUM) - Hardcoded factory PDA seeds create upgrade risk
-12. **no-verifying-key-size-limit.md** (MEDIUM) - No maximum size limit on verifying keys
-13. **host-fallback-error-handling.md** (MEDIUM) - Host fallback uses unwrap_or which masks errors
-14. **syscall-return-value-handling.md** (MEDIUM) - Syscall return values are not properly handled or logged
-15. **no-bump-seed-validation.md** (MEDIUM) - No explicit validation of bump seeds
-16. **no-verifying-key-id-hash-relationship.md** (LOW) - No validation of relationship between verifying_key_id and hash
-17. **no-circuit-tag-validation.md** (LOW) - No validation of circuit_tag parameter
-18. **version-overflow-edge-case.md** (LOW) - Version field is u8, limiting to 256 versions
+1. **hardcoded-factory-program-id.md** (HIGH) - Hardcoded factory program ID prevents upgrades (kept for backwards compatibility)
+2. **account-data-integrity-validation.md** (MEDIUM) - Insufficient validation of account data integrity beyond hash
+3. **hardcoded-factory-pda-seeds.md** (MEDIUM) - Hardcoded factory PDA seeds create upgrade risk
+4. **no-payer-authorization.md** (MEDIUM) - No authorization check for payer account (relaxed for factory compatibility)
+5. **no-verifying-key-id-hash-relationship.md** (LOW) - No validation of relationship between verifying_key_id and hash
+6. **no-circuit-tag-validation.md** (LOW) - No validation of circuit_tag parameter
+7. **version-overflow-edge-case.md** (LOW) - Version field is u8, limiting to 256 versions
+8. **account-closure-authorization.md** (MEDIUM) - Rent collection from account closure could incentivize attacks
+
+**Mitigated (10 concerns):**
+- ✅ dev-skip-production-risk.md (CRITICAL) - Fixed with critical warnings and CI/CD requirements
+- ✅ verifying-key-authority.md (CRITICAL) - Fixed with strict factory PDA validation and revocation mechanism
+- ✅ proof-validation-bypass.md (CRITICAL) - Fixed with enhanced validation and empty checks
+- ✅ no-verifying-key-format-validation.md (HIGH) - Fixed with format validation during registration
+- ✅ no-verifying-key-update-mechanism.md (HIGH) - Fixed with update_verifying_key and revoke_verifying_key functions
+- ✅ no-verifying-key-size-limit.md (MEDIUM) - Fixed with MAX_VERIFYING_KEY_SIZE constant and validation
+- ✅ no-account-ownership-validation.md (MEDIUM) - Fixed with explicit ownership checks
+- ✅ no-bump-seed-validation.md (MEDIUM) - Fixed with explicit bump validation
+- ✅ account-space-calculation-mismatch.md (MEDIUM) - Fixed with account size validation
+- ✅ host-fallback-error-handling.md (MEDIUM) - Fixed with proper error handling instead of unwrap_or
+- ✅ syscall-return-value-handling.md (MEDIUM) - Fixed with error code logging
 
 ## Summary Statistics
 
