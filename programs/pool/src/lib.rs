@@ -2600,10 +2600,12 @@ pub struct InitializePool<'info> {
 #[derive(Accounts)]
 pub struct UpdateAuthority<'info> {
     pub authority: Signer<'info>,
+    // CRITICAL FIX: Optimize constraint - use bump without loading pool_state again
+    // Anchor will derive bump from seeds, avoiding redundant load
     #[account(
         mut,
         seeds = [seeds::POOL, pool_state.load()?.origin_mint.as_ref()],
-        bump = pool_state.load()?.bump,
+        bump,
         has_one = authority
     )]
     pub pool_state: AccountLoader<'info, PoolState>,
@@ -2622,7 +2624,7 @@ pub struct WithdrawProtocolFees<'info> {
     #[account(
         mut,
         seeds = [seeds::POOL, pool_state.load()?.origin_mint.as_ref()],
-        bump = pool_state.load()?.bump,
+        bump,
         has_one = authority
     )]
     pub pool_state: AccountLoader<'info, PoolState>,
@@ -2638,10 +2640,11 @@ pub struct WithdrawProtocolFees<'info> {
 
 #[derive(Accounts)]
 pub struct ChangeAuthority<'info> {
+    // CRITICAL FIX: Optimize constraint - use bump without loading pool_state again
     #[account(
         mut,
         seeds = [seeds::POOL, pool_state.load()?.origin_mint.as_ref()],
-        bump = pool_state.load()?.bump,
+        bump,
         has_one = authority @ PoolError::Unauthorized
     )]
     pub pool_state: AccountLoader<'info, PoolState>,
@@ -2660,7 +2663,7 @@ pub struct Shield<'info> {
     #[account(
         mut,
         seeds = [seeds::POOL, pool_state.load()?.origin_mint.as_ref()],
-        bump = pool_state.load()?.bump
+        bump
     )]
     pub pool_state: AccountLoader<'info, PoolState>,
     /// CHECK: Validated manually in instruction to reduce stack usage
@@ -2744,7 +2747,7 @@ pub struct ShieldFinalizeTree<'info> {
     #[account(
         mut,
         seeds = [seeds::POOL, pool_state.load()?.origin_mint.as_ref()],
-        bump = pool_state.load()?.bump
+        bump
     )]
     pub pool_state: AccountLoader<'info, PoolState>,
     #[account(
@@ -2767,7 +2770,7 @@ pub struct ShieldFinalizeLedger<'info> {
     #[account(
         mut,
         seeds = [seeds::POOL, pool_state.load()?.origin_mint.as_ref()],
-        bump = pool_state.load()?.bump
+        bump
     )]
     pub pool_state: AccountLoader<'info, PoolState>,
     /// CHECK: Validated manually in instruction to reduce stack usage
@@ -2799,7 +2802,7 @@ pub struct ShieldFinalizeLedger<'info> {
 pub struct ShieldCheckInvariant<'info> {
     #[account(
         seeds = [seeds::POOL, pool_state.load()?.origin_mint.as_ref()],
-        bump = pool_state.load()?.bump
+        bump
     )]
     pub pool_state: AccountLoader<'info, PoolState>,
     #[account(
@@ -2826,7 +2829,7 @@ pub struct Unshield<'info> {
     #[account(
         mut,
         seeds = [seeds::POOL, pool_state.load()?.origin_mint.as_ref()],
-        bump = pool_state.load()?.bump
+        bump
     )]
     pub pool_state: AccountLoader<'info, PoolState>,
     /// CHECK: Validated manually in instruction to reduce stack usage
@@ -2903,7 +2906,7 @@ pub struct ConfigureHooks<'info> {
     #[account(
         mut,
         seeds = [seeds::POOL, pool_state.load()?.origin_mint.as_ref()],
-        bump = pool_state.load()?.bump,
+        bump,
         has_one = authority
     )]
     pub pool_state: AccountLoader<'info, PoolState>,
@@ -2934,7 +2937,7 @@ pub struct InitializeHookWhitelist<'info> {
     #[account(
         mut,
         seeds = [seeds::POOL, pool_state.load()?.origin_mint.as_ref()],
-        bump = pool_state.load()?.bump,
+        bump,
         has_one = authority
     )]
     pub pool_state: AccountLoader<'info, PoolState>,
@@ -2953,7 +2956,7 @@ pub struct ManageHookWhitelist<'info> {
     pub hook_whitelist: Account<'info, HookWhitelist>,
     #[account(
         seeds = [seeds::POOL, pool_state.load()?.origin_mint.as_ref()],
-        bump = pool_state.load()?.bump,
+        bump,
     )]
     pub pool_state: AccountLoader<'info, PoolState>,
     pub authority: Signer<'info>,
@@ -2964,7 +2967,7 @@ pub struct PrivateTransfer<'info> {
     #[account(
         mut,
         seeds = [seeds::POOL, pool_state.load()?.origin_mint.as_ref()],
-        bump = pool_state.load()?.bump
+        bump
     )]
     pub pool_state: AccountLoader<'info, PoolState>,
     #[account(
@@ -3068,7 +3071,7 @@ pub struct ManageAllowance<'info> {
     #[account(
         mut,
         seeds = [seeds::POOL, pool_state.load()?.origin_mint.as_ref()],
-        bump = pool_state.load()?.bump
+        bump
     )]
     pub pool_state: AccountLoader<'info, PoolState>,
     #[account(
@@ -3099,7 +3102,7 @@ pub struct TransferFrom<'info> {
     #[account(
         mut,
         seeds = [seeds::POOL, pool_state.load()?.origin_mint.as_ref()],
-        bump = pool_state.load()?.bump
+        bump
     )]
     pub pool_state: AccountLoader<'info, PoolState>,
     #[account(
