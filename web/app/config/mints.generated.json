@@ -2,14 +2,14 @@
   {
     "symbol": "TEST",
     "decimals": 6,
-    "originMint": "DR8CUGH4Q4LnnY86fdUFUjiNLX8YmjSsoPWpJSCc54iu",
-    "poolId": "B9S9T4wMQtCj7xUiiQTqU2uFzexh77npCLM4Bpd25CYA",
-    "zTokenMint": "ARRPV4gp4yhZcHw56GmAL1UChNjJuoRi2bQ25KuiF7mK",
+    "originMint": "8QnkTnzTaTPJPnFGun3R7rtgwD2AyRGchCDruFE4NMmt",
+    "poolId": "D6h9nXMcX7QkgHpQng3XKUtHmPBoV8NKqBqZkiLYJsTp",
+    "zTokenMint": "Dc8tPpVVftR3X4SVok3wEFWJYrvnT7TAgL9ChvcWXyUw",
     "features": {
       "zTokenEnabled": true,
       "wrappedTransfers": false
     },
-    "lookupTable": "4wLMVHmmmJJEKhXdTKzjzB92Dbr9vCXoSBcveAKgaah5"
+    "lookupTable": "GrCrQobgPLvz6a8KvpvTKiUSLeVt846sLuoKH9sAqi41"
   },
   {
     "symbol": "FBGS",
