@@ -58,6 +58,11 @@ pub mod ptf_factory {
         state.last_action_sequence = 0;
         // CRITICAL FIX: Initialize last_action_time for rate limiting (use current time, not 0)
         state.last_action_time = clock.unix_timestamp;
+        // CRITICAL FIX: Initialize multi-sig and emergency pause (empty by default)
+        state.multi_sig_signers = Vec::new();
+        state.multi_sig_threshold = 0;
+        state.emergency_pause_signers = Vec::new();
+        state.emergency_pause_threshold = 3; // Default: require 3-of-N for emergency pause
 
         emit!(FactoryInitialized {
             authority,
@@ -271,6 +276,16 @@ pub mod ptf_factory {
         let state = &mut ctx.accounts.factory_state;
         // CRITICAL FIX: Allow emergency pause without timelock for security incidents
         // This is intentional - pause should be immediate for emergency response
+        // Check if this is emergency pause (via emergency signers) or regular pause (via authority/multi-sig)
+        if state.require_emergency_pause_signers(ctx.remaining_accounts).is_ok() {
+            // Emergency pause - no authority check needed
+        } else {
+            // Regular pause - require authority or multi-sig
+            state.require_authority_or_multisig(
+                &ctx.accounts.authority.key(),
+                ctx.remaining_accounts,
+            )?;
+        }
         state.paused = true;
         emit!(FactoryPausedEmergency {
             authority: ctx.accounts.authority.key(),
@@ -454,11 +469,11 @@ pub mod ptf_factory {
         verifying_key_data: Vec<u8>,
     ) -> Result<()> {
         let state = &ctx.accounts.factory_state;
-        require_keys_eq!(
-            ctx.accounts.authority.key(),
-            state.authority,
-            FactoryError::Unauthorized
-        );
+        // CRITICAL FIX: Require authority or multi-sig for critical operations
+        state.require_authority_or_multisig(
+            &ctx.accounts.authority.key(),
+            ctx.remaining_accounts,
+        )?;
         
         // CRITICAL FIX: Validate verifier program
         require_keys_eq!(
@@ -1161,15 +1176,76 @@ pub struct FactoryState {
     pub last_action_sequence: u64,
     // CRITICAL FIX: Rate limiting - track last action time to prevent rapid queue filling
     pub last_action_time: i64,
+    // CRITICAL FIX: Multi-signature configuration for critical operations
+    pub multi_sig_signers: Vec<Pubkey>,
+    pub multi_sig_threshold: u8,
+    // CRITICAL FIX: Emergency pause signers (independent of main authority)
+    pub emergency_pause_signers: Vec<Pubkey>,
+    pub emergency_pause_threshold: u8,
 }
 
 impl FactoryState {
     pub const MAX_PENDING_ACTIONS: usize = 50;
     // Minimum time between actions (60 seconds) to prevent rapid queue filling
     pub const MIN_TIME_BETWEEN_ACTIONS: i64 = 60;
-    // SPACE = discriminator[8] + authority[32] + default_fee_bps[2] + default_features[1] + paused[1] + timelock_seconds[8] + bump[1] + last_updated_slot[8] + pending_action_hashes[4 + (32 * MAX_PENDING_ACTIONS)] + last_action_sequence[8] + last_action_time[8]
-    pub const SPACE: usize = 8 + 32 + 2 + 1 + 1 + 8 + 1 + 8 + 4 + (32 * Self::MAX_PENDING_ACTIONS) + 8 + 8;
+    pub const MAX_MULTISIG_SIGNERS: usize = 10;
+    pub const MAX_EMERGENCY_SIGNERS: usize = 10;
+    // SPACE = discriminator[8] + authority[32] + default_fee_bps[2] + default_features[1] + paused[1] + timelock_seconds[8] + bump[1] + last_updated_slot[8] + pending_action_hashes[4 + (32 * MAX_PENDING_ACTIONS)] + last_action_sequence[8] + last_action_time[8] + multi_sig_signers[4 + (32 * MAX_MULTISIG_SIGNERS)] + multi_sig_threshold[1] + emergency_pause_signers[4 + (32 * MAX_EMERGENCY_SIGNERS)] + emergency_pause_threshold[1]
+    pub const SPACE: usize = 8 + 32 + 2 + 1 + 1 + 8 + 1 + 8 + 4 + (32 * Self::MAX_PENDING_ACTIONS) + 8 + 8 + 4 + (32 * Self::MAX_MULTISIG_SIGNERS) + 1 + 4 + (32 * Self::MAX_EMERGENCY_SIGNERS) + 1;
     pub const SEQUENCE_WARNING_THRESHOLD: u64 = u64::MAX - 1_000_000;
+    
+    // CRITICAL FIX: Check if authority or multi-sig is satisfied
+    pub fn require_authority_or_multisig(
+        &self,
+        authority_key: &Pubkey,
+        remaining_accounts: &[AccountInfo],
+    ) -> Result<()> {
+        // Check single authority first
+        if authority_key == &self.authority {
+            return Ok(());
+        }
+        
+        // Check multi-sig if configured
+        if !self.multi_sig_signers.is_empty() && self.multi_sig_threshold > 0 {
+            let mut signatures = 0u8;
+            for signer_pubkey in &self.multi_sig_signers {
+                // Check if this signer is in remaining_accounts and is a signer
+                if remaining_accounts.iter().any(|acc| acc.key() == *signer_pubkey && acc.is_signer) {
+                    signatures = signatures.checked_add(1).ok_or(FactoryError::InsufficientSignatures)?;
+                }
+            }
+            require!(
+                signatures >= self.multi_sig_threshold,
+                FactoryError::InsufficientSignatures
+            );
+            return Ok(());
+        }
+        
+        err!(FactoryError::Unauthorized)
+    }
+    
+    // CRITICAL FIX: Check emergency pause signers
+    pub fn require_emergency_pause_signers(
+        &self,
+        remaining_accounts: &[AccountInfo],
+    ) -> Result<()> {
+        require!(
+            !self.emergency_pause_signers.is_empty(),
+            FactoryError::EmergencyPauseNotConfigured
+        );
+        
+        let mut signatures = 0u8;
+        for signer_pubkey in &self.emergency_pause_signers {
+            if remaining_accounts.iter().any(|acc| acc.key() == *signer_pubkey && acc.is_signer) {
+                signatures = signatures.checked_add(1).ok_or(FactoryError::InsufficientEmergencySignatures)?;
+            }
+        }
+        require!(
+            signatures >= self.emergency_pause_threshold,
+            FactoryError::InsufficientEmergencySignatures
+        );
+        Ok(())
+    }
 }
 
 #[account]
@@ -1613,6 +1689,12 @@ pub enum FactoryError {
     SerializationError,
     #[msg("E_ORIGIN_MINT_MISMATCH")]
     OriginMintMismatch,
+    #[msg("E_INSUFFICIENT_SIGNATURES")]
+    InsufficientSignatures,
+    #[msg("E_EMERGENCY_PAUSE_NOT_CONFIGURED")]
+    EmergencyPauseNotConfigured,
+    #[msg("E_INSUFFICIENT_EMERGENCY_SIGNATURES")]
+    InsufficientEmergencySignatures,
     #[msg("E_MINT_FROZEN")]
     MintFrozen,
     #[msg("E_INVALID_AMOUNT")]

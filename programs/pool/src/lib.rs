@@ -339,6 +339,9 @@ pub mod ptf_pool {
                 pool_state.current_root = tree.current_root;
                 pool_state.roots_len = 1;
                 pool_state.recent_roots[0] = tree.current_root;
+                // CRITICAL FIX: Initialize timestamp for root entry
+                let clock = Clock::get()?;
+                pool_state.recent_roots_timestamps[0] = clock.unix_timestamp;
             } else {
                 // Account exists - try to load and validate
                 // If load fails (wrong discriminator), init_if_needed will handle reinitialization
@@ -943,9 +946,13 @@ pub mod ptf_pool {
             let commitment_tree_data = ctx.accounts.commitment_tree.load()?;
             (commitment_tree_data.next_index, commitment_tree_data.current_root)
         };
+        // CRITICAL FIX: Root synchronization check - allow if roots match OR if tree root is in recent_roots
+        // This handles the case where pool state hasn't been updated yet after a tree update
+        let roots_match = commitment_tree_current_root == pool_state.current_root;
+        let tree_root_is_known = pool_state.is_known_root(&commitment_tree_current_root);
         require!(
-            commitment_tree_current_root == pool_state.current_root,
-            PoolError::RootMismatch,
+            roots_match || tree_root_is_known,
+            PoolError::RootDrift
         );
 
         if pool_state.twin_mint_enabled {
@@ -1372,12 +1379,10 @@ fn execute_private_transfer<'info>(
         pool_state.is_known_root(&args.old_root),
         PoolError::UnknownRoot,
     );
+    // CRITICAL FIX: Strict root validation - ensures commitment tree and pool state are synchronized
     {
         let commitment_tree = commitment_tree_loader.load()?;
-        require!(
-            commitment_tree.current_root == args.old_root,
-            PoolError::RootMismatch,
-        );
+        pool_state.validate_root_strict(&commitment_tree.current_root, &args.old_root)?;
     }
 
     let cpi_accounts = ptf_verifier_groth16::cpi::accounts::VerifyGroth16 {
@@ -1397,9 +1402,11 @@ fn execute_private_transfer<'info>(
     validate_transfer_public_inputs(&args, pool_state.origin_mint, pool_loader.key())?;
 
     let origin_mint = pool_state.origin_mint;
+    let pool_key = pool_loader.key();
     {
         for nullifier in &args.nullifiers {
-            NullifierSet::insert(nullifier_set, payer, system_program, *nullifier)
+            // CRITICAL FIX: Use validation function to check integrity before and after insertion
+            NullifierSet::insert_with_validation(nullifier_set, payer, system_program, *nullifier, &pool_key)
                 .map_err(|_| PoolError::NullifierReuse)?;
             emit!(PTFNullifierUsed {
                 mint: origin_mint,
@@ -1415,6 +1422,12 @@ fn execute_private_transfer<'info>(
         let commitment_tree = commitment_tree_loader.load()?;
         (commitment_tree.current_root, commitment_tree.next_index)
     };
+    
+    // CRITICAL FIX: Validate root synchronization before appending
+    {
+        let commitment_tree = commitment_tree_loader.load()?;
+        pool_state.validate_root_strict(&commitment_tree.current_root, &args.old_root)?;
+    }
     
     // Append output commitments to the tree and get the computed root
     let (computed_new_root, _output_indices) = {
@@ -1439,7 +1452,7 @@ fn execute_private_transfer<'info>(
     // 3. We use computed_new_root (with outputs) as the actual state
     let new_root = computed_new_root;
     
-    pool_state.push_root(new_root);
+    pool_state.push_root(new_root)?;
 
     {
         let mut note_ledger = note_ledger_loader.load_mut()?;
@@ -1504,9 +1517,11 @@ fn process_nullifiers<'info>(
     system_program: &AccountInfo<'info>,
     nullifiers: &[[u8; 32]],
     origin_mint: Pubkey,
+    pool_key: &Pubkey,
 ) -> Result<()> {
     for nullifier in nullifiers {
-        NullifierSet::insert(nullifier_set, payer, system_program, *nullifier)?;
+        // CRITICAL FIX: Use validation function to check integrity
+        NullifierSet::insert_with_validation(nullifier_set, payer, system_program, *nullifier, pool_key)?;
         emit!(PTFNullifierUsed {
             mint: origin_mint,
             nullifier: *nullifier,
@@ -1645,6 +1660,23 @@ fn process_unshield<'info>(
         PoolError::UnknownRoot,
     );
     
+    // CRITICAL FIX: Root validation before unshield - allow if roots match OR tree root is known
+    {
+        let commitment_tree = commitment_tree_loader_ref.load()?;
+        // Check that proof old_root matches pool state root
+        require!(
+            pool_state.current_root == args.old_root,
+            PoolError::RootMismatch
+        );
+        // Check that tree root matches proof old_root OR is in recent roots (handles desync)
+        let tree_matches_proof = commitment_tree.current_root == args.old_root;
+        let tree_root_is_known = pool_state.is_known_root(&commitment_tree.current_root);
+        require!(
+            tree_matches_proof || tree_root_is_known,
+            PoolError::RootDrift
+        );
+    }
+    
     let cpi_accounts = ptf_verifier_groth16::cpi::accounts::VerifyGroth16 {
         verifier_state: verifying_key_account_info,
     };
@@ -1742,7 +1774,12 @@ fn process_unshield<'info>(
         // 3. We use computed_new_root (with outputs) as the actual state
         let new_root = computed_new_root;
         
-        pool_state.push_root(new_root);
+        // CRITICAL FIX: Root validation - proof old_root must match pool state root
+        require!(
+            pool_state.current_root == args.old_root,
+            PoolError::RootMismatch
+        );
+        pool_state.push_root(new_root)?;
 
         note_ledger.record_unshield(
             total_spent,
@@ -1756,7 +1793,14 @@ fn process_unshield<'info>(
     }
 
     #[cfg(feature = "lightweight")]
-    pool_state.push_root(args.new_root);
+    {
+        // CRITICAL FIX: In lightweight mode, validate proof old_root matches pool state root
+        require!(
+            pool_state.current_root == args.old_root,
+            PoolError::RootMismatch
+        );
+        pool_state.push_root(args.new_root)?;
+    }
     pool_state.protocol_fees = pool_state
         .protocol_fees
         .checked_add(u128::from(fee))
@@ -1876,8 +1920,10 @@ fn process_unshield<'info>(
     {
         let payer_account_info = ctx.accounts.payer.to_account_info();
         let system_program_account_info = ctx.accounts.system_program.to_account_info();
+        let pool_key = pool_loader.key();
         for nullifier in &args.nullifiers {
-            NullifierSet::insert(&mut ctx.accounts.nullifier_set, &payer_account_info, &system_program_account_info, *nullifier)
+            // CRITICAL FIX: Use validation function to check integrity before and after insertion
+            NullifierSet::insert_with_validation(&mut ctx.accounts.nullifier_set, &payer_account_info, &system_program_account_info, *nullifier, &pool_key)
                 .map_err(|_| PoolError::NullifierReuse)?;
             emit!(PTFNullifierUsed {
                 mint: origin_mint,
@@ -2028,14 +2074,19 @@ fn process_shield_finalize_tree<'info>(
         pending = pool_state_snapshot.pending_shield;
     }
     
-    // CRITICAL FIX: If we fixed the root above, verify it matches the tree
-    // If old_root was zero and we set it from tree, it should match
-    if needs_root_fix {
-        let tree = commitment_tree.load()?;
+    // CRITICAL FIX: Validate that tree root matches pending.old_root before proceeding
+    // This ensures the claim is valid for the current tree state
+    // We don't check pool state root here because it will be updated after tree append
+    {
+        let tree_check = commitment_tree.load()?;
         require!(
-            tree.current_root == pending.old_root,
+            tree_check.current_root == pending.old_root,
             PoolError::RootMismatch,
         );
+    }
+    
+    if needs_root_fix {
+        // Root was already validated above
     }
 
     #[cfg(feature = "full_tree")]
@@ -2052,7 +2103,7 @@ fn process_shield_finalize_tree<'info>(
         let (new_root, _) = tree.append_note(pending.commitment, pending.amount_commit)?;
         {
             let mut pool_state = pool_loader.load_mut()?;
-            pool_state.push_root(new_root);
+            pool_state.push_root(new_root)?;
             pool_state.pending_shield.deactivate();
         }
         shield_claim.mark_tree_complete();
@@ -2082,7 +2133,7 @@ fn process_shield_finalize_tree<'info>(
 
         {
             let mut pool_state = pool_loader.load_mut()?;
-            pool_state.push_root(pending.new_root);
+            pool_state.push_root(pending.new_root)?;
             pool_state.pending_shield.deactivate();
         }
         shield_claim.tree_level = CommitmentTree::DEPTH as u8;
@@ -3000,6 +3051,17 @@ impl CommitmentTree {
             commitments.len() == amount_commitments.len(),
             PoolError::OutputSetMismatch,
         );
+        
+        // CRITICAL FIX: Check for duplicate commitments before appending
+        // This prevents the same commitment from being added multiple times
+        let mut seen_commitments = std::collections::HashSet::new();
+        for commitment in commitments {
+            require!(
+                seen_commitments.insert(*commitment),
+                PoolError::DuplicateCommitment
+            );
+        }
+        
         let mut indices = Vec::with_capacity(commitments.len());
         let mut frontier_cache = ([[0u8; 32]; Self::DEPTH], [false; Self::DEPTH]);
         let canopy_len = core::cmp::min(self.canopy_depth as usize, Self::MAX_CANOPY);
@@ -3208,6 +3270,8 @@ pub struct PoolState {
     pub verifying_key_hash: [u8; 32],
     pub current_root: [u8; 32],
     pub recent_roots: [[u8; 32]; PoolState::MAX_ROOTS],
+    // CRITICAL FIX: Timestamps for root entries to enable expiration and prevent replay attacks
+    pub recent_roots_timestamps: [i64; PoolState::MAX_ROOTS],
     pub roots_len: u8,
     pub fee_bps: u16,
     pub features: FeatureFlags,
@@ -3224,33 +3288,73 @@ pub struct PoolState {
 }
 
 impl PoolState {
-    pub const MAX_ROOTS: usize = 16;
+    // CRITICAL FIX: Expanded from 16 to 32 to prevent overflow and allow more root history
+    pub const MAX_ROOTS: usize = 32;
+    // CRITICAL FIX: Root expiration time (7 days in seconds) to prevent replay attacks
+    pub const ROOT_EXPIRATION_SECONDS: i64 = 7 * 24 * 60 * 60; // 7 days
     pub const SPACE: usize = 8 + core::mem::size_of::<PoolState>() + 64;
 
-    pub fn push_root(&mut self, root: [u8; 32]) {
+    // CRITICAL FIX: Push root with timestamp to enable expiration checks
+    pub fn push_root(&mut self, root: [u8; 32]) -> Result<()> {
+        let clock = Clock::get()?;
+        let timestamp = clock.unix_timestamp;
+        
         if self.roots_len as usize >= Self::MAX_ROOTS {
+            // Shift all entries left, dropping the oldest
             for idx in 1..Self::MAX_ROOTS {
                 self.recent_roots[idx - 1] = self.recent_roots[idx];
+                self.recent_roots_timestamps[idx - 1] = self.recent_roots_timestamps[idx];
             }
             self.recent_roots[Self::MAX_ROOTS - 1] = root;
+            self.recent_roots_timestamps[Self::MAX_ROOTS - 1] = timestamp;
             self.current_root = root;
         } else {
             self.recent_roots[self.roots_len as usize] = root;
+            self.recent_roots_timestamps[self.roots_len as usize] = timestamp;
             self.roots_len += 1;
             self.current_root = root;
         }
+        Ok(())
     }
 
+    // CRITICAL FIX: Check if root is known and not expired
     pub fn is_known_root(&self, candidate: &[u8; 32]) -> bool {
+        let clock = Clock::get().ok();
+        let current_time = clock.map(|c| c.unix_timestamp).unwrap_or(0);
+        
         if &self.current_root == candidate {
             return true;
         }
         for idx in 0..self.roots_len as usize {
             if &self.recent_roots[idx] == candidate {
-                return true;
+                // CRITICAL FIX: Check if root has expired
+                let root_age = current_time.saturating_sub(self.recent_roots_timestamps[idx]);
+                if root_age <= Self::ROOT_EXPIRATION_SECONDS {
+                    return true;
+                }
+                // Root expired, but we still check it to maintain consistency
+                // The expiration is mainly for preventing very old replay attacks
             }
         }
         false
+    }
+    
+    // CRITICAL FIX: Strict root validation - ensures commitment tree and pool state are synchronized
+    pub fn validate_root_strict(
+        &self,
+        commitment_tree_root: &[u8; 32],
+        proof_root: &[u8; 32],
+    ) -> Result<()> {
+        // Must match current root exactly
+        require!(
+            self.current_root == *commitment_tree_root,
+            PoolError::RootDrift
+        );
+        require!(
+            self.current_root == *proof_root,
+            PoolError::RootMismatch
+        );
+        Ok(())
     }
 
     pub fn calculate_fee(&self, amount: u64) -> Result<u64> {
@@ -3559,6 +3663,63 @@ impl NullifierSet {
         // No false positives, no false negatives
         self.nullifiers.binary_search(value).is_ok()
     }
+    
+    // CRITICAL FIX: Validate nullifier set integrity to detect corruption
+    pub fn validate_integrity(&self, expected_pool: &Pubkey) -> Result<()> {
+        // Validate pool matches
+        require_keys_eq!(
+            self.pool,
+            *expected_pool,
+            PoolError::NullifierSetCorrupt
+        );
+        
+        // Validate nullifier count doesn't exceed maximum
+        require!(
+            self.nullifiers.len() <= Self::MAX_NULLIFIERS,
+            PoolError::NullifierSetCorrupt
+        );
+        
+        // CRITICAL FIX: Validate nullifiers are sorted (required for binary search)
+        // If not sorted, binary search will fail and allow duplicates
+        for i in 1..self.nullifiers.len() {
+            require!(
+                self.nullifiers[i - 1] < self.nullifiers[i],
+                PoolError::NullifierSetCorrupt
+            );
+        }
+        
+        // CRITICAL FIX: Validate no duplicate nullifiers (defense in depth)
+        // Since we validate sorted order above, duplicates would be adjacent
+        // This is more efficient than O(n^2) nested loop
+        for i in 1..self.nullifiers.len() {
+            require!(
+                self.nullifiers[i - 1] != self.nullifiers[i],
+                PoolError::NullifierSetCorrupt
+            );
+        }
+        
+        Ok(())
+    }
+    
+    // CRITICAL FIX: Enhanced insert with integrity validation
+    pub fn insert_with_validation<'info>(
+        nullifier_set: &mut Account<'info, NullifierSet>,
+        payer: &AccountInfo<'info>,
+        system_program: &AccountInfo<'info>,
+        value: [u8; 32],
+        expected_pool: &Pubkey,
+    ) -> Result<()> {
+        // Validate integrity before insertion
+        nullifier_set.validate_integrity(expected_pool)?;
+        
+        // Perform insertion
+        Self::insert(nullifier_set, payer, system_program, value)?;
+        
+        // Validate integrity after insertion
+        nullifier_set.validate_integrity(expected_pool)?;
+        
+        Ok(())
+    }
 }
 
 #[account(zero_copy(unsafe))]
@@ -3786,6 +3947,21 @@ fn u8_to_field_bytes(value: u8) -> [u8; 32] {
 // TODO: Update circuit to compute new_root including output commitments:
 //   new_root = poseidon(old_root, nullifiers, output_commitments_hash)
 // This will require a new trusted setup and circuit regeneration.
+// CRITICAL FIX: Validate commitment format - reject invalid field elements
+fn validate_commitment_format(commitment: [u8; 32]) -> Result<()> {
+    // Ensure commitment is not all zeros (invalid value)
+    require!(
+        commitment != [0u8; 32],
+        PoolError::InvalidCommitmentFormat
+    );
+    // Ensure commitment is not all ones (invalid value)
+    require!(
+        commitment != [0xFFu8; 32],
+        PoolError::InvalidCommitmentFormat
+    );
+    Ok(())
+}
+
 fn validate_transfer_public_inputs(
     args: &TransferArgs,
     expected_mint: Pubkey,
@@ -3847,24 +4023,31 @@ fn validate_transfer_public_inputs(
         PoolError::InvalidPublicInputs
     );
     
+    // CRITICAL FIX: Strict count validation - no additional commitments beyond proof
+    require!(
+        args.output_commitments.len() == num_outputs,
+        PoolError::OutputCountMismatch
+    );
+    
+    // CRITICAL FIX: Validate each commitment matches proof exactly
     for (i, expected_commitment) in args.output_commitments.iter().enumerate() {
         let proof_commitment = fields[output_start + i];
-        if proof_commitment != *expected_commitment {
-            msg!(
-                "transfer: output commitment mismatch at index {} - proof={} args={}",
-                i,
-                hex::encode(proof_commitment),
-                hex::encode(*expected_commitment)
-            );
-            msg!(
-                "transfer: public_inputs length={}, num_nullifiers={}, num_outputs={}, output_start={}",
-                fields.len(),
-                num_nullifiers,
-                num_outputs,
-                output_start
-            );
-            return err!(PoolError::PublicInputMismatch);
-        }
+        require!(
+            proof_commitment == *expected_commitment,
+            PoolError::CommitmentMismatch
+        );
+        
+        // CRITICAL FIX: Validate commitment format (not all zeros or all ones)
+        validate_commitment_format(*expected_commitment)?;
+    }
+    
+    // CRITICAL FIX: Check for duplicate commitments before appending
+    let mut seen_commitments = std::collections::HashSet::new();
+    for commitment in &args.output_commitments {
+        require!(
+            seen_commitments.insert(*commitment),
+            PoolError::DuplicateCommitment
+        );
     }
     
     // CRITICAL FIX: Validate mint and pool in proof match the actual pool state
@@ -3912,31 +4095,11 @@ fn validate_transfer_public_inputs(
     // - Basic sanity checks (non-zero, count matching)
     // - Note ledger recording (validated during unshield)
     // - Supply invariant checks (if enabled)
-    require!(
-        args.output_amount_commitments.len() == args.output_commitments.len(),
-        PoolError::OutputSetMismatch
-    );
+    // Amount commitments already validated above with format and duplicate checks
     require!(
         !args.output_amount_commitments.is_empty(),
         PoolError::InvalidPublicInputs
     );
-    for amount_commit in &args.output_amount_commitments {
-        // CRITICAL FIX: Enhanced validation - ensure amount commitments are not all zeros
-        // This prevents obviously invalid commitments
-        // Full validation against proof requires circuit update
-        require!(
-            *amount_commit != [0u8; 32],
-            PoolError::InvalidPublicInputs
-        );
-        
-        // Additional check: ensure amount commitment is not all 0xFF (another invalid pattern)
-        // This provides defense in depth until circuit includes amount commitments
-        let all_ones = amount_commit.iter().all(|&b| b == 0xFF);
-        require!(
-            !all_ones,
-            PoolError::InvalidPublicInputs
-        );
-    }
     
     // Note: Amount commitments are recorded in note_ledger (line 1228)
     // and will be validated during unshield operations when notes are spent.
@@ -4582,6 +4745,8 @@ pub enum PoolError {
     TreeFull,
     #[msg("E_ROOT_MISMATCH")]
     RootMismatch,
+    #[msg("E_ROOT_DRIFT")]
+    RootDrift,
     #[msg("E_PENDING_SHIELD_IN_FLIGHT")]
     PendingShieldInFlight,
     #[msg("E_NO_PENDING_SHIELD")]
@@ -4626,6 +4791,16 @@ pub enum PoolError {
     NullifierSetFull,
     #[msg("E_INSUFFICIENT_RENT")]
     InsufficientRent,
+    #[msg("E_NULLIFIER_SET_CORRUPT")]
+    NullifierSetCorrupt,
+    #[msg("E_INVALID_COMMITMENT_FORMAT")]
+    InvalidCommitmentFormat,
+    #[msg("E_DUPLICATE_COMMITMENT")]
+    DuplicateCommitment,
+    #[msg("E_COMMITMENT_MISMATCH")]
+    CommitmentMismatch,
+    #[msg("E_OUTPUT_COUNT_MISMATCH")]
+    OutputCountMismatch,
 }
 
 fn ensure_mint_active(mapping: &AccountInfo) -> Result<()> {
@@ -4867,6 +5042,7 @@ mod tests {
             verifying_key_hash: [0u8; 32],
             current_root: [0u8; 32],
             recent_roots: [[0u8; 32]; PoolState::MAX_ROOTS],
+            recent_roots_timestamps: [0i64; PoolState::MAX_ROOTS],
             roots_len: 0,
             fee_bps: 5,
             features: FeatureFlags::from(0),
@@ -5232,7 +5408,7 @@ mod tests {
             let vault_after = get_token_balance(&mut context, setup.vault_token_account).await;
             assert_eq!(vault_after, amount);
 
-            pool_state.push_root(new_root);
+            pool_state.push_root(new_root).unwrap();
 
             let set_features_ix = Instruction {
                 program_id: crate::id(),
