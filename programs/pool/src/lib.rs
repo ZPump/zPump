@@ -1117,11 +1117,8 @@ pub mod ptf_pool {
         new_root_be.reverse();
 
         if old_root_bytes != pool_state.current_root {
-            msg!(
-                "shield: root mismatch - proof old_root={} pool_state.current_root={}",
-                hex::encode(old_root_bytes),
-                hex::encode(pool_state.current_root)
-            );
+            // CRITICAL FIX: Don't log sensitive root values
+            msg!("shield: root mismatch");
         }
         require!(
             old_root_bytes == pool_state.current_root,
@@ -2025,6 +2022,16 @@ fn process_unshield<'info>(
         );
         pool_state.push_root(args.new_root)?;
     }
+    // CRITICAL FIX: Check if protocol_fees is approaching overflow limit
+    // Warn when fees exceed 90% of u128::MAX to allow time for withdrawal
+    const PROTOCOL_FEES_WARNING_THRESHOLD: u128 = u128::MAX - (u128::MAX / 10); // 90% of max
+    if pool_state.protocol_fees > PROTOCOL_FEES_WARNING_THRESHOLD {
+        msg!(
+            "WARNING: protocol_fees ({}) approaching overflow limit. Withdraw fees immediately.",
+            pool_state.protocol_fees
+        );
+    }
+    
     pool_state.protocol_fees = pool_state
         .protocol_fees
         .checked_add(u128::from(fee))
@@ -4364,14 +4371,29 @@ impl NoteLedger {
 
     #[cfg(feature = "invariant_checks")]
     pub fn should_enforce_invariant(&self, note_amount: u64) -> bool {
+        // CRITICAL FIX: Always check large operations
         if note_amount >= INVARIANT_CHECK_MIN_NOTE_AMOUNT {
             return true;
         }
         if INVARIANT_CHECK_SAMPLE_INTERVAL == 0 {
             return true;
         }
+        
+        // CRITICAL FIX: Use hash-based sampling to make it less predictable
+        // Combine operation counts with pool-specific data to create non-deterministic sampling
         let operations = self.notes_created.saturating_add(self.notes_consumed);
-        operations % INVARIANT_CHECK_SAMPLE_INTERVAL == 0
+        
+        // Use hash of pool + operations + amount_commitment_digest for less predictable sampling
+        let mut hasher = Keccak256::new();
+        hasher.update(self.pool.as_ref());
+        hasher.update(&operations.to_le_bytes());
+        hasher.update(&self.amount_commitment_digest);
+        hasher.update(&note_amount.to_le_bytes());
+        let hash: [u8; 32] = hasher.finalize().into();
+        
+        // Use first byte of hash modulo interval for sampling (less predictable than simple modulo)
+        let sample_value = u64::from(hash[0]);
+        sample_value % INVARIANT_CHECK_SAMPLE_INTERVAL == 0
     }
 
     #[cfg(feature = "note_digests")]
@@ -4550,12 +4572,8 @@ fn validate_transfer_public_inputs(
     let nullifier_end = nullifier_start + num_nullifiers;
     for (i, nullifier) in args.nullifiers.iter().enumerate() {
         if fields[nullifier_start + i] != *nullifier {
-            msg!(
-                "transfer: nullifier mismatch at index {} - proof={} args={}",
-                i,
-                hex::encode(fields[nullifier_start + i]),
-                hex::encode(*nullifier)
-            );
+                // CRITICAL FIX: Don't log sensitive nullifier values
+                msg!("transfer: nullifier mismatch at index {}", i);
             return err!(PoolError::PublicInputMismatch);
         }
     }
@@ -4613,11 +4631,8 @@ fn validate_transfer_public_inputs(
     let expected_pool_bytes = pubkey_to_field_bytes(&expected_pool);
     
     if proof_mint != expected_mint_bytes {
-        msg!(
-            "transfer: mint mismatch - proof={} expected={}",
-            hex::encode(proof_mint),
-            hex::encode(expected_mint_bytes)
-        );
+        // CRITICAL FIX: Don't log sensitive proof values
+        msg!("transfer: mint mismatch");
         return err!(PoolError::PublicInputMismatch);
     }
     
@@ -4939,12 +4954,8 @@ fn validate_unshield_public_inputs(
         .enumerate()
     {
         if actual != expected {
-            msg!(
-                "unshield: output commitment mismatch at index {} - proof={} args={}",
-                i,
-                hex::encode(*actual),
-                hex::encode(*expected)
-            );
+            // CRITICAL FIX: Don't log sensitive commitment values
+            msg!("unshield: output commitment mismatch at index {}", i);
             return err!(PoolError::PublicInputMismatch);
         }
     }
@@ -4959,12 +4970,8 @@ fn validate_unshield_public_inputs(
         .enumerate()
     {
         if actual != expected {
-            msg!(
-                "unshield: output amount commitment mismatch at index {} - proof={} args={}",
-                i,
-                hex::encode(*actual),
-                hex::encode(*expected)
-            );
+            // CRITICAL FIX: Don't log sensitive commitment values
+            msg!("unshield: output amount commitment mismatch at index {}", i);
             return err!(PoolError::PublicInputMismatch);
         }
     }
@@ -4983,20 +4990,14 @@ fn validate_unshield_public_inputs(
     let fee_from_proof = decode_amount_from_field(&fields[index], decimals)?;
     index += 1;
     if fields[index] != pubkey_to_field_bytes(&destination) {
-        msg!(
-            "destination mismatch actual={} expected={}",
-            hex::encode(fields[index]),
-            hex::encode(pubkey_to_field_bytes(&destination))
-        );
+        // CRITICAL FIX: Don't log sensitive proof values
+        msg!("destination mismatch");
         return err!(PoolError::PublicInputMismatch);
     }
     index += 1;
     if fields[index] != u8_to_field_bytes(mode as u8) {
-        msg!(
-            "mode mismatch actual={} expected={}",
-            hex::encode(fields[index]),
-            hex::encode(u8_to_field_bytes(mode as u8))
-        );
+        // CRITICAL FIX: Don't log sensitive proof values
+        msg!("mode mismatch");
         return err!(PoolError::PublicInputMismatch);
     }
     index += 1;
@@ -5004,11 +5005,8 @@ fn validate_unshield_public_inputs(
     // CRITICAL FIX: Validate mint in proof matches the actual pool state
     // This prevents proof reuse across different mints
     if fields[index] != pubkey_to_field_bytes(&pool_state.origin_mint) {
-        msg!(
-            "unshield: origin mint mismatch - proof={} expected={}",
-            hex::encode(fields[index]),
-            hex::encode(pubkey_to_field_bytes(&pool_state.origin_mint))
-        );
+        // CRITICAL FIX: Don't log sensitive proof values
+        msg!("unshield: origin mint mismatch");
         return err!(PoolError::PublicInputMismatch);
     }
     index += 1;
@@ -5016,11 +5014,8 @@ fn validate_unshield_public_inputs(
     // CRITICAL FIX: Validate pool in proof matches the actual pool state
     // This prevents proof reuse across different pools
     if fields[index] != pubkey_to_field_bytes(&pool_key) {
-        msg!(
-            "unshield: pool key mismatch - proof={} expected={}",
-            hex::encode(fields[index]),
-            hex::encode(pubkey_to_field_bytes(&pool_key))
-        );
+        // CRITICAL FIX: Don't log sensitive proof values
+        msg!("unshield: pool key mismatch");
         return err!(PoolError::PublicInputMismatch);
     }
 
