@@ -58,6 +58,8 @@ pub mod ptf_factory {
         state.last_action_sequence = 0;
         // CRITICAL FIX: Initialize last_action_time for rate limiting (use current time, not 0)
         state.last_action_time = clock.unix_timestamp;
+        // CRITICAL FIX: Initialize global rate limiting
+        state.last_global_action_time = clock.unix_timestamp;
         // CRITICAL FIX: Initialize multi-sig and emergency pause (empty by default)
         state.multi_sig_signers = Vec::new();
         state.multi_sig_threshold = 0;
@@ -323,6 +325,15 @@ pub mod ptf_factory {
         }
         state.last_action_time = clock.unix_timestamp;
         
+        // CRITICAL FIX: Global rate limiting to prevent coordinated attacks
+        if state.last_global_action_time > 0 {
+            require!(
+                clock.unix_timestamp >= state.last_global_action_time + FactoryState::MIN_TIME_BETWEEN_ACTIONS,
+                FactoryError::GlobalActionRateLimitExceeded
+            );
+        }
+        state.last_global_action_time = clock.unix_timestamp;
+        
         // Determine timelock duration based on action type
         let timelock_duration = match &action {
             TimelockAction::ChangeAuthority { .. } => AUTHORITY_CHANGE_TIMELOCK_SECONDS,
@@ -338,12 +349,24 @@ pub mod ptf_factory {
             .try_to_vec()
             .map_err(|_| error!(FactoryError::SerializationError))?;
         
-        // CRITICAL FIX: Compute action hash including salt for deduplication
+        // CRITICAL FIX: Use sequence for unique entry address
+        // Anchor's PDA constraint reads factory_state.last_action_sequence BEFORE the instruction runs
+        // So the PDA seeds use the CURRENT sequence value. We set entry.sequence to match the PDA.
+        // Then we increment state.last_action_sequence AFTER creating the account.
+        let current_sequence = state.last_action_sequence;
+        let next_sequence = current_sequence
+            .checked_add(1)
+            .ok_or(FactoryError::SequenceOverflow)?;
+        
+        // CRITICAL FIX: Compute action hash including salt and sequence for additional entropy
+        // This prevents hash collisions and makes each action unique
+        // Use current_sequence (the one that will be in the entry) for hash computation
         let action_hash = hashv(&[
             state.key().as_ref(),
             &salt,
             &action_bytes,
             &execute_after.to_le_bytes(),
+            &current_sequence.to_le_bytes(), // CRITICAL FIX: Include sequence for additional entropy
         ]);
         
         // CRITICAL FIX: Check for duplicate actions
@@ -431,6 +454,10 @@ pub mod ptf_factory {
         // CRITICAL FIX: Set sequence to current value (matches PDA derivation)
         // ExecuteTimelockAction's PDA constraint uses timelock_entry.sequence, so it must match
         entry.sequence = current_sequence;
+        // CRITICAL FIX: Set expiration time (30 days after execute_after to prevent indefinite execution)
+        entry.expires_at = execute_after
+            .checked_add(TIMELOCK_STALE_GRACE_SECONDS)
+            .ok_or(FactoryError::TimelockOverflow)?;
         
         // CRITICAL FIX: Increment sequence AFTER entry is created
         // This ensures the next entry uses a different sequence
@@ -553,10 +580,16 @@ pub mod ptf_factory {
             clock.unix_timestamp >= entry.execute_after,
             FactoryError::TimelockNotReady
         );
+        
+        // CRITICAL FIX: Check if action has expired
+        require!(
+            clock.unix_timestamp < entry.expires_at,
+            FactoryError::ActionExpired
+        );
 
         // CRITICAL FIX: Recompute and verify action hash before execution
         // This ensures the action hasn't been tampered with after queuing
-        // MUST include salt to match queue hash: hash(factory || salt || action || execute_after)
+        // MUST include salt and sequence to match queue hash: hash(factory || salt || action || execute_after || sequence)
         let action_bytes = entry.action
             .try_to_vec()
             .map_err(|_| error!(FactoryError::SerializationError))?;
@@ -565,6 +598,7 @@ pub mod ptf_factory {
             &entry.salt, // CRITICAL: Include salt to match queue hash
             &action_bytes,
             &entry.execute_after.to_le_bytes(),
+            &entry.sequence.to_le_bytes(), // CRITICAL FIX: Include sequence to match queue hash
         ]);
         
         require!(
@@ -1176,6 +1210,8 @@ pub struct FactoryState {
     pub last_action_sequence: u64,
     // CRITICAL FIX: Rate limiting - track last action time to prevent rapid queue filling
     pub last_action_time: i64,
+    // CRITICAL FIX: Global rate limiting to prevent coordinated attacks
+    pub last_global_action_time: i64,
     // CRITICAL FIX: Multi-signature configuration for critical operations
     pub multi_sig_signers: Vec<Pubkey>,
     pub multi_sig_threshold: u8,
@@ -1191,7 +1227,7 @@ impl FactoryState {
     pub const MAX_MULTISIG_SIGNERS: usize = 10;
     pub const MAX_EMERGENCY_SIGNERS: usize = 10;
     // SPACE = discriminator[8] + authority[32] + default_fee_bps[2] + default_features[1] + paused[1] + timelock_seconds[8] + bump[1] + last_updated_slot[8] + pending_action_hashes[4 + (32 * MAX_PENDING_ACTIONS)] + last_action_sequence[8] + last_action_time[8] + multi_sig_signers[4 + (32 * MAX_MULTISIG_SIGNERS)] + multi_sig_threshold[1] + emergency_pause_signers[4 + (32 * MAX_EMERGENCY_SIGNERS)] + emergency_pause_threshold[1]
-    pub const SPACE: usize = 8 + 32 + 2 + 1 + 1 + 8 + 1 + 8 + 4 + (32 * Self::MAX_PENDING_ACTIONS) + 8 + 8 + 4 + (32 * Self::MAX_MULTISIG_SIGNERS) + 1 + 4 + (32 * Self::MAX_EMERGENCY_SIGNERS) + 1;
+    pub const SPACE: usize = 8 + 32 + 2 + 1 + 1 + 8 + 1 + 8 + 4 + (32 * Self::MAX_PENDING_ACTIONS) + 8 + 8 + 8 + 4 + (32 * Self::MAX_MULTISIG_SIGNERS) + 1 + 4 + (32 * Self::MAX_EMERGENCY_SIGNERS) + 1;
     pub const SEQUENCE_WARNING_THRESHOLD: u64 = u64::MAX - 1_000_000;
     
     // CRITICAL FIX: Check if authority or multi-sig is satisfied
@@ -1291,12 +1327,14 @@ pub struct TimelockEntry {
     pub action: TimelockAction,
     pub bump: u8,
     pub sequence: u64,
+    // CRITICAL FIX: Action expiration to prevent indefinite execution
+    pub expires_at: i64,
 }
 
 impl TimelockEntry {
     pub const MAX_ACTION_SIZE: usize = 128;
-    // SPACE = discriminator[8] + factory[32] + salt[32] + action_hash[32] + queued_at[8] + execute_after[8] + executed[1] + canceled[1] + action[MAX_ACTION_SIZE] + bump[1] + sequence[8]
-    pub const SPACE: usize = 8 + 32 + 32 + 32 + 8 + 8 + 1 + 1 + Self::MAX_ACTION_SIZE + 1 + 8;
+    // SPACE = discriminator[8] + factory[32] + salt[32] + action_hash[32] + queued_at[8] + execute_after[8] + executed[1] + canceled[1] + action[MAX_ACTION_SIZE] + bump[1] + sequence[8] + expires_at[8]
+    pub const SPACE: usize = 8 + 32 + 32 + 32 + 8 + 8 + 1 + 1 + Self::MAX_ACTION_SIZE + 1 + 8 + 8;
 }
 
 fn ensure_direct_update_allowed(_state: &FactoryState) -> Result<()> {
@@ -1715,6 +1753,10 @@ pub enum FactoryError {
     DuplicateAction,
     #[msg("E_TOO_MANY_PENDING_ACTIONS")]
     TooManyPendingActions,
+    #[msg("E_GLOBAL_ACTION_RATE_LIMIT_EXCEEDED")]
+    GlobalActionRateLimitExceeded,
+    #[msg("E_ACTION_EXPIRED")]
+    ActionExpired,
     #[msg("E_SEQUENCE_OVERFLOW")]
     SequenceOverflow,
     #[msg("E_ACTION_RATE_LIMIT_EXCEEDED")]
