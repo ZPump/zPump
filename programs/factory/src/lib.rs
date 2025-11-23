@@ -493,17 +493,12 @@ pub mod ptf_factory {
         
         // CPI to verifier program - factory program signs as authority
         let cpi_program = ctx.accounts.verifier_program.to_account_info();
-        let mut cpi_accounts = ptf_verifier_groth16::cpi::accounts::InitializeVerifyingKey {
+        let cpi_accounts = ptf_verifier_groth16::cpi::accounts::InitializeVerifyingKey {
             verifier_state: ctx.accounts.verifier_state.to_account_info(),
             authority: ctx.accounts.factory_state.to_account_info(), // Factory state PDA as authority (owned by factory program)
-            verifier_config: None, // Will be set below if provided
             payer: ctx.accounts.payer.to_account_info(),
             system_program: ctx.accounts.system_program.to_account_info(),
         };
-        // Set verifier_config if provided
-        if let Some(config) = ctx.accounts.verifier_config.as_ref() {
-            cpi_accounts.verifier_config = Some(config.to_account_info());
-        }
         
         // Sign with factory_state PDA - the verifier will verify authority is factory program ID
         let factory_seeds: &[&[&[u8]]] = &[&[
@@ -1108,9 +1103,6 @@ pub struct CreateVerifyingKey<'info> {
     /// CHECK: Will be initialized by verifier program
     #[account(mut)]
     pub verifier_state: UncheckedAccount<'info>,
-    /// CRITICAL FIX: Optional verifier config - if provided, uses stored factory_program_id
-    /// CHECK: Validated in verifier program if provided
-    pub verifier_config: Option<Account<'info, ptf_verifier_groth16::VerifierConfig>>,
     #[account(mut)]
     pub payer: Signer<'info>,
     pub system_program: Program<'info, System>,

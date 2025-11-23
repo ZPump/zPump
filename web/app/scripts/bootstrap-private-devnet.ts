@@ -596,6 +596,8 @@ async function ensureVerifyingKey(
     PROGRAM_IDS.factory
   )[0];
   
+  // CRITICAL FIX: verifier_config is optional - don't pass it when not needed
+  // buildAccountMetas will skip optional accounts that aren't provided
   await sendInstruction(
     ctx,
     ctx.idls.factory,
@@ -607,6 +609,7 @@ async function ensureVerifyingKey(
       authority: ctx.payer.publicKey,
       verifier_program: PROGRAM_IDS.verifier,
       verifier_state: verifierState,
+      // verifier_config is optional - don't include it when not needed
       payer: ctx.payer.publicKey,
       system_program: SystemProgram.programId
     },

@@ -88,12 +88,9 @@ pub mod ptf_verifier_groth16 {
             VerifierError::UnauthorizedAuthority
         );
         
-        // CRITICAL FIX: Use config if available, otherwise fallback to hardcoded (backward compatibility)
-        let factory_program_id = if let Some(config) = ctx.accounts.verifier_config.as_ref() {
-            config.factory_program_id
-        } else {
-            PTF_FACTORY_PROGRAM_ID
-        };
+        // CRITICAL FIX: Use hardcoded factory program ID for now
+        // TODO: Add VerifierConfig support later when needed
+        let factory_program_id = PTF_FACTORY_PROGRAM_ID;
         
         // Verify authority is owned by factory program
         require_keys_eq!(
@@ -481,9 +478,6 @@ pub struct InitializeVerifyingKey<'info> {
     pub verifier_state: Account<'info, VerifyingKeyAccount>,
     /// Governance or authority that owns this verifying key.
     pub authority: Signer<'info>,
-    /// CRITICAL FIX: Optional verifier config - if provided, uses stored factory_program_id
-    /// CHECK: Validated in instruction if provided
-    pub verifier_config: Option<Account<'info, VerifierConfig>>,
     #[account(mut)]
     pub payer: Signer<'info>,
     pub system_program: Program<'info, System>,
