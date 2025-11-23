@@ -276,23 +276,23 @@ pub mod ptf_factory {
 
     pub fn pause(ctx: Context<UpdateFactoryAuthority>) -> Result<()> {
         let state = &mut ctx.accounts.factory_state;
-        // CRITICAL FIX: Allow emergency pause without timelock for security incidents
-        // This is intentional - pause should be immediate for emergency response
-        // Check if this is emergency pause (via emergency signers) or regular pause (via authority/multi-sig)
+        // CRITICAL FIX: Only allow emergency pause without timelock for security incidents
+        // Regular pause must go through timelock to prevent abuse
+        // Check if this is emergency pause (via emergency signers)
         if state.require_emergency_pause_signers(ctx.remaining_accounts).is_ok() {
-            // Emergency pause - no authority check needed
+            // Emergency pause - no timelock needed for immediate response
+            state.paused = true;
+            emit!(FactoryPausedEmergency {
+                authority: ctx.accounts.authority.key(),
+            });
+            Ok(())
         } else {
-            // Regular pause - require authority or multi-sig
-            state.require_authority_or_multisig(
-                &ctx.accounts.authority.key(),
-                ctx.remaining_accounts,
-            )?;
+            // Regular pause - must go through timelock
+            // This prevents rapid pause/unpause cycles and ensures proper governance
+            ensure_direct_update_allowed(state)?;
+            // This should never be reached due to ensure_direct_update_allowed
+            Ok(())
         }
-        state.paused = true;
-        emit!(FactoryPausedEmergency {
-            authority: ctx.accounts.authority.key(),
-        });
-        Ok(())
     }
 
     pub fn unpause(ctx: Context<UpdateFactoryAuthority>) -> Result<()> {
@@ -652,12 +652,16 @@ pub mod ptf_factory {
                 });
             }
             TimelockAction::PauseFactory => {
+                // CRITICAL FIX: Only allow pause via timelock if not already paused
+                require!(!state.paused, FactoryError::Paused);
                 state.paused = true;
                 emit!(FactoryPaused {
                     authority: state.authority,
                 });
             }
             TimelockAction::UnpauseFactory => {
+                // CRITICAL FIX: Only allow unpause via timelock if currently paused
+                require!(state.paused, FactoryError::NotPaused);
                 state.paused = false;
                 emit!(FactoryUnpaused {
                     authority: state.authority,
@@ -1685,6 +1689,8 @@ pub enum FactoryError {
     AlreadyRegistered,
     #[msg("E_FACTORY_PAUSED")]
     Paused,
+    #[msg("E_NOT_PAUSED")]
+    NotPaused,
     #[msg("E_PTKN_MINT_MISSING")]
     PtknMintMissing,
     #[msg("E_INVALID_FEE_BPS")]
