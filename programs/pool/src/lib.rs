@@ -222,6 +222,7 @@ pub mod ptf_pool {
         pool_state.commitment_tree = ctx.accounts.commitment_tree.key();
         pool_state.roots_len = 0;
         pool_state.current_root = [0u8; 32];
+        pool_state.shield_sequence = 0;
         pool_state.note_ledger = ctx.accounts.note_ledger.key();
         pool_state.note_ledger_bump = ctx.bumps.note_ledger;
         pool_state.protocol_fees = 0;
@@ -811,9 +812,15 @@ pub mod ptf_pool {
             let claim_old_root = ctx.accounts.shield_claim.old_root;
             let tree_current_root = commitment_tree.current_root;
             
+            // CRITICAL FIX: Check if claim has expired
+            if ctx.accounts.shield_claim.is_expired() {
+                msg!("shield: claim expired, deactivating expired claim");
+                ctx.accounts.shield_claim.deactivate();
+                pool_state.pending_shield.deactivate();
+            }
             // CRITICAL FIX: Check if claim is stale (old_root doesn't match current_root)
             // If stale, deactivate it to allow new shields. If valid, reject to prevent duplicates.
-            if claim_old_root != tree_current_root {
+            else if claim_old_root != tree_current_root {
                 // Claim is stale - deactivate it
                 msg!("shield: claim timeout/stale (old_root mismatch), deactivating stale claim");
                 ctx.accounts.shield_claim.deactivate();
@@ -824,6 +831,11 @@ pub mod ptf_pool {
                 return err!(PoolError::PendingShieldInFlight);
             }
         }
+        
+        // CRITICAL FIX: Increment shield sequence to prevent race conditions
+        pool_state.shield_sequence = pool_state.shield_sequence
+            .checked_add(1)
+            .ok_or(PoolError::AmountOverflow)?;
         
         // Now check that pending_shield is inactive (either it was already inactive, or we just deactivated it)
         require!(
@@ -1046,7 +1058,7 @@ pub mod ptf_pool {
                 args.amount,
                 commitment_tree_next_index,
                 claim_bump,
-            );
+            )?;
             msg!(
                 "shield: claim activated new_root={} next_index={}",
                 hex::encode(new_root_bytes),
@@ -3285,6 +3297,8 @@ pub struct PoolState {
     pub twin_mint: Pubkey,
     pub twin_mint_enabled: bool,
     pub pending_shield: PendingShield,
+    // CRITICAL FIX: Sequence number to prevent race conditions in shield pipeline
+    pub shield_sequence: u64,
 }
 
 impl PoolState {
@@ -3431,6 +3445,9 @@ pub struct ShieldClaim {
     pub tree_level: u8,
     pub tree_index_cursor: u64,
     pub tree_node: [u8; 32],
+    // CRITICAL FIX: Timestamp-based expiration to prevent stale claim reuse
+    pub created_at: i64,
+    pub expires_at: i64,
 }
 
 impl ShieldClaim {
@@ -3439,7 +3456,10 @@ impl ShieldClaim {
     pub const STATUS_AWAITING_LEDGER: u8 = 2;
     pub const STATUS_AWAITING_INVARIANT: u8 = 3;
     pub const STATUS_LEDGER_COMPLETE: u8 = 4;
-    pub const SPACE: usize = 8 + core::mem::size_of::<ShieldClaim>();
+    // CRITICAL FIX: Shield claim expiration time (1 hour in seconds) to prevent stale claim reuse
+    pub const EXPIRATION_SECONDS: i64 = 60 * 60; // 1 hour
+    // SPACE = discriminator[8] + pool[32] + depositor[32] + commitment[32] + amount_commit[32] + old_root[32] + new_root[32] + amount[8] + next_index[8] + bump[1] + status[1] + enforce_invariant[1] + tree_level[1] + tree_index_cursor[8] + tree_node[32] + created_at[8] + expires_at[8]
+    pub const SPACE: usize = 8 + 32 + 32 + 32 + 32 + 32 + 32 + 8 + 8 + 1 + 1 + 1 + 1 + 8 + 32 + 8 + 8;
 
     pub fn is_active(&self) -> bool {
         self.status != Self::STATUS_INACTIVE
@@ -3468,7 +3488,8 @@ impl ShieldClaim {
         amount: u64,
         next_index: u64,
         bump: u8,
-    ) {
+    ) -> Result<()> {
+        let clock = Clock::get()?;
         self.pool = pool;
         self.depositor = depositor;
         self.commitment = commitment;
@@ -3478,11 +3499,24 @@ impl ShieldClaim {
         self.amount = amount;
         self.next_index = next_index;
         self.bump = bump;
+        // CRITICAL FIX: Set timestamps for expiration checking
+        self.created_at = clock.unix_timestamp;
+        self.expires_at = clock.unix_timestamp
+            .checked_add(Self::EXPIRATION_SECONDS)
+            .ok_or(PoolError::AmountOverflow)?;
         self.status = Self::STATUS_PENDING_TREE;
         self.enforce_invariant = 0;
         self.tree_level = 0;
         self.tree_index_cursor = next_index;
         self.tree_node = commitment;
+        Ok(())
+    }
+    
+    // CRITICAL FIX: Check if claim has expired
+    pub fn is_expired(&self) -> bool {
+        let clock = Clock::get().ok();
+        let current_time = clock.map(|c| c.unix_timestamp).unwrap_or(0);
+        current_time > self.expires_at
     }
 
     pub fn deactivate(&mut self) {
@@ -5044,6 +5078,7 @@ mod tests {
             recent_roots: [[0u8; 32]; PoolState::MAX_ROOTS],
             recent_roots_timestamps: [0i64; PoolState::MAX_ROOTS],
             roots_len: 0,
+            shield_sequence: 0,
             fee_bps: 5,
             features: FeatureFlags::from(0),
             note_ledger: Pubkey::new_unique(),
