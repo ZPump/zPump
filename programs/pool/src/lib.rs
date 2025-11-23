@@ -5638,6 +5638,7 @@ mod tests {
                     vault_state,
                     origin_mint: origin_mint.pubkey(),
                     payer: context.payer.pubkey(),
+                    token_program: spl_token::id(),
                     system_program: system_program::id(),
                 }
                 .to_account_metas(None),

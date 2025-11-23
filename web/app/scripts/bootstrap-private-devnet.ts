@@ -825,6 +825,7 @@ async function ensureMint(
         vault_state: vaultState,
         origin_mint: originMintKey,
         payer: ctx.payer.publicKey,
+        token_program: TOKEN_PROGRAM_ID,
         system_program: SystemProgram.programId
       },
       { pool_authority: poolState }
