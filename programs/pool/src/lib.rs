@@ -1745,6 +1745,9 @@ fn write_allowance(
 // Legacy-style nullifier processing helper matching the pre-audit behavior.
 // NOTE: This is only used while we migrate back to the fixed-size NullifierSet; it expects
 // a simple `insert(value)` API and AccountLoader-based access.
+// CRITICAL FIX: Limit number of nullifiers per operation to prevent compute exhaustion
+const MAX_NULLIFIERS_PER_OPERATION: usize = 100; // Reasonable limit
+
 fn process_nullifiers<'info>(
     nullifier_set: &mut Account<'info, NullifierSet>,
     payer: &AccountInfo<'info>,
@@ -1753,6 +1756,12 @@ fn process_nullifiers<'info>(
     origin_mint: Pubkey,
     pool_key: &Pubkey,
 ) -> Result<()> {
+    // CRITICAL FIX: Limit number of nullifiers per operation
+    require!(
+        nullifiers.len() <= MAX_NULLIFIERS_PER_OPERATION,
+        PoolError::TooManyNullifiers
+    );
+    
     for nullifier in nullifiers {
         // CRITICAL FIX: Use validation function to check integrity
         NullifierSet::insert_with_validation(nullifier_set, payer, system_program, *nullifier, pool_key)?;
