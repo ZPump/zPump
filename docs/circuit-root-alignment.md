@@ -1,5 +1,9 @@
 # Circuit-Tree Root Computation Alignment
 
+## Status: PARTIALLY RESOLVED
+
+**Update**: The commitment tree has been migrated to use Poseidon hashing (matching circuits). However, circuits still compute simplified roots rather than actual Merkle roots. Direct root validation is not yet possible, but both systems now use the same hash function (Poseidon), improving alignment.
+
 ## Overview
 
 This document describes the current mismatch between how the zero-knowledge proof circuit computes the new Merkle root versus how the on-chain commitment tree computes it, and the required changes to align them.

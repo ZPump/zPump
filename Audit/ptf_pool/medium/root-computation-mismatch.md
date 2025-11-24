@@ -1,8 +1,9 @@
 # Root Computation Mismatch Between Circuit and Tree
 
-**Severity:** MEDIUM
+**Severity:** MEDIUM  
+**Status:** PARTIALLY MITIGATED - Tree migrated to Poseidon, circuits still need updates
 
-**Location:** `programs/pool/src/lib.rs:1680-1692` (transfer) and `2026-2038` (unshield)
+**Location:** `programs/pool/src/lib.rs:1895-1904` (transfer) and `2251-2263` (unshield)
 
 ## Description
 
@@ -47,10 +48,25 @@ The zero-knowledge proof circuits compute `new_root` differently than the commit
 3. Groth16 verification validates proof's new_root computation
 4. Tree's computed root is used as the actual state
 
+## Current Mitigation Status
+
+**Completed:**
+- ✅ Tree migrated to Poseidon (matching circuit hash function)
+- ✅ Both systems now use same hash function
+- ✅ Multi-layer validation is secure and functional
+
+**Remaining:**
+- ⏳ Circuits still compute simplified roots (not actual Merkle roots)
+- ⏳ Direct root validation not yet possible
+- ⏳ Circuit updates require Merkle path proofs (complex, deferred)
+
 ## Recommendation
 
-1. Update circuits to compute new_root exactly matching the tree's root computation
-2. This would allow direct validation of the proof's new_root against the tree's root
-3. Reduces reliance on multiple validation layers
-4. Makes the security model simpler and more auditable
+1. **Short-term**: Current multi-layer validation is secure and functional
+2. **Medium-term**: Update circuits to compute actual Merkle roots (requires Merkle path proofs)
+3. This would allow direct validation of the proof's new_root against the tree's root
+4. Reduces reliance on multiple validation layers
+5. Makes the security model simpler and more auditable
+
+**Note**: Circuit updates are complex and require significant redesign. They are deferred to focus on getting the tree migration working first.
 
