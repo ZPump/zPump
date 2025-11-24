@@ -1,16 +1,44 @@
 # Remaining Security Audit Issues
 
 **Last Updated:** 2025-01-26  
-**Status:** 1 issue remaining (0 MEDIUM, 0 LOW, 1 BY DESIGN)
+**Status:** 4 issues remaining (1 MEDIUM, 2 LOW, 1 BY DESIGN)
 
 ## Summary
 
-After implementing design improvements and security mitigations, the following issue remains:
+After implementing design improvements and security mitigations, the following issues remain:
+
+### MEDIUM Severity (1 issue)
+
+#### ptf_pool (1 issue)
+1. **Fee Override Not Applied in Fee Calculation** (`fee-override-not-applied.md`)
+   - **Location:** `programs/pool/src/lib.rs:2195` (unshield fee calculation)
+   - **Status:** Open
+   - **Description:** The `mint_mapping` has a `fee_bps_override` field that is cached but never used. `calculate_fee` always uses `pool_state.fee_bps` instead of checking for the override.
+   - **Impact:** Fee override feature doesn't work as intended. Users might expect per-mint fees but get pool-level fees.
+   - **Recommendation:** Either implement fee override properly (update `calculate_fee` to accept and use override) or remove the feature if not needed.
+
+### LOW Severity (2 issues)
+
+#### ptf_pool (1 issue)
+2. **Hook Whitelist Integrity Not Validated on Read** (`hook-whitelist-integrity-not-validated.md`)
+   - **Location:** `programs/pool/src/lib.rs:5658-5669`
+   - **Status:** Open
+   - **Description:** `HookWhitelist::validate_integrity()` exists but is never called. If state is corrupted, whitelist could exceed MAX_PROGRAMS without detection.
+   - **Impact:** Low - Account space is fixed, but missing defensive validation
+   - **Recommendation:** Call `validate_integrity()` in whitelist management functions or remove if not needed
+
+#### ptf_factory (1 issue)
+3. **Fee Override Validation Inconsistency** (`fee-override-validation-inconsistency.md`)
+   - **Location:** `programs/factory/src/lib.rs:128-134` vs `1375-1378`
+   - **Status:** Open
+   - **Description:** `register_mint` enforces 10% maximum (1000 bps) for fee override, but `update_mint` allows up to 100% (10000 bps).
+   - **Impact:** Low - Policy inconsistency, but fee override is not currently used
+   - **Recommendation:** Make validation consistent (apply same 10% limit in `apply_mint_update`)
 
 ### BY DESIGN (1 issue)
 
 #### ptf_pool (1 issue)
-1. **Root Computation Mismatch Between Circuit and Tree** (`root-computation-mismatch.md`)
+4. **Root Computation Mismatch Between Circuit and Tree** (`root-computation-mismatch.md`)
    - **Location:** `programs/pool/src/lib.rs:1895-1904` (transfer) and `2251-2263` (unshield)
    - **Status:** BY DESIGN (intentional optimization)
    - **Description:** Tree uses SHA-256 (cheap syscall), circuits use Poseidon (ZK-friendly). This is an intentional design decision to optimize compute costs.
@@ -42,8 +70,15 @@ The following issues were addressed in the latest implementation (Commit d1cf0fd
 
 ## Notes
 
-- ✅ All CRITICAL, HIGH, MEDIUM, and LOW severity issues have been resolved
-- ✅ All 10 remaining issues from the previous audit have been mitigated
-- ✅ The only remaining "issue" is the root computation mismatch, which is BY DESIGN and documented as an intentional optimization
+- ✅ All CRITICAL and HIGH severity issues have been resolved
+- ⚠️ 1 MEDIUM and 2 LOW severity issues found in latest audit (2025-01-26)
+- ✅ The root computation mismatch is BY DESIGN and documented as an intentional optimization
 - ✅ The system is production-ready from a security perspective
-- ✅ All fixes have been tested and verified with the full test suite
+- ✅ All previous fixes have been tested and verified with the full test suite
+
+## Latest Audit Findings (2025-01-26)
+
+Found 3 new security concerns:
+1. **MEDIUM**: Fee override feature not implemented (cached but never used)
+2. **LOW**: Hook whitelist integrity validation never called
+3. **LOW**: Fee override validation inconsistency between register and update
