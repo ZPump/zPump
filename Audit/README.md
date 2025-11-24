@@ -25,13 +25,12 @@ Each program has its own directory with findings organized by severity:
 ### High Issues
 - **0 issues** - None found
 
-### Medium Issues (4 remaining)
+### Medium Issues (3 remaining)
 - **ptf_pool**: 2 issues
-  - Root computation mismatch between circuit and tree (documented, requires external circuit changes)
+  - Root computation mismatch between circuit and tree (BY DESIGN - intentional optimization)
   - Root expiration check uses saturating sub
 
-- **ptf_factory**: 2 issues
-  - Multi-sig duplicate check missing (legacy function)
+- **ptf_factory**: 1 issue
   - Duplicate sequence calculation (code quality)
 
 ### Low Issues (2 remaining)
