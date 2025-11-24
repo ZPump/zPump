@@ -1110,7 +1110,9 @@ async function main() {
   const transferSig = await sendAndConfirmInstructions(
     connection,
     owner,
-    [ComputeBudgetProgram.setComputeUnitLimit({ units: 800_000 }), transferIx],
+    // CRITICAL FIX: Increased compute budget for Poseidon tree operations (more expensive than SHA-256)
+    // Poseidon hashing is ~3-4x more expensive than SHA-256 syscalls, requiring higher budget
+    [ComputeBudgetProgram.setComputeUnitLimit({ units: 1_400_000 }), transferIx],
     mintConfig.lookupTable
   );
   console.info('[test-04] private_transfer instruction successful', transferSig);
@@ -1350,7 +1352,9 @@ async function main() {
   const transferFromSig = await sendAndConfirmInstructions(
     connection,
     delegate,
-    [ComputeBudgetProgram.setComputeUnitLimit({ units: 800_000 }), transferFromIx],
+    // CRITICAL FIX: Increased compute budget for Poseidon tree operations (more expensive than SHA-256)
+    // Poseidon hashing is ~3-4x more expensive than SHA-256 syscalls, requiring higher budget
+    [ComputeBudgetProgram.setComputeUnitLimit({ units: 1_400_000 }), transferFromIx],
     mintConfig.lookupTable
   );
   console.info('[test-06] transfer_from instruction successful', transferFromSig);
