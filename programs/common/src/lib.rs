@@ -3,6 +3,9 @@
 use anchor_lang::prelude::*;
 use thiserror::Error;
 
+/// Security module providing centralized validation, access control, and security utilities.
+pub mod security;
+
 /// Depth of the Merkle tree used by shielded pools.
 pub const MERKLE_DEPTH: u8 = 32;
 /// Default basis points fee applied to shield and unshield operations.
