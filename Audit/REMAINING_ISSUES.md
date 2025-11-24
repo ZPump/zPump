@@ -1,7 +1,7 @@
 # Remaining Security Audit Issues
 
 **Last Updated:** 2025-01-26  
-**Status:** 4 issues remaining (1 MEDIUM, 2 LOW, 1 BY DESIGN)
+**Status:** 5 issues remaining (1 MEDIUM, 3 LOW, 1 BY DESIGN)
 
 ## Summary
 
@@ -17,7 +17,7 @@ After implementing design improvements and security mitigations, the following i
    - **Impact:** Fee override feature doesn't work as intended. Users might expect per-mint fees but get pool-level fees.
    - **Recommendation:** Either implement fee override properly (update `calculate_fee` to accept and use override) or remove the feature if not needed.
 
-### LOW Severity (2 issues)
+### LOW Severity (3 issues)
 
 #### ptf_pool (1 issue)
 2. **Hook Whitelist Integrity Not Validated on Read** (`hook-whitelist-integrity-not-validated.md`)
