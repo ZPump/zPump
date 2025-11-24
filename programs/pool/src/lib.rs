@@ -4868,9 +4868,13 @@ fn process_shield_finalize_ledger<'info>(
         }
         // Skip discriminator (first 8 bytes) and deserialize
         let mut data_slice = &data[8..];
+        // CRITICAL FIX: Provide more context in deserialization error
         let cfg_result = HookConfig::try_deserialize(&mut data_slice);
         drop(data);
-        let cfg = cfg_result.map_err(|_| PoolError::HookConfigInvalid)?;
+        let cfg = cfg_result.map_err(|e| {
+            msg!("HookConfig deserialization failed: {:?}", e);
+            error!(PoolError::HookConfigInvalid)
+        })?;
         {
             let (required_accounts, hook_mode, target_program, post_shield_enabled) = (
                 cfg.required_keys().collect::<Vec<_>>(),
