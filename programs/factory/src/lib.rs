@@ -10,6 +10,7 @@ use solana_program::{hash::hashv, program::invoke, system_instruction, system_pr
 use spl_token_2022::state::Mint as Token2022Mint;
 
 use ptf_common::{seeds, FeatureFlags, MAX_BPS};
+use ptf_common::security::{AccessController, AccessLevel, AccountValidator, InputValidator};
 use solana_program::pubkey;
 use sha3::{Digest, Keccak256};
 use ptf_verifier_groth16;
@@ -33,7 +34,8 @@ pub mod ptf_factory {
         default_fee_bps: u16,
         timelock_seconds: i64,
     ) -> Result<()> {
-        require!(default_fee_bps <= MAX_BPS, FactoryError::InvalidFeeBps);
+        // CRITICAL FIX: Use centralized input validation
+        InputValidator::validate_fee_bps(default_fee_bps)?;
         
         // CRITICAL FIX: Enforce minimum timelock (allow 0 for test/devnet initialization)
         // In production, timelock should be at least 24 hours, but for devnet/testing we allow 0
@@ -482,10 +484,21 @@ pub mod ptf_factory {
         verifying_key_data: Vec<u8>,
     ) -> Result<()> {
         let state = &ctx.accounts.factory_state;
-        // CRITICAL FIX: Require authority or multi-sig for critical operations
-        state.require_authority_or_multisig(
+        // CRITICAL FIX: Use centralized access control with duplicate signer prevention
+        let access_level = if !state.multi_sig_signers.is_empty() && state.multi_sig_threshold > 0 {
+            AccessLevel::MultiSig {
+                threshold: state.multi_sig_threshold,
+                signers: state.multi_sig_signers.clone(),
+            }
+        } else {
+            AccessLevel::Authority
+        };
+        AccessController::require_access(
+            access_level,
             &ctx.accounts.authority.key(),
+            &state.authority,
             ctx.remaining_accounts,
+            None,
         )?;
         
         // CRITICAL FIX: Validate verifier program
@@ -498,11 +511,13 @@ pub mod ptf_factory {
             ctx.accounts.verifier_program.executable,
             FactoryError::InvalidVerifierProgram
         );
-        require_keys_eq!(
-            *ctx.accounts.verifier_program.owner,
-            anchor_lang::solana_program::bpf_loader_upgradeable::ID,
-            FactoryError::InvalidVerifierProgram
-        );
+        // CRITICAL FIX: Use centralized account validation
+        let verifier_program_info = ctx.accounts.verifier_program.to_account_info();
+        AccountValidator::validate_ownership(
+            &verifier_program_info,
+            &anchor_lang::solana_program::bpf_loader_upgradeable::ID,
+            "verifier_program",
+        )?;
         
         // CRITICAL FIX: Validate verifying key data size
         require!(
