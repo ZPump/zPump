@@ -21,6 +21,8 @@ use ptf_common::security::{
     AccountValidator, InputValidator, InputSanitizer, StateMachine,
     MAX_PROOF_SIZE, MAX_PUBLIC_INPUTS_SIZE,
 };
+#[cfg(feature = "invariant_checks")]
+use ptf_common::security::{Invariant, InvariantChecker};
 use ptf_factory::{program::PtfFactory, MintMapping, MintStatus};
 use ptf_vault::program::PtfVault;
 use ptf_vault::{self};
@@ -2476,7 +2478,65 @@ fn enforce_supply_invariant<'info>(
         (false, None) => 0u128,
     };
 
-    validate_supply_components(pool_state, note_ledger, twin_supply, vault_balance, live_value, protocol_fees).map(|_| ())
+    let supply_invariant = SupplyInvariant {
+        pool_state,
+        note_ledger,
+        twin_supply,
+        vault_balance,
+        live_value,
+        protocol_fees,
+    };
+    let live_value_invariant = LiveValueInvariant { note_ledger };
+    InvariantChecker::check_all(&[
+        &supply_invariant as &dyn Invariant,
+        &live_value_invariant as &dyn Invariant,
+    ])?;
+    Ok(())
+}
+
+#[cfg(feature = "invariant_checks")]
+struct SupplyInvariant<'a> {
+    pool_state: &'a PoolState,
+    note_ledger: &'a NoteLedger,
+    twin_supply: u128,
+    vault_balance: u128,
+    live_value: u128,
+    protocol_fees: u128,
+}
+
+#[cfg(feature = "invariant_checks")]
+impl<'a> Invariant for SupplyInvariant<'a> {
+    fn name(&self) -> &'static str {
+        "SupplyInvariant"
+    }
+
+    fn check(&self) -> Result<()> {
+        validate_supply_components(
+            self.pool_state,
+            self.note_ledger,
+            self.twin_supply,
+            self.vault_balance,
+            self.live_value,
+            self.protocol_fees,
+        )
+        .map(|_| ())
+    }
+}
+
+#[cfg(feature = "invariant_checks")]
+struct LiveValueInvariant<'a> {
+    note_ledger: &'a NoteLedger,
+}
+
+#[cfg(feature = "invariant_checks")]
+impl<'a> Invariant for LiveValueInvariant<'a> {
+    fn name(&self) -> &'static str {
+        "LiveValueInvariant"
+    }
+
+    fn check(&self) -> Result<()> {
+        self.note_ledger.validate_live_value()
+    }
 }
 
 #[cfg(feature = "invariant_checks")]
