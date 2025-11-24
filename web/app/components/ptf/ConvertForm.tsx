@@ -49,6 +49,7 @@ import { formatBaseUnitsToUi } from '../../lib/format';
 import { useMintCatalog } from '../providers/MintCatalogProvider';
 import { recordWalletActivity } from '../../lib/client/activityLog';
 import { useLocalWallet } from '../wallet/LocalWalletContext';
+import { normalizeError } from '../../lib/errorHandler';
 
 type ConvertMode = 'to-private' | 'to-public';
 
@@ -141,19 +142,7 @@ function parseUiAmountToBaseUnits(value: string, decimals: number, label = 'amou
 }
 
 function normaliseSendError(error: unknown): string {
-  const message = (error as Error)?.message ?? 'Transaction failed';
-  if (error instanceof SendTransactionError) {
-    const debitLog = error.logs?.find((entry) =>
-      entry.includes('Attempt to debit an account but found no record of a prior credit')
-    );
-    if (debitLog) {
-      return 'Destination wallet needs SOL to create its public token account. Fund it via the Faucet, then retry.';
-    }
-  }
-  if (message.includes('Attempt to debit an account but found no record of a prior credit')) {
-    return 'Destination wallet needs SOL to create its public token account. Fund it via the Faucet, then retry.';
-  }
-  return message;
+  return normalizeError(error);
 }
 
 function parseOptionalUiAmountToBaseUnits(value: string, decimals: number, label = 'amount'): bigint {

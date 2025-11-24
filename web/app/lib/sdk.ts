@@ -748,14 +748,11 @@ export async function wrap(params: WrapParams): Promise<string> {
       }
       break; // Success, exit retry loop
     } catch (error: any) {
-      // Check if error is PendingShieldInFlight (0x1793 = 6035)
-      const isPendingShieldError = error?.logs?.some((log: string) => log.includes('0x1793') || log.includes('PendingShieldInFlight') || log.includes('6035')) ||
-                                   error?.transactionLogs?.some((log: string) => log.includes('0x1793') || log.includes('PendingShieldInFlight') || log.includes('6035')) ||
-                                   error?.message?.includes('0x1793') ||
-                                   error?.message?.includes('PendingShieldInFlight') ||
-                                   error?.message?.includes('6035');
+      // Check if error is PendingShieldInFlight using standardized error handler
+      const { isPendingShieldError } = require('./errorHandler');
+      const isPendingShield = isPendingShieldError(error);
       
-      if (isPendingShieldError && shieldAttempts < maxShieldAttempts) {
+      if (isPendingShield && shieldAttempts < maxShieldAttempts) {
         console.warn(`[wrap] Shield failed with PendingShieldInFlight (attempt ${shieldAttempts}/${maxShieldAttempts}), waiting and trying to clear...`);
         // Wait a bit and try to clear pending_shield
         await sleep(2000);
