@@ -4146,6 +4146,10 @@ impl NullifierSet {
         _system_program: &AccountInfo<'info>,
         value: [u8; 32],
     ) -> Result<()> {
+        // CRITICAL FIX: Validate nullifier set is sorted before binary search
+        // Binary search requires sorted array, so we validate integrity first
+        Self::validate_sorted(&nullifier_set.nullifiers)?;
+        
         // Binary search to find insertion point or existing value
         let pos = match nullifier_set.nullifiers.binary_search(&value) {
             Ok(_) => {
