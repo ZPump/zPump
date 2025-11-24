@@ -8,6 +8,7 @@ use ptf_common::seeds;
 use ptf_common::security::{
     AccountIntegrity, IntegrityChecker, RateLimitConfig, RateLimiterState,
 };
+use ptf_common::security::events::{emit_security_event, SecurityEventType, SecuritySeverity};
 use ptf_common::security::patterns::validate_then_execute;
 
 declare_id!("9g6ZodQwxK8MN6MX3dbvFC3E7vGVqFtKZEHY7PByRAuh");
@@ -88,6 +89,12 @@ pub mod ptf_vault {
         state.deposit_rate_limit = RateLimiterState::default();
         state.release_rate_limit = RateLimiterState::default();
         refresh_vault_state_integrity(state);
+        emit_security_event(
+            SecurityEventType::StateTransition,
+            ctx.accounts.payer.key(),
+            format!("Initialized vault for mint {}", state.origin_mint),
+            SecuritySeverity::Low,
+        );
         Ok(())
     }
 
@@ -172,6 +179,16 @@ pub mod ptf_vault {
         
         release_lock(vault_state);
         refresh_vault_state_integrity(vault_state);
+        emit_security_event(
+            SecurityEventType::StateTransition,
+            ctx.accounts.depositor.key(),
+            format!(
+                "Deposit {} into vault {}",
+                amount,
+                vault_state.origin_mint
+            ),
+            SecuritySeverity::Low,
+        );
         result
     }
 
@@ -294,6 +311,16 @@ pub mod ptf_vault {
         
         release_lock(vault_state);
         refresh_vault_state_integrity(vault_state);
+        emit_security_event(
+            SecurityEventType::StateTransition,
+            ctx.accounts.pool_authority.key(),
+            format!(
+                "Release {} from vault {}",
+                amount,
+                vault_state.origin_mint
+            ),
+            SecuritySeverity::Low,
+        );
         result
     }
 
@@ -342,6 +369,12 @@ pub mod ptf_vault {
                 VaultError::AuthorityChangeRateLimited
             );
         }
+        emit_security_event(
+            SecurityEventType::RateLimitHit,
+            ctx.accounts.authority.key(),
+            "Authority change rate limit check".to_owned(),
+            SecuritySeverity::Low,
+        );
         
         let execute_after = clock
             .unix_timestamp
@@ -386,6 +419,15 @@ pub mod ptf_vault {
             sequence,
             proposed_by: ctx.accounts.authority.key(),
         });
+        emit_security_event(
+            SecurityEventType::StateTransition,
+            ctx.accounts.authority.key(),
+            format!(
+                "Authority change proposed for vault {}",
+                state.origin_mint
+            ),
+            SecuritySeverity::Medium,
+        );
         refresh_vault_state_integrity(state);
         Ok(())
     }
@@ -462,6 +504,15 @@ pub mod ptf_vault {
             executed_by: ctx.accounts.executor.key(),
             sequence: pending.sequence,
         });
+        emit_security_event(
+            SecurityEventType::StateTransition,
+            ctx.accounts.executor.key(),
+            format!(
+                "Authority change executed for vault {}",
+                state.origin_mint
+            ),
+            SecuritySeverity::Medium,
+        );
         refresh_vault_state_integrity(state);
         Ok(())
     }
