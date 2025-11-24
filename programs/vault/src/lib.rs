@@ -8,6 +8,7 @@ use ptf_common::seeds;
 use ptf_common::security::{
     AccountIntegrity, IntegrityChecker, RateLimitConfig, RateLimiterState,
 };
+use ptf_common::security::patterns::validate_then_execute;
 
 declare_id!("9g6ZodQwxK8MN6MX3dbvFC3E7vGVqFtKZEHY7PByRAuh");
 
@@ -112,54 +113,61 @@ pub mod ptf_vault {
         
         // Use defer-like pattern to ensure lock is always released
         let result = (|| -> Result<()> {
-            // CRITICAL FIX: Validate vault token account owner is vault PDA
-            let (expected_vault_pda, _) = Pubkey::find_program_address(
-                &[seeds::VAULT, vault_state.origin_mint.as_ref()],
-                &crate::ID,
-            );
-            require_keys_eq!(
-                ctx.accounts.vault_token_account.owner,
-                expected_vault_pda,
-                VaultError::InvalidVaultAccount
-            );
-            
-            // CRITICAL FIX: Validate vault token account mint matches origin_mint
-            require_keys_eq!(
-                ctx.accounts.vault_token_account.mint,
-                vault_state.origin_mint,
-                VaultError::InvalidMint,
-            );
-            
-            // CRITICAL FIX: Validate depositor token account owner is depositor
-            require_keys_eq!(
-                ctx.accounts.depositor_token_account.owner,
-                ctx.accounts.depositor.key(),
-                VaultError::InvalidDepositorAccount
-            );
-            
-            // CRITICAL FIX: Validate depositor token account mint matches origin_mint
-            require_keys_eq!(
-                ctx.accounts.depositor_token_account.mint,
-                vault_state.origin_mint,
-                VaultError::InvalidMint
-            );
+            validate_then_execute(
+                || {
+                    // CRITICAL FIX: Validate vault token account owner is vault PDA
+                    let (expected_vault_pda, _) = Pubkey::find_program_address(
+                        &[seeds::VAULT, vault_state.origin_mint.as_ref()],
+                        &crate::ID,
+                    );
+                    require_keys_eq!(
+                        ctx.accounts.vault_token_account.owner,
+                        expected_vault_pda,
+                        VaultError::InvalidVaultAccount
+                    );
+                    
+                    // CRITICAL FIX: Validate vault token account mint matches origin_mint
+                    require_keys_eq!(
+                        ctx.accounts.vault_token_account.mint,
+                        vault_state.origin_mint,
+                        VaultError::InvalidMint,
+                    );
+                    
+                    // CRITICAL FIX: Validate depositor token account owner is depositor
+                    require_keys_eq!(
+                        ctx.accounts.depositor_token_account.owner,
+                        ctx.accounts.depositor.key(),
+                        VaultError::InvalidDepositorAccount
+                    );
+                    
+                    // CRITICAL FIX: Validate depositor token account mint matches origin_mint
+                    require_keys_eq!(
+                        ctx.accounts.depositor_token_account.mint,
+                        vault_state.origin_mint,
+                        VaultError::InvalidMint
+                    );
+                    Ok(())
+                },
+                || {
+                    let cpi_accounts = Transfer {
+                        from: ctx.accounts.depositor_token_account.to_account_info(),
+                        to: ctx.accounts.vault_token_account.to_account_info(),
+                        authority: ctx.accounts.depositor.to_account_info(),
+                    };
+                    let cpi_ctx =
+                        CpiContext::new(ctx.accounts.token_program.to_account_info(), cpi_accounts);
+                    
+                    #[allow(deprecated)]
+                    token_interface::transfer(cpi_ctx, amount)?;
 
-            let cpi_accounts = Transfer {
-                from: ctx.accounts.depositor_token_account.to_account_info(),
-                to: ctx.accounts.vault_token_account.to_account_info(),
-                authority: ctx.accounts.depositor.to_account_info(),
-            };
-            let cpi_ctx = CpiContext::new(ctx.accounts.token_program.to_account_info(), cpi_accounts);
-            
-            #[allow(deprecated)]
-            token_interface::transfer(cpi_ctx, amount)?;
-
-            emit!(VaultDeposit {
-                origin_mint: vault_state.origin_mint,
-                depositor: ctx.accounts.depositor.key(),
-                amount,
-            });
-            Ok(())
+                    emit!(VaultDeposit {
+                        origin_mint: vault_state.origin_mint,
+                        depositor: ctx.accounts.depositor.key(),
+                        amount,
+                    });
+                    Ok(())
+                },
+            )
         })();
         
         release_lock(vault_state);
@@ -209,79 +217,79 @@ pub mod ptf_vault {
         
         // Use defer-like pattern to ensure lock is always released
         let result = (|| -> Result<()> {
-            validate_pool_authority(&ctx.accounts.pool_authority, &pool_authority)?;
-            
-            // CRITICAL FIX: Validate vault token account owner is vault PDA
-            let (expected_vault_pda, _) = Pubkey::find_program_address(
-                &[seeds::VAULT, origin_mint.as_ref()],
-                &crate::ID,
-            );
-            require_keys_eq!(
-                ctx.accounts.vault_token_account.owner,
-                expected_vault_pda,
-                VaultError::InvalidVaultAccount
-            );
-            
-            // CRITICAL FIX: Validate vault token account mint matches origin_mint
-            require_keys_eq!(
-                ctx.accounts.vault_token_account.mint,
-                origin_mint,
-                VaultError::InvalidMint
-            );
-            
-            // CRITICAL FIX: Validate destination token account mint matches origin_mint
-            require_keys_eq!(
-                ctx.accounts.destination_token_account.mint,
-                origin_mint,
-                VaultError::InvalidMint
-            );
+            validate_then_execute(
+                || {
+                    validate_pool_authority(&ctx.accounts.pool_authority, &pool_authority)?;
+                    
+                    // CRITICAL FIX: Validate vault token account owner is vault PDA
+                    let (expected_vault_pda, _) = Pubkey::find_program_address(
+                        &[seeds::VAULT, origin_mint.as_ref()],
+                        &crate::ID,
+                    );
+                    require_keys_eq!(
+                        ctx.accounts.vault_token_account.owner,
+                        expected_vault_pda,
+                        VaultError::InvalidVaultAccount
+                    );
+                    
+                    // CRITICAL FIX: Validate vault token account mint matches origin_mint
+                    require_keys_eq!(
+                        ctx.accounts.vault_token_account.mint,
+                        origin_mint,
+                        VaultError::InvalidMint
+                    );
+                    
+                    // CRITICAL FIX: Validate destination token account mint matches origin_mint
+                    require_keys_eq!(
+                        ctx.accounts.destination_token_account.mint,
+                        origin_mint,
+                        VaultError::InvalidMint
+                    );
 
-            // CRITICAL FIX: Explicitly validate vault has sufficient balance before releasing
-            // Cache balance before transfer to validate after
-            let balance_before = ctx.accounts.vault_token_account.amount;
-            require!(
-                balance_before >= amount,
-                VaultError::InsufficientBalance
-            );
-            
-            // CRITICAL FIX: Validate amount is reasonable to prevent overflow attacks
-            const MAX_RELEASE_AMOUNT: u64 = 1_000_000_000_000_000; // 1 quadrillion
-            require!(
-                amount <= MAX_RELEASE_AMOUNT,
-                VaultError::InvalidReleaseAmount
-            );
-
-            let seeds = &[
-                seeds::VAULT,
-                origin_mint.as_ref(),
-                &[expected_bump], // Use validated bump
-            ];
-            let signer = &[&seeds[..]];
-            let cpi_accounts = Transfer {
-                from: ctx.accounts.vault_token_account.to_account_info(),
-                to: ctx.accounts.destination_token_account.to_account_info(),
-                authority: vault_state.to_account_info(),
-            };
-            let cpi_ctx = CpiContext::new_with_signer(
-                ctx.accounts.token_program.to_account_info(),
-                cpi_accounts,
-                signer,
-            );
-            
-            #[allow(deprecated)]
-            token_interface::transfer(cpi_ctx, amount)?;
-            
-            // NOTE: Post-transfer balance validation removed
-            // SPL Token transfers are atomic and the pre-transfer balance check is sufficient
-            // Account data may not be immediately refreshed after CPI in Anchor's account cache
-            // The pre-transfer check ensures sufficient balance, and SPL Token program enforces atomicity
-
-            emit!(VaultRelease {
-                origin_mint,
-                destination: ctx.accounts.destination_token_account.owner,
-                amount,
-            });
-            Ok(())
+                    // CRITICAL FIX: Explicitly validate vault has sufficient balance before releasing
+                    let balance_before = ctx.accounts.vault_token_account.amount;
+                    require!(
+                        balance_before >= amount,
+                        VaultError::InsufficientBalance
+                    );
+                    
+                    // CRITICAL FIX: Validate amount is reasonable to prevent overflow attacks
+                    const MAX_RELEASE_AMOUNT: u64 = 1_000_000_000_000_000; // 1 quadrillion
+                    require!(
+                        amount <= MAX_RELEASE_AMOUNT,
+                        VaultError::InvalidReleaseAmount
+                    );
+                    Ok(())
+                },
+                || {
+                    let seeds = &[
+                        seeds::VAULT,
+                        origin_mint.as_ref(),
+                        &[expected_bump], // Use validated bump
+                    ];
+                    let signer = &[&seeds[..]];
+                    let cpi_accounts = Transfer {
+                        from: ctx.accounts.vault_token_account.to_account_info(),
+                        to: ctx.accounts.destination_token_account.to_account_info(),
+                        authority: vault_state.to_account_info(),
+                    };
+                    let cpi_ctx = CpiContext::new_with_signer(
+                        ctx.accounts.token_program.to_account_info(),
+                        cpi_accounts,
+                        signer,
+                    );
+                    
+                    #[allow(deprecated)]
+                    token_interface::transfer(cpi_ctx, amount)?;
+                    
+                    emit!(VaultRelease {
+                        origin_mint,
+                        destination: ctx.accounts.destination_token_account.owner,
+                        amount,
+                    });
+                    Ok(())
+                },
+            )
         })();
         
         release_lock(vault_state);
