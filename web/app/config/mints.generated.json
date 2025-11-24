@@ -2,17 +2,17 @@
   {
     "symbol": "TEST",
     "decimals": 6,
-    "originMint": "7jgrsJ818zSZJfEksQPD6E9N6XfZBmn9kwmUdJNtZtKb",
-    "poolId": "7AmvngbQuvv4GM9pt1pzrF2XSrCJU4EstrRNY1y25TDw",
-    "zTokenMint": "gvppx8A59aT4TMMH9RPRiL2q14JV6bjt4KLk46DmN98",
+    "originMint": "2bt2B25LPngYYvdkxbZJnceDBSUZbf51t2ZTDMhz5ab1",
+    "poolId": "Ht6ao5v3wBph7de2ESFbEwkkkAfkbr62U9FHjy7qLc6j",
+    "zTokenMint": "EzzA3hyW8qctcxbFCebxAMExtzEFzvw8gtYhr3PutUYQ",
     "features": {
       "zTokenEnabled": true,
       "wrappedTransfers": false
     },
-    "lookupTable": "ATutxDAP8QcjTKJcvs3RdKZNRiAYyWoXF2BxLFDtDawF"
+    "lookupTable": "44w7AepLGHbhxbkexuPnT6C9ADBcXGWHK6B4qpjscfXy"
   },
   {
-    "symbol": "FBQA",
+    "symbol": "FBME",
     "decimals": 6,
     "originMint": "Mint111111111111111111111111111111111111111",
     "poolId": "Pool111111111111111111111111111111111111111",

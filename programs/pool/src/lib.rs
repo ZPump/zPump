@@ -17,6 +17,10 @@ use ptf_common::hooks::{HookInstruction, PostShieldHook, PostUnshieldHook};
 use ptf_common::{
     seeds, FeatureFlags, FEATURE_HOOKS_ENABLED, FEATURE_PRIVATE_TRANSFER_ENABLED, MAX_BPS,
 };
+use ptf_common::security::{
+    AccountValidator, InputValidator, InputSanitizer, 
+    MAX_PROOF_SIZE, MAX_PUBLIC_INPUTS_SIZE,
+};
 use ptf_factory::{program::PtfFactory, MintMapping, MintStatus};
 use ptf_vault::program::PtfVault;
 use ptf_vault::{self};
@@ -39,7 +43,8 @@ pub mod ptf_pool {
     use super::*;
 
     pub fn initialize_pool(ctx: Context<InitializePool>, fee_bps: u16, features: u8) -> Result<()> {
-        require!(fee_bps <= MAX_BPS, PoolError::InvalidFeeBps);
+        // CRITICAL FIX: Use centralized input validation
+        InputValidator::validate_fee_bps(fee_bps)?;
 
         // Manually validate unchecked accounts to reduce stack usage
         let expected_origin = ctx.accounts.origin_mint.key();
@@ -54,12 +59,13 @@ pub mod ptf_pool {
             expected_mapping,
             PoolError::OriginMintMismatch,
         );
-        // CRITICAL FIX: Explicit account ownership validation
-        require_keys_eq!(
-            *ctx.accounts.mint_mapping.owner,
-            ptf_factory::ID,
-            PoolError::InvalidAccountOwner,
-        );
+        // CRITICAL FIX: Use centralized account validation
+        let mint_mapping_info = ctx.accounts.mint_mapping.to_account_info();
+        AccountValidator::validate_ownership(
+            &mint_mapping_info,
+            &ptf_factory::ID,
+            "mint_mapping",
+        )?;
         
         // Validate factory_state PDA
         let (expected_factory, _) = Pubkey::find_program_address(
@@ -71,12 +77,13 @@ pub mod ptf_pool {
             expected_factory,
             PoolError::OriginMintMismatch,
         );
-        // CRITICAL FIX: Explicit account ownership validation
-        require_keys_eq!(
-            *ctx.accounts.factory_state.owner,
-            ptf_factory::ID,
-            PoolError::InvalidAccountOwner,
-        );
+        // CRITICAL FIX: Use centralized account validation
+        let factory_state_info = ctx.accounts.factory_state.to_account_info();
+        AccountValidator::validate_ownership(
+            &factory_state_info,
+            &ptf_factory::ID,
+            "factory_state",
+        )?;
         
         // CRITICAL FIX: Read vault_state.origin_mint with comprehensive validation
         // VaultState layout: discriminator[8] + origin_mint[32] + pool_authority[32] + ...
@@ -208,24 +215,25 @@ pub mod ptf_pool {
             ctx.accounts.verifier_program.executable,
             PoolError::InvalidAccountOwner,
         );
-        // CRITICAL FIX: Explicit account ownership validation
-        require_keys_eq!(
-            *ctx.accounts.verifier_program.owner,
-            anchor_lang::solana_program::bpf_loader_upgradeable::ID,
-            PoolError::InvalidAccountOwner,
-        );
-        // CRITICAL FIX: Explicit account ownership validation for verifying_key
-        require_keys_eq!(
-            *ctx.accounts.verifying_key.owner,
-            ptf_verifier_groth16::ID,
-            PoolError::InvalidAccountOwner,
-        );
-        // CRITICAL FIX: Explicit account ownership validation for vault_state
-        require_keys_eq!(
-            *ctx.accounts.vault_state.owner,
-            ptf_vault::ID,
-            PoolError::InvalidAccountOwner,
-        );
+        // CRITICAL FIX: Use centralized account validation
+        let verifier_program_info = ctx.accounts.verifier_program.to_account_info();
+        AccountValidator::validate_ownership(
+            &verifier_program_info,
+            &anchor_lang::solana_program::bpf_loader_upgradeable::ID,
+            "verifier_program",
+        )?;
+        let verifying_key_info = ctx.accounts.verifying_key.to_account_info();
+        AccountValidator::validate_ownership(
+            &verifying_key_info,
+            &ptf_verifier_groth16::ID,
+            "verifying_key",
+        )?;
+        let vault_state_info = ctx.accounts.vault_state.to_account_info();
+        AccountValidator::validate_ownership(
+            &vault_state_info,
+            &ptf_vault::ID,
+            "vault_state",
+        )?;
 
         msg!("init_pool stage: before_pool_state_load");
         let pool_key = ctx.accounts.pool_state.key();
@@ -516,7 +524,8 @@ pub mod ptf_pool {
     }
 
     pub fn set_fee(ctx: Context<UpdateAuthority>, fee_bps: u16) -> Result<()> {
-        require!(fee_bps <= MAX_BPS, PoolError::InvalidFeeBps);
+        // CRITICAL FIX: Use centralized input validation
+        InputValidator::validate_fee_bps(fee_bps)?;
         let mut pool_state = ctx.accounts.pool_state.load_mut()?;
         pool_state.fee_bps = fee_bps;
         emit!(FeeUpdated {
@@ -797,11 +806,8 @@ pub mod ptf_pool {
         ensure_mint_active(&mint_mapping_info)?;
         
         // CRITICAL SECURITY: Validate amount to prevent overflow
-        require!(
-            args.amount <= MAX_SHIELD_AMOUNT,
-            PoolError::AmountTooLarge
-        );
-        require!(args.amount > 0, PoolError::AmountTooLarge);
+        // CRITICAL FIX: Use centralized input validation
+        InputValidator::validate_amount(args.amount, MAX_SHIELD_AMOUNT)?;
         
         let pool_loader = &ctx.accounts.pool_state;
         msg!("shield: got pool_loader");
@@ -1185,15 +1191,9 @@ pub mod ptf_pool {
             PoolError::RootMismatch
         );
 
-        // CRITICAL FIX: Validate proof and public input sizes before CPI to prevent DoS attacks
-        require!(
-            args.proof.len() <= MAX_PROOF_SIZE,
-            PoolError::ProofTooLarge
-        );
-        require!(
-            args.public_inputs.len() <= MAX_PUBLIC_INPUTS_SIZE,
-            PoolError::PublicInputsTooLarge
-        );
+        // CRITICAL FIX: Use centralized input sanitization
+        InputSanitizer::sanitize_proof(&args.proof, MAX_PROOF_SIZE)?;
+        InputSanitizer::sanitize_public_inputs(&args.public_inputs, MAX_PUBLIC_INPUTS_SIZE)?;
 
         let cpi_accounts = ptf_verifier_groth16::cpi::accounts::VerifyGroth16 {
             verifier_state: ctx.accounts.verifying_key.to_account_info(),
@@ -1618,15 +1618,9 @@ fn execute_private_transfer<'info>(
         pool_state.validate_root_strict(&commitment_tree.current_root, &args.old_root)?;
     }
 
-    // CRITICAL FIX: Validate proof and public input sizes before CPI to prevent DoS attacks
-    require!(
-        args.proof.len() <= MAX_PROOF_SIZE,
-        PoolError::ProofTooLarge
-    );
-    require!(
-        args.public_inputs.len() <= MAX_PUBLIC_INPUTS_SIZE,
-        PoolError::PublicInputsTooLarge
-    );
+    // CRITICAL FIX: Use centralized input sanitization
+    InputSanitizer::sanitize_proof(&args.proof, MAX_PROOF_SIZE)?;
+    InputSanitizer::sanitize_public_inputs(&args.public_inputs, MAX_PUBLIC_INPUTS_SIZE)?;
 
     let cpi_accounts = ptf_verifier_groth16::cpi::accounts::VerifyGroth16 {
         verifier_state: verifying_key.to_account_info(),
@@ -1934,15 +1928,9 @@ fn process_unshield<'info>(
         );
     }
     
-    // CRITICAL FIX: Validate proof and public input sizes before CPI to prevent DoS attacks
-    require!(
-        args.proof.len() <= MAX_PROOF_SIZE,
-        PoolError::ProofTooLarge
-    );
-    require!(
-        args.public_inputs.len() <= MAX_PUBLIC_INPUTS_SIZE,
-        PoolError::PublicInputsTooLarge
-    );
+    // CRITICAL FIX: Use centralized input sanitization
+    InputSanitizer::sanitize_proof(&args.proof, MAX_PROOF_SIZE)?;
+    InputSanitizer::sanitize_public_inputs(&args.public_inputs, MAX_PUBLIC_INPUTS_SIZE)?;
     
     let cpi_accounts = ptf_verifier_groth16::cpi::accounts::VerifyGroth16 {
         verifier_state: verifying_key_account_info,
@@ -4568,9 +4556,7 @@ fn sha_branch(left: &[u8; 32], right: &[u8; 32]) -> [u8; 32] {
 }
 
 // CRITICAL FIX: Maximum size for public inputs to prevent DoS attacks
-pub const MAX_PUBLIC_INPUTS_SIZE: usize = 10 * 1024; // 10KB
-// CRITICAL FIX: Maximum proof size to prevent DoS attacks (matches verifier limit)
-pub const MAX_PROOF_SIZE: usize = 10 * 1024; // 10KB
+// MAX_PUBLIC_INPUTS_SIZE and MAX_PROOF_SIZE are now imported from ptf_common::security
 
 // CRITICAL FIX: Validate field element is within valid range
 // Bn254 field modulus: p = 21888242871839275222246405745257275088548364400416034343698204186575808495617
@@ -4643,19 +4629,7 @@ fn u8_to_field_bytes(value: u8) -> [u8; 32] {
 //   new_root = poseidon(old_root, nullifiers, output_commitments_hash)
 // This will require a new trusted setup and circuit regeneration.
 // CRITICAL FIX: Validate commitment format - reject invalid field elements
-fn validate_commitment_format(commitment: [u8; 32]) -> Result<()> {
-    // Ensure commitment is not all zeros (invalid value)
-    require!(
-        commitment != [0u8; 32],
-        PoolError::InvalidCommitmentFormat
-    );
-    // Ensure commitment is not all ones (invalid value)
-    require!(
-        commitment != [0xFFu8; 32],
-        PoolError::InvalidCommitmentFormat
-    );
-    Ok(())
-}
+// validate_commitment_format is now replaced by InputSanitizer::sanitize_commitment
 
 fn validate_transfer_public_inputs(
     args: &TransferArgs,
@@ -4728,8 +4702,8 @@ fn validate_transfer_public_inputs(
             PoolError::CommitmentMismatch
         );
         
-        // CRITICAL FIX: Validate commitment format (not all zeros or all ones)
-        validate_commitment_format(*expected_commitment)?;
+        // CRITICAL FIX: Use centralized commitment sanitization
+        InputSanitizer::sanitize_commitment(expected_commitment)?;
     }
     
     // CRITICAL FIX: Check for duplicate commitments before appending

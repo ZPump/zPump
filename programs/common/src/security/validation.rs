@@ -9,8 +9,8 @@ pub struct AccountValidator;
 
 impl AccountValidator {
     /// Validate account ownership with comprehensive checks.
-    pub fn validate_ownership(
-        account: &AccountInfo,
+    pub fn validate_ownership<'info>(
+        account: &AccountInfo<'info>,
         expected_owner: &Pubkey,
         _account_name: &str,
     ) -> Result<()> {
