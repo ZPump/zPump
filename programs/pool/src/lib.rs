@@ -4148,7 +4148,12 @@ impl NullifierSet {
     ) -> Result<()> {
         // CRITICAL FIX: Validate nullifier set is sorted before binary search
         // Binary search requires sorted array, so we validate integrity first
-        NullifierSet::validate_sorted(&nullifier_set.nullifiers)?;
+        for i in 1..nullifier_set.nullifiers.len() {
+            require!(
+                nullifier_set.nullifiers[i - 1] <= nullifier_set.nullifiers[i],
+                PoolError::NullifierSetCorrupt
+            );
+        }
         
         // Binary search to find insertion point or existing value
         let pos = match nullifier_set.nullifiers.binary_search(&value) {
