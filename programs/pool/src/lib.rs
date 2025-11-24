@@ -318,12 +318,22 @@ pub mod ptf_pool {
             let freeze_auth_bytes: [u8; 36] = twin_data[36..72].try_into().map_err(|_| PoolError::TwinMintDecimalsMismatch)?;
             drop(twin_data);
             
-            // Read origin_mint decimals
-            let origin_data = ctx.accounts.origin_mint.try_borrow_data()?;
-            if origin_data.len() < 44 {
-                return err!(PoolError::TwinMintDecimalsMismatch);
-            }
-            let origin_decimals = origin_data[44];
+        // CRITICAL FIX: Read origin_mint decimals with validation
+        // NOTE: This uses manual byte offset (44) which is fragile to SPL Token layout changes
+        // Consider using Mint::try_deserialize for more robust parsing
+        let origin_data = ctx.accounts.origin_mint.try_borrow_data()?;
+        // SPL Token Mint account: discriminator[8] + mint_authority[36] + supply[8] + decimals[1] + ...
+        // Offset 44 = 8 + 36 = start of decimals field
+        require!(
+            origin_data.len() >= 45, // Need at least 45 bytes (44 + 1 for decimals)
+            PoolError::TwinMintDecimalsMismatch
+        );
+        let origin_decimals = origin_data[44];
+        // CRITICAL FIX: Validate decimals is reasonable (0-255, but typically 0-18)
+        require!(
+            origin_decimals <= 18,
+            PoolError::TwinMintDecimalsMismatch
+        );
             drop(origin_data);
             
             require!(
