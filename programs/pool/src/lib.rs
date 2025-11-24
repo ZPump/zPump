@@ -4851,9 +4851,15 @@ fn process_shield_finalize_ledger<'info>(
 
     // CRITICAL: Only access hook_config if hooks are enabled and config is present
     // hook_config_info is None when hooks are disabled, so we skip hook execution
-    if hook_enabled && hook_config_info.is_some() && hook_config_account.is_some() {
-        // Manually load hook_config from UncheckedAccount to reduce stack usage
-        let hook_config_account = hook_config_account.unwrap();
+    if hook_enabled && hook_config_info.is_some() {
+        // CRITICAL FIX: Use match instead of unwrap to handle None case
+        let hook_config_account = match hook_config_account {
+            Some(acc) => acc,
+            None => {
+                msg!("WARNING: hook_config_account is None despite check, skipping hook");
+                return Ok(()); // Skip hook execution if config account is missing
+            }
+        };
         let data = hook_config_account.try_borrow_data()?;
         if data.len() < 8 {
             return err!(PoolError::HookConfigInvalid);
