@@ -1704,104 +1704,122 @@ pub enum MintStatus {
 
 #[error_code]
 pub enum FactoryError {
-    #[msg("E_ALREADY_REGISTERED")]
+    // Program-specific state errors
+    #[msg("Already registered")]
     AlreadyRegistered,
-    #[msg("E_FACTORY_PAUSED")]
+    #[msg("Factory paused")]
     Paused,
-    #[msg("E_NOT_PAUSED")]
+    #[msg("Factory not paused")]
     NotPaused,
-    #[msg("E_PTKN_MINT_MISSING")]
+    #[msg("PTKN mint missing")]
     PtknMintMissing,
-    #[msg("E_INVALID_FEE_BPS")]
+    // Standardized input errors
+    #[msg("Invalid fee basis points")]
     InvalidFeeBps,
-    #[msg("E_UNAUTHORIZED")]
+    // Standardized access control errors
+    #[msg("Unauthorized")]
     Unauthorized,
-    #[msg("E_INVALID_DECIMALS")]
+    #[msg("Invalid decimals")]
     InvalidDecimals,
-    #[msg("E_PTKN_MINT_MISMATCH")]
+    // Program-specific errors
+    #[msg("PTKN mint mismatch")]
     PtknMintMismatch,
-    #[msg("E_PTKN_AUTHORITY_MISSING")]
+    #[msg("PTKN authority missing")]
     PtknAuthorityMissing,
-    #[msg("E_TOKEN_PROGRAM_MISSING")]
+    #[msg("Token program missing")]
     TokenProgramMissing,
-    #[msg("E_RENT_MISSING")]
+    #[msg("Rent missing")]
     RentMissing,
-    #[msg("E_PTKN_PAYER_MISSING")]
+    #[msg("PTKN payer missing")]
     PtknPayerMissing,
-    #[msg("E_PTKN_DISABLED")]
+    #[msg("PTKN mint disabled")]
     PtknMintDisabled,
-    #[msg("E_POOL_AUTHORITY_MISMATCH")]
+    #[msg("Pool authority mismatch")]
     PoolAuthorityMismatch,
-    #[msg("E_TIMELOCK_OVERFLOW")]
+    // Standardized timelock errors
+    #[msg("Timelock overflow")]
     TimelockOverflow,
-    #[msg("E_TIMELOCK_CONSUMED")]
+    #[msg("Timelock consumed")]
     TimelockConsumed,
-    #[msg("E_CHANGE_CANCELED")]
+    #[msg("Change canceled")]
     ChangeCanceled,
-    #[msg("E_TIMELOCK_NOT_READY")]
+    #[msg("Timelock not ready")]
     TimelockNotReady,
-    #[msg("E_TIMELOCK_NOT_EXPIRED")]
+    #[msg("Timelock not expired")]
     TimelockNotExpired,
-    #[msg("E_TIMELOCK_MINT_MAPPING_MISSING")]
+    // Program-specific timelock errors
+    #[msg("Timelock mint mapping missing")]
     TimelockMissingMapping,
-    #[msg("E_TIMELOCK_INVALID_FACTORY")]
+    #[msg("Timelock invalid factory")]
     TimelockInvalidFactory,
-    #[msg("E_TIMELOCK_ONLY_QUEUE")]
+    #[msg("Timelock only queue")]
     TimelockOnlyQueue,
-    #[msg("E_SERIALIZATION_ERROR")]
+    #[msg("Serialization error")]
     SerializationError,
-    #[msg("E_ORIGIN_MINT_MISMATCH")]
+    #[msg("Origin mint mismatch")]
     OriginMintMismatch,
-    #[msg("E_INSUFFICIENT_SIGNATURES")]
+    // Standardized access control errors
+    #[msg("Insufficient signatures")]
     InsufficientSignatures,
-    #[msg("E_EMERGENCY_PAUSE_NOT_CONFIGURED")]
+    // Program-specific errors
+    #[msg("Emergency pause not configured")]
     EmergencyPauseNotConfigured,
-    #[msg("E_INSUFFICIENT_EMERGENCY_SIGNATURES")]
+    #[msg("Insufficient emergency signatures")]
     InsufficientEmergencySignatures,
-    #[msg("E_MINT_FROZEN")]
+    #[msg("Mint frozen")]
     MintFrozen,
-    #[msg("E_INVALID_AMOUNT")]
+    // Standardized input errors
+    #[msg("Invalid amount")]
     InvalidAmount,
-    #[msg("E_AMOUNT_TOO_LARGE")]
+    #[msg("Amount too large")]
     AmountTooLarge,
-    #[msg("E_INVALID_DESTINATION")]
+    #[msg("Invalid destination")]
     InvalidDestination,
-    #[msg("E_TIMELOCK_TOO_SHORT")]
+    // Standardized timelock errors
+    #[msg("Timelock too short")]
     TimelockTooShort,
-    #[msg("E_TIMELOCK_HASH_MISMATCH")]
+    // Standardized integrity errors
+    #[msg("Hash mismatch")]
     TimelockHashMismatch,
-    #[msg("E_VERIFYING_KEY_HASH_MISMATCH")]
+    #[msg("Hash mismatch")]
     VerifyingKeyHashMismatch,
-    #[msg("E_VERIFYING_KEY_TOO_LARGE")]
+    #[msg("Verifying key too large")]
     VerifyingKeyTooLarge,
-    #[msg("E_DUPLICATE_ACTION")]
+    // Program-specific errors
+    #[msg("Duplicate action")]
     DuplicateAction,
-    #[msg("E_TOO_MANY_PENDING_ACTIONS")]
+    #[msg("Too many pending actions")]
     TooManyPendingActions,
-    #[msg("E_GLOBAL_ACTION_RATE_LIMIT_EXCEEDED")]
+    // Standardized rate limiting errors
+    #[msg("Global action rate limit exceeded")]
     GlobalActionRateLimitExceeded,
-    #[msg("E_ACTION_EXPIRED")]
+    #[msg("Action expired")]
     ActionExpired,
-    #[msg("E_SEQUENCE_OVERFLOW")]
+    // Standardized sequence errors
+    #[msg("Sequence overflow")]
     SequenceOverflow,
-    #[msg("E_ACTION_RATE_LIMIT_EXCEEDED")]
+    // Standardized rate limiting errors
+    #[msg("Action rate limit exceeded")]
     ActionRateLimitExceeded,
-    #[msg("E_INVALID_AUTHORITY")]
+    // Standardized access control errors
+    #[msg("Invalid authority")]
     InvalidAuthority,
-    #[msg("E_AUTHORITY_UNCHANGED")]
+    #[msg("Authority unchanged")]
     AuthorityUnchanged,
-    #[msg("E_CONFIG_NOT_INITIALIZED")]
+    // Program-specific errors
+    #[msg("Config not initialized")]
     ConfigNotInitialized,
-    #[msg("E_CONFIG_FACTORY_MISMATCH")]
+    #[msg("Config factory mismatch")]
     ConfigFactoryMismatch,
-    #[msg("E_ACCOUNT_DATA_READ_FAILED")]
+    #[msg("Account data read failed")]
     AccountDataReadFailed,
-    #[msg("E_ACCOUNT_DATA_TOO_SHORT")]
+    // Standardized validation errors
+    #[msg("Account data too short")]
     AccountDataTooShort,
-    #[msg("E_INVALID_MINT_FORMAT")]
+    #[msg("Invalid mint format")]
     InvalidMintFormat,
-    #[msg("E_DECIMALS_MISMATCH")]
+    #[msg("Decimals mismatch")]
     DecimalsMismatch,
-    #[msg("E_INVALID_VERIFIER_PROGRAM")]
+    #[msg("Invalid verifier program")]
     InvalidVerifierProgram,
 }

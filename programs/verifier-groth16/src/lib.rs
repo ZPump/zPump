@@ -650,50 +650,58 @@ pub struct FactoryProgramIdUpdated {
 
 #[error_code]
 pub enum VerifierError {
-    #[msg("invalid proof")]
+    // Standardized sanitization errors
+    #[msg("Invalid proof")]
     InvalidProof,
-    #[msg("verifying key hash mismatch")]
+    // Standardized integrity errors
+    #[msg("Hash mismatch")]
     HashMismatch,
-    #[msg("verifying key data must not be empty")]
+    // Program-specific errors
+    #[msg("Verifying key data must not be empty")]
     EmptyVerifyingKey,
-    #[msg("verifying key id must be provided")]
+    #[msg("Verifying key id must be provided")]
     InvalidVerifyingKeyId,
-    #[msg("proof must not be empty")]
+    #[msg("Proof must not be empty")]
     EmptyProof,
-    #[msg("public inputs must not be empty")]
+    #[msg("Public inputs must not be empty")]
     EmptyPublicInputs,
-    #[msg("unauthorized authority - only factory can create keys")]
+    // Standardized access control errors
+    #[msg("Unauthorized authority - only factory can create keys")]
     UnauthorizedAuthority,
-    #[msg("proof exceeds maximum allowed size")]
+    // Standardized sanitization errors
+    #[msg("Proof too large")]
     ProofTooLarge,
-    #[msg("public inputs exceed maximum allowed size")]
+    #[msg("Public inputs too large")]
     PublicInputsTooLarge,
-    #[msg("verifying key version is too old and no longer supported")]
+    // Program-specific errors
+    #[msg("Verifying key version is too old and no longer supported")]
     VersionTooOld,
-    // CRITICAL FIX: New error types for enhanced security
-    #[msg("verifying key exceeds maximum allowed size")]
+    #[msg("Verifying key exceeds maximum allowed size")]
     VerifyingKeyTooLarge,
-    #[msg("verifying key format is invalid")]
+    #[msg("Verifying key format is invalid")]
     InvalidKeyFormat,
-    #[msg("verifying key has been revoked")]
+    #[msg("Verifying key has been revoked")]
     KeyRevoked,
-    #[msg("verifying key is already revoked")]
+    #[msg("Verifying key is already revoked")]
     AlreadyRevoked,
-    #[msg("account is not owned by verifier program")]
+    // Standardized validation errors
+    #[msg("Invalid account owner")]
     InvalidAccountOwner,
-    #[msg("PDA derivation mismatch")]
+    #[msg("Invalid PDA")]
     InvalidPDA,
-    #[msg("bump seed mismatch")]
+    #[msg("Invalid bump seed")]
     InvalidBump,
-    #[msg("account data length mismatch")]
+    #[msg("Data length mismatch")]
     DataLengthMismatch,
-    #[msg("account size does not match expected size")]
+    #[msg("Account size mismatch")]
     AccountSizeMismatch,
-    #[msg("proof format is invalid")]
+    // Standardized sanitization errors
+    #[msg("Invalid proof format")]
     InvalidProofFormat,
-    #[msg("invalid program ID")]
+    // Program-specific errors
+    #[msg("Invalid program ID")]
     InvalidProgramId,
-    #[msg("invalid circuit tag")]
+    #[msg("Invalid circuit tag")]
     InvalidCircuitTag,
 }
 
