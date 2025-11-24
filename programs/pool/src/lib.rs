@@ -3837,35 +3837,29 @@ impl CommitmentTree {
             }
 
             let level_start = chunk_size.trailing_zeros() as usize;
-            // CRITICAL FIX: Use Poseidon for tree operations
-            // Convert commitments to Fr for leaves
-            let mut current_level_fr: Vec<Fr> = chunk_commitments
+            let mut level_nodes: Vec<Vec<[u8; 32]>> = Vec::with_capacity(level_start + 1);
+            let mut current_level: Vec<[u8; 32]> = chunk_commitments
                 .iter()
-                .map(|commitment| poseidon_leaf(commitment))
-                .collect::<Result<Vec<Fr>>>()?;
-            // Store Fr values for level_nodes (avoid unnecessary conversions)
-            let mut level_nodes_fr: Vec<Vec<Fr>> = Vec::with_capacity(level_start + 1);
-            level_nodes_fr.push(current_level_fr.clone());
+                .map(|commitment| sha_leaf(commitment))
+                .collect();
+            level_nodes.push(current_level.clone());
 
-            // Build tree levels using Poseidon
             for _ in 0..level_start {
-                let mut next_level_fr = Vec::with_capacity(current_level_fr.len() / 2);
-                for pair in current_level_fr.chunks_exact(2) {
-                    next_level_fr.push(poseidon_branch(&pair[0], &pair[1]));
+                let mut next_level = Vec::with_capacity(current_level.len() / 2);
+                for pair in current_level.chunks_exact(2) {
+                    next_level.push(sha_branch(&pair[0], &pair[1]));
                 }
-                current_level_fr = next_level_fr;
-                level_nodes_fr.push(current_level_fr.clone());
+                current_level = next_level;
+                level_nodes.push(current_level.clone());
             }
 
-            let mut node_fr = current_level_fr[0];
+            let mut node_bytes = current_level[0];
 
-            // Update frontier with cached values (convert only when storing)
             for level in 0..level_start {
                 let pos = ((chunk_size - (1 << level) - 1) >> level) as usize;
-                let cached_fr = &level_nodes_fr[level][pos];
-                let cached_bytes = fr_to_bytes(cached_fr);
-                self.frontier[level] = cached_bytes;
-                frontier_cache.0[level] = cached_bytes;
+                let cached = level_nodes[level][pos];
+                self.frontier[level] = cached;
+                frontier_cache.0[level] = cached;
                 frontier_cache.1[level] = true;
             }
 
@@ -3873,35 +3867,30 @@ impl CommitmentTree {
             let mut level = level_start;
             while level < Self::DEPTH {
                 if index % 2 == 0 {
-                    // Store current node in frontier
-                    let node_bytes = fr_to_bytes(&node_fr);
                     frontier_cache.0[level] = node_bytes;
                     frontier_cache.1[level] = true;
                     self.frontier[level] = node_bytes;
-                    // Hash with zero value (Poseidon)
-                    let zero_fr = poseidon::merkle_zero(level);
-                    node_fr = poseidon_branch(&node_fr, &zero_fr);
+                    let zero = self.zeroes[level];
+                    node_bytes = sha_branch(&frontier_cache.0[level], &zero);
                 } else {
-                    // Load left sibling from frontier
                     if !frontier_cache.1[level] {
                         frontier_cache.0[level] = self.frontier[level];
                         frontier_cache.1[level] = true;
                     }
-                    // CRITICAL FIX: Use fr_from_bytes for frontier values (already valid, no need for field modulus check)
-                    let left_fr = fr_from_bytes(&frontier_cache.0[level])?;
-                    node_fr = poseidon_branch(&left_fr, &node_fr);
+                    let left = frontier_cache.0[level];
+                    node_bytes = sha_branch(&left, &node_bytes);
                 }
                 if canopy_len > 0 {
                     let offset = Self::DEPTH - 1 - level;
                     if offset < canopy_len {
-                        self.canopy[offset] = fr_to_bytes(&node_fr);
+                        self.canopy[offset] = node_bytes;
                     }
                 }
                 index >>= 1;
                 level += 1;
             }
 
-            self.current_root = fr_to_bytes(&node_fr);
+            self.current_root = node_bytes;
             self.next_index = self
                 .next_index
                 .checked_add(chunk_size as u64)
@@ -3938,40 +3927,32 @@ impl CommitmentTree {
             PoolError::TreeFull,
         );
         let index_position = self.next_index;
-        // CRITICAL FIX: Use Poseidon for tree operations
-        // Convert commitment bytes to Fr for leaf
-        let mut node_fr = poseidon_leaf(&commitment)?;
+        let mut node_bytes = sha_leaf(&commitment);
         let mut index = self.next_index;
         let canopy_len = core::cmp::min(self.canopy_depth as usize, Self::MAX_CANOPY);
         for level in 0..Self::DEPTH {
             if index % 2 == 0 {
-                // Store current node in frontier cache
-                let node_bytes = fr_to_bytes(&node_fr);
                 frontier_cache.0[level] = node_bytes;
                 frontier_cache.1[level] = true;
                 self.frontier[level] = node_bytes;
-                // Hash with zero value (already Fr from merkle_zero)
-                let zero_fr = poseidon::merkle_zero(level);
-                node_fr = poseidon_branch(&node_fr, &zero_fr);
+                let zero = self.zeroes[level];
+                node_bytes = sha_branch(&frontier_cache.0[level], &zero);
             } else {
-                // Load left sibling from frontier
                 if !frontier_cache.1[level] {
                     frontier_cache.0[level] = self.frontier[level];
                     frontier_cache.1[level] = true;
                 }
-                // CRITICAL FIX: Use fr_from_bytes for frontier values (already valid, no need for field modulus check)
-                let left_fr = fr_from_bytes(&frontier_cache.0[level])?;
-                node_fr = poseidon_branch(&left_fr, &node_fr);
+                let left = frontier_cache.0[level];
+                node_bytes = sha_branch(&left, &node_bytes);
             }
             if canopy_len > 0 {
                 let offset = Self::DEPTH - 1 - level;
                 if offset < canopy_len {
-                    self.canopy[offset] = fr_to_bytes(&node_fr);
+                    self.canopy[offset] = node_bytes;
                 }
             }
             index >>= 1;
         }
-        let node_bytes = fr_to_bytes(&node_fr);
         self.next_index = self
             .next_index
             .checked_add(1)
@@ -4001,11 +3982,11 @@ impl CommitmentTree {
 
     fn compute_zeroes() -> [[u8; 32]; Self::DEPTH] {
         let mut zeroes = [[0u8; 32]; Self::DEPTH];
-        // CRITICAL FIX: Use Poseidon merkle_zero for each level
-        // Poseidon zero values are precomputed constants
-        for level in 0..Self::DEPTH {
-            let zero_fr = poseidon::merkle_zero(level);
-            zeroes[level] = fr_to_bytes(&zero_fr);
+        let empty_leaf = [0u8; 32];
+        zeroes[0] = sha_leaf(&empty_leaf);
+        for level in 1..Self::DEPTH {
+            let prev = zeroes[level - 1];
+            zeroes[level] = sha_branch(&prev, &prev);
         }
         zeroes
     }
@@ -4980,44 +4961,6 @@ fn instruction_discriminator(name: &str) -> [u8; 8] {
     out
 }
 
-// CRITICAL FIX: Bytes to Fr conversion utility for Poseidon tree migration
-// Note: fr_to_bytes already exists at line 2848, so we only add bytes_to_fr here
-// Convert little-endian bytes to field element (Fr) with field modulus validation
-fn bytes_to_fr(bytes: &[u8; 32]) -> Result<Fr> {
-    // CRITICAL FIX: Validate field element before conversion
-    validate_field_element(bytes)?;
-    
-    // Use existing fr_from_bytes pattern but with field modulus check
-    let mut limbs = [0u64; 4];
-    for (index, limb) in limbs.iter_mut().enumerate() {
-        let start = index * 8;
-        let chunk: [u8; 8] = bytes[start..start + 8]
-            .try_into()
-            .map_err(|_| error!(PoolError::InvalidFieldElement))?;
-        *limb = u64::from_le_bytes(chunk);
-    }
-    let bigint = BigInteger256::new(limbs);
-    
-    // Create Fr from BigInteger256 with field modulus validation
-    // CRITICAL FIX: Check if value is within field modulus
-    // Bn254 field modulus: p = 21888242871839275222246405745257275088548364400416034343698204186575808495617
-    // BigInteger256 can represent values up to 2^256 - 1, which is larger than p
-    // Fr::from_bigint will return None if value >= p
-    Fr::from_bigint(bigint)
-        .ok_or_else(|| error!(PoolError::InvalidFieldElement))
-}
-
-// CRITICAL FIX: Poseidon tree migration - replace SHA-256 with Poseidon
-// Poseidon leaf: commitment bytes are already a field element from Poseidon hash, just convert
-// Use fr_from_bytes (no field modulus check) since commitments are already valid field elements
-fn poseidon_leaf(commitment: &[u8; 32]) -> Result<Fr> {
-    fr_from_bytes(commitment)
-}
-
-// Poseidon branch: hash two field elements using Poseidon
-fn poseidon_branch(left: &Fr, right: &Fr) -> Fr {
-    poseidon::hash_two(left, right)
-}
 
 // Legacy SHA-256 functions (kept for backward compatibility during migration)
 fn sha_leaf(data: &[u8; 32]) -> [u8; 32] {
