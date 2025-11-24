@@ -5,7 +5,9 @@ use anchor_spl::token_interface::{
 use solana_program::pubkey;
 
 use ptf_common::seeds;
-use ptf_common::security::{RateLimitConfig, RateLimiterState};
+use ptf_common::security::{
+    AccountIntegrity, IntegrityChecker, RateLimitConfig, RateLimiterState,
+};
 
 declare_id!("9g6ZodQwxK8MN6MX3dbvFC3E7vGVqFtKZEHY7PByRAuh");
 
@@ -84,6 +86,7 @@ pub mod ptf_vault {
         state.last_authority_change_time = None;
         state.deposit_rate_limit = RateLimiterState::default();
         state.release_rate_limit = RateLimiterState::default();
+        refresh_vault_state_integrity(state);
         Ok(())
     }
 
@@ -95,11 +98,14 @@ pub mod ptf_vault {
 
         let vault_state = &mut ctx.accounts.vault_state;
 
+        verify_vault_state(vault_state)?;
+
         // Apply per-mint deposit rate limiting.
         let clock = Clock::get()?;
         vault_state
             .deposit_rate_limit
             .check(&DEPOSIT_RATE_LIMIT_CONFIG, &clock)?;
+        refresh_vault_state_integrity(vault_state);
         
         // CRITICAL FIX: Enhanced reentrancy guard with timeout
         acquire_lock(vault_state)?;
@@ -157,6 +163,7 @@ pub mod ptf_vault {
         })();
         
         release_lock(vault_state);
+        refresh_vault_state_integrity(vault_state);
         result
     }
 
@@ -188,11 +195,14 @@ pub mod ptf_vault {
         
         let vault_state = &mut ctx.accounts.vault_state;
 
+        verify_vault_state(vault_state)?;
+
         // Apply per-mint release rate limiting.
         let clock = Clock::get()?;
         vault_state
             .release_rate_limit
             .check(&RELEASE_RATE_LIMIT_CONFIG, &clock)?;
+        refresh_vault_state_integrity(vault_state);
         
         // CRITICAL FIX: Enhanced reentrancy guard with timeout
         acquire_lock(vault_state)?;
@@ -275,6 +285,7 @@ pub mod ptf_vault {
         })();
         
         release_lock(vault_state);
+        refresh_vault_state_integrity(vault_state);
         result
     }
 
@@ -287,6 +298,7 @@ pub mod ptf_vault {
         new_pool_authority: Pubkey,
     ) -> Result<()> {
         let state = &mut ctx.accounts.vault_state;
+        verify_vault_state(state)?;
         require_keys_eq!(
             ctx.accounts.authority.key(),
             state.pool_authority,
@@ -366,7 +378,7 @@ pub mod ptf_vault {
             sequence,
             proposed_by: ctx.accounts.authority.key(),
         });
-        
+        refresh_vault_state_integrity(state);
         Ok(())
     }
 
@@ -391,6 +403,7 @@ pub mod ptf_vault {
         );
         
         let state = &mut ctx.accounts.vault_state;
+        verify_vault_state(state)?;
         require_keys_eq!(
             pending.vault_state,
             state.key(),
@@ -441,7 +454,7 @@ pub mod ptf_vault {
             executed_by: ctx.accounts.executor.key(),
             sequence: pending.sequence,
         });
-        
+        refresh_vault_state_integrity(state);
         Ok(())
     }
 
@@ -675,6 +688,7 @@ pub struct VaultState {
     pub last_authority_change_time: Option<i64>, // CRITICAL FIX: Rate limiting for authority changes
     pub deposit_rate_limit: RateLimiterState,
     pub release_rate_limit: RateLimiterState,
+    pub integrity_hash: [u8; 32],
 }
 
 impl VaultState {
@@ -682,7 +696,43 @@ impl VaultState {
     // + lock_timestamp (9) + sequence (8) + last_change_time (9) + padding (1)
     // + deposit_rate_limit (RateLimiterState::SIZE) + release_rate_limit (RateLimiterState::SIZE)
     pub const SPACE: usize =
-        8 + 32 + 32 + 1 + 1 + 9 + 8 + 9 + 1 + RateLimiterState::SIZE * 2;
+        8 + 32 + 32 + 1 + 1 + 9 + 8 + 9 + 1 + RateLimiterState::SIZE * 2 + 32;
+}
+
+impl AccountIntegrity for VaultState {
+    fn compute_integrity_hash(&self) -> [u8; 32] {
+        let bump = [self.bump];
+        let locked = [self.locked as u8];
+        let lock_timestamp = self.lock_timestamp.unwrap_or_default().to_le_bytes();
+        let seq = self.authority_change_sequence.to_le_bytes();
+        let last_change_flag = [self.last_authority_change_time.is_some() as u8];
+        let last_change = self.last_authority_change_time.unwrap_or_default().to_le_bytes();
+
+        let dep_last = self.deposit_rate_limit.last_action_time.to_le_bytes();
+        let dep_window = self.deposit_rate_limit.window_start.to_le_bytes();
+        let dep_count = self.deposit_rate_limit.action_count.to_le_bytes();
+
+        let rel_last = self.release_rate_limit.last_action_time.to_le_bytes();
+        let rel_window = self.release_rate_limit.window_start.to_le_bytes();
+        let rel_count = self.release_rate_limit.action_count.to_le_bytes();
+
+        IntegrityChecker::hash_fields(&[
+            self.origin_mint.as_ref(),
+            self.pool_authority.as_ref(),
+            &bump,
+            &locked,
+            &lock_timestamp,
+            &seq,
+            &last_change_flag,
+            &last_change,
+            &dep_last,
+            &dep_window,
+            &dep_count,
+            &rel_last,
+            &rel_window,
+            &rel_count,
+        ])
+    }
 }
 
 // CRITICAL FIX: Pending authority change account for timelock system
@@ -805,9 +855,19 @@ fn validate_token_program(program: &Pubkey) -> Result<()> {
     Ok(())
 }
 
+fn verify_vault_state(state: &VaultState) -> Result<()> {
+    state.verify_integrity(&state.integrity_hash)
+}
+
+fn refresh_vault_state_integrity(state: &mut VaultState) {
+    state.integrity_hash = state.compute_integrity_hash();
+}
+
 // CRITICAL FIX: Enhanced lock acquisition with timeout
 fn acquire_lock(state: &mut VaultState) -> Result<()> {
     let clock = Clock::get()?;
+
+    verify_vault_state(state)?;
     
     if state.locked {
         if let Some(lock_time) = state.lock_timestamp {
@@ -828,6 +888,7 @@ fn acquire_lock(state: &mut VaultState) -> Result<()> {
     
     state.locked = true;
     state.lock_timestamp = Some(clock.unix_timestamp);
+    refresh_vault_state_integrity(state);
     Ok(())
 }
 
@@ -835,6 +896,7 @@ fn acquire_lock(state: &mut VaultState) -> Result<()> {
 fn release_lock(state: &mut VaultState) {
     state.locked = false;
     state.lock_timestamp = None;
+    refresh_vault_state_integrity(state);
 }
 
 #[error_code]
