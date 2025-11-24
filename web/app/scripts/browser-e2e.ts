@@ -714,10 +714,11 @@ async function fetchPoolStateRoot(connection: Connection, poolId: string): Promi
   advance(32);
   const rootBytes = buffer.slice(offset, offset + 32);
   advance(32);
-  advance(32 * 16);
-  offset += 1;
+  advance(32 * 64); // recent_roots (MAX_ROOTS = 64, not 16)
+  advance(8 * 64); // recent_roots_timestamps (i64 * 64)
+  offset += 1; // roots_len
   if (offset % 2 !== 0) {
-    offset += 1;
+    offset += 1; // align for u16
   }
   const feeBps = buffer.readUInt16LE(offset);
   return {
@@ -1202,8 +1203,11 @@ async function main() {
   }
 
   console.info('[flow] partial unshield with change');
-  const unshieldFee = (wrapLarge.noteAmount * feeBps) / 10_000n;
+  // CRITICAL FIX: Calculate fee based on unshield amount (not note amount) to match on-chain calculation
   const unshieldAmount = wrapLarge.noteAmount / 2n;
+  // On-chain calculates: fee = (unshieldAmount * fee_bps) / 10000, with minimum of 1
+  let calculatedFee = (unshieldAmount * feeBps) / 10_000n;
+  const unshieldFee = calculatedFee > 0n ? calculatedFee : 1n;
   const unwrapSignature = await executeUnwrap({
     note: wrapLarge,
     amount: unshieldAmount,
@@ -1224,10 +1228,14 @@ async function main() {
 
   console.info('[edge] attempting to unshield same note twice (expected failure)');
   try {
+    // CRITICAL FIX: Calculate fee for the new amount
+    const secondUnshieldAmount = unshieldAmount / 2n;
+    let secondCalculatedFee = (secondUnshieldAmount * feeBps) / 10_000n;
+    const secondUnshieldFee = secondCalculatedFee > 0n ? secondCalculatedFee : 1n;
     await executeUnwrap({
       note: wrapLarge,
-      amount: unshieldAmount / 2n,
-      fee: unshieldFee,
+      amount: secondUnshieldAmount,
+      fee: secondUnshieldFee,
       destination: owner.publicKey
     });
     throw new Error('Repeated unwrap did not fail as expected');

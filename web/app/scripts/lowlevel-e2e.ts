@@ -457,7 +457,8 @@ async function fetchPoolStateRoot(connection: Connection, poolId: string): Promi
   const rootBytes = buffer.slice(offset, offset + 32);
 
   offset += 32; // current_root
-  offset += 32 * 16; // recent_roots
+  offset += 32 * 64; // recent_roots (MAX_ROOTS = 64, not 16)
+  offset += 8 * 64; // recent_roots_timestamps (i64 * 64)
   offset += 1; // roots_len
   if (offset % 2 !== 0) {
     offset += 1; // align for u16
@@ -1504,14 +1505,48 @@ async function main() {
     nullifier: Buffer.from(await poseidonHashMany([BigInt(depositId4), BigInt(blinding4)])).reverse().toString('hex').padStart(64, '0')
   };
 
-  // Unshield amount should account for fees - use a slightly smaller amount
-  const unshieldAmount = wrap4.noteAmount - (wrap4.noteAmount * feeBps) / 10_000n;
+  // CRITICAL FIX: Calculate unshield amount and fee correctly
+  // The note amount includes the original deposit + fee from shield
+  // For unshield, we want to unshield most of the note, leaving room for the unshield fee
+  // Calculate: if we want to unshield X, fee = (X * feeBps) / 10000, and we need X + fee <= noteAmount
+  // So: X + (X * feeBps) / 10000 <= noteAmount
+  // X * (1 + feeBps/10000) <= noteAmount
+  // X <= noteAmount / (1 + feeBps/10000)
+  // X <= noteAmount * 10000 / (10000 + feeBps)
+  let unshieldAmount = (wrap4.noteAmount * 10_000n) / (10_000n + feeBps);
+  // Calculate fee based on unshield amount (matching on-chain calculation: (amount * fee_bps) / 10000)
+  let calculatedFee = (unshieldAmount * feeBps) / 10_000n;
+  // CRITICAL FIX: On-chain enforces minimum fee of 1 lamport (MIN_FEE)
+  // But if calculated fee is 0, we still need to ensure the calculation matches on-chain
+  // On-chain: fee_u64.max(MIN_FEE) where MIN_FEE = 1
+  // So if calculatedFee is 0, fee should be 1, otherwise use calculatedFee
+  let fee = calculatedFee > 0n ? calculatedFee : 1n;
+  // Verify: unshieldAmount + fee should be <= noteAmount (with small tolerance for rounding)
+  let totalNeeded = unshieldAmount + fee;
+  if (totalNeeded > wrap4.noteAmount) {
+    // Adjust unshield amount down if needed to ensure total fits
+    // Try with fee=1 first (minimum fee case)
+    if (wrap4.noteAmount > 1n) {
+      unshieldAmount = wrap4.noteAmount - 1n;
+      calculatedFee = (unshieldAmount * feeBps) / 10_000n;
+      fee = calculatedFee > 0n ? calculatedFee : 1n;
+      totalNeeded = unshieldAmount + fee;
+      if (totalNeeded > wrap4.noteAmount) {
+        // Still doesn't fit, reduce unshield amount further
+        fee = (unshieldAmount * feeBps) / 10_000n;
+        fee = fee > 0n ? fee : 1n;
+        unshieldAmount = wrap4.noteAmount - fee;
+      }
+    } else {
+      throw new Error(`Cannot unshield: noteAmount ${wrap4.noteAmount} is too small`);
+    }
+  }
   const unshieldBlinding = randomFieldScalar();
 
   const unshieldProof = await proofClient.requestProof('unwrap', {
     oldRoot: currentRoot,
     amount: unshieldAmount.toString(),
-    fee: ((wrap4.noteAmount * feeBps) / 10_000n).toString(),
+    fee: fee.toString(),
     destPubkey: receiver.publicKey.toBase58(),
     mode: 'origin',
     mintId: mintConfig.originMint,
