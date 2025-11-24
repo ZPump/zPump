@@ -1336,7 +1336,9 @@ export async function transfer(params: TransferParams): Promise<string> {
         return Math.max(parsed, 0);
       }
     }
-    return 800_000;
+    // CRITICAL FIX: Increased compute budget for Poseidon tree operations (more expensive than SHA-256)
+    // Poseidon hashing is ~3-4x more expensive than SHA-256 syscalls, requiring higher budget
+    return 1_400_000;
   })();
   if (resolvedLimit > 0) {
     instructions.push(ComputeBudgetProgram.setComputeUnitLimit({ units: resolvedLimit }));
@@ -1500,7 +1502,9 @@ export async function transferFrom(params: TransferFromParams): Promise<string> 
         return Math.max(parsed, 0);
       }
     }
-    return 800_000;
+    // CRITICAL FIX: Increased compute budget for Poseidon tree operations (more expensive than SHA-256)
+    // Poseidon hashing is ~3-4x more expensive than SHA-256 syscalls, requiring higher budget
+    return 1_400_000;
   })();
   if (resolvedLimit > 0) {
     instructions.push(ComputeBudgetProgram.setComputeUnitLimit({ units: resolvedLimit }));
