@@ -5495,6 +5495,8 @@ pub enum PoolError {
     CommitmentMismatch,
     #[msg("E_OUTPUT_COUNT_MISMATCH")]
     OutputCountMismatch,
+    #[msg("Too many nullifiers in single operation")]
+    TooManyNullifiers,
 }
 
 fn ensure_mint_active(mapping: &AccountInfo) -> Result<()> {
