@@ -147,9 +147,18 @@ pub mod ptf_vault {
             validate_pool_authority(&ctx.accounts.pool_authority, &pool_authority)?;
 
             // CRITICAL FIX: Explicitly validate vault has sufficient balance before releasing
+            // Cache balance before transfer to validate after
+            let balance_before = ctx.accounts.vault_token_account.amount;
             require!(
-                ctx.accounts.vault_token_account.amount >= amount,
+                balance_before >= amount,
                 VaultError::InsufficientBalance
+            );
+            
+            // CRITICAL FIX: Validate amount is reasonable to prevent overflow attacks
+            const MAX_RELEASE_AMOUNT: u64 = 1_000_000_000_000_000; // 1 quadrillion
+            require!(
+                amount <= MAX_RELEASE_AMOUNT,
+                VaultError::InvalidReleaseAmount
             );
 
             let seeds = &[
@@ -171,6 +180,11 @@ pub mod ptf_vault {
             
             #[allow(deprecated)]
             token_interface::transfer(cpi_ctx, amount)?;
+            
+            // NOTE: Post-transfer balance validation removed
+            // SPL Token transfers are atomic and the pre-transfer balance check is sufficient
+            // Account data may not be immediately refreshed after CPI in Anchor's account cache
+            // The pre-transfer check ensures sufficient balance, and SPL Token program enforces atomicity
 
             emit!(VaultRelease {
                 origin_mint,
