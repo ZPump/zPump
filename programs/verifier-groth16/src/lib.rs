@@ -770,8 +770,13 @@ fn validate_verifying_key_format(key_data: &[u8]) -> Result<()> {
         match VerifyingKey::<Bn254>::deserialize_uncompressed(&mut cursor) {
             Ok(_) => {
                 // Verify entire data was consumed
-                if (cursor.position() as usize) != key_data.len() {
-                    return err!(VerifierError::InvalidKeyFormat);
+                // CRITICAL FIX: Use try_from instead of cast to prevent truncation
+                let position = match usize::try_from(cursor.position()) {
+                    Ok(p) => p,
+                    Err(_) => return false,
+                };
+                if position != key_data.len() {
+                    return false;
                 }
                 Ok(())
             }
@@ -840,7 +845,12 @@ fn groth16_verify(verifying_key: &[u8], proof: &[u8], public_inputs: &[u8]) -> b
         }
     };
 
-    if (vk_cursor.position() as usize) != verifying_key.len() {
+    // CRITICAL FIX: Use try_from instead of cast
+    let vk_position = match usize::try_from(vk_cursor.position()) {
+        Ok(p) => p,
+        Err(_) => return false,
+    };
+    if vk_position != verifying_key.len() {
         #[cfg(debug_assertions)]
         msg!("Verifying key deserialization did not consume all bytes");
         return false;
