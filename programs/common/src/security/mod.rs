@@ -18,4 +18,5 @@ pub use errors::*;
 pub use state_machine::*;
 pub use rate_limiting::*;
 pub use integrity::*;
+pub use patterns::*;
 
