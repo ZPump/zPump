@@ -771,13 +771,12 @@ fn validate_verifying_key_format(key_data: &[u8]) -> Result<()> {
             Ok(_) => {
                 // Verify entire data was consumed
                 // CRITICAL FIX: Use try_from instead of cast to prevent truncation
-                let position = match usize::try_from(cursor.position()) {
-                    Ok(p) => p,
-                    Err(_) => return false,
-                };
-                if position != key_data.len() {
-                    return false;
-                }
+                let position = usize::try_from(cursor.position())
+                    .map_err(|_| VerifierError::InvalidKeyFormat)?;
+                require!(
+                    position == key_data.len(),
+                    VerifierError::InvalidKeyFormat
+                );
                 Ok(())
             }
             Err(_) => err!(VerifierError::InvalidKeyFormat)
@@ -848,7 +847,11 @@ fn groth16_verify(verifying_key: &[u8], proof: &[u8], public_inputs: &[u8]) -> b
     // CRITICAL FIX: Use try_from instead of cast
     let vk_position = match usize::try_from(vk_cursor.position()) {
         Ok(p) => p,
-        Err(_) => return false,
+        Err(_) => {
+            #[cfg(debug_assertions)]
+            msg!("Cursor position exceeds usize::MAX");
+            return false;
+        }
     };
     if vk_position != verifying_key.len() {
         #[cfg(debug_assertions)]
@@ -883,7 +886,16 @@ fn groth16_verify(verifying_key: &[u8], proof: &[u8], public_inputs: &[u8]) -> b
         }
     };
 
-    if (inputs_cursor.position() as usize) != public_inputs.len() {
+    // CRITICAL FIX: Use try_from instead of cast
+    let inputs_position = match usize::try_from(inputs_cursor.position()) {
+        Ok(p) => p,
+        Err(_) => {
+            #[cfg(debug_assertions)]
+            msg!("Inputs cursor position exceeds usize::MAX");
+            return false;
+        }
+    };
+    if inputs_position != public_inputs.len() {
         #[cfg(debug_assertions)]
         msg!("Public inputs deserialization did not consume all bytes");
         return false;
