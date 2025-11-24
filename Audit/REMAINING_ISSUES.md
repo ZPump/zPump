@@ -1,7 +1,7 @@
 # Remaining Security Audit Issues
 
 **Last Updated:** 2025-11-24  
-**Status:** 9 issues remaining (6 MEDIUM, 3 LOW)
+**Status:** 10 issues remaining (6 MEDIUM, 4 LOW)
 
 ## Summary
 
@@ -53,9 +53,9 @@ After implementing design improvements and security mitigations, the following i
    - **Impact:** Single signer could potentially bypass emergency pause threshold requirement
    - **Recommendation:** Add duplicate signer tracking similar to multi-sig fix
 
-### LOW Severity (3 issues)
+### LOW Severity (4 issues)
 
-#### ptf_pool (2 issues)
+#### ptf_pool (3 issues)
 7. **Features Update Without Input Validation** (`features-update-no-validation.md`)
    - **Location:** `programs/pool/src/lib.rs:551-559`
    - **Status:** Open
@@ -69,6 +69,13 @@ After implementing design improvements and security mitigations, the following i
    - **Description:** `configure_hooks` increments `required_accounts_len` without overflow protection. If state is corrupted, could wrap around.
    - **Impact:** Low impact since length is reset to 0, but could cause incorrect hook account validation if state is corrupted
    - **Recommendation:** Use `checked_add` to prevent overflow
+
+10. **Hook Config Unwrap Could Panic** (`hook-config-unwrap-panic.md`)
+   - **Location:** `programs/pool/src/lib.rs:5316`
+   - **Status:** Open
+   - **Description:** Hook execution code uses `.unwrap()` on an `Option` that was already checked, but could panic if state changes between check and unwrap
+   - **Impact:** Low impact since there's a guard check, but could cause transaction failure if guard has a bug
+   - **Recommendation:** Replace `.unwrap()` with safe pattern matching (`match` or `if let`)
 
 #### ptf_verifier_groth16 (1 issue)
 9. **Proof Format Validation Function Unused** (`proof-format-validation-unused.md`)
@@ -102,6 +109,7 @@ The following issues were addressed in the latest implementation:
 - **Root Computation Mismatch**: Documented as BY DESIGN - no changes needed
 
 ### Low Priority
+- **Hook Config Unwrap**: Replace `.unwrap()` with safe pattern matching
 - **Hook Required Accounts Length**: Use `checked_add` to prevent overflow
 - **Features Update Validation**: Add input validation for feature combinations
 - **Proof Format Validation**: Integrate validation function or remove if redundant
