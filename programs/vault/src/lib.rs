@@ -580,9 +580,10 @@ pub struct ExecuteAuthorityChange<'info> {
         ],
         bump = pending_change.bump,
         constraint = pending_change.vault_state == vault_state.key() @ VaultError::VaultMismatch,
-        close = executor,
+        close = system_program, // CRITICAL FIX: Close to system program, rent is burned (prevents rent incentive attacks)
     )]
     pub pending_change: Account<'info, PendingAuthorityChange>,
+    pub system_program: Program<'info, System>,
     #[account(mut)]
     pub executor: Signer<'info>,
 }
@@ -600,9 +601,10 @@ pub struct CancelAuthorityChange<'info> {
         ],
         bump = pending_change.bump,
         constraint = pending_change.vault_state == vault_state.key() @ VaultError::VaultMismatch,
-        close = authority,
+        close = system_program, // CRITICAL FIX: Close to system program, rent is burned (prevents rent incentive attacks)
     )]
     pub pending_change: Account<'info, PendingAuthorityChange>,
+    pub system_program: Program<'info, System>,
 }
 
 #[derive(Accounts)]
