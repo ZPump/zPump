@@ -4317,17 +4317,23 @@ impl NoteLedger {
         if !nullifiers.is_empty() {
             #[cfg(feature = "note_digests")]
             self.absorb_nullifiers(nullifiers);
+            // CRITICAL FIX: Use try_from instead of cast to prevent truncation
+            let len_u64 = u64::try_from(nullifiers.len())
+                .map_err(|_| PoolError::AmountOverflow)?;
             self.notes_consumed = self
                 .notes_consumed
-                .checked_add(nullifiers.len() as u64)
+                .checked_add(len_u64)
                 .ok_or(PoolError::AmountOverflow)?;
         }
         if !amount_commitments.is_empty() {
             #[cfg(feature = "note_digests")]
             self.absorb_amount_commitments(amount_commitments);
+            // CRITICAL FIX: Use try_from instead of cast to prevent truncation
+            let len_u64 = u64::try_from(amount_commitments.len())
+                .map_err(|_| PoolError::AmountOverflow)?;
             self.notes_created = self
                 .notes_created
-                .checked_add(amount_commitments.len() as u64)
+                .checked_add(len_u64)
                 .ok_or(PoolError::AmountOverflow)?;
         }
         Ok(())
@@ -4359,17 +4365,23 @@ impl NoteLedger {
         if !nullifiers.is_empty() {
             #[cfg(feature = "note_digests")]
             self.absorb_nullifiers(nullifiers);
+            // CRITICAL FIX: Use try_from instead of cast to prevent truncation
+            let len_u64 = u64::try_from(nullifiers.len())
+                .map_err(|_| PoolError::AmountOverflow)?;
             self.notes_consumed = self
                 .notes_consumed
-                .checked_add(nullifiers.len() as u64)
+                .checked_add(len_u64)
                 .ok_or(PoolError::AmountOverflow)?;
         }
         if !output_amount_commitments.is_empty() {
             #[cfg(feature = "note_digests")]
             self.absorb_amount_commitments(output_amount_commitments);
+            // CRITICAL FIX: Use try_from instead of cast to prevent truncation
+            let len_u64 = u64::try_from(output_amount_commitments.len())
+                .map_err(|_| PoolError::AmountOverflow)?;
             self.notes_created = self
                 .notes_created
-                .checked_add(output_amount_commitments.len() as u64)
+                .checked_add(len_u64)
                 .ok_or(PoolError::AmountOverflow)?;
         }
         Ok(())
