@@ -25,25 +25,29 @@ Each program has its own directory with findings organized by severity:
 ### High Issues
 - **0 issues** - None found
 
-### Medium Issues (3 remaining)
-- **ptf_pool**: 2 issues
-  - Root computation mismatch between circuit and tree (BY DESIGN - intentional optimization)
-  - Root expiration check uses saturating sub
-
-- **ptf_factory**: 1 issue
-  - Duplicate sequence calculation (code quality)
-
-### Low Issues (2 remaining)
+### Medium Issues (1 remaining)
 - **ptf_pool**: 1 issue
-  - Features update without input validation
+  - Root computation mismatch between circuit and tree (BY DESIGN - intentional optimization)
 
-- **ptf_verifier_groth16**: 1 issue
-  - Proof format validation function unused
+### Low Issues (0 remaining)
+- All low severity issues have been mitigated and removed
 
 ## Recently Mitigated Issues
 
-The following issues were addressed in recent updates:
+The following issues were addressed and removed from the audit folder:
 
+### Phase 1-5 Security Fixes (2025-01-26)
+1. ✅ **Root Expiration Check Uses Saturating Sub** - Fixed and removed
+2. ✅ **Protocol Fees Withdrawal Without Vault Balance Validation** - Fixed and removed
+3. ✅ **Roots Length Bounds Check Missing** - Fixed and removed
+4. ✅ **Duplicate Sequence Calculation** - Fixed and removed
+5. ✅ **Emergency Pause Duplicate Signer Check Missing** - Fixed and removed
+6. ✅ **Features Update Without Input Validation** - Fixed and removed
+7. ✅ **Hook Required Accounts Length Overflow Risk** - Fixed and removed
+8. ✅ **Hook Config Unwrap Could Panic** - Fixed and removed
+9. ✅ **Proof Format Validation Function Unused** - Fixed and removed
+
+### Previous Mitigations
 1. ✅ **Pause/Unpause Implementation** - Fixed: Both functions now properly require timelock queue
 2. ✅ **Allowance Strict Equality** - Fixed: Changed to allow partial usage
 3. ✅ **Authority Change Without Timelock** - Fixed: Implemented timelock-based authority changes
@@ -66,13 +70,13 @@ The audit was conducted by:
 
 ## Recommendations
 
-1. Address all medium severity issues before mainnet deployment
-2. Implement proper timelock for pool authority changes
-3. Re-enable fee validation in unshield once calculation is standardized
-4. Update circuits to match tree root computation exactly
-5. Fix pause/unpause implementation in factory
-6. Remove duplicate code in timelock action queuing
-7. Consider implementing stricter root expiration enforcement
+1. ✅ All medium and low severity issues have been addressed
+2. ✅ Proper timelock for pool authority changes has been implemented
+3. ✅ Fee validation has been re-enabled with proper calculation
+4. ⚠️ Root computation mismatch is BY DESIGN (intentional optimization) - no changes needed
+5. ✅ Pause/unpause implementation in factory has been fixed
+6. ✅ Duplicate code in timelock action queuing has been removed
+7. ✅ Root expiration enforcement has been improved with checked_sub and timestamp validation
 
 ## Next Steps
 
