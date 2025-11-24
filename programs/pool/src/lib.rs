@@ -331,24 +331,40 @@ pub mod ptf_pool {
                 PoolError::TwinMintDecimalsMismatch,
             );
             
+            // CRITICAL FIX: Parse COption tag correctly (4-byte u32, not 1-byte)
+            let mint_auth_tag_bytes: [u8; 4] = mint_auth_bytes[0..4].try_into()
+                .map_err(|_| PoolError::TwinMintAuthorityMismatch)?;
+            let mint_auth_tag = u32::from_le_bytes(mint_auth_tag_bytes);
+            
             // CRITICAL FIX: Validate mint_authority must be factory PDA
-            if mint_auth_bytes[0] != 0 {
-                // Some variant - extract Pubkey from bytes 4-36
-                let auth_bytes: [u8; 32] = mint_auth_bytes[4..36].try_into().map_err(|_| PoolError::TwinMintAuthorityMismatch)?;
-                let auth = Pubkey::new_from_array(auth_bytes);
-                require_keys_eq!(
-                    auth,
-                    ctx.accounts.factory_state.key(),
-                    PoolError::TwinMintAuthorityMismatch,
-                );
-            } else {
-                return err!(PoolError::TwinMintAuthorityMismatch);
-            }
+            require!(
+                mint_auth_tag == 1, // COption::Some = 1
+                PoolError::TwinMintAuthorityMismatch
+            );
+            // Some variant - extract Pubkey from bytes 4-36
+            let auth_bytes: [u8; 32] = mint_auth_bytes[4..36].try_into()
+                .map_err(|_| PoolError::TwinMintAuthorityMismatch)?;
+            let auth = Pubkey::new_from_array(auth_bytes);
+            require_keys_eq!(
+                auth,
+                ctx.accounts.factory_state.key(),
+                PoolError::TwinMintAuthorityMismatch,
+            );
+            
+            // CRITICAL FIX: Parse COption tag correctly for freeze_authority
+            let freeze_auth_tag_bytes: [u8; 4] = freeze_auth_bytes[0..4].try_into()
+                .map_err(|_| PoolError::TwinMintAuthorityMismatch)?;
+            let freeze_auth_tag = u32::from_le_bytes(freeze_auth_tag_bytes);
             
             // CRITICAL FIX: Validate freeze_authority must be None or factory PDA
-            if freeze_auth_bytes[0] != 0 {
+            if freeze_auth_tag != 0 {
                 // Some variant - extract Pubkey from bytes 4-36
-                let freeze_auth_bytes_pubkey: [u8; 32] = freeze_auth_bytes[4..36].try_into().map_err(|_| PoolError::TwinMintAuthorityMismatch)?;
+                require!(
+                    freeze_auth_tag == 1, // COption::Some = 1
+                    PoolError::TwinMintAuthorityMismatch
+                );
+                let freeze_auth_bytes_pubkey: [u8; 32] = freeze_auth_bytes[4..36].try_into()
+                    .map_err(|_| PoolError::TwinMintAuthorityMismatch)?;
                 let freeze_auth = Pubkey::new_from_array(freeze_auth_bytes_pubkey);
                 // Only allow factory PDA as freeze authority
                 require_keys_eq!(
@@ -357,7 +373,7 @@ pub mod ptf_pool {
                     PoolError::TwinMintAuthorityMismatch,
                 );
             }
-            // None is acceptable for freeze authority
+            // None (tag = 0) is acceptable for freeze authority
             
             pool_state.twin_mint = twin_mint_info.key();
             pool_state.twin_mint_enabled = true;
@@ -2491,27 +2507,38 @@ fn validate_supply_components(
     Ok(expected)
 }
 
+// CRITICAL FIX: Add runtime validation and safe shift operations
 #[inline(always)]
-fn highest_power_of_two_leq(n: usize) -> usize {
-    debug_assert!(n > 0);
+fn highest_power_of_two_leq(n: usize) -> Result<usize> {
+    require!(n > 0, PoolError::AmountOverflow); // Reuse existing error
+    
+    // CRITICAL FIX: Use safe shift with overflow protection
     let mut power = 1usize;
-    while (power << 1) <= n {
+    while power < usize::MAX / 2 && (power << 1) <= n {
         power <<= 1;
     }
-    power
+    Ok(power)
 }
 
+// CRITICAL FIX: Replace expect with proper error handling to prevent panics
 #[inline(always)]
-fn fr_from_bytes(bytes: &[u8; 32]) -> Fr {
+fn fr_from_bytes(bytes: &[u8; 32]) -> Result<Fr> {
+    // Defense in depth: validate input length
+    require!(bytes.len() == 32, PoolError::InvalidFieldElement);
+    
     let mut limbs = [0u64; 4];
     for (index, limb) in limbs.iter_mut().enumerate() {
         let start = index * 8;
+        // Additional bounds check (defense in depth)
+        if start + 8 > bytes.len() {
+            return err!(PoolError::InvalidFieldElement);
+        }
         let chunk: [u8; 8] = bytes[start..start + 8]
             .try_into()
-            .expect("slice with incorrect length");
+            .map_err(|_| error!(PoolError::InvalidFieldElement))?;
         *limb = u64::from_le_bytes(chunk);
     }
-    Fr::new(BigInteger256::new(limbs))
+    Ok(Fr::new(BigInteger256::new(limbs)))
 }
 
 #[inline(always)]
@@ -3414,12 +3441,12 @@ impl CommitmentTree {
 
             let mut chunk_size = (1u128 << tz) as usize;
             if chunk_size > remaining {
-                chunk_size = highest_power_of_two_leq(remaining);
+                chunk_size = highest_power_of_two_leq(remaining)?;
             }
 
             let capacity_remaining = ((1u128 << Self::DEPTH) - base_index as u128) as usize;
             require!(capacity_remaining > 0, PoolError::TreeFull);
-            chunk_size = core::cmp::min(chunk_size, highest_power_of_two_leq(capacity_remaining));
+            chunk_size = core::cmp::min(chunk_size, highest_power_of_two_leq(capacity_remaining)?);
 
             let chunk_commitments = &commitments[processed..processed + chunk_size];
             let chunk_amounts = &amount_commitments[processed..processed + chunk_size];
