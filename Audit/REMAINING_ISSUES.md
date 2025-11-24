@@ -1,13 +1,13 @@
 # Remaining Security Audit Issues
 
 **Last Updated:** 2025-11-24  
-**Status:** 5 issues remaining (3 MEDIUM, 2 LOW)
+**Status:** 9 issues remaining (6 MEDIUM, 3 LOW)
 
 ## Summary
 
 After implementing design improvements and security mitigations, the following issues remain:
 
-### MEDIUM Severity (3 issues)
+### MEDIUM Severity (6 issues)
 
 #### ptf_pool (2 issues)
 1. **Root Expiration Check Uses Saturating Sub** (`root-expiration-check.md`)
@@ -32,7 +32,7 @@ After implementing design improvements and security mitigations, the following i
    - **Impact:** Code duplication, maintenance burden
    - **Recommendation:** Remove duplicate calculation, reuse variables
 
-### LOW Severity (2 issues)
+### LOW Severity (3 issues)
 
 #### ptf_pool (1 issue)
 5. **Features Update Without Input Validation** (`features-update-no-validation.md`)
@@ -42,8 +42,23 @@ After implementing design improvements and security mitigations, the following i
    - **Impact:** Could set invalid feature combinations or reserved bits
    - **Recommendation:** Add validation for valid feature combinations
 
+#### ptf_pool (1 issue)
+5. **Features Update Without Input Validation** (`features-update-no-validation.md`)
+   - **Location:** `programs/pool/src/lib.rs:551-559`
+   - **Status:** Open
+   - **Description:** `set_features` allows any `u8` value without validation
+   - **Impact:** Could set invalid feature combinations or reserved bits
+   - **Recommendation:** Add validation for valid feature combinations
+
+6. **Hook Required Accounts Length Overflow Risk** (`hook-required-accounts-len-overflow.md`)
+   - **Location:** `programs/pool/src/lib.rs:903-910`
+   - **Status:** Open
+   - **Description:** `configure_hooks` increments `required_accounts_len` without overflow protection. If state is corrupted, could wrap around.
+   - **Impact:** Low impact since length is reset to 0, but could cause incorrect hook account validation if state is corrupted
+   - **Recommendation:** Use `checked_add` to prevent overflow
+
 #### ptf_verifier_groth16 (1 issue)
-6. **Proof Format Validation Function Unused** (`proof-format-validation-unused.md`)
+7. **Proof Format Validation Function Unused** (`proof-format-validation-unused.md`)
    - **Location:** `programs/verifier-groth16/src/lib.rs:796-803`
    - **Status:** Open
    - **Description:** `validate_proof_format` function is defined but never called
@@ -64,13 +79,17 @@ The following issues were addressed in the latest implementation:
 ## Priority Recommendations
 
 ### High Priority
+- **Protocol Fees Withdrawal**: Validate vault balance before updating state to prevent inconsistency
+- **Emergency Pause Duplicate Check**: Add duplicate signer prevention for emergency pause operations
 - **Root Expiration Check**: Replace `saturating_sub` with `checked_sub` and add timestamp validation
 
 ### Medium Priority
+- **Roots Length Bounds Check**: Add explicit bounds validation to prevent out-of-bounds array access
 - **Duplicate Sequence Calculation**: Remove code duplication for maintainability
-- **Root Computation Mismatch**: Coordinate with circuit team to align computation (external dependency)
+- **Root Computation Mismatch**: Documented as BY DESIGN - no changes needed
 
 ### Low Priority
+- **Hook Required Accounts Length**: Use `checked_add` to prevent overflow
 - **Features Update Validation**: Add input validation for feature combinations
 - **Proof Format Validation**: Integrate validation function or remove if redundant
 
