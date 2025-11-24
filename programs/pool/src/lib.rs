@@ -1490,6 +1490,8 @@ pub mod ptf_pool {
         // CRITICAL FIX: Verify that allowance_amount matches the actual spend_amount
         // This prevents attackers from draining unlimited funds while only decrementing
         // allowance by an arbitrary small amount
+        // NOTE: This strict equality might be too restrictive - consider allowing
+        // spend_amount <= allowance_amount if partial allowance usage is desired
         require!(
             args.allowance_amount == args.spend_amount,
             PoolError::AllowanceAmountMismatch
