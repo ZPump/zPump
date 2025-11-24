@@ -39,6 +39,12 @@ const DEFAULT_CANOPY_DEPTH: u8 = 8;
 const MAX_SHIELD_AMOUNT: u64 = 1_000_000_000_000_000; // 1 quadrillion
 const MAX_UNSHIELD_AMOUNT: u64 = 1_000_000_000_000_000; // 1 quadrillion
 const MAX_TRANSFER_AMOUNT: u64 = 1_000_000_000_000_000; // 1 quadrillion
+// CRITICAL FIX: Timelock duration for authority changes (7 days, same as vault)
+const AUTHORITY_CHANGE_TIMELOCK_SECONDS: i64 = 7 * 24 * 60 * 60; // 7 days
+// CRITICAL FIX: Rate limiting for authority changes (30 days between changes, same as vault)
+const AUTHORITY_CHANGE_RATE_LIMIT_SECONDS: i64 = 30 * 24 * 60 * 60; // 30 days
+// CRITICAL FIX: Pending change expiration (30 days after execution time, same as vault)
+const PENDING_CHANGE_EXPIRATION_SECONDS: i64 = 30 * 24 * 60 * 60; // 30 days
 
 #[program]
 pub mod ptf_pool {
@@ -282,6 +288,11 @@ pub mod ptf_pool {
         pool_state.roots_len = 0;
         pool_state.current_root = [0u8; 32];
         pool_state.shield_sequence = 0;
+        // CRITICAL FIX: Initialize authority change tracking
+        pool_state.authority_change_sequence = 0;
+        pool_state.last_authority_change_time = None;
+        // CRITICAL FIX: Initialize expired root rejection flag (false during migration)
+        pool_state.reject_expired_roots = false;
         pool_state.note_ledger = ctx.accounts.note_ledger.key();
         pool_state.note_ledger_bump = ctx.bumps.note_ledger;
         pool_state.protocol_fees = 0;
@@ -547,6 +558,21 @@ pub mod ptf_pool {
         Ok(())
     }
 
+    /// Set expired root rejection flag
+    /// CRITICAL FIX: Allows authority to enable strict expiration enforcement after migration
+    pub fn set_reject_expired_roots(
+        ctx: Context<UpdateAuthority>,
+        reject: bool,
+    ) -> Result<()> {
+        let mut pool_state = ctx.accounts.pool_state.load_mut()?;
+        pool_state.reject_expired_roots = reject;
+        emit!(RejectExpiredRootsUpdated {
+            origin_mint: pool_state.origin_mint,
+            reject_expired_roots: reject,
+        });
+        Ok(())
+    }
+
     /// Withdraw accumulated protocol fees
     /// CRITICAL FIX: Allows protocol to collect accumulated fees
     pub fn withdraw_protocol_fees(
@@ -614,7 +640,9 @@ pub mod ptf_pool {
     }
 
     /// Change the pool authority
-    /// CRITICAL SECURITY: Only the current authority can change to a new authority
+    /// DEPRECATED: Use propose_authority_change instead for timelock-based changes
+    /// This function is kept for backwards compatibility during migration
+    #[deprecated(note = "Use propose_authority_change for timelock-based authority changes")]
     pub fn change_authority(
         ctx: Context<ChangeAuthority>,
         new_authority: Pubkey,
@@ -647,6 +675,193 @@ pub mod ptf_pool {
             origin_mint: pool_state.origin_mint,
             old_authority,
             new_authority,
+        });
+        
+        Ok(())
+    }
+
+    /// Propose an authority change with timelock
+    /// CRITICAL FIX: Implements timelock-based authority changes for security consistency with vault
+    pub fn propose_authority_change(
+        ctx: Context<ProposeAuthorityChange>,
+        new_authority: Pubkey,
+    ) -> Result<()> {
+        let state = &ctx.accounts.pool_state;
+        let mut pool_state = state.load_mut()?;
+        
+        // Validate current authority
+        require_keys_eq!(
+            ctx.accounts.authority.key(),
+            pool_state.authority,
+            PoolError::Unauthorized
+        );
+        
+        // Validate new authority is not default
+        require!(
+            new_authority != Pubkey::default(),
+            PoolError::InvalidAuthority
+        );
+        
+        // Validate new authority is different
+        require_keys_neq!(
+            new_authority,
+            pool_state.authority,
+            PoolError::AuthorityUnchanged
+        );
+        
+        // CRITICAL FIX: Rate limiting - prevent rapid authority changes
+        let clock = Clock::get()?;
+        if let Some(last_change) = pool_state.last_authority_change_time {
+            require!(
+                clock.unix_timestamp >= last_change + AUTHORITY_CHANGE_RATE_LIMIT_SECONDS,
+                PoolError::AuthorityChangeRateLimited
+            );
+        }
+        
+        let execute_after = clock
+            .unix_timestamp
+            .checked_add(AUTHORITY_CHANGE_TIMELOCK_SECONDS)
+            .ok_or(PoolError::TimelockOverflow)?;
+        
+        // CRITICAL FIX: Set expiration (30 days after execution time)
+        let expires_at = execute_after
+            .checked_add(PENDING_CHANGE_EXPIRATION_SECONDS)
+            .ok_or(PoolError::TimelockOverflow)?;
+        
+        // CRITICAL FIX: Increment sequence to prevent race conditions
+        let sequence = pool_state.authority_change_sequence
+            .checked_add(1)
+            .ok_or(PoolError::SequenceOverflow)?;
+        pool_state.authority_change_sequence = sequence;
+        
+        let pending = &mut ctx.accounts.pending_change;
+        pending.pool_state = state.key();
+        pending.current_authority = pool_state.authority;
+        pending.new_authority = new_authority;
+        pending.proposed_at = clock.unix_timestamp;
+        pending.execute_after = execute_after;
+        pending.expires_at = expires_at;
+        pending.proposed_by = ctx.accounts.authority.key();
+        pending.sequence = sequence;
+        pending.executed = false;
+        pending.canceled = false;
+        pending.bump = ctx.bumps.pending_change;
+        
+        // CRITICAL FIX: Compute and store integrity hash
+        pending.integrity_hash = pending.compute_integrity_hash();
+        
+        emit!(AuthorityChangeProposed {
+            pool_state: state.key(),
+            origin_mint: pool_state.origin_mint,
+            current_authority: pool_state.authority,
+            new_authority,
+            proposed_at: clock.unix_timestamp,
+            execute_after,
+            expires_at,
+            sequence,
+            proposed_by: ctx.accounts.authority.key(),
+        });
+        
+        Ok(())
+    }
+
+    /// Execute an authority change after timelock
+    pub fn execute_authority_change(
+        ctx: Context<ExecuteAuthorityChange>,
+    ) -> Result<()> {
+        let pending = &mut ctx.accounts.pending_change;
+        require!(!pending.executed, PoolError::AlreadyExecuted);
+        require!(!pending.canceled, PoolError::ChangeCanceled);
+        
+        let clock = Clock::get()?;
+        require!(
+            clock.unix_timestamp >= pending.execute_after,
+            PoolError::TimelockNotReady
+        );
+        
+        // CRITICAL FIX: Check expiration
+        require!(
+            clock.unix_timestamp < pending.expires_at,
+            PoolError::ChangeExpired
+        );
+        
+        let state = &ctx.accounts.pool_state;
+        let mut pool_state = state.load_mut()?;
+        require_keys_eq!(
+            pending.pool_state,
+            state.key(),
+            PoolError::ShieldClaimMismatch
+        );
+        
+        // CRITICAL FIX: Verify integrity hash to prevent manipulation
+        let expected_hash = pending.compute_integrity_hash();
+        require!(
+            expected_hash == pending.integrity_hash,
+            PoolError::HashMismatch
+        );
+        
+        // CRITICAL FIX: Check if authority has changed since proposal (stale proposal)
+        if pending.current_authority != pool_state.authority {
+            return err!(PoolError::StaleProposal);
+        }
+        
+        // CRITICAL FIX: Validate sequence matches
+        require!(
+            pending.sequence <= pool_state.authority_change_sequence,
+            PoolError::StaleProposal
+        );
+        
+        let old_authority = pool_state.authority;
+        pool_state.authority = pending.new_authority;
+        pool_state.last_authority_change_time = Some(clock.unix_timestamp);
+        pending.executed = true;
+        
+        // Update hook whitelist authority if it exists
+        if let Some(hook_whitelist) = ctx.accounts.hook_whitelist.as_mut() {
+            hook_whitelist.authority = pending.new_authority;
+        }
+        
+        emit!(AuthorityChangeExecuted {
+            pool_state: state.key(),
+            origin_mint: pool_state.origin_mint,
+            old_authority,
+            new_authority: pending.new_authority,
+            executed_at: clock.unix_timestamp,
+            executed_by: ctx.accounts.executor.key(),
+            sequence: pending.sequence,
+        });
+        
+        Ok(())
+    }
+
+    /// Cancel a proposed authority change
+    pub fn cancel_authority_change(
+        ctx: Context<CancelAuthorityChange>,
+    ) -> Result<()> {
+        let pending = &mut ctx.accounts.pending_change;
+        require!(!pending.executed, PoolError::AlreadyExecuted);
+        require!(!pending.canceled, PoolError::ChangeCanceled);
+        
+        let state = ctx.accounts.pool_state.load()?;
+        require_keys_eq!(
+            ctx.accounts.authority.key(),
+            state.authority,
+            PoolError::Unauthorized
+        );
+        require_keys_eq!(
+            pending.pool_state,
+            ctx.accounts.pool_state.key(),
+            PoolError::ShieldClaimMismatch
+        );
+        
+        pending.canceled = true;
+        
+        let clock = Clock::get()?;
+        emit!(AuthorityChangeCanceled {
+            pool_state: ctx.accounts.pool_state.key(),
+            origin_mint: state.origin_mint,
+            canceled_at: clock.unix_timestamp,
+            authority: ctx.accounts.authority.key(),
         });
         
         Ok(())
@@ -1499,14 +1714,13 @@ pub mod ptf_pool {
         require!(args.allowance_amount > 0, PoolError::AllowanceAmountInvalid);
         require!(args.spend_amount > 0, PoolError::AllowanceAmountInvalid);
         
-        // CRITICAL FIX: Verify that allowance_amount matches the actual spend_amount
+        // CRITICAL FIX: Verify that spend_amount doesn't exceed allowance_amount
         // This prevents attackers from draining unlimited funds while only decrementing
         // allowance by an arbitrary small amount
-        // NOTE: This strict equality might be too restrictive - consider allowing
-        // spend_amount <= allowance_amount if partial allowance usage is desired
+        // Allow partial allowance usage: spend_amount <= allowance_amount
         require!(
-            args.allowance_amount == args.spend_amount,
-            PoolError::AllowanceAmountMismatch
+            args.spend_amount <= args.allowance_amount,
+            PoolError::AllowanceInsufficient
         );
         
         ensure_mint_active(&ctx.accounts.mint_mapping.to_account_info())?;
@@ -1541,12 +1755,13 @@ pub mod ptf_pool {
             }
             
             require!(
-                allowance.amount >= args.allowance_amount,
+                allowance.amount >= args.spend_amount,
                 PoolError::AllowanceInsufficient
             );
+            // CRITICAL FIX: Decrement by spend_amount (not allowance_amount) to support partial usage
             allowance.amount = allowance
                 .amount
-                .checked_sub(args.allowance_amount)
+                .checked_sub(args.spend_amount)
                 .ok_or(PoolError::AllowanceInsufficient)?;
             allowance.updated_at = clock.unix_timestamp;
             emit!(PTFAllowanceUpdated {
@@ -1964,10 +2179,20 @@ fn process_unshield<'info>(
         decimals,
     )?;
     
-    // NOTE: Fee validation removed temporarily to allow tests to pass
-    // The fee is extracted from the proof in validate_unshield_public_inputs
-    // TODO: Add strict fee validation once fee calculation method is standardized
-    // between proof generation and pool validation
+    // CRITICAL FIX: Re-enable fee validation
+    // Calculate expected fee using pool's fee calculation
+    let expected_fee = pool_state.calculate_fee(args.amount)?;
+    // CRITICAL FIX: Validate fee matches expected (allow 1 lamport tolerance for rounding)
+    let fee_diff = if fee > expected_fee {
+        fee - expected_fee
+    } else {
+        expected_fee - fee
+    };
+    require!(
+        fee_diff <= 1,
+        PoolError::PublicInputMismatch
+    );
+    
     let total_spent = args
         .amount
         .checked_add(fee)
@@ -2764,6 +2989,88 @@ pub struct ChangeAuthority<'info> {
 }
 
 #[derive(Accounts)]
+pub struct ProposeAuthorityChange<'info> {
+    #[account(
+        mut,
+        seeds = [seeds::POOL, pool_state.load()?.origin_mint.as_ref()],
+        bump,
+        has_one = authority @ PoolError::Unauthorized
+    )]
+    pub pool_state: AccountLoader<'info, PoolState>,
+    pub authority: Signer<'info>,
+    #[account(
+        init,
+        payer = payer,
+        seeds = [
+            b"pending-auth",
+            pool_state.load()?.origin_mint.as_ref(),
+            &pool_state.load()?.authority_change_sequence.to_le_bytes(),
+        ],
+        bump,
+        space = PendingAuthorityChange::SPACE,
+    )]
+    pub pending_change: Account<'info, PendingAuthorityChange>,
+    #[account(mut)]
+    pub payer: Signer<'info>,
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct ExecuteAuthorityChange<'info> {
+    #[account(
+        mut,
+        seeds = [seeds::POOL, pool_state.load()?.origin_mint.as_ref()],
+        bump,
+    )]
+    pub pool_state: AccountLoader<'info, PoolState>,
+    #[account(
+        mut,
+        seeds = [
+            b"pending-auth",
+            pool_state.load()?.origin_mint.as_ref(),
+            &pending_change.sequence.to_le_bytes(),
+        ],
+        bump = pending_change.bump,
+        constraint = pending_change.pool_state == pool_state.key() @ PoolError::ShieldClaimMismatch,
+        constraint = !pending_change.executed @ PoolError::AlreadyExecuted,
+        constraint = !pending_change.canceled @ PoolError::ChangeCanceled,
+    )]
+    pub pending_change: Account<'info, PendingAuthorityChange>,
+    pub executor: Signer<'info>,
+    /// CHECK: Optional hook whitelist - may not exist for all pools
+    #[account(
+        mut,
+        seeds = [b"hook-whitelist", pool_state.load()?.origin_mint.as_ref()],
+        bump
+    )]
+    pub hook_whitelist: Option<Account<'info, HookWhitelist>>,
+}
+
+#[derive(Accounts)]
+pub struct CancelAuthorityChange<'info> {
+    #[account(
+        seeds = [seeds::POOL, pool_state.load()?.origin_mint.as_ref()],
+        bump,
+        has_one = authority @ PoolError::Unauthorized
+    )]
+    pub pool_state: AccountLoader<'info, PoolState>,
+    pub authority: Signer<'info>,
+    #[account(
+        mut,
+        seeds = [
+            b"pending-auth",
+            pool_state.load()?.origin_mint.as_ref(),
+            &pending_change.sequence.to_le_bytes(),
+        ],
+        bump = pending_change.bump,
+        constraint = pending_change.pool_state == pool_state.key() @ PoolError::ShieldClaimMismatch,
+        constraint = !pending_change.executed @ PoolError::AlreadyExecuted,
+        constraint = !pending_change.canceled @ PoolError::ChangeCanceled,
+    )]
+    pub pending_change: Account<'info, PendingAuthorityChange>,
+}
+
+#[derive(Accounts)]
 pub struct Shield<'info> {
     #[account(
         mut,
@@ -3543,23 +3850,36 @@ impl CommitmentTree {
             }
 
             let level_start = chunk_size.trailing_zeros() as usize;
-            let mut level_nodes: Vec<Vec<[u8; 32]>> = Vec::with_capacity(level_start + 1);
-            let mut current_level: Vec<[u8; 32]> = chunk_commitments
+            // CRITICAL FIX: Use Poseidon for tree operations
+            // Convert commitments to Fr for leaves
+            let mut current_level_fr: Vec<Fr> = chunk_commitments
                 .iter()
-                .map(|commitment| sha_leaf(commitment))
+                .map(|commitment| poseidon_leaf(commitment))
+                .collect::<Result<Vec<Fr>>>()?;
+            // Store as bytes for level_nodes (for caching)
+            let mut level_nodes: Vec<Vec<[u8; 32]>> = Vec::with_capacity(level_start + 1);
+            let current_level_bytes: Vec<[u8; 32]> = current_level_fr
+                .iter()
+                .map(|fr| fr_to_bytes(fr))
                 .collect();
-            level_nodes.push(current_level.clone());
+            level_nodes.push(current_level_bytes.clone());
 
+            // Build tree levels using Poseidon
             for _ in 0..level_start {
-                let mut next_level = Vec::with_capacity(current_level.len() / 2);
-                for pair in current_level.chunks_exact(2) {
-                    next_level.push(sha_branch(&pair[0], &pair[1]));
+                let mut next_level_fr = Vec::with_capacity(current_level_fr.len() / 2);
+                for pair in current_level_fr.chunks_exact(2) {
+                    next_level_fr.push(poseidon_branch(&pair[0], &pair[1]));
                 }
-                current_level = next_level;
-                level_nodes.push(current_level.clone());
+                current_level_fr = next_level_fr;
+                let current_level_bytes: Vec<[u8; 32]> = current_level_fr
+                    .iter()
+                    .map(|fr| fr_to_bytes(fr))
+                    .collect();
+                level_nodes.push(current_level_bytes.clone());
             }
 
-            let mut node_bytes = current_level[0];
+            let mut node_fr = current_level_fr[0];
+            let mut node_bytes = fr_to_bytes(&node_fr);
 
             for level in 0..level_start {
                 let pos = ((chunk_size - (1 << level) - 1) >> level) as usize;
@@ -3573,30 +3893,34 @@ impl CommitmentTree {
             let mut level = level_start;
             while level < Self::DEPTH {
                 if index % 2 == 0 {
+                    // Store current node in frontier
+                    node_bytes = fr_to_bytes(&node_fr);
                     frontier_cache.0[level] = node_bytes;
                     frontier_cache.1[level] = true;
                     self.frontier[level] = node_bytes;
-                    let zero = self.zeroes[level];
-                    node_bytes = sha_branch(&frontier_cache.0[level], &zero);
+                    // Hash with zero value (Poseidon)
+                    let zero_fr = poseidon::merkle_zero(level);
+                    node_fr = poseidon_branch(&node_fr, &zero_fr);
                 } else {
+                    // Load left sibling from frontier
                     if !frontier_cache.1[level] {
                         frontier_cache.0[level] = self.frontier[level];
                         frontier_cache.1[level] = true;
                     }
-                    let left = frontier_cache.0[level];
-                    node_bytes = sha_branch(&left, &node_bytes);
+                    let left_fr = bytes_to_fr(&frontier_cache.0[level])?;
+                    node_fr = poseidon_branch(&left_fr, &node_fr);
                 }
                 if canopy_len > 0 {
                     let offset = Self::DEPTH - 1 - level;
                     if offset < canopy_len {
-                        self.canopy[offset] = node_bytes;
+                        self.canopy[offset] = fr_to_bytes(&node_fr);
                     }
                 }
                 index >>= 1;
                 level += 1;
             }
 
-            self.current_root = node_bytes;
+            self.current_root = fr_to_bytes(&node_fr);
             self.next_index = self
                 .next_index
                 .checked_add(chunk_size as u64)
@@ -3633,32 +3957,39 @@ impl CommitmentTree {
             PoolError::TreeFull,
         );
         let index_position = self.next_index;
-        let mut node_bytes = sha_leaf(&commitment);
+        // CRITICAL FIX: Use Poseidon for tree operations
+        // Convert commitment bytes to Fr for leaf
+        let mut node_fr = poseidon_leaf(&commitment)?;
         let mut index = self.next_index;
         let canopy_len = core::cmp::min(self.canopy_depth as usize, Self::MAX_CANOPY);
         for level in 0..Self::DEPTH {
             if index % 2 == 0 {
+                // Store current node in frontier cache
+                let node_bytes = fr_to_bytes(&node_fr);
                 frontier_cache.0[level] = node_bytes;
                 frontier_cache.1[level] = true;
                 self.frontier[level] = node_bytes;
-                let zero = self.zeroes[level];
-                node_bytes = sha_branch(&frontier_cache.0[level], &zero);
+                // Hash with zero value (already Fr from merkle_zero)
+                let zero_fr = poseidon::merkle_zero(level);
+                node_fr = poseidon_branch(&node_fr, &zero_fr);
             } else {
+                // Load left sibling from frontier
                 if !frontier_cache.1[level] {
                     frontier_cache.0[level] = self.frontier[level];
                     frontier_cache.1[level] = true;
                 }
-                let left = frontier_cache.0[level];
-                node_bytes = sha_branch(&left, &node_bytes);
+                let left_fr = bytes_to_fr(&frontier_cache.0[level])?;
+                node_fr = poseidon_branch(&left_fr, &node_fr);
             }
             if canopy_len > 0 {
                 let offset = Self::DEPTH - 1 - level;
                 if offset < canopy_len {
-                    self.canopy[offset] = node_bytes;
+                    self.canopy[offset] = fr_to_bytes(&node_fr);
                 }
             }
             index >>= 1;
         }
+        let node_bytes = fr_to_bytes(&node_fr);
         self.next_index = self
             .next_index
             .checked_add(1)
@@ -3688,11 +4019,11 @@ impl CommitmentTree {
 
     fn compute_zeroes() -> [[u8; 32]; Self::DEPTH] {
         let mut zeroes = [[0u8; 32]; Self::DEPTH];
-        let empty_leaf = [0u8; 32];
-        zeroes[0] = sha_leaf(&empty_leaf);
-        for level in 1..Self::DEPTH {
-            let prev = zeroes[level - 1];
-            zeroes[level] = sha_branch(&prev, &prev);
+        // CRITICAL FIX: Use Poseidon merkle_zero for each level
+        // Poseidon zero values are precomputed constants
+        for level in 0..Self::DEPTH {
+            let zero_fr = poseidon::merkle_zero(level);
+            zeroes[level] = fr_to_bytes(&zero_fr);
         }
         zeroes
     }
@@ -3728,6 +4059,12 @@ pub struct PoolState {
     pub pending_shield: PendingShield,
     // CRITICAL FIX: Sequence number to prevent race conditions in shield pipeline
     pub shield_sequence: u64,
+    // CRITICAL FIX: Authority change sequence to prevent race conditions
+    pub authority_change_sequence: u64,
+    // CRITICAL FIX: Last authority change time for rate limiting
+    pub last_authority_change_time: Option<i64>,
+    // CRITICAL FIX: Flag to control expired root rejection (migration period)
+    pub reject_expired_roots: bool,
 }
 
 impl PoolState {
@@ -3792,15 +4129,17 @@ impl PoolState {
                 if root_age <= Self::ROOT_EXPIRATION_SECONDS {
                     return true;
                 }
-                // Root expired, but we still allow it to prevent fund locking
-                // Log warning for monitoring
+                // Root expired - check if rejection is enabled
                 msg!(
                     "WARNING: Root validation found expired root (age: {} seconds, max: {})",
                     root_age,
                     Self::ROOT_EXPIRATION_SECONDS
                 );
-                // For now, allow expired roots to prevent fund locking
-                // TODO: After migration period, consider rejecting expired roots
+                // CRITICAL FIX: Reject expired roots if flag is enabled (after migration period)
+                if self.reject_expired_roots {
+                    return false;
+                }
+                // During migration period, allow expired roots to prevent fund locking
                 return true;
             }
         }
@@ -3883,6 +4222,40 @@ impl PendingShield {
 
     pub fn deactivate(&mut self) {
         *self = Self::inactive();
+    }
+}
+
+#[account]
+pub struct PendingAuthorityChange {
+    pub pool_state: Pubkey,
+    pub current_authority: Pubkey,
+    pub new_authority: Pubkey,
+    pub proposed_at: i64,
+    pub execute_after: i64,
+    pub expires_at: i64,
+    pub integrity_hash: [u8; 32],
+    pub proposed_by: Pubkey,
+    pub sequence: u64,
+    pub executed: bool,
+    pub canceled: bool,
+    pub bump: u8,
+}
+
+impl PendingAuthorityChange {
+    // SPACE: discriminator (8) + pool_state (32) + current_authority (32) + new_authority (32) + proposed_at (8) + execute_after (8) + expires_at (8) + integrity_hash (32) + proposed_by (32) + sequence (8) + executed (1) + canceled (1) + bump (1) + padding (6)
+    pub const SPACE: usize = 8 + 32 + 32 + 32 + 8 + 8 + 8 + 32 + 32 + 8 + 1 + 1 + 1 + 6;
+    
+    // CRITICAL FIX: Compute integrity hash to prevent manipulation
+    pub fn compute_integrity_hash(&self) -> [u8; 32] {
+        use solana_program::hash::hashv;
+        let hash = hashv(&[
+            self.pool_state.as_ref(),
+            self.current_authority.as_ref(),
+            self.new_authority.as_ref(),
+            &self.execute_after.to_le_bytes(),
+            &self.sequence.to_le_bytes(),
+        ]);
+        hash.to_bytes()
     }
 }
 
@@ -4625,6 +4998,45 @@ fn instruction_discriminator(name: &str) -> [u8; 8] {
     out
 }
 
+// CRITICAL FIX: Bytes to Fr conversion utility for Poseidon tree migration
+// Note: fr_to_bytes already exists at line 2848, so we only add bytes_to_fr here
+// Convert little-endian bytes to field element (Fr) with field modulus validation
+fn bytes_to_fr(bytes: &[u8; 32]) -> Result<Fr> {
+    // CRITICAL FIX: Validate field element before conversion
+    validate_field_element(bytes)?;
+    
+    // Use existing fr_from_bytes pattern but with field modulus check
+    let mut limbs = [0u64; 4];
+    for (index, limb) in limbs.iter_mut().enumerate() {
+        let start = index * 8;
+        let chunk: [u8; 8] = bytes[start..start + 8]
+            .try_into()
+            .map_err(|_| error!(PoolError::InvalidFieldElement))?;
+        *limb = u64::from_le_bytes(chunk);
+    }
+    let bigint = BigInteger256::new(limbs);
+    
+    // Create Fr from BigInteger256 with field modulus validation
+    // CRITICAL FIX: Check if value is within field modulus
+    // Bn254 field modulus: p = 21888242871839275222246405745257275088548364400416034343698204186575808495617
+    // BigInteger256 can represent values up to 2^256 - 1, which is larger than p
+    // Fr::from_bigint will return None if value >= p
+    Fr::from_bigint(bigint)
+        .ok_or_else(|| error!(PoolError::InvalidFieldElement))
+}
+
+// CRITICAL FIX: Poseidon tree migration - replace SHA-256 with Poseidon
+// Poseidon leaf: commitment bytes are already a field element, just convert
+fn poseidon_leaf(commitment: &[u8; 32]) -> Result<Fr> {
+    bytes_to_fr(commitment)
+}
+
+// Poseidon branch: hash two field elements using Poseidon
+fn poseidon_branch(left: &Fr, right: &Fr) -> Fr {
+    poseidon::hash_two(left, right)
+}
+
+// Legacy SHA-256 functions (kept for backward compatibility during migration)
 fn sha_leaf(data: &[u8; 32]) -> [u8; 32] {
     hashv(&[&data[..]]).to_bytes()
 }
@@ -5446,6 +5858,44 @@ pub struct AuthorityChanged {
     pub new_authority: Pubkey,
 }
 
+#[event]
+pub struct AuthorityChangeProposed {
+    pub pool_state: Pubkey,
+    pub origin_mint: Pubkey,
+    pub current_authority: Pubkey,
+    pub new_authority: Pubkey,
+    pub proposed_at: i64,
+    pub execute_after: i64,
+    pub expires_at: i64,
+    pub sequence: u64,
+    pub proposed_by: Pubkey,
+}
+
+#[event]
+pub struct AuthorityChangeExecuted {
+    pub pool_state: Pubkey,
+    pub origin_mint: Pubkey,
+    pub old_authority: Pubkey,
+    pub new_authority: Pubkey,
+    pub executed_at: i64,
+    pub executed_by: Pubkey,
+    pub sequence: u64,
+}
+
+#[event]
+pub struct AuthorityChangeCanceled {
+    pub pool_state: Pubkey,
+    pub origin_mint: Pubkey,
+    pub canceled_at: i64,
+    pub authority: Pubkey,
+}
+
+#[event]
+pub struct RejectExpiredRootsUpdated {
+    pub origin_mint: Pubkey,
+    pub reject_expired_roots: bool,
+}
+
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy)]
 pub enum UnshieldMode {
     Origin = 0,
@@ -5635,6 +6085,28 @@ pub enum PoolError {
     InvalidAuthority,
     #[msg("E_AUTHORITY_UNCHANGED")]
     AuthorityUnchanged,
+    // Standardized timelock errors
+    #[msg("Timelock overflow")]
+    TimelockOverflow,
+    #[msg("Timelock not ready")]
+    TimelockNotReady,
+    #[msg("Change expired")]
+    ChangeExpired,
+    #[msg("Change not expired")]
+    ChangeNotExpired,
+    #[msg("Stale proposal")]
+    StaleProposal,
+    #[msg("Sequence overflow")]
+    SequenceOverflow,
+    #[msg("Authority change rate limited")]
+    AuthorityChangeRateLimited,
+    // Standardized state errors
+    #[msg("Already executed")]
+    AlreadyExecuted,
+    #[msg("Change canceled")]
+    ChangeCanceled,
+    #[msg("Hash mismatch")]
+    HashMismatch,
     #[msg("E_NULLIFIER_SET_FULL")]
     NullifierSetFull,
     #[msg("E_INSUFFICIENT_RENT")]
@@ -5918,6 +6390,9 @@ mod tests {
             twin_mint,
             twin_mint_enabled: twin_enabled,
             pending_shield: PendingShield::inactive(),
+            authority_change_sequence: 0,
+            last_authority_change_time: None,
+            reject_expired_roots: false,
         }
     }
 

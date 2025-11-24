@@ -273,21 +273,18 @@ pub mod ptf_factory {
             });
             Ok(())
         } else {
-            // Regular pause - must go through timelock
+            // Regular pause - must go through timelock queue
             // This prevents rapid pause/unpause cycles and ensures proper governance
-            ensure_direct_update_allowed(state)?;
-            // This should never be reached due to ensure_direct_update_allowed
-            Ok(())
+            // Use queue_timelock_action with TimelockAction::PauseFactory
+            err!(FactoryError::TimelockOnlyQueue)
         }
     }
 
-    pub fn unpause(ctx: Context<UpdateFactoryAuthority>) -> Result<()> {
-        let state = &ctx.accounts.factory_state;
-        // CRITICAL FIX: Require timelock for unpause to prevent rapid pause/unpause cycles
-        ensure_direct_update_allowed(state)?;
-        // This function should never be reached due to ensure_direct_update_allowed
-        // but kept for clarity
-        Ok(())
+    pub fn unpause(_ctx: Context<UpdateFactoryAuthority>) -> Result<()> {
+        // CRITICAL FIX: Unpause must go through timelock queue
+        // This prevents rapid pause/unpause cycles and ensures proper governance
+        // Use queue_timelock_action with TimelockAction::UnpauseFactory
+        err!(FactoryError::TimelockOnlyQueue)
     }
 
     pub fn queue_timelock_action(
