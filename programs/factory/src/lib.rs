@@ -1372,8 +1372,12 @@ fn apply_mint_update<'info>(
     payer: Option<&Signer<'info>>,
     authority: Option<&Signer<'info>>,
 ) -> Result<()> {
+    // CRITICAL FIX: Validate fee override limits to prevent abuse
+    // Allow 0 to 1000 bps (0% to 10%) for reasonable fee ranges (consistent with register_mint)
+    const MAX_FEE_BPS_OVERRIDE: u16 = 1000; // 10% maximum override
     if let Some(fee) = params.fee_bps_override {
         require!(fee <= MAX_BPS, FactoryError::InvalidFeeBps);
+        require!(fee <= MAX_FEE_BPS_OVERRIDE, FactoryError::InvalidFeeBps);
         mapping.fee_bps_override = fee;
         mapping.has_fee_override = true;
     }
