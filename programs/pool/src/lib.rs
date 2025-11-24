@@ -4874,19 +4874,31 @@ fn pubkey_to_field_bytes(pubkey: &Pubkey) -> [u8; 32] {
     bytes
 }
 
-fn field_bytes_to_u128_le(bytes: &[u8; 32]) -> u128 {
+// CRITICAL FIX: Validate upper 16 bytes are zero for u128 conversion
+// This ensures the field element represents a valid u128 value
+fn field_bytes_to_u128_le(bytes: &[u8; 32]) -> Result<u128> {
+    // CRITICAL FIX: Validate upper 16 bytes are zero
+    // For amounts (which should be < u128::MAX), the upper bytes must be zero
+    for byte in &bytes[16..32] {
+        require!(
+            *byte == 0,
+            PoolError::InvalidFieldElement
+        );
+    }
+    
     let mut value = 0u128;
     for (idx, byte) in bytes.iter().enumerate().take(16) {
         value |= (*byte as u128) << (idx * 8);
     }
-    value
+    Ok(value)
 }
 
 fn decode_amount_from_field(bytes: &[u8; 32], _decimals: u8) -> Result<u64> {
     // CRITICAL FIX: Validate field element first
     validate_field_element(bytes)?;
     
-    let raw = field_bytes_to_u128_le(bytes);
+    // CRITICAL FIX: field_bytes_to_u128_le now returns Result and validates upper bytes
+    let raw = field_bytes_to_u128_le(bytes)?;
     
     // CRITICAL FIX: Validate amount is reasonable (prevent overflow attacks)
     // Maximum reasonable amount: 1 quadrillion (1e15) to prevent overflow
