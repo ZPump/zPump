@@ -122,8 +122,13 @@ pub mod ptf_factory {
         let state = &ctx.accounts.factory_state;
         require!(!state.paused, FactoryError::Paused);
         require!(decimals <= 12, FactoryError::InvalidDecimals);
+        
+        // CRITICAL FIX: Validate fee override limits to prevent abuse
+        // Allow 0 to 1000 bps (0% to 10%) for reasonable fee ranges
+        const MAX_FEE_BPS_OVERRIDE: u16 = 1000; // 10% maximum override
         if let Some(fee) = fee_bps_override {
             require!(fee <= MAX_BPS, FactoryError::InvalidFeeBps);
+            require!(fee <= MAX_FEE_BPS_OVERRIDE, FactoryError::InvalidFeeBps);
         }
 
         // Validate origin_mint account - check it's a valid mint account
