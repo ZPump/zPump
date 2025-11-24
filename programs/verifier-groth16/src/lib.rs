@@ -264,6 +264,10 @@ pub mod ptf_verifier_groth16 {
         );
         
         let vk = &ctx.accounts.verifier_state;
+        
+        // CRITICAL FIX: Comprehensive account data integrity validation
+        validate_account_integrity(vk)?;
+        
         require!(verify_account_hash(vk), VerifierError::HashMismatch,);
         
         // CRITICAL FIX: Validate account size matches calculation
@@ -688,6 +692,8 @@ pub enum VerifierError {
     InvalidProofFormat,
     #[msg("invalid program ID")]
     InvalidProgramId,
+    #[msg("invalid circuit tag")]
+    InvalidCircuitTag,
 }
 
 fn verify_account_hash(account: &VerifyingKeyAccount) -> bool {
@@ -695,6 +701,47 @@ fn verify_account_hash(account: &VerifyingKeyAccount) -> bool {
     hasher.update(&account.verifying_key);
     let computed: [u8; 32] = hasher.finalize().into();
     computed == account.hash
+}
+
+// CRITICAL FIX: Comprehensive account data integrity validation
+fn validate_account_integrity(account: &VerifyingKeyAccount) -> Result<()> {
+    // Validate version is reasonable (0-255, but check against minimum supported)
+    require!(
+        account.version >= MIN_SUPPORTED_VERSION && account.version <= 255,
+        VerifierError::VersionTooOld
+    );
+    
+    // Validate bump is reasonable (0-255, but typically > 0)
+    require!(
+        account.bump <= 255,
+        VerifierError::InvalidBump
+    );
+    
+    // Validate verifying_key_id is not zero
+    require!(
+        account.verifying_key_id != [0u8; 32],
+        VerifierError::InvalidVerifyingKeyId
+    );
+    
+    // Validate circuit_tag is not zero
+    require!(
+        account.circuit_tag != [0u8; 32],
+        VerifierError::InvalidCircuitTag
+    );
+    
+    // Validate authority is not default
+    require!(
+        account.authority != Pubkey::default(),
+        VerifierError::UnauthorizedAuthority
+    );
+    
+    // Validate verifying_key is not empty
+    require!(
+        !account.verifying_key.is_empty(),
+        VerifierError::EmptyVerifyingKey
+    );
+    
+    Ok(())
 }
 
 // CRITICAL FIX: Validate verifying key format during registration
