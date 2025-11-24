@@ -4156,8 +4156,10 @@ impl NullifierSet {
         // This prevents unexpected transaction failures and DoS by exhausting payer funds
         if new_space > current_space {
             let rent_sysvar = Rent::get()?;
+            // CRITICAL FIX: Use checked_sub instead of saturating_sub to detect calculation errors
             let additional_rent = rent_sysvar.minimum_balance(new_space)
-                .saturating_sub(rent_sysvar.minimum_balance(current_space));
+                .checked_sub(rent_sysvar.minimum_balance(current_space))
+                .ok_or(PoolError::RentCalculationError)?;
             
             // Check payer has sufficient balance BEFORE starting reallocation
             require!(
@@ -4170,10 +4172,11 @@ impl NullifierSet {
         if new_space > current_space {
             // Get the underlying AccountInfo for reallocation
             let account_info = nullifier_set.to_account_info();
-            // Reuse rent calculation from pre-check above
+            // CRITICAL FIX: Recalculate rent using checked_sub (cache from pre-check above)
             let rent_sysvar = Rent::get()?;
             let additional_rent = rent_sysvar.minimum_balance(new_space)
-                .saturating_sub(rent_sysvar.minimum_balance(current_space));
+                .checked_sub(rent_sysvar.minimum_balance(current_space))
+                .ok_or(PoolError::RentCalculationError)?;
             
             // Transfer lamports from payer to account for rent via CPI
             if additional_rent > 0 {
