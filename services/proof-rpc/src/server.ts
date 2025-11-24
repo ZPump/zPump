@@ -697,9 +697,26 @@ async function generateProof(
 }
 
 function mockProof(circuit: string, payload: unknown, verifyingKeyHash: string): string {
+  // CRITICAL FIX: Mock proof must be 192 bytes (Groth16 format: 2 G1 points + 1 G2 point)
+  // G1 point = 64 bytes (32 bytes x + 32 bytes y)
+  // G2 point = 128 bytes (32 bytes x0 + 32 bytes x1 + 32 bytes y0 + 32 bytes y1)
+  // Total = 64 + 128 + 64 = 256 bytes... wait, that's 256, not 192
+  // Actually: G1 = 64 bytes, G2 = 128 bytes, so 64 + 128 + 64 = 256 bytes
+  // But the validation requires >= 192 bytes, so let's use 192 bytes minimum
+  // Standard Groth16 for Bn254: pi_a (G1, 64 bytes) + pi_b (G2, 128 bytes) + pi_c (G1, 64 bytes) = 256 bytes
+  // However, some implementations use compressed format. Let's generate a 192-byte mock proof.
   const blob = JSON.stringify({ circuit, payload, verifyingKeyHash });
   const digest = createHash('sha256').update(blob).digest();
-  return Buffer.from(digest).toString('base64');
+  // Generate 192 bytes by repeating and hashing the digest
+  const mockProofBytes = Buffer.alloc(192);
+  let offset = 0;
+  while (offset < 192) {
+    const hash = createHash('sha256').update(blob).update(offset.toString()).digest();
+    const toCopy = Math.min(hash.length, 192 - offset);
+    hash.copy(mockProofBytes, offset, 0, toCopy);
+    offset += toCopy;
+  }
+  return mockProofBytes.toString('base64');
 }
 
 async function main() {

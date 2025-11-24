@@ -1061,6 +1061,18 @@ async function main() {
   });
 
   const decodedTransferProof = decodeProofPayload(transferProof);
+  
+  // CRITICAL FIX: Validate proof length before sending
+  if (decodedTransferProof.proof.length < 192) {
+    console.error('[test-04] Proof validation failed', {
+      proofLength: decodedTransferProof.proof.length,
+      requiredLength: 192,
+      proofBase64: transferProof.proof?.substring(0, 100),
+      proofHex: decodedTransferProof.proof.toString('hex').substring(0, 100)
+    });
+    throw new Error(`Proof length (${decodedTransferProof.proof.length}) is less than required 192 bytes. Proof may be corrupted or improperly decoded.`);
+  }
+  
   // Structure: [oldRoot, newRoot, ...nullifiers, ...output_commitments, mint, pool]
   // Extract nullifier from proof (at index 2, after oldRoot and newRoot)
   const numNullifiers = 1;
@@ -1084,8 +1096,8 @@ async function main() {
     nullifiers: [Array.from(nullifierBytes)],
     output_commitments: outputCommitments,
     output_amount_commitments: amountCommitments,
-    proof: decodedTransferProof.proof,
-    public_inputs: decodedTransferProof.publicInputs
+    proof: Buffer.from(decodedTransferProof.proof),
+    public_inputs: Buffer.from(decodedTransferProof.publicInputs)
   };
 
   const transferData = poolCoder.instruction.encode('private_transfer', { args: transferArgs });
