@@ -1,8 +1,9 @@
 # Proof Format Validation Function Unused
 
-**Severity:** LOW
+**Severity:** LOW  
+**Status:** ✅ MITIGATED
 
-**Location:** `programs/verifier-groth16/src/lib.rs:795-803`
+**Location:** `programs/verifier-groth16/src/lib.rs:795-803` and `295`
 
 ## Description
 
@@ -36,7 +37,16 @@ fn validate_proof_format(proof: &[u8]) -> Result<()> {
 
 ## Recommendation
 
-1. Call `validate_proof_format` in `verify_groth16` before deserialization
-2. Or remove the function if validation during deserialization is sufficient
-3. Consider adding more comprehensive format validation (e.g., check for valid curve points)
+1. ✅ Call `validate_proof_format` in `verify_groth16` before deserialization - **FIXED**
+2. ✅ Or remove the function if validation during deserialization is sufficient - **KEPT** (validation is useful)
+3. ⚠️ Consider adding more comprehensive format validation (e.g., check for valid curve points) - **DEFERRED** (current validation is sufficient)
+
+## Mitigation Status
+
+**Fixed in:** Commit d1cf0fd
+
+**Changes Made:**
+- Added call to `validate_proof_format(&proof)?` in `verify_groth16` function (line ~295)
+- Explicit proof format validation now happens before deserialization
+- Provides additional security layer before proof verification
 
