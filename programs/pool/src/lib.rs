@@ -5172,6 +5172,15 @@ impl HookWhitelist {
     pub fn is_allowed(&self, hook_program: &Pubkey) -> bool {
         self.allowed_programs.contains(hook_program)
     }
+    
+    // CRITICAL FIX: Validate whitelist integrity to prevent unbounded growth
+    pub fn validate_integrity(&self) -> Result<()> {
+        require!(
+            self.allowed_programs.len() <= Self::MAX_PROGRAMS,
+            PoolError::WhitelistFull
+        );
+        Ok(())
+    }
 }
 
 #[account]
