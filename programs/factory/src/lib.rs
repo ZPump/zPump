@@ -336,6 +336,7 @@ pub mod ptf_factory {
         // Anchor's PDA constraint reads factory_state.last_action_sequence BEFORE the instruction runs
         // So the PDA seeds use the CURRENT sequence value. We set entry.sequence to match the PDA.
         // Then we increment state.last_action_sequence AFTER creating the account.
+        // CRITICAL FIX: Calculate sequence once and reuse to avoid duplication
         let current_sequence = state.last_action_sequence;
         let next_sequence = current_sequence
             .checked_add(1)
@@ -416,14 +417,7 @@ pub mod ptf_factory {
             _ => {}
         }
 
-        // CRITICAL FIX: Use sequence for unique entry address
-        // Anchor's PDA constraint reads factory_state.last_action_sequence BEFORE the instruction runs
-        // So the PDA seeds use the CURRENT sequence value. We set entry.sequence to match the PDA.
-        // Then we increment state.last_action_sequence AFTER creating the account.
-        let current_sequence = state.last_action_sequence;
-        let next_sequence = current_sequence
-            .checked_add(1)
-            .ok_or(FactoryError::SequenceOverflow)?;
+        // CRITICAL FIX: Reuse current_sequence and next_sequence calculated above (no duplicate calculation)
         
         // Create the entry with the CURRENT sequence value (matches PDA)
         let entry = &mut ctx.accounts.timelock_entry;
@@ -1290,9 +1284,13 @@ impl FactoryState {
             FactoryError::EmergencyPauseNotConfigured
         );
         
+        // CRITICAL FIX: Add duplicate signer tracking to prevent single signer from being counted multiple times
         let mut signatures = 0u8;
+        let mut seen_signers = std::collections::HashSet::new();
         for signer_pubkey in &self.emergency_pause_signers {
-            if remaining_accounts.iter().any(|acc| acc.key() == *signer_pubkey && acc.is_signer) {
+            if remaining_accounts.iter().any(|acc| {
+                acc.key() == *signer_pubkey && acc.is_signer && seen_signers.insert(*signer_pubkey)
+            }) {
                 signatures = signatures.checked_add(1).ok_or(FactoryError::InsufficientEmergencySignatures)?;
             }
         }

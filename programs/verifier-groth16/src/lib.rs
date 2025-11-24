@@ -292,8 +292,9 @@ pub mod ptf_verifier_groth16 {
         require!(!public_inputs.is_empty(), VerifierError::EmptyPublicInputs);
         require!(!vk.verifying_key.is_empty(), VerifierError::EmptyVerifyingKey);
         
-        // Note: Proof format validation happens during deserialization in groth16_verify
-        // The actual verification will catch invalid proofs, so we don't need to validate format here
+        // CRITICAL FIX: Validate proof format before verification
+        // This provides explicit validation before deserialization
+        validate_proof_format(&proof)?;
 
         // CRITICAL FIX: Always perform actual verification - no bypasses
         require!(

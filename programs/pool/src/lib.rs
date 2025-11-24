@@ -549,6 +549,16 @@ pub mod ptf_pool {
     }
 
     pub fn set_features(ctx: Context<UpdateAuthority>, features: u8) -> Result<()> {
+        // CRITICAL FIX: Validate feature flags - only allow known feature bits
+        // FEATURE_PRIVATE_TRANSFER_ENABLED = 0x01
+        // FEATURE_HOOKS_ENABLED = 0x02
+        // Reserved bits (0x04, 0x08, 0x10, 0x20, 0x40, 0x80) should be validated
+        const VALID_FEATURE_MASK: u8 = 0x03; // Only allow bits 0 and 1
+        require!(
+            (features & !VALID_FEATURE_MASK) == 0,
+            PoolError::InvalidFeatureFlags
+        );
+        
         let mut pool_state = ctx.accounts.pool_state.load_mut()?;
         pool_state.features = FeatureFlags::from(features);
         emit!(FeaturesUpdated {
@@ -597,7 +607,15 @@ pub mod ptf_pool {
             PoolError::InsufficientFees
         );
         
-        // Update protocol_fees
+        // CRITICAL FIX: Validate vault balance BEFORE updating state
+        // This prevents state inconsistency if CPI fails
+        let vault_balance = ctx.accounts.vault_token_account.amount;
+        require!(
+            vault_balance >= amount,
+            PoolError::InsufficientLiquidity
+        );
+        
+        // Update protocol_fees (safe to do now since vault balance is validated)
         pool_state.protocol_fees = pool_state
             .protocol_fees
             .checked_sub(amount_u128)
@@ -906,7 +924,10 @@ pub mod ptf_pool {
                 PoolError::TooManyHookAccounts
             );
             hook_config.required_accounts[idx] = key.to_bytes();
-            hook_config.required_accounts_len += 1;
+            // CRITICAL FIX: Use checked_add to prevent overflow
+            hook_config.required_accounts_len = hook_config.required_accounts_len
+                .checked_add(1)
+                .ok_or(PoolError::TooManyHookAccounts)?;
         }
 
         pool_state.hook_config = ctx.accounts.hook_config.key();
@@ -4041,6 +4062,12 @@ impl PoolState {
 
     // CRITICAL FIX: Push root with timestamp to enable expiration checks
     pub fn push_root(&mut self, root: [u8; 32]) -> Result<()> {
+        // CRITICAL FIX: Validate roots_len is within bounds before indexing
+        require!(
+            self.roots_len as usize <= Self::MAX_ROOTS,
+            PoolError::AccountDataCorrupt
+        );
+        
         let clock = Clock::get()?;
         let timestamp = clock.unix_timestamp;
         
@@ -4085,10 +4112,26 @@ impl PoolState {
         if &self.current_root == candidate {
             return true;
         }
-        for idx in 0..self.roots_len as usize {
+        // CRITICAL FIX: Cap roots_len to MAX_ROOTS to prevent out-of-bounds access
+        let max_len = core::cmp::min(self.roots_len as usize, Self::MAX_ROOTS);
+        for idx in 0..max_len {
             if &self.recent_roots[idx] == candidate {
-                // CRITICAL FIX: Check if root has expired
-                let root_age = current_time.saturating_sub(self.recent_roots_timestamps[idx]);
+                // CRITICAL FIX: Validate timestamp is not in the future (indicates corruption)
+                // Note: is_known_root returns bool, so we validate and reject if timestamp is invalid
+                if current_time < self.recent_roots_timestamps[idx] {
+                    msg!("WARNING: Root timestamp in future, rejecting root check");
+                    return false;
+                }
+                // CRITICAL FIX: Use checked_sub to detect calculation errors
+                // Since we can't return Result from bool function, we use saturating_sub but log warning
+                // In a future refactor, consider making this return Result<()> instead of bool
+                let root_age = match current_time.checked_sub(self.recent_roots_timestamps[idx]) {
+                    Some(age) => age,
+                    None => {
+                        msg!("WARNING: Root timestamp calculation underflow, rejecting root check");
+                        return false;
+                    }
+                };
                 if root_age <= Self::ROOT_EXPIRATION_SECONDS {
                     return true;
                 }
@@ -5312,8 +5355,14 @@ fn process_shield_finalize_ledger<'info>(
                 
                 // CRITICAL: Use the cached account infos passed to this function
                 // This prevents access violations by using account infos obtained before dropping pool_state
-                // hook_config_info is guaranteed to be Some() here because we checked above
-                let hook_config_info_unwrapped = hook_config_info.unwrap();
+                // CRITICAL FIX: Use safe pattern matching instead of unwrap
+                let hook_config_info_unwrapped = match hook_config_info {
+                    Some(info) => info,
+                    None => {
+                        msg!("WARNING: hook_config_info is None despite check, skipping hook");
+                        return Ok(()); // Skip hook execution if config is missing
+                    }
+                };
                 
                 // Double-check that the account info is valid
                 require!(
@@ -6051,6 +6100,10 @@ pub enum PoolError {
     TooManyNullifiers,
     #[msg("Rent calculation error")]
     RentCalculationError,
+    #[msg("Invalid feature flags")]
+    InvalidFeatureFlags,
+    #[msg("Invalid timestamp")]
+    InvalidTimestamp,
 }
 
 fn ensure_mint_active(mapping: &AccountInfo) -> Result<()> {
