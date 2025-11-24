@@ -4120,6 +4120,24 @@ impl ShieldClaim {
     }
 }
 
+// CRITICAL FIX: Implement StateMachine trait for ShieldClaim
+impl StateMachine for ShieldClaim {
+    type State = u8;
+    
+    fn current_state(&self) -> Self::State {
+        self.status
+    }
+    
+    fn can_transition(&self, from: Self::State, to: Self::State) -> bool {
+        // Use existing validation logic
+        self.validate_state_transition(from, to).is_ok()
+    }
+    
+    fn set_state(&mut self, state: Self::State) {
+        self.status = state;
+    }
+}
+
 // CRITICAL FIX: Replaced bloom filter with deterministic sorted array
 // This eliminates false positives entirely, preventing DoS attacks where
 // legitimate users' nullifiers are incorrectly rejected.
