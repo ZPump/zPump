@@ -1,54 +1,35 @@
 # Remaining Security Audit Issues
 
 **Last Updated:** 2025-01-26  
-**Status:** 6 issues remaining (1 MEDIUM, 4 LOW, 1 BY DESIGN)
+**Status:** All issues mitigated (0 remaining, 1 BY DESIGN)
 
 ## Summary
 
-After implementing design improvements and security mitigations, the following issues remain:
+All security audit issues have been successfully mitigated. The following issues were resolved:
 
-### MEDIUM Severity (1 issue)
+### ✅ All Issues Mitigated (2025-01-26)
 
-#### ptf_pool (1 issue)
+#### MEDIUM Severity (1 issue - ✅ MITIGATED)
 1. **Fee Override Not Applied in Fee Calculation** (`fee-override-not-applied.md`)
-   - **Location:** `programs/pool/src/lib.rs:2195` (unshield fee calculation)
-   - **Status:** Open
-   - **Description:** The `mint_mapping` has a `fee_bps_override` field that is cached but never used. `calculate_fee` always uses `pool_state.fee_bps` instead of checking for the override.
-   - **Impact:** Fee override feature doesn't work as intended. Users might expect per-mint fees but get pool-level fees.
-   - **Recommendation:** Either implement fee override properly (update `calculate_fee` to accept and use override) or remove the feature if not needed.
+   - **Status:** ✅ MITIGATED
+   - **Resolution:** Implemented fee override in `calculate_fee` function. Updated to accept optional `fee_override` parameter and use it when provided. Updated `process_unshield` to pass override from mint mapping.
 
-### LOW Severity (4 issues)
-
-#### ptf_pool (1 issue)
+#### LOW Severity (4 issues - ✅ MITIGATED)
 2. **Hook Whitelist Integrity Not Validated on Read** (`hook-whitelist-integrity-not-validated.md`)
-   - **Location:** `programs/pool/src/lib.rs:5658-5669`
-   - **Status:** Open
-   - **Description:** `HookWhitelist::validate_integrity()` exists but is never called. If state is corrupted, whitelist could exceed MAX_PROGRAMS without detection.
-   - **Impact:** Low - Account space is fixed, but missing defensive validation
-   - **Recommendation:** Call `validate_integrity()` in whitelist management functions or remove if not needed
+   - **Status:** ✅ MITIGATED
+   - **Resolution:** Added `validate_integrity()` calls in `is_allowed`, `add_hook_to_whitelist`, and `remove_hook_from_whitelist` functions.
 
-#### ptf_factory (1 issue)
 3. **Fee Override Validation Inconsistency** (`fee-override-validation-inconsistency.md`)
-   - **Location:** `programs/factory/src/lib.rs:128-134` vs `1375-1378`
-   - **Status:** Open
-   - **Description:** `register_mint` enforces 10% maximum (1000 bps) for fee override, but `update_mint` allows up to 100% (10000 bps).
-   - **Impact:** Low - Policy inconsistency, but fee override is not currently used
-   - **Recommendation:** Make validation consistent (apply same 10% limit in `apply_mint_update`)
+   - **Status:** ✅ MITIGATED
+   - **Resolution:** Applied same 10% limit (1000 bps) in `apply_mint_update` as in `register_mint` for consistency.
 
-#### ptf_pool (1 issue)
 4. **Recent Commitments Length Overflow Risk** (`recent-len-overflow-risk.md`)
-   - **Location:** `programs/pool/src/lib.rs:3986-4002` (record_recent function)
-   - **Status:** Open
-   - **Description:** `recent_len` can be corrupted to exceed `MAX_CANOPY` without validation. When `recent_len >= MAX_CANOPY`, array shifts but `recent_len` is not updated.
-   - **Impact:** Low - Current code is safe (uses fixed indexing), but missing defensive validation
-   - **Recommendation:** Add bounds validation for `recent_len` in `record_recent` to cap it at `MAX_CANOPY`
+   - **Status:** ✅ MITIGATED
+   - **Resolution:** Added bounds validation to cap `recent_len` at `MAX_CANOPY` if corrupted, and keep it at `MAX_CANOPY` in else branch.
 
 5. **Append Many Bounds Check Missing** (`append-many-bounds-check-missing.md`)
-   - **Location:** `programs/pool/src/lib.rs:3877` and `3881` (append_many function)
-   - **Status:** Open
-   - **Description:** `current_level[0]` and `level_nodes[level][pos]` are accessed without explicit bounds validation
-   - **Impact:** Low - Logic should ensure safety, but missing defensive validation could cause panics if state is corrupted
-   - **Recommendation:** Add explicit bounds checks before array access
+   - **Status:** ✅ MITIGATED
+   - **Resolution:** Added explicit bounds checks for `current_level[0]` and `level_nodes[level][pos]` accesses.
 
 ### BY DESIGN (1 issue)
 

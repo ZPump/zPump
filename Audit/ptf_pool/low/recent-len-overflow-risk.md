@@ -1,5 +1,7 @@
 # Recent Commitments Length Overflow Risk
 
+**Status:** ✅ MITIGATED
+
 **Severity:** LOW
 
 **Location:** `programs/pool/src/lib.rs:3986-4002` (record_recent function)

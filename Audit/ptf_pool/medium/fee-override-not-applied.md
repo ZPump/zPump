@@ -1,5 +1,7 @@
 # Fee Override Not Applied in Fee Calculation
 
+**Status:** ✅ MITIGATED
+
 **Severity:** MEDIUM
 
 **Location:** `programs/pool/src/lib.rs:2195` (unshield fee calculation)

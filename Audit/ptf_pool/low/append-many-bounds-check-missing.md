@@ -1,5 +1,7 @@
 # Append Many Bounds Check Missing
 
+**Status:** ✅ MITIGATED
+
 **Severity:** LOW
 
 **Location:** `programs/pool/src/lib.rs:3877` and `3881` (append_many function)

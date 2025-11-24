@@ -1,5 +1,7 @@
 # Fee Override Validation Inconsistency
 
+**Status:** ✅ MITIGATED
+
 **Severity:** LOW
 
 **Location:** `programs/factory/src/lib.rs:128-134` (register_mint) vs `1375-1378` (apply_mint_update)

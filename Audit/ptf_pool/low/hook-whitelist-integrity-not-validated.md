@@ -1,5 +1,7 @@
 # Hook Whitelist Integrity Not Validated on Read
 
+**Status:** ✅ MITIGATED
+
 **Severity:** LOW
 
 **Location:** `programs/pool/src/lib.rs:5658-5669` (validate_integrity exists but never called)
