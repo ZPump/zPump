@@ -969,6 +969,8 @@ pub mod ptf_pool {
             ctx.accounts.authority.key(),
             PoolError::Unauthorized
         );
+        // CRITICAL FIX: Validate integrity before adding
+        whitelist.validate_integrity()?;
         require!(
             !whitelist.is_allowed(&hook_program),
             PoolError::HookAlreadyWhitelisted
@@ -1009,6 +1011,8 @@ pub mod ptf_pool {
             ctx.accounts.authority.key(),
             PoolError::Unauthorized
         );
+        // CRITICAL FIX: Validate integrity before removal
+        whitelist.validate_integrity()?;
 
         let Some(pos) = whitelist
             .allowed_programs
@@ -2192,7 +2196,13 @@ fn process_unshield<'info>(
     
     // CRITICAL FIX: Re-enable fee validation
     // Calculate expected fee using pool's fee calculation
-    let expected_fee = pool_state.calculate_fee(args.amount)?;
+    // Use fee override from mint mapping if available
+    let fee_override = if mint_mapping_has_fee_override {
+        Some(mint_mapping_fee_bps_override)
+    } else {
+        None
+    };
+    let expected_fee = pool_state.calculate_fee(args.amount, fee_override)?;
     // CRITICAL FIX: Validate fee matches expected (allow 1 lamport tolerance for rounding)
     let fee_diff = if fee > expected_fee {
         fee - expected_fee
@@ -3874,10 +3884,18 @@ impl CommitmentTree {
                 level_nodes.push(current_level.clone());
             }
 
+            require!(
+                !current_level.is_empty(),
+                PoolError::AccountDataCorrupt
+            );
             let mut node_bytes = current_level[0];
 
             for level in 0..level_start {
                 let pos = ((chunk_size - (1 << level) - 1) >> level) as usize;
+                require!(
+                    pos < level_nodes[level].len(),
+                    PoolError::AccountDataCorrupt
+                );
                 let cached = level_nodes[level][pos];
                 self.frontier[level] = cached;
                 frontier_cache.0[level] = cached;
@@ -3984,6 +4002,12 @@ impl CommitmentTree {
     }
 
     fn record_recent(&mut self, index: u64, commitment: [u8; 32], amount_commit: [u8; 32]) {
+        // CRITICAL FIX: Validate recent_len is within bounds
+        if (self.recent_len as usize) > Self::MAX_CANOPY {
+            // Cap to MAX_CANOPY if corrupted
+            self.recent_len = Self::MAX_CANOPY as u8;
+        }
+        
         if (self.recent_len as usize) < Self::MAX_CANOPY {
             let idx = self.recent_len as usize;
             self.recent_commitments[idx] = commitment;
@@ -3998,6 +4022,8 @@ impl CommitmentTree {
             self.recent_commitments[Self::MAX_CANOPY - 1] = commitment;
             self.recent_amount_commitments[Self::MAX_CANOPY - 1] = amount_commit;
             self.recent_indices[Self::MAX_CANOPY - 1] = index;
+            // CRITICAL FIX: Keep recent_len at MAX_CANOPY (don't let it grow)
+            self.recent_len = Self::MAX_CANOPY as u8;
         }
     }
 
@@ -4170,11 +4196,20 @@ impl PoolState {
         Ok(())
     }
 
-    pub fn calculate_fee(&self, amount: u64) -> Result<u64> {
+    pub fn calculate_fee(&self, amount: u64, fee_override: Option<u16>) -> Result<u64> {
+        // Use override if provided, otherwise use pool fee
+        let fee_bps = if let Some(override_bps) = fee_override {
+            // Validate override value
+            InputValidator::validate_fee_bps(override_bps)?;
+            override_bps
+        } else {
+            self.fee_bps
+        };
+        
         // CRITICAL SECURITY: Use 128-bit intermediate to prevent overflow
         // amount * fee_bps can be up to u64::MAX * 10000, which fits in u128
         let amount_128 = amount as u128;
-        let fee_bps_128 = self.fee_bps as u128;
+        let fee_bps_128 = fee_bps as u128;
         let fee = amount_128
             .checked_mul(fee_bps_128)
             .ok_or(PoolError::AmountOverflow)?
@@ -5656,6 +5691,12 @@ impl HookWhitelist {
     pub const SPACE: usize = 8 + 32 + 4 + (32 * Self::MAX_PROGRAMS) + 1 + 7;
     
     pub fn is_allowed(&self, hook_program: &Pubkey) -> bool {
+        // Validate integrity on read (defensive check)
+        if self.validate_integrity().is_err() {
+            // Log warning but don't fail (defensive programming)
+            msg!("WARNING: Hook whitelist integrity check failed");
+            return false; // Fail closed for safety
+        }
         self.allowed_programs.contains(hook_program)
     }
     
@@ -6788,7 +6829,7 @@ mod tests {
                 .append_many(&unshield_outputs, &unshield_amount_commits)
                 .unwrap();
 
-            let fee = pool_state.calculate_fee(amount).unwrap();
+            let fee = pool_state.calculate_fee(amount, None).unwrap();
             ledger
                 .record_unshield(amount + fee, &[nullifier], &unshield_amount_commits)
                 .expect("ledger unshield");
