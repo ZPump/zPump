@@ -101,8 +101,9 @@ pub mod ptf_verifier_groth16 {
         );
         
         // CRITICAL FIX: Verify authority is specifically the factory_state PDA
+        // Use shared seed constant from ptf_common to ensure consistency with factory program
         let (expected_factory_state, _) = Pubkey::find_program_address(
-            &[b"factory", factory_program_id.as_ref()],
+            &[ptf_common::seeds::FACTORY, factory_program_id.as_ref()],
             &factory_program_id,
         );
         require_keys_eq!(
