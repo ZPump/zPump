@@ -1,8 +1,9 @@
 # Duplicate Sequence Calculation in queue_timelock_action
 
-**Severity:** MEDIUM
+**Severity:** MEDIUM  
+**Status:** ✅ MITIGATED
 
-**Location:** `programs/factory/src/lib.rs:342-345` and `426-429`
+**Location:** `programs/factory/src/lib.rs:339-342` (now single calculation)
 
 ## Description
 
@@ -42,8 +43,17 @@ let next_sequence = current_sequence
 
 ## Recommendation
 
-1. Remove the duplicate calculation
-2. Keep only one calculation before the entry creation
-3. Reuse the variables throughout the function
-4. Add a comment explaining why sequence is calculated before entry creation
+1. ✅ Remove the duplicate calculation - **FIXED**
+2. ✅ Keep only one calculation before the entry creation - **FIXED**
+3. ✅ Reuse the variables throughout the function - **FIXED**
+4. ✅ Add a comment explaining why sequence is calculated before entry creation - **FIXED**
+
+## Mitigation Status
+
+**Fixed in:** Commit d1cf0fd
+
+**Changes Made:**
+- Removed duplicate sequence calculation at lines 423-426
+- Sequence is now calculated once at lines 339-342 and reused
+- Added comment explaining the reuse to prevent future duplication
 

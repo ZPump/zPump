@@ -1,6 +1,7 @@
 # Emergency Pause Duplicate Signer Check Missing
 
-**Severity:** MEDIUM
+**Severity:** MEDIUM  
+**Status:** ✅ MITIGATED
 
 **Location:** `programs/factory/src/lib.rs:1284-1304`
 
@@ -57,21 +58,18 @@ This function is used for emergency pause operations. While emergency pause is a
 
 ## Recommendation
 
-1. Add duplicate signer tracking similar to what should be done for multi-sig:
-   ```rust
-   let mut seen_signers = std::collections::HashSet::new();
-   for signer_pubkey in &self.emergency_pause_signers {
-       if remaining_accounts.iter().any(|acc| {
-           acc.key() == *signer_pubkey && acc.is_signer && seen_signers.insert(*signer_pubkey)
-       }) {
-           signatures = signatures.checked_add(1)?;
-       }
-   }
-   ```
+1. ✅ Add duplicate signer tracking similar to what should be done for multi-sig - **FIXED**
+   - Added `HashSet` to track seen signers
+   - Each signer is only counted once, even if they appear multiple times in `remaining_accounts`
 
-2. Alternatively, use a similar approach to `AccessController::require_access` which already has duplicate prevention built-in.
+## Mitigation Status
 
-3. Consider consolidating emergency pause signer checking with the access control framework.
+**Fixed in:** Commit d1cf0fd
+
+**Changes Made:**
+- Added `seen_signers` HashSet to track duplicate signers (line ~1295)
+- Modified signer check to only count each signer once using `seen_signers.insert()`
+- Prevents single signer from bypassing threshold by appearing multiple times
 
 ## Related Issues
 

@@ -1,6 +1,7 @@
 # Protocol Fees Withdrawal Without Vault Balance Validation
 
-**Severity:** MEDIUM
+**Severity:** MEDIUM  
+**Status:** ✅ MITIGATED
 
 **Location:** `programs/pool/src/lib.rs:578-631`
 
@@ -75,28 +76,19 @@ The state is updated (`protocol_fees` is decremented) before the CPI call. If th
 
 ## Recommendation
 
-1. **Validate vault balance before updating state:**
-   ```rust
-   // Check vault balance BEFORE updating protocol_fees
-   let vault_balance = ctx.accounts.vault_token_account.amount;
-   require!(
-       vault_balance >= amount,
-       PoolError::InsufficientVaultBalance
-   );
-   
-   // Now safe to update state
-   pool_state.protocol_fees = pool_state
-       .protocol_fees
-       .checked_sub(amount_u128)
-       .ok_or(PoolError::AmountOverflow)?;
-   ```
+1. ✅ **Validate vault balance before updating state** - **FIXED**
+   - Vault balance is now validated before updating `protocol_fees` state
+   - Uses `PoolError::InsufficientLiquidity` error (existing error type)
+   - Follows "validate-then-execute" pattern
 
-2. **Or use a two-phase commit pattern:**
-   - First, validate everything
-   - Then, update state and execute CPI atomically
-   - If CPI fails, revert state change (requires transaction-level rollback, which Solana doesn't support)
+## Mitigation Status
 
-3. **Best approach:** Validate vault balance before updating state, following the "validate-then-execute" pattern already used elsewhere in the codebase.
+**Fixed in:** Commit d1cf0fd
+
+**Changes Made:**
+- Added vault balance validation before state update (line ~599-603)
+- State update now happens after validation, preventing inconsistency
+- If vault balance is insufficient, transaction fails before state is modified
 
 ## Related Patterns
 

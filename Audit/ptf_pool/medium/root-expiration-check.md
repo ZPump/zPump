@@ -1,8 +1,9 @@
 # Root Expiration Check Uses Saturating Sub
 
-**Severity:** MEDIUM
+**Severity:** MEDIUM  
+**Status:** ✅ MITIGATED
 
-**Location:** `programs/pool/src/lib.rs:3771-3791`
+**Location:** `programs/pool/src/lib.rs:4117-4134`
 
 ## Description
 
@@ -53,8 +54,18 @@ If `current_time` is less than `recent_roots_timestamps[idx]` (e.g., due to cloc
 
 ## Recommendation
 
-1. Consider using `checked_sub` and explicitly handling underflow cases
-2. Add validation that timestamps are reasonable (not in the future)
-3. Log warnings when timestamp anomalies are detected
-4. Consider rejecting roots if timestamp is in the future
+1. ✅ Consider using `checked_sub` and explicitly handling underflow cases - **FIXED**
+2. ✅ Add validation that timestamps are reasonable (not in the future) - **FIXED**
+3. ✅ Log warnings when timestamp anomalies are detected - **FIXED**
+4. ✅ Consider rejecting roots if timestamp is in the future - **FIXED**
+
+## Mitigation Status
+
+**Fixed in:** Commit d1cf0fd
+
+**Changes Made:**
+- Replaced `saturating_sub` with `checked_sub` using pattern matching
+- Added validation to reject roots with timestamps in the future
+- Added warning messages for timestamp anomalies
+- Function now properly handles underflow cases by returning false instead of silently saturating
 

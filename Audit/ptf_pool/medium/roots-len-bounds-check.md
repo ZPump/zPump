@@ -1,8 +1,9 @@
 # Roots Length Bounds Check Missing
 
-**Severity:** MEDIUM
+**Severity:** MEDIUM  
+**Status:** ✅ MITIGATED
 
-**Location:** `programs/pool/src/lib.rs:4043-4070` and `4088`
+**Location:** `programs/pool/src/lib.rs:4043-4070` and `4115-4117`
 
 ## Description
 
@@ -68,47 +69,22 @@ pub fn is_known_root(&self, candidate: &[u8; 32]) -> bool {
 
 ## Recommendation
 
-1. **Add explicit bounds validation:**
-   ```rust
-   pub fn push_root(&mut self, root: [u8; 32]) -> Result<()> {
-       // CRITICAL FIX: Validate roots_len is within bounds
-       require!(
-           self.roots_len as usize <= Self::MAX_ROOTS,
-           PoolError::RootsLenCorrupted
-       );
-       
-       let clock = Clock::get()?;
-       let timestamp = clock.unix_timestamp;
-       
-       if self.roots_len as usize >= Self::MAX_ROOTS {
-           // Overflow path
-           // ...
-       } else {
-           // Now safe to index
-           self.recent_roots[self.roots_len as usize] = root;
-           // ...
-       }
-   }
-   ```
+1. ✅ **Add explicit bounds validation** - **FIXED**
+   - Added bounds check in `push_root` using `PoolError::AccountDataCorrupt`
+   - Validates `roots_len <= MAX_ROOTS` before indexing
 
-2. **Add bounds check in `is_known_root`:**
-   ```rust
-   pub fn is_known_root(&self, candidate: &[u8; 32]) -> bool {
-       // CRITICAL FIX: Cap roots_len to MAX_ROOTS to prevent out-of-bounds access
-       let max_len = core::cmp::min(self.roots_len as usize, Self::MAX_ROOTS);
-       for idx in 0..max_len {
-           if &self.recent_roots[idx] == candidate {
-               // ...
-           }
-       }
-   }
-   ```
+2. ✅ **Add bounds check in `is_known_root`** - **FIXED**
+   - Uses `core::cmp::min` to cap `roots_len` to `MAX_ROOTS`
+   - Prevents out-of-bounds access even if state is corrupted
 
-3. **Consider using `u8::try_from(MAX_ROOTS)` to ensure type safety:**
-   ```rust
-   pub const MAX_ROOTS: usize = 64;
-   pub const MAX_ROOTS_U8: u8 = 64; // Ensure this matches MAX_ROOTS
-   ```
+## Mitigation Status
+
+**Fixed in:** Commit d1cf0fd
+
+**Changes Made:**
+- `push_root`: Added bounds validation before array indexing (line ~4047)
+- `is_known_root`: Added `max_len` calculation to cap iteration (line ~4116)
+- Both functions now safely handle corrupted `roots_len` values
 
 ## Related Issues
 

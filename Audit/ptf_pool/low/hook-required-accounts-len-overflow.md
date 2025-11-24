@@ -1,6 +1,7 @@
 # Hook Required Accounts Length Overflow Risk
 
-**Severity:** LOW
+**Severity:** LOW  
+**Status:** ✅ MITIGATED
 
 **Location:** `programs/pool/src/lib.rs:903-910`
 
@@ -52,22 +53,18 @@ for (idx, key) in args.required_accounts.iter().enumerate() {
 
 ## Recommendation
 
-1. **Add explicit bounds validation:**
-   ```rust
-   hook_config.required_accounts_len = 0;
-   // ...
-   for (idx, key) in args.required_accounts.iter().enumerate() {
-       require!(
-           idx < HookConfig::MAX_REQUIRED_ACCOUNTS,
-           PoolError::TooManyHookAccounts
-       );
-       hook_config.required_accounts[idx] = key.to_bytes();
-       // CRITICAL FIX: Use checked_add to prevent overflow
-       hook_config.required_accounts_len = hook_config.required_accounts_len
-           .checked_add(1)
-           .ok_or(PoolError::TooManyHookAccounts)?;
-   }
-   ```
+1. ✅ **Add explicit bounds validation** - **FIXED**
+   - Replaced `+= 1` with `checked_add(1)` to prevent overflow
+   - Returns `PoolError::TooManyHookAccounts` if overflow would occur
+
+## Mitigation Status
+
+**Fixed in:** Commit d1cf0fd
+
+**Changes Made:**
+- Replaced `hook_config.required_accounts_len += 1` with `checked_add(1)`
+- Overflow now returns error instead of silently wrapping
+- Prevents corrupted state from causing incorrect hook account validation
 
 2. **Add validation in `required_keys()` method:**
    ```rust
