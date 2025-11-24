@@ -4029,25 +4029,6 @@ impl ShieldClaim {
         self.tree_index_cursor = 0;
         self.tree_node = [0u8; 32];
     }
-}
-
-// CRITICAL FIX: Implement StateMachine trait for ShieldClaim
-impl StateMachine for ShieldClaim {
-    type State = u8;
-    
-    fn current_state(&self) -> Self::State {
-        self.status
-    }
-    
-    fn can_transition(&self, from: Self::State, to: Self::State) -> bool {
-        // Use existing validation logic
-        self.validate_state_transition(from, to).is_ok()
-    }
-    
-    fn set_state(&mut self, state: Self::State) {
-        self.status = state;
-    }
-}
 
     // CRITICAL FIX: Mark tree complete with strict state transition validation
     pub fn mark_tree_complete(&mut self) -> Result<()> {
