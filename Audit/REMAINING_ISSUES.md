@@ -1,7 +1,7 @@
 # Remaining Security Audit Issues
 
 **Last Updated:** 2025-01-26  
-**Status:** 5 issues remaining (1 MEDIUM, 3 LOW, 1 BY DESIGN)
+**Status:** 6 issues remaining (1 MEDIUM, 4 LOW, 1 BY DESIGN)
 
 ## Summary
 
@@ -17,7 +17,7 @@ After implementing design improvements and security mitigations, the following i
    - **Impact:** Fee override feature doesn't work as intended. Users might expect per-mint fees but get pool-level fees.
    - **Recommendation:** Either implement fee override properly (update `calculate_fee` to accept and use override) or remove the feature if not needed.
 
-### LOW Severity (3 issues)
+### LOW Severity (4 issues)
 
 #### ptf_pool (1 issue)
 2. **Hook Whitelist Integrity Not Validated on Read** (`hook-whitelist-integrity-not-validated.md`)
@@ -42,6 +42,13 @@ After implementing design improvements and security mitigations, the following i
    - **Description:** `recent_len` can be corrupted to exceed `MAX_CANOPY` without validation. When `recent_len >= MAX_CANOPY`, array shifts but `recent_len` is not updated.
    - **Impact:** Low - Current code is safe (uses fixed indexing), but missing defensive validation
    - **Recommendation:** Add bounds validation for `recent_len` in `record_recent` to cap it at `MAX_CANOPY`
+
+5. **Append Many Bounds Check Missing** (`append-many-bounds-check-missing.md`)
+   - **Location:** `programs/pool/src/lib.rs:3877` and `3881` (append_many function)
+   - **Status:** Open
+   - **Description:** `current_level[0]` and `level_nodes[level][pos]` are accessed without explicit bounds validation
+   - **Impact:** Low - Logic should ensure safety, but missing defensive validation could cause panics if state is corrupted
+   - **Recommendation:** Add explicit bounds checks before array access
 
 ### BY DESIGN (1 issue)
 
@@ -86,8 +93,9 @@ The following issues were addressed in the latest implementation (Commit d1cf0fd
 
 ## Latest Audit Findings (2025-01-26)
 
-Found 4 new security concerns:
+Found 5 new security concerns:
 1. **MEDIUM**: Fee override feature not implemented (cached but never used)
 2. **LOW**: Hook whitelist integrity validation never called
 3. **LOW**: Fee override validation inconsistency between register and update
 4. **LOW**: Recent commitments length overflow risk (missing bounds validation)
+5. **LOW**: Append many bounds check missing (array access without validation)
