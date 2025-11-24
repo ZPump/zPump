@@ -5504,6 +5504,8 @@ pub enum PoolError {
     OutputCountMismatch,
     #[msg("Too many nullifiers in single operation")]
     TooManyNullifiers,
+    #[msg("Rent calculation error")]
+    RentCalculationError,
 }
 
 fn ensure_mint_active(mapping: &AccountInfo) -> Result<()> {
