@@ -354,8 +354,10 @@ pub mod ptf_factory {
         ]);
         
         // CRITICAL FIX: Check for duplicate actions
+        // Optimized: Use position() for O(n) check (same as contains but allows removal)
+        let action_hash_bytes = action_hash.to_bytes();
         require!(
-            !state.pending_action_hashes.contains(&action_hash.to_bytes()),
+            state.pending_action_hashes.iter().position(|&h| h == action_hash_bytes).is_none(),
             FactoryError::DuplicateAction
         );
         
@@ -786,7 +788,12 @@ pub mod ptf_factory {
         entry.executed = true;
         
         // CRITICAL FIX: Remove from pending hashes
-        state.pending_action_hashes.retain(|&h| h != entry.action_hash);
+        // CRITICAL FIX: Optimize removal - use position + swap_remove for better performance
+        // swap_remove is O(1) if removing last element, O(n) for finding position
+        // This is more efficient than retain() which is always O(n) and creates new vector
+        if let Some(pos) = state.pending_action_hashes.iter().position(|&h| h == entry.action_hash) {
+            state.pending_action_hashes.swap_remove(pos);
+        }
 
         emit!(TimelockExecuted {
             factory: state.key(),
@@ -807,7 +814,12 @@ pub mod ptf_factory {
         entry.canceled = true;
         
         // CRITICAL FIX: Remove from pending hashes
-        state.pending_action_hashes.retain(|&h| h != entry.action_hash);
+        // CRITICAL FIX: Optimize removal - use position + swap_remove for better performance
+        // swap_remove is O(1) if removing last element, O(n) for finding position
+        // This is more efficient than retain() which is always O(n) and creates new vector
+        if let Some(pos) = state.pending_action_hashes.iter().position(|&h| h == entry.action_hash) {
+            state.pending_action_hashes.swap_remove(pos);
+        }
         
         let clock = Clock::get()?;
 
@@ -857,7 +869,12 @@ pub mod ptf_factory {
         entry.canceled = true;
 
         let state = &mut ctx.accounts.factory_state;
-        state.pending_action_hashes.retain(|&h| h != entry.action_hash);
+        // CRITICAL FIX: Optimize removal - use position + swap_remove for better performance
+        // swap_remove is O(1) if removing last element, O(n) for finding position
+        // This is more efficient than retain() which is always O(n) and creates new vector
+        if let Some(pos) = state.pending_action_hashes.iter().position(|&h| h == entry.action_hash) {
+            state.pending_action_hashes.swap_remove(pos);
+        }
 
         emit!(TimelockGarbageCollected {
             factory: state.key(),
