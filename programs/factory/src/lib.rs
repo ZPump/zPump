@@ -146,46 +146,25 @@ pub mod ptf_factory {
         );
 
         let mapping = &mut ctx.accounts.mint_mapping;
-        // CRITICAL FIX: Handle account initialization robustly
-        // init_if_needed creates accounts with default values, but if an account already exists
-        // (e.g., owned by BPF loader), we need to ensure it's properly initialized.
-        // We check if the account is new by seeing if origin_mint is default.
-        let is_new_registration = mapping.origin_mint == Pubkey::default();
+        // CRITICAL FIX: Only allow initialization, not updates
+        // All updates must go through update_mint instruction which has proper authorization
+        // This prevents unauthorized status changes, decimals manipulation, and feature flag bypasses
+        require!(
+            mapping.origin_mint == Pubkey::default(),
+            FactoryError::AlreadyRegistered
+        );
         
-        if is_new_registration {
-            // Allow direct registration for new mints (backward compatibility for bootstrap)
-            // Updates to existing mints must go through timelock
-            // Initialize all fields - this ensures the account is properly set up
-            mapping.origin_mint = ctx.accounts.origin_mint.key();
-            mapping.status = MintStatus::Active as u8;
-            mapping.decimals = decimals;
-            mapping.features =
-                FeatureFlags::from(feature_flags.unwrap_or_else(|| state.default_features.bits()));
-            mapping.has_fee_override = fee_bps_override.is_some();
-            mapping.fee_bps_override = fee_bps_override.unwrap_or_default();
-            mapping.bump = ctx.bumps.mint_mapping;
-            mapping.has_ptkn = false;
-            mapping.ptkn_mint = Pubkey::default();
-            
-            // CRITICAL FIX: Explicitly verify the account was saved
-            // This ensures the account data is persisted even if init_if_needed had issues
-            // The account should already be initialized by init_if_needed, but we verify
-            // by checking that our changes are reflected (they should be since we have &mut)
-        } else {
-            // Account already initialized - updates must go through timelock
-            ensure_direct_update_allowed(state)?;
-            require_keys_eq!(
-                mapping.origin_mint,
-                ctx.accounts.origin_mint.key(),
-                FactoryError::OriginMintMismatch
-            );
-            mapping.status = MintStatus::Active as u8;
-            mapping.decimals = decimals;
-            mapping.features =
-                FeatureFlags::from(feature_flags.unwrap_or_else(|| state.default_features.bits()));
-            mapping.has_fee_override = fee_bps_override.is_some();
-            mapping.fee_bps_override = fee_bps_override.unwrap_or_default();
-        }
+        // Initialize new mapping - all fields set from scratch
+        mapping.origin_mint = ctx.accounts.origin_mint.key();
+        mapping.status = MintStatus::Active as u8;
+        mapping.decimals = decimals;
+        mapping.features =
+            FeatureFlags::from(feature_flags.unwrap_or_else(|| state.default_features.bits()));
+        mapping.has_fee_override = fee_bps_override.is_some();
+        mapping.fee_bps_override = fee_bps_override.unwrap_or_default();
+        mapping.bump = ctx.bumps.mint_mapping;
+        mapping.has_ptkn = false;
+        mapping.ptkn_mint = Pubkey::default();
 
         let effective_fee_bps = fee_bps_override.unwrap_or(state.default_fee_bps);
 
