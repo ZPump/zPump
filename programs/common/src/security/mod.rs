@@ -17,4 +17,5 @@ pub use sanitization::*;
 pub use errors::*;
 pub use state_machine::*;
 pub use rate_limiting::*;
+pub use integrity::*;
 
