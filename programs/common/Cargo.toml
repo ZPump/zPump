@@ -7,3 +7,4 @@ edition = "2021"
 anchor-lang = { workspace = true }
 thiserror = { workspace = true }
 hex = { workspace = true }
+sha3 = "0.10"
