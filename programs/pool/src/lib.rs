@@ -3759,7 +3759,11 @@ impl PoolState {
             PoolError::AmountOverflow
         );
         
-        Ok(fee as u64)
+        let fee_u64 = fee as u64;
+        
+        // CRITICAL FIX: Enforce minimum fee to prevent fee bypass via small transactions
+        const MIN_FEE: u64 = 1; // 1 lamport minimum fee
+        Ok(fee_u64.max(MIN_FEE))
     }
 }
 
