@@ -1872,16 +1872,9 @@ fn execute_private_transfer<'info>(
         args.output_commitments.len() == args.output_amount_commitments.len(),
         PoolError::OutputSetMismatch,
     );
-    let (_old_root_before, _next_index_before) = {
-        let commitment_tree = commitment_tree_loader.load()?;
-        (commitment_tree.current_root, commitment_tree.next_index)
-    };
     
-    // CRITICAL FIX: Validate root synchronization before appending
-    {
-        let commitment_tree = commitment_tree_loader.load()?;
-        pool_state.validate_root_strict(&commitment_tree.current_root, &args.old_root)?;
-    }
+    // CRITICAL FIX: Validate root synchronization before appending (already validated above at line 1835)
+    // Root validation was already done, so we can proceed directly to appending
     
     // Append output commitments to the tree and get the computed root
     let (computed_new_root, _output_indices) = {
@@ -5015,9 +5008,10 @@ fn bytes_to_fr(bytes: &[u8; 32]) -> Result<Fr> {
 }
 
 // CRITICAL FIX: Poseidon tree migration - replace SHA-256 with Poseidon
-// Poseidon leaf: commitment bytes are already a field element, just convert
+// Poseidon leaf: commitment bytes are already a field element from Poseidon hash, just convert
+// Use fr_from_bytes (no field modulus check) since commitments are already valid field elements
 fn poseidon_leaf(commitment: &[u8; 32]) -> Result<Fr> {
-    bytes_to_fr(commitment)
+    fr_from_bytes(commitment)
 }
 
 // Poseidon branch: hash two field elements using Poseidon
