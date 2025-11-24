@@ -3711,8 +3711,16 @@ impl PoolState {
 
     // CRITICAL FIX: Check if root is known and not expired
     pub fn is_known_root(&self, candidate: &[u8; 32]) -> bool {
-        let clock = Clock::get().ok();
-        let current_time = clock.map(|c| c.unix_timestamp).unwrap_or(0);
+        // CRITICAL FIX: Require Clock sysvar - don't silently fall back to 0
+        let clock = match Clock::get() {
+            Ok(c) => c,
+            Err(_) => {
+                // If Clock is unavailable, we can't validate expiration, so reject for safety
+                msg!("WARNING: Clock sysvar unavailable, rejecting root check");
+                return false;
+            }
+        };
+        let current_time = clock.unix_timestamp;
         
         if &self.current_root == candidate {
             return true;
@@ -3909,8 +3917,16 @@ impl ShieldClaim {
     
     // CRITICAL FIX: Check if claim has expired
     pub fn is_expired(&self) -> bool {
-        let clock = Clock::get().ok();
-        let current_time = clock.map(|c| c.unix_timestamp).unwrap_or(0);
+        // CRITICAL FIX: Require Clock sysvar - don't silently fall back to 0
+        let clock = match Clock::get() {
+            Ok(c) => c,
+            Err(_) => {
+                // If Clock is unavailable, we can't validate expiration, so assume expired for safety
+                msg!("WARNING: Clock sysvar unavailable, assuming expired");
+                return true;
+            }
+        };
+        let current_time = clock.unix_timestamp;
         current_time > self.expires_at
     }
     
