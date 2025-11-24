@@ -960,60 +960,62 @@ fn release_lock(state: &mut VaultState) {
 
 #[error_code]
 pub enum VaultError {
-    #[msg("invalid bump seed")]
+    // Standardized validation errors
+    #[msg("Invalid bump seed")]
     InvalidBump,
-    #[msg("E_UNAUTHORIZED_CALLER")]
+    #[msg("Unauthorized caller")]
     UnauthorizedCaller,
-    #[msg("E_INVALID_MINT")]
+    #[msg("Invalid mint")]
     InvalidMint,
-    #[msg("E_INVALID_DEPOSIT_AMOUNT")]
+    #[msg("Invalid amount")]
     InvalidDepositAmount,
-    #[msg("E_INVALID_RELEASE_AMOUNT")]
+    #[msg("Invalid amount")]
     InvalidReleaseAmount,
-    #[msg("E_INSUFFICIENT_BALANCE")]
+    #[msg("Insufficient balance")]
     InsufficientBalance,
-    #[msg("E_INVALID_VAULT_ACCOUNT")]
+    #[msg("Invalid vault account")]
     InvalidVaultAccount,
-    #[msg("E_INVALID_DEPOSITOR_ACCOUNT")]
+    #[msg("Invalid depositor account")]
     InvalidDepositorAccount,
-    // CRITICAL FIX: Reentrancy protection
-    #[msg("E_REENTRANCY_DETECTED")]
+    // Standardized security errors
+    #[msg("Reentrancy detected")]
     ReentrancyDetected,
-    // CRITICAL FIX: Error types for timelock-based authority changes
-    #[msg("E_TIMELOCK_OVERFLOW")]
+    // Standardized timelock errors
+    #[msg("Timelock overflow")]
     TimelockOverflow,
-    #[msg("E_TIMELOCK_NOT_READY")]
+    #[msg("Timelock not ready")]
     TimelockNotReady,
-    #[msg("E_ALREADY_EXECUTED")]
+    #[msg("Already executed")]
     AlreadyExecuted,
-    #[msg("E_CHANGE_CANCELED")]
+    #[msg("Change canceled")]
     ChangeCanceled,
-    #[msg("E_VAULT_MISMATCH")]
+    #[msg("Vault mismatch")]
     VaultMismatch,
-    #[msg("E_AUTHORITY_MISMATCH")]
+    #[msg("Authority mismatch")]
     AuthorityMismatch,
-    #[msg("E_INVALID_AUTHORITY_CHANGE")]
+    #[msg("Invalid authority change")]
     InvalidAuthorityChange,
-    #[msg("E_ALREADY_CANCELED")]
+    #[msg("Already canceled")]
     AlreadyCanceled,
-    // CRITICAL FIX: New error types for enhanced security
-    #[msg("E_INVALID_TOKEN_PROGRAM")]
+    // Program-specific errors
+    #[msg("Invalid token program")]
     InvalidTokenProgram,
-    #[msg("E_INVALID_POOL_AUTHORITY")]
+    #[msg("Invalid pool authority")]
     InvalidPoolAuthority,
-    #[msg("E_PENDING_CHANGE_EXISTS")]
+    #[msg("Pending change exists")]
     PendingChangeExists,
-    #[msg("E_AUTHORITY_CHANGE_RATE_LIMITED")]
+    #[msg("Authority change rate limited")]
     AuthorityChangeRateLimited,
-    #[msg("E_CHANGE_EXPIRED")]
+    #[msg("Change expired")]
     ChangeExpired,
-    #[msg("E_CHANGE_NOT_EXPIRED")]
+    #[msg("Change not expired")]
     ChangeNotExpired,
-    #[msg("E_INTEGRITY_CHECK_FAILED")]
+    // Standardized integrity errors
+    #[msg("Integrity check failed")]
     IntegrityCheckFailed,
-    #[msg("E_STALE_PROPOSAL")]
+    #[msg("Stale proposal")]
     StaleProposal,
-    #[msg("E_SEQUENCE_OVERFLOW")]
+    #[msg("Sequence overflow")]
     SequenceOverflow,
 }
 

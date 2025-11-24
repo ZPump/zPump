@@ -5461,153 +5461,177 @@ pub enum HookAccountMode {
 
 #[error_code]
 pub enum PoolError {
-    #[msg("account is not owned by expected program")]
+    // Standardized validation errors
+    #[msg("Invalid account owner")]
     InvalidAccountOwner,
-    #[msg("E_INVALID_FEE_BPS")]
+    // Standardized input errors
+    #[msg("Invalid fee basis points")]
     InvalidFeeBps,
-    #[msg("E_POOL_ALREADY_INITIALIZED")]
+    // Program-specific state errors
+    #[msg("Pool already initialized")]
     PoolAlreadyInitialized,
-    #[msg("E_VERIFIER_MISMATCH")]
+    #[msg("Verifier mismatch")]
     VerifierMismatch,
-    #[msg("E_VERIFYING_KEY_HASH_MISMATCH")]
+    // Standardized integrity errors
+    #[msg("Hash mismatch")]
     VerifyingKeyHashMismatch,
-    #[msg("E_INVALID_PUBLIC_INPUTS")]
+    // Standardized sanitization errors
+    #[msg("Invalid public inputs")]
     InvalidPublicInputs,
-    #[msg("E_INVALID_FIELD_ELEMENT")]
+    // Program-specific errors
+    #[msg("Invalid field element")]
     InvalidFieldElement,
-    #[msg("E_INVALID_STATE_TRANSITION")]
+    // Standardized state errors
+    #[msg("Invalid state transition")]
     InvalidStateTransition,
-    #[msg("E_INVALID_BUMP")]
+    // Standardized validation errors
+    #[msg("Invalid bump seed")]
     InvalidBump,
-    #[msg("E_PUBLIC_INPUTS_TOO_LARGE")]
+    // Standardized sanitization errors
+    #[msg("Public inputs too large")]
     PublicInputsTooLarge,
-    #[msg("E_PROOF_TOO_LARGE")]
+    #[msg("Proof too large")]
     ProofTooLarge,
-    #[msg("E_PUBLIC_INPUT_MISMATCH")]
+    #[msg("Public input mismatch")]
     PublicInputMismatch,
-    #[msg("E_UNKNOWN_ROOT")]
+    // Program-specific errors
+    #[msg("Unknown root")]
     UnknownRoot,
-    #[msg("E_NULLIFIER_REUSE")]
+    // Standardized sanitization errors
+    #[msg("Nullifier reuse")]
     NullifierReuse,
     // REMOVED: NullifierCapacity - no longer needed with bloom-filter-only approach
     // The bloom filter has no capacity limit, so this error is obsolete
-    #[msg("E_AMOUNT_OVERFLOW")]
+    // Standardized input errors
+    #[msg("Amount overflow")]
     AmountOverflow,
-    #[msg("E_INVALID_AMOUNT")]
+    #[msg("Invalid amount")]
     InvalidAmount,
-    #[msg("E_AMOUNT_TOO_LARGE")]
+    #[msg("Amount too large")]
     AmountTooLarge,
-    #[msg("E_INSUFFICIENT_LIQUIDITY")]
+    // Standardized insufficient balance/liability errors
+    #[msg("Insufficient liquidity")]
     InsufficientLiquidity,
-    #[msg("E_INSUFFICIENT_FEES")]
+    #[msg("Insufficient fees")]
     InsufficientFees,
-    #[msg("E_FEATURE_DISABLED")]
+    // Program-specific errors
+    #[msg("Feature disabled")]
     FeatureDisabled,
-    #[msg("E_MINT_FROZEN")]
+    #[msg("Mint frozen")]
     MintFrozen,
-    #[msg("E_SHIELD_FINALIZATION_REQUIRED")]
+    #[msg("Shield finalization required")]
     ShieldFinalizationRequired,
-    #[msg("E_VAULT_AUTHORITY_MISMATCH")]
+    #[msg("Vault authority mismatch")]
     MismatchedVaultAuthority,
-    #[msg("E_ORIGIN_MINT_MISMATCH")]
+    #[msg("Origin mint mismatch")]
     OriginMintMismatch,
-    #[msg("E_MINT_MAPPING_CORRUPT")]
+    #[msg("Mint mapping corrupt")]
     MintMappingCorrupt,
-    #[msg("E_ACCOUNT_DATA_TOO_SHORT")]
+    // Standardized validation errors
+    #[msg("Account data too short")]
     AccountDataTooShort,
-    #[msg("E_INVALID_ACCOUNT_DISCRIMINATOR")]
+    #[msg("Invalid discriminator")]
     InvalidAccountDiscriminator,
-    #[msg("E_ACCOUNT_DATA_CORRUPT")]
+    #[msg("Account data corrupt")]
     AccountDataCorrupt,
-    #[msg("E_VAULT_TOKEN_ACCOUNT_MISMATCH")]
+    // Program-specific errors
+    #[msg("Vault token account mismatch")]
     VaultTokenAccountMismatch,
-    #[msg("E_INVALID_DEPOSITOR_ACCOUNT")]
+    #[msg("Invalid depositor account")]
     InvalidDepositorAccount,
-    #[msg("E_TWIN_MINT_MISMATCH")]
+    #[msg("Twin mint mismatch")]
     TwinMintMismatch,
-    #[msg("E_TWIN_MINT_NOT_CONFIGURED")]
+    #[msg("Twin mint not configured")]
     TwinMintNotConfigured,
-    #[msg("E_TWIN_MINT_AUTHORITY_MISMATCH")]
+    #[msg("Twin mint authority mismatch")]
     TwinMintAuthorityMismatch,
-    #[msg("E_TWIN_MINT_DECIMALS_MISMATCH")]
+    #[msg("Twin mint decimals mismatch")]
     TwinMintDecimalsMismatch,
-    #[msg("E_INVARIANT_BREACH")]
+    // Standardized invariant errors
+    #[msg("Invariant breach")]
     InvariantBreach,
-    #[msg("E_HOOKS_DISABLED")]
+    // Program-specific hook errors
+    #[msg("Hooks disabled")]
     HooksDisabled,
-    #[msg("E_TOO_MANY_HOOK_ACCOUNTS")]
+    #[msg("Too many hook accounts")]
     TooManyHookAccounts,
-    #[msg("E_HOOK_CONFIG_INVALID")]
+    #[msg("Hook config invalid")]
     HookConfigInvalid,
-    #[msg("E_HOOK_ACCOUNT_MISMATCH")]
+    #[msg("Hook account mismatch")]
     HookAccountMismatch,
-    #[msg("E_HOOK_ACCOUNT_MISSING")]
+    #[msg("Hook account missing")]
     HookAccountMissing,
-    #[msg("E_HOOK_ACCOUNT_UNEXPECTED")]
+    #[msg("Hook account unexpected")]
     HookAccountUnexpected,
-    #[msg("E_NOTE_LEDGER_MISMATCH")]
+    // Program-specific errors
+    #[msg("Note ledger mismatch")]
     NoteLedgerMismatch,
-    #[msg("E_TREE_MISMATCH")]
+    #[msg("Tree mismatch")]
     CommitmentTreeMismatch,
-    #[msg("E_INVALID_CHANGE_NOTE_COUNT")]
+    #[msg("Invalid change note count")]
     InvalidChangeNoteCount,
-    #[msg("E_OUTPUT_SET_MISMATCH")]
+    #[msg("Output set mismatch")]
     OutputSetMismatch,
-    #[msg("E_CANOPY_DEPTH_INVALID")]
+    #[msg("Canopy depth invalid")]
     CanopyDepthInvalid,
-    #[msg("E_TREE_FULL")]
+    #[msg("Tree full")]
     TreeFull,
-    #[msg("E_ROOT_MISMATCH")]
+    #[msg("Root mismatch")]
     RootMismatch,
-    #[msg("E_ROOT_DRIFT")]
+    #[msg("Root drift")]
     RootDrift,
-    #[msg("E_PENDING_SHIELD_IN_FLIGHT")]
+    #[msg("Pending shield in flight")]
     PendingShieldInFlight,
-    #[msg("E_NO_PENDING_SHIELD")]
+    #[msg("No pending shield")]
     NoPendingShield,
-    #[msg("E_PENDING_SHIELD_MISMATCH")]
+    #[msg("Pending shield mismatch")]
     PendingShieldMismatch,
-    #[msg("E_SHIELD_FINALIZE_MISSING")]
+    #[msg("Shield finalize missing")]
     MissingShieldFinalize,
-    #[msg("E_SHIELD_CLAIM_MISMATCH")]
+    #[msg("Shield claim mismatch")]
     ShieldClaimMismatch,
-    #[msg("E_SHIELD_CLAIM_STAGE")]
+    #[msg("Shield claim stage")]
     ShieldClaimStage,
-    #[msg("E_ALLOWANCE_POOL_MISMATCH")]
+    // Program-specific allowance errors
+    #[msg("Allowance pool mismatch")]
     AllowancePoolMismatch,
-    #[msg("E_ALLOWANCE_OWNER_MISMATCH")]
+    #[msg("Allowance owner mismatch")]
     AllowanceOwnerMismatch,
-    #[msg("E_ALLOWANCE_SPENDER_MISMATCH")]
+    #[msg("Allowance spender mismatch")]
     AllowanceSpenderMismatch,
-    #[msg("E_ALLOWANCE_MINT_MISMATCH")]
+    #[msg("Allowance mint mismatch")]
     AllowanceMintMismatch,
-    #[msg("E_ALLOWANCE_INSUFFICIENT")]
+    #[msg("Allowance insufficient")]
     AllowanceInsufficient,
-    #[msg("E_ALLOWANCE_AMOUNT_INVALID")]
+    #[msg("Allowance amount invalid")]
     AllowanceAmountInvalid,
-    #[msg("E_ALLOWANCE_AMOUNT_MISMATCH")]
+    #[msg("Allowance amount mismatch")]
     AllowanceAmountMismatch,
-    #[msg("E_ALLOWANCE_TOO_LARGE")]
+    #[msg("Allowance too large")]
     AllowanceTooLarge,
-    #[msg("E_ALLOWANCE_EXPIRED")]
+    #[msg("Allowance expired")]
     AllowanceExpired,
-    #[msg("E_INVALID_EXPIRATION")]
+    #[msg("Invalid expiration")]
     InvalidExpiration,
-    #[msg("E_NULLIFIER_SET_MISMATCH")]
+    // Program-specific errors
+    #[msg("Nullifier set mismatch")]
     NullifierSetMismatch,
-    #[msg("E_HOOK_NOT_WHITELISTED")]
+    #[msg("Hook not whitelisted")]
     HookNotWhitelisted,
-    #[msg("E_HOOK_REENTRANCY_DETECTED")]
+    // Standardized reentrancy errors
+    #[msg("Reentrancy detected")]
     HookReentrancyDetected,
-    #[msg("E_HOOK_EXECUTION_FAILED")]
+    // Program-specific errors
+    #[msg("Hook execution failed")]
     HookExecutionFailed,
-    #[msg("E_HOOK_ALREADY_WHITELISTED")]
+    #[msg("Hook already whitelisted")]
     HookAlreadyWhitelisted,
-    #[msg("E_WHITELIST_FULL")]
+    #[msg("Whitelist full")]
     WhitelistFull,
-    #[msg("E_UNAUTHORIZED")]
+    // Standardized access control errors
+    #[msg("Unauthorized")]
     Unauthorized,
-    #[msg("E_INVALID_AUTHORITY")]
+    #[msg("Invalid authority")]
     InvalidAuthority,
     #[msg("E_AUTHORITY_UNCHANGED")]
     AuthorityUnchanged,
