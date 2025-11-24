@@ -41,12 +41,27 @@ The zero-knowledge proof circuits compute `new_root` differently than the commit
 - Relies on multiple validation layers rather than direct circuit validation
 - Could lead to inconsistencies if validation logic has bugs
 
+**Note:** A comprehensive validation security analysis has been performed. See `docs/validation-security-analysis.md` for detailed analysis of validation correctness, identified gaps, and how we ensure bug-free operation.
+
 ## Current Mitigations
 
-1. `validate_transfer_public_inputs` ensures output commitments match proof
-2. `validate_unshield_public_inputs` ensures output commitments match proof
-3. Groth16 verification validates proof's new_root computation
-4. Tree's computed root is used as the actual state
+1. **Groth16 Proof Verification** - Cryptographic validation of proof validity
+2. **Root Validation** - Ensures old_root is known and matches tree state
+3. **Transfer Public Inputs Validation** - Validates:
+   - old_root, new_root, nullifiers match proof exactly
+   - All output commitments match proof exactly (byte-for-byte)
+   - Duplicate commitment prevention
+   - Mint and pool binding (prevents proof reuse)
+   - Field element validation
+4. **Unshield Public Inputs Validation** - Comprehensive validation including:
+   - All commitments and amount commitments match proof
+   - Amount, fee, destination, mode validation
+   - Strict length validation
+5. **Nullifier Validation** - Prevents double-spending
+6. **Supply Invariant Checks** - Detects supply inconsistencies (if enabled)
+7. **Tree's computed root is used as the actual state** - Authoritative source
+
+**Validation Security:** See `docs/validation-security-analysis.md` for comprehensive analysis.
 
 ## Current Status
 
