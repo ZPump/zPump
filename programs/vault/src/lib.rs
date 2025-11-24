@@ -5,7 +5,7 @@ use anchor_spl::token_interface::{
 use solana_program::pubkey;
 
 use ptf_common::seeds;
-use ptf_common::security::{AccountValidator, InputValidator};
+use ptf_common::security::{RateLimitConfig, RateLimiterState};
 
 declare_id!("9g6ZodQwxK8MN6MX3dbvFC3E7vGVqFtKZEHY7PByRAuh");
 
@@ -22,6 +22,20 @@ const LOCK_TIMEOUT_SECONDS: i64 = 300; // 5 minutes
 const SPL_TOKEN_PROGRAM_ID: Pubkey = pubkey!("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
 const SPL_TOKEN_2022_PROGRAM_ID: Pubkey = pubkey!("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb");
 
+// Rate limiting configuration (per vault / origin mint)
+const DEPOSIT_RATE_LIMIT_CONFIG: RateLimitConfig = RateLimitConfig {
+    // At most 120 deposits per minute with at least 1 second between deposits.
+    min_time_between_actions: 1,
+    max_actions_per_window: 120,
+    window_duration: 60,
+};
+const RELEASE_RATE_LIMIT_CONFIG: RateLimitConfig = RateLimitConfig {
+    // Releases are more sensitive: 30 per minute, 2 seconds apart.
+    min_time_between_actions: 2,
+    max_actions_per_window: 30,
+    window_duration: 60,
+};
+
 #[program]
 pub mod ptf_vault {
     use super::*;
@@ -35,7 +49,7 @@ pub mod ptf_vault {
         );
         
         // CRITICAL FIX: Validate pool_authority is a valid pool PDA
-        let (expected_pool_authority, expected_bump) = Pubkey::find_program_address(
+        let (expected_pool_authority, _expected_bump) = Pubkey::find_program_address(
             &[seeds::POOL, ctx.accounts.origin_mint.key().as_ref()],
             &PTF_POOL_PROGRAM_ID,
         );
@@ -68,6 +82,8 @@ pub mod ptf_vault {
         state.lock_timestamp = None;
         state.authority_change_sequence = 0;
         state.last_authority_change_time = None;
+        state.deposit_rate_limit = RateLimiterState::default();
+        state.release_rate_limit = RateLimiterState::default();
         Ok(())
     }
 
@@ -78,6 +94,12 @@ pub mod ptf_vault {
         validate_token_program(&ctx.accounts.token_program.key())?;
 
         let vault_state = &mut ctx.accounts.vault_state;
+
+        // Apply per-mint deposit rate limiting.
+        let clock = Clock::get()?;
+        vault_state
+            .deposit_rate_limit
+            .check(&DEPOSIT_RATE_LIMIT_CONFIG, &clock)?;
         
         // CRITICAL FIX: Enhanced reentrancy guard with timeout
         acquire_lock(vault_state)?;
@@ -165,6 +187,12 @@ pub mod ptf_vault {
         );
         
         let vault_state = &mut ctx.accounts.vault_state;
+
+        // Apply per-mint release rate limiting.
+        let clock = Clock::get()?;
+        vault_state
+            .release_rate_limit
+            .check(&RELEASE_RATE_LIMIT_CONFIG, &clock)?;
         
         // CRITICAL FIX: Enhanced reentrancy guard with timeout
         acquire_lock(vault_state)?;
@@ -645,11 +673,16 @@ pub struct VaultState {
     pub lock_timestamp: Option<i64>, // CRITICAL FIX: Track when lock was acquired for timeout
     pub authority_change_sequence: u64, // CRITICAL FIX: Track authority change sequence to prevent race conditions
     pub last_authority_change_time: Option<i64>, // CRITICAL FIX: Rate limiting for authority changes
+    pub deposit_rate_limit: RateLimiterState,
+    pub release_rate_limit: RateLimiterState,
 }
 
 impl VaultState {
-    // SPACE: discriminator (8) + origin_mint (32) + pool_authority (32) + bump (1) + locked (1) + lock_timestamp (9) + sequence (8) + last_change_time (9) + padding (1)
-    pub const SPACE: usize = 8 + 32 + 32 + 1 + 1 + 9 + 8 + 9 + 1;
+    // SPACE: discriminator (8) + origin_mint (32) + pool_authority (32) + bump (1) + locked (1)
+    // + lock_timestamp (9) + sequence (8) + last_change_time (9) + padding (1)
+    // + deposit_rate_limit (RateLimiterState::SIZE) + release_rate_limit (RateLimiterState::SIZE)
+    pub const SPACE: usize =
+        8 + 32 + 32 + 1 + 1 + 9 + 8 + 9 + 1 + RateLimiterState::SIZE * 2;
 }
 
 // CRITICAL FIX: Pending authority change account for timelock system
