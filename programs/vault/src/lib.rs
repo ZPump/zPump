@@ -83,10 +83,36 @@ pub mod ptf_vault {
         
         // Use defer-like pattern to ensure lock is always released
         let result = (|| -> Result<()> {
+            // CRITICAL FIX: Validate vault token account owner is vault PDA
+            let (expected_vault_pda, _) = Pubkey::find_program_address(
+                &[seeds::VAULT, vault_state.origin_mint.as_ref()],
+                &crate::ID,
+            );
+            require_keys_eq!(
+                ctx.accounts.vault_token_account.owner,
+                expected_vault_pda,
+                VaultError::InvalidVaultAccount
+            );
+            
+            // CRITICAL FIX: Validate vault token account mint matches origin_mint
             require_keys_eq!(
                 ctx.accounts.vault_token_account.mint,
                 vault_state.origin_mint,
                 VaultError::InvalidMint,
+            );
+            
+            // CRITICAL FIX: Validate depositor token account owner is depositor
+            require_keys_eq!(
+                ctx.accounts.depositor_token_account.owner,
+                ctx.accounts.depositor.key(),
+                VaultError::InvalidDepositorAccount
+            );
+            
+            // CRITICAL FIX: Validate depositor token account mint matches origin_mint
+            require_keys_eq!(
+                ctx.accounts.depositor_token_account.mint,
+                vault_state.origin_mint,
+                VaultError::InvalidMint
             );
 
             let cpi_accounts = Transfer {
@@ -145,6 +171,31 @@ pub mod ptf_vault {
         // Use defer-like pattern to ensure lock is always released
         let result = (|| -> Result<()> {
             validate_pool_authority(&ctx.accounts.pool_authority, &pool_authority)?;
+            
+            // CRITICAL FIX: Validate vault token account owner is vault PDA
+            let (expected_vault_pda, _) = Pubkey::find_program_address(
+                &[seeds::VAULT, origin_mint.as_ref()],
+                &crate::ID,
+            );
+            require_keys_eq!(
+                ctx.accounts.vault_token_account.owner,
+                expected_vault_pda,
+                VaultError::InvalidVaultAccount
+            );
+            
+            // CRITICAL FIX: Validate vault token account mint matches origin_mint
+            require_keys_eq!(
+                ctx.accounts.vault_token_account.mint,
+                origin_mint,
+                VaultError::InvalidMint
+            );
+            
+            // CRITICAL FIX: Validate destination token account mint matches origin_mint
+            require_keys_eq!(
+                ctx.accounts.destination_token_account.mint,
+                origin_mint,
+                VaultError::InvalidMint
+            );
 
             // CRITICAL FIX: Explicitly validate vault has sufficient balance before releasing
             // Cache balance before transfer to validate after
@@ -764,6 +815,10 @@ pub enum VaultError {
     InvalidReleaseAmount,
     #[msg("E_INSUFFICIENT_BALANCE")]
     InsufficientBalance,
+    #[msg("E_INVALID_VAULT_ACCOUNT")]
+    InvalidVaultAccount,
+    #[msg("E_INVALID_DEPOSITOR_ACCOUNT")]
+    InvalidDepositorAccount,
     // CRITICAL FIX: Reentrancy protection
     #[msg("E_REENTRANCY_DETECTED")]
     ReentrancyDetected,
