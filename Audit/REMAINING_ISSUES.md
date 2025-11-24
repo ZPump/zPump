@@ -35,6 +35,14 @@ After implementing design improvements and security mitigations, the following i
    - **Impact:** Low - Policy inconsistency, but fee override is not currently used
    - **Recommendation:** Make validation consistent (apply same 10% limit in `apply_mint_update`)
 
+#### ptf_pool (1 issue)
+4. **Recent Commitments Length Overflow Risk** (`recent-len-overflow-risk.md`)
+   - **Location:** `programs/pool/src/lib.rs:3986-4002` (record_recent function)
+   - **Status:** Open
+   - **Description:** `recent_len` can be corrupted to exceed `MAX_CANOPY` without validation. When `recent_len >= MAX_CANOPY`, array shifts but `recent_len` is not updated.
+   - **Impact:** Low - Current code is safe (uses fixed indexing), but missing defensive validation
+   - **Recommendation:** Add bounds validation for `recent_len` in `record_recent` to cap it at `MAX_CANOPY`
+
 ### BY DESIGN (1 issue)
 
 #### ptf_pool (1 issue)
@@ -78,7 +86,8 @@ The following issues were addressed in the latest implementation (Commit d1cf0fd
 
 ## Latest Audit Findings (2025-01-26)
 
-Found 3 new security concerns:
+Found 4 new security concerns:
 1. **MEDIUM**: Fee override feature not implemented (cached but never used)
 2. **LOW**: Hook whitelist integrity validation never called
 3. **LOW**: Fee override validation inconsistency between register and update
+4. **LOW**: Recent commitments length overflow risk (missing bounds validation)
