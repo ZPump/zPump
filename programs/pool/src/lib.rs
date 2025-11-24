@@ -2417,8 +2417,14 @@ fn process_shield_finalize_tree<'info>(
             tree.next_index == pending.next_index,
             PoolError::PendingShieldMismatch,
         );
+        // CRITICAL FIX: Validate DEPTH is safe for u64 cast before shift
         require!(
-            tree.next_index < (1u128 << CommitmentTree::DEPTH) as u64,
+            CommitmentTree::DEPTH < 64,
+            PoolError::AmountOverflow
+        );
+        let max_capacity = (1u128 << CommitmentTree::DEPTH) as u64;
+        require!(
+            tree.next_index < max_capacity,
             PoolError::TreeFull
         );
         tree.next_index = tree
@@ -2432,7 +2438,10 @@ fn process_shield_finalize_tree<'info>(
             pool_state.push_root(pending.new_root)?;
             pool_state.pending_shield.deactivate();
         }
-        shield_claim.tree_level = CommitmentTree::DEPTH as u8;
+        // CRITICAL FIX: Validate DEPTH fits in u8 before casting
+        let depth_u8 = u8::try_from(CommitmentTree::DEPTH)
+            .map_err(|_| PoolError::AmountOverflow)?;
+        shield_claim.tree_level = depth_u8;
         shield_claim.tree_node = pending.new_root;
         shield_claim.tree_index_cursor = 0;
         shield_claim.mark_tree_complete()?;
@@ -3553,8 +3562,14 @@ impl CommitmentTree {
         commitment: [u8; 32],
         amount_commit: [u8; 32],
     ) -> Result<([u8; 32], u64)> {
+        // CRITICAL FIX: Validate DEPTH is safe for u64 cast before shift
         require!(
-            self.next_index < (1u128 << Self::DEPTH) as u64,
+            Self::DEPTH < 64,
+            PoolError::AmountOverflow
+        );
+        let max_capacity = (1u128 << Self::DEPTH) as u64;
+        require!(
+            self.next_index < max_capacity,
             PoolError::TreeFull,
         );
         let index_position = self.next_index;
