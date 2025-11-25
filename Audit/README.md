@@ -20,10 +20,14 @@ Each program has its own directory with findings organized by severity:
 ## Summary
 
 ### Critical Issues
-- **0 issues** - None found
+- **2 issues**
+  - **ptf_verifier_groth16**: Verifier config can be hijacked during initialization (unauthorized authority + factory program ID)
+  - **ptf_verifier_groth16**: Dev-skip build flag bypasses proof verification on-chain (unchecked feature toggle)
 
 ### High Issues
-- **0 issues** - None found
+- **2 issues**
+  - **ptf_factory**: Missing authority check when initializing factory config (attacker can set pool/verifier program IDs)
+  - **ptf_factory**: Pool-controlled PTKN minting lacks governance guardrails (factory authority never approves issuance)
 
 ### Medium Issues (1 remaining - BY DESIGN)
 - **ptf_pool**: 1 issue
