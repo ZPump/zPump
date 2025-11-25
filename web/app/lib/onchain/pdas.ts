@@ -57,6 +57,14 @@ export function deriveFactoryState(): PublicKey {
   )[0];
 }
 
+export function deriveFactoryConfig(): PublicKey {
+  const factoryState = deriveFactoryState();
+  return PublicKey.findProgramAddressSync(
+    [textEncoder.encode('factory-config'), factoryState.toBuffer()],
+    FACTORY_PROGRAM_ID
+  )[0];
+}
+
 export function deriveVerifyingKey(): PublicKey {
   return PublicKey.findProgramAddressSync(
     [textEncoder.encode('vk'), CIRCUIT_TAGS.shield, new Uint8Array([VERIFIER_VERSION])],

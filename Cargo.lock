@@ -3742,6 +3742,7 @@ dependencies = [
  "solana-program 2.3.0",
  "solana-program-test 2.3.13",
  "solana-sdk 2.3.1",
+ "spl-associated-token-account-client",
  "spl-token",
  "thiserror 1.0.69",
  "tokio",

@@ -40,6 +40,7 @@ import {
   deriveVerifyingKey,
   deriveMintMapping,
   deriveFactoryState,
+  deriveFactoryConfig,
   deriveShieldClaim,
   deriveTokenMetadata,
   derivePoolState
@@ -179,6 +180,17 @@ interface MintNativeZTokenParams {
   initialSupply: bigint | number | string;
   featureFlags?: number;
   feeBpsOverride?: number;
+}
+
+export interface MintNativeZTokenResult {
+  signature: string;
+  originMint: string;
+  poolId: string;
+  metadataAccount: string;
+  mintMapping: string;
+  decimals: number;
+  symbol: string;
+  uri: string;
 }
 
 type SplTokenProgramKind = 'token' | 'token-2022';
@@ -1684,16 +1696,18 @@ export async function resolvePublicKey(maybeKey: string | undefined, fallback: P
   return new PublicKey(maybeKey);
 }
 
-export async function mintNativeZToken(params: MintNativeZTokenParams): Promise<string> {
+export async function mintNativeZToken(params: MintNativeZTokenParams): Promise<MintNativeZTokenResult> {
   assertWallet(params.wallet);
   const { connection, wallet } = params;
 
   // Generate a new mint keypair
   const mintKeypair = Keypair.generate();
   const originMint = mintKeypair.publicKey;
+  const tokenProgramId = TOKEN_2022_PROGRAM_ID;
 
   // Derive all PDAs
   const factoryState = deriveFactoryState();
+  const factoryConfig = deriveFactoryConfig();
   const mintMapping = deriveMintMapping(originMint);
   const metadata = deriveTokenMetadata(originMint);
   const poolState = derivePoolState(originMint);
@@ -1705,31 +1719,29 @@ export async function mintNativeZToken(params: MintNativeZTokenParams): Promise<
   const hookWhitelist = deriveHookWhitelist(originMint);
   const verifyingKey = deriveVerifyingKey();
 
-  // Get user's token account (create if needed)
+  // Factory config currently holds legacy program IDs on devnet. Skip passing it so the
+  // on-chain program falls back to its baked-in configuration.
+  const factoryConfigInfo = null;
+  const factoryConfigMeta = factoryConfigInfo
+    ? { pubkey: factoryConfig, isSigner: false, isWritable: true }
+    : { pubkey: FACTORY_PROGRAM_ID, isSigner: false, isWritable: false };
+
   const userTokenAccount = await getAssociatedTokenAddress(
     originMint,
     wallet.publicKey,
     false,
-    TOKEN_PROGRAM_ID,
+    tokenProgramId,
     ASSOCIATED_TOKEN_PROGRAM_ID
   );
-
-  // Check if token account exists, create if not
-  const userTokenAccountInfo = await connection.getAccountInfo(userTokenAccount);
-  const instructions: TransactionInstruction[] = [];
-  
-  if (!userTokenAccountInfo) {
-    instructions.push(
-      createAssociatedTokenAccountInstruction(
-        wallet.publicKey,
-        userTokenAccount,
-        wallet.publicKey,
-        originMint,
-        TOKEN_PROGRAM_ID,
-        ASSOCIATED_TOKEN_PROGRAM_ID
-      )
-    );
+  if (process.env.NEXT_PUBLIC_DEBUG_WRAP === 'true') {
+    // eslint-disable-next-line no-console
+    console.info('[mintNativeZToken]', {
+      originMint: originMint.toBase58(),
+      mintMapping: mintMapping.toBase58(),
+      poolState: poolState.toBase58(),
+    });
   }
+  const instructions: TransactionInstruction[] = [];
 
   // Build mint_native_ztoken instruction
   const mintData = factoryCoder.instruction.encode('mint_native_ztoken', {
@@ -1737,19 +1749,18 @@ export async function mintNativeZToken(params: MintNativeZTokenParams): Promise<
     symbol: params.symbol,
     uri: params.uri,
     decimals: params.decimals,
-    initialSupply: new BN(params.initialSupply.toString()),
-    featureFlags: params.featureFlags ? { some: params.featureFlags } : null,
-    feeBpsOverride: params.feeBpsOverride ? { some: params.feeBpsOverride } : null,
+    initial_supply: new BN(params.initialSupply.toString()),
+    feature_flags: params.featureFlags ? { some: params.featureFlags } : null,
+    fee_bps_override: params.feeBpsOverride ? { some: params.feeBpsOverride } : null,
   });
 
   const mintKeys = [
     { pubkey: factoryState, isSigner: false, isWritable: true },
-    { pubkey: wallet.publicKey, isSigner: true, isWritable: true }, // authority
     { pubkey: wallet.publicKey, isSigner: true, isWritable: true }, // payer
     { pubkey: originMint, isSigner: true, isWritable: true }, // mint (keypair)
     { pubkey: metadata, isSigner: false, isWritable: true },
     { pubkey: mintMapping, isSigner: false, isWritable: true },
-    // factory_config is optional, skip for now (will be None)
+    factoryConfigMeta,
     { pubkey: POOL_PROGRAM_ID, isSigner: false, isWritable: false }, // pool_program
     { pubkey: VAULT_PROGRAM_ID, isSigner: false, isWritable: false }, // vault_program
     { pubkey: poolState, isSigner: false, isWritable: true },
@@ -1762,7 +1773,8 @@ export async function mintNativeZToken(params: MintNativeZTokenParams): Promise<
     { pubkey: VERIFIER_PROGRAM_ID, isSigner: false, isWritable: false },
     { pubkey: verifyingKey, isSigner: false, isWritable: false },
     { pubkey: userTokenAccount, isSigner: false, isWritable: true },
-    { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
+    { pubkey: tokenProgramId, isSigner: false, isWritable: false },
+    { pubkey: ASSOCIATED_TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
     { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
     { pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false },
   ];
@@ -1809,5 +1821,14 @@ export async function mintNativeZToken(params: MintNativeZTokenParams): Promise<
     latestBlockhash.lastValidBlockHeight
   );
 
-  return signature;
+  return {
+    signature,
+    originMint: originMint.toBase58(),
+    poolId: poolState.toBase58(),
+    metadataAccount: metadata.toBase58(),
+    mintMapping: mintMapping.toBase58(),
+    decimals: params.decimals,
+    symbol: params.symbol,
+    uri: params.uri
+  };
 }

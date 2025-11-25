@@ -1,27 +1,27 @@
 import type { NextApiRequest, NextApiResponse } from 'next';
-import fs from 'fs/promises';
-import path from 'path';
+import bs58 from 'bs58';
+import { Connection, PublicKey } from '@solana/web3.js';
+import { BorshCoder, Idl } from '@coral-xyz/anchor';
+import factoryIdl from '../../idl/ptf_factory.json';
 import type { MintConfig } from '../../config/mints';
 import { bootstrapPrivateDevnet } from '../../scripts/bootstrap-private-devnet';
-import { getRepoRoot, resolveRepoPath } from '../../lib/server/paths';
-
-interface GeneratedMint {
-  symbol: string;
-  decimals: number;
-  originMint: string;
-  poolId: string;
-  zTokenMint: string | null;
-  features: {
-    zTokenEnabled: boolean;
-    wrappedTransfers: boolean;
-  };
-  lookupTable?: string | null;
-}
+import { getRepoRoot } from '../../lib/server/paths';
+import {
+  GeneratedMint,
+  mapGeneratedMint,
+  readMintCatalog,
+  writeMintCatalog
+} from '../../lib/server/mintCatalog';
+import { derivePoolState, deriveTokenMetadata } from '../../lib/onchain/pdas';
+import { FACTORY_PROGRAM_ID } from '../../lib/onchain/programIds';
 
 const PROJECT_ROOT = getRepoRoot();
-const MINTS_PATH = resolveRepoPath('web', 'app', 'config', 'mints.generated.json');
 const PLACEHOLDER_ORIGIN = 'Mint111111111111111111111111111111111111111';
 const PLACEHOLDER_POOL = 'Pool111111111111111111111111111111111111111';
+const MINT_MAPPING_DATA_SIZE = 85;
+const IS_NATIVE_OFFSET = 80;
+const TRUE_BYTE = bs58.encode(Buffer.from([1]));
+const coder = new BorshCoder(factoryIdl as Idl);
 
 let bootstrapInFlight = false;
 
@@ -30,42 +30,107 @@ function isLocalFaucetMode(): boolean {
   return mode === 'local';
 }
 
-function mapGeneratedMint(entry: GeneratedMint): MintConfig {
-  return {
-    symbol: entry.symbol,
-    originMint: entry.originMint,
-    poolId: entry.poolId,
-    zTokenMint: entry.zTokenMint ?? undefined,
-    decimals: entry.decimals,
-    features: entry.features,
-    lookupTable: entry.lookupTable ?? undefined
-  };
+function getRpcUrl(): string {
+  return process.env.RPC_URL ?? process.env.NEXT_PUBLIC_RPC_URL ?? 'http://127.0.0.1:8899';
 }
 
-async function readMintCatalog(): Promise<GeneratedMint[]> {
+async function fetchNativeMintEntries(): Promise<GeneratedMint[]> {
   try {
-    const raw = await fs.readFile(MINTS_PATH, 'utf8');
-    return JSON.parse(raw) as GeneratedMint[];
-  } catch (error) {
-    const err = error as NodeJS.ErrnoException;
-    if (err.code === 'ENOENT') {
-      return [];
+    const connection = new Connection(getRpcUrl(), 'confirmed');
+    const accounts = await connection.getProgramAccounts(FACTORY_PROGRAM_ID, {
+      commitment: 'confirmed',
+      filters: [
+        { dataSize: MINT_MAPPING_DATA_SIZE },
+        { memcmp: { offset: IS_NATIVE_OFFSET, bytes: TRUE_BYTE } }
+      ]
+    });
+
+    const entries: GeneratedMint[] = [];
+    for (const account of accounts) {
+      let decoded: any;
+      try {
+        decoded = coder.accounts.decode('MintMapping', account.account.data);
+      } catch (error) {
+        console.warn('[api/mints] Unable to decode MintMapping', { error });
+        continue;
+      }
+
+      if (!decoded?.isNativeZtoken) {
+        continue;
+      }
+
+      const originMintKey = new PublicKey(decoded.originMint as PublicKey);
+      const originMint = originMintKey.toBase58();
+      const poolId = derivePoolState(originMintKey).toBase58();
+      const metadataKey = deriveTokenMetadata(originMintKey);
+
+      let symbol = decoded?.symbol ?? originMint.slice(0, 6).toUpperCase();
+      let metadataUri: string | null = null;
+      try {
+        const metadataInfo = await connection.getAccountInfo(metadataKey, 'confirmed');
+        if (metadataInfo) {
+          const metadata = coder.accounts.decode('TokenMetadata', metadataInfo.data) as {
+            name: string;
+            symbol: string;
+            uri: string;
+          };
+          symbol = metadata.symbol || symbol;
+          metadataUri = metadata.uri || null;
+        }
+      } catch (error) {
+        console.warn('[api/mints] Failed to decode token metadata', { originMint, error });
+      }
+
+      entries.push({
+        symbol,
+        originMint,
+        poolId,
+        decimals: Number(decoded.decimals ?? 0),
+        zTokenMint: originMint,
+        features: {
+          zTokenEnabled: true,
+          wrappedTransfers: false
+        },
+        lookupTable: null,
+        metadataUri,
+        isNativeZToken: true
+      });
     }
-    throw error;
+    return entries;
+  } catch (error) {
+    console.warn('[api/mints] Failed to fetch native zTokens', error);
+    return [];
   }
 }
 
-async function writeMintCatalog(entries: GeneratedMint[]) {
-  await fs.mkdir(path.dirname(MINTS_PATH), { recursive: true });
-  await fs.writeFile(MINTS_PATH, JSON.stringify(entries, null, 2));
-}
-
 async function handleGet(res: NextApiResponse) {
-  const catalog = (await readMintCatalog()).filter(
-    (entry) =>
-      entry.originMint !== PLACEHOLDER_ORIGIN && entry.poolId !== PLACEHOLDER_POOL
+  const [catalog, nativeEntries] = await Promise.all([
+    readMintCatalog(),
+    fetchNativeMintEntries()
+  ]);
+  const filteredCatalog = catalog.filter(
+    (entry) => entry.originMint !== PLACEHOLDER_ORIGIN && entry.poolId !== PLACEHOLDER_POOL
   );
-  const mints = catalog.map(mapGeneratedMint);
+
+  const merged = new Map<string, GeneratedMint>();
+  for (const entry of filteredCatalog) {
+    merged.set(entry.originMint, entry);
+  }
+  for (const entry of nativeEntries) {
+    if (!merged.has(entry.originMint)) {
+      merged.set(entry.originMint, entry);
+    } else {
+      const existing = merged.get(entry.originMint)!;
+      merged.set(entry.originMint, {
+        ...existing,
+        ...entry,
+        metadataUri: entry.metadataUri ?? existing.metadataUri,
+        isNativeZToken: entry.isNativeZToken ?? existing.isNativeZToken
+      });
+    }
+  }
+
+  const mints = Array.from(merged.values()).map(mapGeneratedMint);
   res.status(200).json({ mints });
 }
 

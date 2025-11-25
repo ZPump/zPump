@@ -1,5 +1,5 @@
 {
-  "address": "7kbUWzeTPY6qb1mFJC1ZMRmTZAdaHC27yukc3Czj7fKh",
+  "address": "GBfBiuyXm5YZjnCPkZNjakht41rxEkMRxawQcocowwdi",
   "metadata": {
     "name": "ptf_pool",
     "version": "0.1.0",
@@ -5057,66 +5057,6 @@
       }
     },
     {
-      "name": "PendingShield",
-      "type": {
-        "kind": "struct",
-        "fields": [
-          {
-            "name": "active",
-            "type": "u8"
-          },
-          {
-            "name": "old_root",
-            "type": {
-              "array": [
-                "u8",
-                32
-              ]
-            }
-          },
-          {
-            "name": "new_root",
-            "type": {
-              "array": [
-                "u8",
-                32
-              ]
-            }
-          },
-          {
-            "name": "commitment",
-            "type": {
-              "array": [
-                "u8",
-                32
-              ]
-            }
-          },
-          {
-            "name": "amount_commit",
-            "type": {
-              "array": [
-                "u8",
-                32
-              ]
-            }
-          },
-          {
-            "name": "amount",
-            "type": "u64"
-          },
-          {
-            "name": "depositor",
-            "type": "pubkey"
-          },
-          {
-            "name": "next_index",
-            "type": "u64"
-          }
-        ]
-      }
-    },
-    {
       "name": "PendingAuthorityChange",
       "type": {
         "kind": "struct",
@@ -5842,6 +5782,66 @@
             "type": {
               "option": "i64"
             }
+          }
+        ]
+      }
+    },
+    {
+      "name": "PendingShield",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "active",
+            "type": "u8"
+          },
+          {
+            "name": "old_root",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "new_root",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "commitment",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "amount_commit",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "amount",
+            "type": "u64"
+          },
+          {
+            "name": "depositor",
+            "type": "pubkey"
+          },
+          {
+            "name": "next_index",
+            "type": "u64"
           }
         ]
       }

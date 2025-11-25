@@ -4,7 +4,7 @@ The `ptf_pool` Anchor program is the core of zPump. It orchestrates the shieldin
 
 ## Program ID & Features
 
-- Program ID: `7kbUWzeTPY6qb1mFJC1ZMRmTZAdaHC27yukc3Czj7fKh`
+- Program ID: `GBfBiuyXm5YZjnCPkZNjakht41rxEkMRxawQcocowwdi`
 - `Cargo.toml` feature flags:
   - `lightweight`: Legacy mode that trusts proof-supplied roots (only used for benchmarking).
   - `full_tree`: Recomputes the Merkle tree on-chain.

@@ -1,10 +1,12 @@
+import { Buffer } from 'buffer';
+
 /**
  * IPFS Service Module
  * Handles uploading metadata and images to IPFS for native zToken minting
  */
 
-const IPFS_API_URL = process.env.NEXT_PUBLIC_IPFS_API_URL || 'http://localhost:5001';
 const IPFS_GATEWAY_URL = process.env.NEXT_PUBLIC_IPFS_GATEWAY_URL || 'https://ipfs.io/ipfs';
+const IPFS_PROXY_ENDPOINT = '/api/ipfs/add';
 
 export interface TokenMetadata {
   name: string;
@@ -21,27 +23,46 @@ export interface TokenMetadata {
 /**
  * Upload data to IPFS and return the CID
  */
+function toBase64Payload(data: ArrayBuffer | Buffer | string): Buffer {
+  if (typeof data === 'string') {
+    return Buffer.from(data);
+  }
+  if (data instanceof ArrayBuffer) {
+    return Buffer.from(new Uint8Array(data));
+  }
+  return data;
+}
+
 export async function uploadToIPFS(
-  data: Buffer | string,
-  contentType?: string
+  data: Buffer | ArrayBuffer | string,
+  contentType?: string,
+  filename?: string
 ): Promise<string> {
   try {
-    const formData = new FormData();
-    const blob = typeof data === 'string' ? new Blob([data], { type: contentType || 'text/plain' }) : new Blob([data], { type: contentType || 'application/octet-stream' });
-    formData.append('file', blob);
-
-    const response = await fetch(`${IPFS_API_URL}/api/v0/add`, {
+    const buffer = toBase64Payload(data);
+    const response = await fetch(IPFS_PROXY_ENDPOINT, {
       method: 'POST',
-      body: formData,
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        data: buffer.toString('base64'),
+        contentType: contentType ?? 'application/octet-stream',
+        filename: filename ?? 'upload.bin',
+      }),
     });
 
     if (!response.ok) {
-      const errorText = await response.text();
+      const errorText = await response.text().catch(() => '');
       throw new Error(`IPFS upload failed: ${response.status} ${errorText}`);
     }
 
     const result = await response.json();
-    return result.Hash; // CID
+    const cid = result.Hash || result.IpfsHash || result.cid;
+    if (!cid) {
+      throw new Error('IPFS upload response missing CID');
+    }
+    return cid;
   } catch (error) {
     console.error('[IPFS] Upload failed:', error);
     throw error;
@@ -53,7 +74,8 @@ export async function uploadToIPFS(
  */
 export async function uploadMetadata(metadata: TokenMetadata): Promise<string> {
   const jsonString = JSON.stringify(metadata, null, 2);
-  return uploadToIPFS(jsonString, 'application/json');
+  const filename = `${metadata.symbol ?? metadata.name ?? 'metadata'}.json`;
+  return uploadToIPFS(jsonString, 'application/json', filename);
 }
 
 /**
@@ -61,9 +83,8 @@ export async function uploadMetadata(metadata: TokenMetadata): Promise<string> {
  */
 export async function uploadImage(file: File): Promise<string> {
   const arrayBuffer = await file.arrayBuffer();
-  const buffer = Buffer.from(arrayBuffer);
   const contentType = file.type || 'image/png';
-  return uploadToIPFS(buffer, contentType);
+  return uploadToIPFS(arrayBuffer, contentType, file.name || 'image');
 }
 
 /**
