@@ -25,9 +25,10 @@ Each program has its own directory with findings organized by severity:
   - **ptf_verifier_groth16**: Dev-skip build flag bypasses proof verification on-chain (unchecked feature toggle)
 
 ### High Issues
-- **2 issues**
+- **3 issues**
   - **ptf_factory**: Missing authority check when initializing factory config (attacker can set pool/verifier program IDs)
   - **ptf_factory**: Pool-controlled PTKN minting lacks governance guardrails (factory authority never approves issuance)
+  - **ptf_factory**: Zero timelock allows instant governance actions (factory can be deployed with `timelock_seconds = 0`)
 
 ### Medium Issues (1 remaining - BY DESIGN)
 - **ptf_pool**: 1 issue
