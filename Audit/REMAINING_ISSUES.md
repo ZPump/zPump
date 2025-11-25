@@ -1,7 +1,7 @@
 # Remaining Security Audit Issues
 
 **Last Updated:** 2025-02-02
-**Status:** 4 outstanding issues (2 CRITICAL, 2 HIGH) + 1 BY DESIGN
+**Status:** 5 outstanding issues (2 CRITICAL, 3 HIGH) + 1 BY DESIGN
 **Last Cleanup:** 2025-01-26 - Deleted all mitigated audit files
 
 ## Summary
@@ -21,6 +21,8 @@ Two new high-severity issues remain open alongside the previously documented BY 
    - Factory config can be front-run and initialized with attacker-controlled pool/verifier program IDs because no authority signer is required.
 4. **Pool-controlled PTKN Minting Lacks Governance Guardrails** (`ptf_factory/high/unrestricted-ptkn-minting-by-pool.md`)
    - Factory allows PTKN minting whenever the pool PDA signs, without factory authority approval or linkage to deposits, enabling unchecked inflation if the pool program is exploited or upgraded maliciously.
+5. **Zero Timelock Allows Instant Factory Actions** (`ptf_factory/high/zero-timelock-allows-instant-actions.md`)
+   - Allowing `timelock_seconds = 0` disables the 24-hour governance delay for all privileged actions, enabling immediate execution of sensitive updates.
 
 ### BY DESIGN (1 issue)
 
