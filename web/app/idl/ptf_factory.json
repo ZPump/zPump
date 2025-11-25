@@ -564,13 +564,6 @@
           "writable": true
         },
         {
-          "name": "authority",
-          "signer": true,
-          "relations": [
-            "factory_state"
-          ]
-        },
-        {
           "name": "payer",
           "writable": true,
           "signer": true
@@ -672,10 +665,15 @@
           "name": "verifying_key"
         },
         {
-          "name": "user_token_account"
+          "name": "user_token_account",
+          "writable": true
         },
         {
           "name": "token_program"
+        },
+        {
+          "name": "associated_token_program",
+          "address": "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
         },
         {
           "name": "system_program",

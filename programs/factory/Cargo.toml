@@ -15,6 +15,7 @@ ptf-verifier-groth16 = { path = "../verifier-groth16", features = ["cpi"] }
 thiserror = { workspace = true }
 solana-program = { workspace = true }
 sha3 = { workspace = true }
+spl-associated-token-account-client = "2.0.0"
 
 [features]
 default = []

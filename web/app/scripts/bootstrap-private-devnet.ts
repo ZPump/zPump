@@ -37,8 +37,8 @@ ensureFetchPolyfill();
 
 const PROGRAM_IDS = {
   factory: new PublicKey('YNZGqPEsKkMcUopmXThpigDdxfCYPE6jS1QtsXfRzjV'),
-  vault: new PublicKey('9g6ZodQwxK8MN6MX3dbvFC3E7vGVqFtKZEHY7PByRAuh'),
-  pool: new PublicKey('7kbUWzeTPY6qb1mFJC1ZMRmTZAdaHC27yukc3Czj7fKh'),
+  vault: new PublicKey('ABUQvsF8kdY9HCFrVEomafg9ABbq4zVQuxLfevpwGnvb'),
+  pool: new PublicKey('GBfBiuyXm5YZjnCPkZNjakht41rxEkMRxawQcocowwdi'),
   verifier: new PublicKey('3aCv39mCRFH9BGJskfXqwQoWzW1ULq2yXEbEwGgKtLgg')
 } as const;
 
@@ -1097,6 +1097,34 @@ async function ensureMint(
           throw new Error(`Mint mapping account for ${mintConfig.symbol} exists but cannot be decoded: ${decodeError instanceof Error ? decodeError.message : String(decodeError)}`);
         }
         
+        // CRITICAL: After successful registration, verify mint_mapping matches origin_mint
+        // and re-derive all PDAs to ensure consistency
+        const postRegMappingInfo = await connection.getAccountInfo(mintMapping);
+        if (postRegMappingInfo && postRegMappingInfo.owner.equals(PROGRAM_IDS.factory)) {
+          try {
+            const decoded = ctx.coders.factory.accounts.decode('MintMapping', postRegMappingInfo.data);
+            if (decoded && !decoded.origin_mint.equals(PublicKey.default)) {
+              // Verify the registered origin_mint matches what we're using
+              if (!decoded.origin_mint.equals(originMintKey)) {
+                console.warn(`[ensureMint] WARNING: Registered origin_mint (${decoded.origin_mint.toBase58()}) doesn't match current originMintKey (${originMintKey.toBase58()}). Updating to match registered mint.`);
+                originMintKey = decoded.origin_mint;
+                // Re-derive ALL PDAs with the registered origin_mint
+                mintMapping = PublicKey.findProgramAddressSync([Buffer.from('map'), originMintKey.toBuffer()], PROGRAM_IDS.factory)[0];
+                vaultState = PublicKey.findProgramAddressSync([Buffer.from('vault'), originMintKey.toBuffer()], PROGRAM_IDS.vault)[0];
+                poolState = PublicKey.findProgramAddressSync([Buffer.from('pool'), originMintKey.toBuffer()], PROGRAM_IDS.pool)[0];
+                nullifierSet = PublicKey.findProgramAddressSync([Buffer.from('nulls'), originMintKey.toBuffer()], PROGRAM_IDS.pool)[0];
+                noteLedger = PublicKey.findProgramAddressSync([Buffer.from('notes'), originMintKey.toBuffer()], PROGRAM_IDS.pool)[0];
+                commitmentTree = PublicKey.findProgramAddressSync([Buffer.from('tree'), originMintKey.toBuffer()], PROGRAM_IDS.pool)[0];
+                hookConfig = PublicKey.findProgramAddressSync([Buffer.from('hooks'), originMintKey.toBuffer()], PROGRAM_IDS.pool)[0];
+                hookWhitelist = PublicKey.findProgramAddressSync([Buffer.from('hook-whitelist'), originMintKey.toBuffer()], PROGRAM_IDS.pool)[0];
+                console.log(`[ensureMint] Re-derived all PDAs with registered origin_mint: ${originMintKey.toBase58()}`);
+              }
+            }
+          } catch (decodeError) {
+            console.warn(`[ensureMint] Could not decode mint_mapping after registration: ${decodeError instanceof Error ? decodeError.message : String(decodeError)}`);
+          }
+        }
+        
         // Success - break out of retry loop
         lastError = null;
         break;
@@ -1198,15 +1226,30 @@ async function ensureMint(
     has_ptkn: boolean;
     features: { bits?: number } | number;
   };
+  
+  // CRITICAL: Use the ACTUAL registered origin_mint, not what we think it should be
+  // This ensures we use the correct mint that was actually registered
   if (!decodedMintMapping.origin_mint.equals(originMintKey)) {
-    throw new Error(
-      `Mint mapping origin mismatch for ${mintConfig.symbol}: mapping=${decodedMintMapping.origin_mint.toBase58()} expected=${originMintKey.toBase58()}`
-    );
+    console.warn(`[ensureMint] Registered origin_mint (${decodedMintMapping.origin_mint.toBase58()}) doesn't match current originMintKey (${originMintKey.toBase58()}). Updating to match registered mint.`);
+    originMintKey = decodedMintMapping.origin_mint;
+    // Re-derive ALL PDAs with the registered origin_mint
+    mintMapping = PublicKey.findProgramAddressSync([Buffer.from('map'), originMintKey.toBuffer()], PROGRAM_IDS.factory)[0];
+    vaultState = PublicKey.findProgramAddressSync([Buffer.from('vault'), originMintKey.toBuffer()], PROGRAM_IDS.vault)[0];
+    poolState = PublicKey.findProgramAddressSync([Buffer.from('pool'), originMintKey.toBuffer()], PROGRAM_IDS.pool)[0];
+    nullifierSet = PublicKey.findProgramAddressSync([Buffer.from('nulls'), originMintKey.toBuffer()], PROGRAM_IDS.pool)[0];
+    noteLedger = PublicKey.findProgramAddressSync([Buffer.from('notes'), originMintKey.toBuffer()], PROGRAM_IDS.pool)[0];
+    commitmentTree = PublicKey.findProgramAddressSync([Buffer.from('tree'), originMintKey.toBuffer()], PROGRAM_IDS.pool)[0];
+    hookConfig = PublicKey.findProgramAddressSync([Buffer.from('hooks'), originMintKey.toBuffer()], PROGRAM_IDS.pool)[0];
+    hookWhitelist = PublicKey.findProgramAddressSync([Buffer.from('hook-whitelist'), originMintKey.toBuffer()], PROGRAM_IDS.pool)[0];
+    console.log(`[ensureMint] Re-derived all PDAs with registered origin_mint: ${originMintKey.toBase58()}`);
   }
 
   const twinMintKey = decodedMintMapping.has_ptkn ? new PublicKey(decodedMintMapping.ptkn_mint) : null;
 
   // CRITICAL: Check ALL pool accounts before initialization
+  // NOTE: We MUST NOT generate a new mint here if accounts are uninitialized,
+  // because the mint is already registered. Instead, we should skip pool initialization
+  // or handle it differently.
   // pool_state, hook_config, and hook_whitelist use `init` (not `init_if_needed`)
   // If they exist but are uninitialized, init will fail with 0x0
   console.log(`[ensureMint] Checking pool accounts BEFORE pool initialization for ${mintConfig.symbol}...`);
@@ -1241,74 +1284,17 @@ async function ensureMint(
   }
   
   if (hasUninitializedInitAccount) {
-    console.log(`[ensureMint] CRITICAL: Found uninitialized accounts that use 'init' constraint. Generating new mint...`);
-    console.log(`[ensureMint] CRITICAL: Found uninitialized accounts that use 'init' constraint. Generating new mint...`);
-    const poolEmergencyMint = await createMintAccount(ctx, mintConfig.decimals, ctx.payer.publicKey, ctx.payer.publicKey);
-    originMintKey = poolEmergencyMint.publicKey;
-    
-    // Re-derive ALL PDAs with the new mint
-    mintMapping = PublicKey.findProgramAddressSync([Buffer.from('map'), originMintKey.toBuffer()], PROGRAM_IDS.factory)[0];
-    vaultState = PublicKey.findProgramAddressSync([Buffer.from('vault'), originMintKey.toBuffer()], PROGRAM_IDS.vault)[0];
-    poolState = PublicKey.findProgramAddressSync([Buffer.from('pool'), originMintKey.toBuffer()], PROGRAM_IDS.pool)[0];
-    nullifierSet = PublicKey.findProgramAddressSync([Buffer.from('nulls'), originMintKey.toBuffer()], PROGRAM_IDS.pool)[0];
-    noteLedger = PublicKey.findProgramAddressSync([Buffer.from('notes'), originMintKey.toBuffer()], PROGRAM_IDS.pool)[0];
-    commitmentTree = PublicKey.findProgramAddressSync([Buffer.from('tree'), originMintKey.toBuffer()], PROGRAM_IDS.pool)[0];
-    hookConfig = PublicKey.findProgramAddressSync([Buffer.from('hooks'), originMintKey.toBuffer()], PROGRAM_IDS.pool)[0];
-    hookWhitelist = PublicKey.findProgramAddressSync([Buffer.from('hook-whitelist'), originMintKey.toBuffer()], PROGRAM_IDS.pool)[0];
-    
-    // Verify the new accounts don't exist or are properly owned
-    const newPoolStateInfo = await connection.getAccountInfo(poolState);
-    const newHookConfigInfo = await connection.getAccountInfo(hookConfig);
-    const newHookWhitelistInfo = await connection.getAccountInfo(hookWhitelist);
-    
-    if (newPoolStateInfo && !newPoolStateInfo.owner.equals(PROGRAM_IDS.pool) && !newPoolStateInfo.owner.equals(SystemProgram.programId)) {
-      throw new Error(`Even after generating new mint, pool_state is uninitialized. This indicates a systemic issue.`);
-    }
-    if (newHookConfigInfo && !newHookConfigInfo.owner.equals(PROGRAM_IDS.pool) && !newHookConfigInfo.owner.equals(SystemProgram.programId)) {
-      throw new Error(`Even after generating new mint, hook_config is uninitialized. This indicates a systemic issue.`);
-    }
-    if (newHookWhitelistInfo && !newHookWhitelistInfo.owner.equals(PROGRAM_IDS.pool) && !newHookWhitelistInfo.owner.equals(SystemProgram.programId)) {
-      throw new Error(`Even after generating new mint, hook_whitelist is uninitialized. This indicates a systemic issue.`);
-    }
-    
-    // Mint tokens to the new mint
-    const payerAta = await ensureAta(ctx, originMintKey, ctx.payer.publicKey);
-    const mintAmount = 1_000_000 * 10 ** mintConfig.decimals;
-    const mintIx = createMintToInstruction(originMintKey, payerAta, ctx.payer.publicKey, mintAmount);
-    await sendAndConfirm(ctx, [mintIx]);
-    console.log(`[ensureMint] Emergency mint created for init accounts: ${originMintKey.toBase58()}`);
-    
-    // Re-check mint_mapping for the new mint
-    const newMintMappingInfo = await connection.getAccountInfo(mintMapping);
-    if (newMintMappingInfo && !newMintMappingInfo.owner.equals(PROGRAM_IDS.factory) && !newMintMappingInfo.owner.equals(SystemProgram.programId)) {
-      isUninitialized = true;
-      existingMapping = newMintMappingInfo;
-    } else if (!newMintMappingInfo || newMintMappingInfo.owner.equals(SystemProgram.programId)) {
-      isUninitialized = false;
-      existingMapping = null;
-      isAlreadyRegistered = false;
-    } else {
-      try {
-        const decoded = ctx.coders.factory.accounts.decode('MintMapping', newMintMappingInfo.data);
-        if (decoded && !decoded.origin_mint.equals(PublicKey.default)) {
-          if (decoded.origin_mint.equals(originMintKey)) {
-            isAlreadyRegistered = true;
-          } else {
-            throw new Error(`Mint mapping exists with different origin_mint`);
-          }
-        }
-      } catch (e) {
-        isUninitialized = true;
-      }
-    }
-    
-    // Re-fetch pool account infos with new addresses
-    poolStateInfo = await connection.getAccountInfo(poolState);
-    nullifierSetInfo = await connection.getAccountInfo(nullifierSet);
-    noteLedgerInfo = await connection.getAccountInfo(noteLedger);
-    commitmentTreeInfo = await connection.getAccountInfo(commitmentTree);
-    hookConfigInfo = await connection.getAccountInfo(hookConfig);
-    hookWhitelistInfo = await connection.getAccountInfo(hookWhitelist);
+    // CRITICAL: We cannot generate a new mint here because the mint is already registered!
+    // The mint_mapping is registered with originMintKey, so we must use that for pool initialization.
+    // If pool accounts are uninitialized, this indicates a previous failed pool initialization.
+    // We should throw an error with clear instructions.
+    throw new Error(
+      `Cannot initialize pool for ${mintConfig.symbol}: Pool accounts (pool_state, hook_config, or hook_whitelist) are uninitialized, but mint is already registered with origin_mint ${originMintKey.toBase58()}. ` +
+      `The mint_mapping PDA is derived from the registered origin_mint, so we cannot change it. ` +
+      `This indicates a state inconsistency - the mint was registered but pool initialization failed previously. ` +
+      `You may need to manually close the uninitialized accounts or use a different symbol. ` +
+      `Uninitialized accounts: ${initAccounts.filter(a => a.info && !a.info.owner.equals(PROGRAM_IDS.pool) && !a.info.owner.equals(SystemProgram.programId)).map(a => a.name).join(', ')}`
+    );
   }
   
   // CRITICAL: Check if pool is already initialized

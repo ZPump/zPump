@@ -24,6 +24,7 @@ import { useCallback, useState } from 'react';
 import { mintNativeZToken } from '../../lib/sdk';
 import { uploadImage, uploadMetadata, createTokenMetadata, getIPFSURL } from '../../lib/ipfs';
 import { normalizeError } from '../../lib/errorHandler';
+import { useMintCatalog } from '../providers/MintCatalogProvider';
 
 export function MintZTokenForm() {
   const { connection } = useConnection();
@@ -39,7 +40,13 @@ export function MintZTokenForm() {
   const [feeBpsOverride, setFeeBpsOverride] = useState('');
   const [isSubmitting, setIsSubmitting] = useBoolean(false);
   const [error, setError] = useState<string | null>(null);
-  const [success, setSuccess] = useState<{ signature: string; mint: string } | null>(null);
+  const [success, setSuccess] = useState<{
+    signature: string;
+    mint: string;
+    poolId: string;
+    metadataUri: string;
+  } | null>(null);
+  const { refresh: refreshMintCatalog } = useMintCatalog();
 
   const handleImageChange = useCallback((event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
@@ -113,7 +120,7 @@ export function MintZTokenForm() {
       }
 
       // Mint the token
-      const signature = await mintNativeZToken({
+      const result = await mintNativeZToken({
         connection,
         wallet,
         name: name.trim(),
@@ -124,13 +131,22 @@ export function MintZTokenForm() {
         feeBpsOverride: feeOverride,
       });
 
-      // Extract mint address from transaction (would need to parse transaction logs)
-      // For now, we'll show the signature
-      setSuccess({ signature, mint: 'Check transaction logs for mint address' });
+      setSuccess({
+        signature: result.signature,
+        mint: result.originMint,
+        poolId: result.poolId,
+        metadataUri: uri
+      });
+
+      try {
+        await refreshMintCatalog();
+      } catch (refreshError) {
+        console.warn('[mint-ztoken] Failed to refresh catalog', refreshError);
+      }
 
       toast({
         title: 'Token minted successfully',
-        description: `Transaction: ${signature}`,
+        description: `Mint ${result.originMint} registered`,
         status: 'success',
         duration: 5000,
         isClosable: true
@@ -159,7 +175,8 @@ export function MintZTokenForm() {
     initialSupply,
     feeBpsOverride,
     setIsSubmitting,
-    toast
+    toast,
+    refreshMintCatalog
   ]);
 
   return (
@@ -191,7 +208,13 @@ export function MintZTokenForm() {
           <Alert status="success">
             <AlertIcon />
             <AlertDescription>
-              Token minted! Transaction: {success.signature}
+              <Stack spacing={1}>
+                <Text>Token minted!</Text>
+                <Text fontSize="sm">Mint: {success.mint}</Text>
+                <Text fontSize="sm">Pool: {success.poolId}</Text>
+                <Text fontSize="sm">Metadata: {getIPFSURL(success.metadataUri)}</Text>
+                <Text fontSize="sm">Signature: {success.signature}</Text>
+              </Stack>
             </AlertDescription>
           </Alert>
         )}

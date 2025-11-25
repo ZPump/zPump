@@ -63,9 +63,9 @@ log "Deploying programs to ${RPC_URL}..."
 # Deploy using solana program deploy for each program
 log "Deploying all programs..."
 PROGRAMS=(
-  "ptf_factory:4z618BY2dXGqAUiegqDt8omo3e81TSdXRHt64ikX1bTy"
-  "ptf_vault:9g6ZodQwxK8MN6MX3dbvFC3E7vGVqFtKZEHY7PByRAuh"
-  "ptf_pool:7kbUWzeTPY6qb1mFJC1ZMRmTZAdaHC27yukc3Czj7fKh"
+  "ptf_factory:YNZGqPEsKkMcUopmXThpigDdxfCYPE6jS1QtsXfRzjV"
+  "ptf_vault:ABUQvsF8kdY9HCFrVEomafg9ABbq4zVQuxLfevpwGnvb"
+  "ptf_pool:GBfBiuyXm5YZjnCPkZNjakht41rxEkMRxawQcocowwdi"
   "ptf_verifier_groth16:3aCv39mCRFH9BGJskfXqwQoWzW1ULq2yXEbEwGgKtLgg"
 )
 
@@ -80,6 +80,14 @@ for program_info in "${PROGRAMS[@]}"; do
   fi
   
   log "Deploying ${program_name} (${program_id})..."
+  show_output="$(solana program show --url "${RPC_URL}" "${program_id}" 2>/dev/null || true)"
+  if [[ -n "${show_output}" ]]; then
+    current_authority="$(printf '%s\n' "${show_output}" | awk '/Authority:/ {print $2; exit}')"
+    if [[ "${current_authority}" == "11111111111111111111111111111111" ]]; then
+      log_info "${program_name} already loaded with immutable authority; skipping redeploy."
+      continue
+    fi
+  fi
   if solana program deploy \
     --url "${RPC_URL}" \
     --program-id "${program_keypair}" \

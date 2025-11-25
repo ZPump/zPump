@@ -31,7 +31,7 @@ use ptf_verifier_groth16::{self, VerifyingKeyAccount};
 
 mod poseidon;
 
-declare_id!("7kbUWzeTPY6qb1mFJC1ZMRmTZAdaHC27yukc3Czj7fKh");
+declare_id!("GBfBiuyXm5YZjnCPkZNjakht41rxEkMRxawQcocowwdi");
 
 const DEFAULT_CANOPY_DEPTH: u8 = 8;
 // CRITICAL SECURITY: Maximum amounts to prevent overflow in calculations

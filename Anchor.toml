@@ -8,8 +8,8 @@ members = [
 
 [programs.localnet]
 ptf_factory = "YNZGqPEsKkMcUopmXThpigDdxfCYPE6jS1QtsXfRzjV"
-ptf_vault = "9g6ZodQwxK8MN6MX3dbvFC3E7vGVqFtKZEHY7PByRAuh"
-ptf_pool = "7kbUWzeTPY6qb1mFJC1ZMRmTZAdaHC27yukc3Czj7fKh"
+ptf_vault = "ABUQvsF8kdY9HCFrVEomafg9ABbq4zVQuxLfevpwGnvb"
+ptf_pool = "GBfBiuyXm5YZjnCPkZNjakht41rxEkMRxawQcocowwdi"
 ptf_verifier_groth16 = "3aCv39mCRFH9BGJskfXqwQoWzW1ULq2yXEbEwGgKtLgg"
 
 [registry]

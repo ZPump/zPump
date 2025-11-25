@@ -163,7 +163,20 @@ pub fn mint_native_ztoken(
 #### mintNativeZToken
 
 ```typescript
-export async function mintNativeZToken(params: MintNativeZTokenParams): Promise<string>
+export interface MintNativeZTokenResult {
+  signature: string;
+  originMint: string;
+  poolId: string;
+  metadataAccount: string;
+  mintMapping: string;
+  decimals: number;
+  symbol: string;
+  uri: string;
+}
+
+export async function mintNativeZToken(
+  params: MintNativeZTokenParams
+): Promise<MintNativeZTokenResult>
 ```
 
 **Parameters**:
@@ -177,7 +190,7 @@ export async function mintNativeZToken(params: MintNativeZTokenParams): Promise<
 - `featureFlags?: number`
 - `feeBpsOverride?: number`
 
-**Returns**: Transaction signature
+**Returns**: Transaction signature plus the derived addresses for the origin mint, pool, metadata, and mint mapping so the frontend can immediately surface the asset in Convert/Wallet drawers.
 
 #### getTokenMetadata
 
