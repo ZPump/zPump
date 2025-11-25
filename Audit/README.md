@@ -25,9 +25,11 @@ Each program has its own directory with findings organized by severity:
 ### High Issues
 - **0 issues** - None found
 
-### Medium Issues (1 remaining)
+### Medium Issues (1 remaining - BY DESIGN)
 - **ptf_pool**: 1 issue
   - Root computation mismatch between circuit and tree (BY DESIGN - intentional optimization)
+  - See `ptf_pool/medium/root-computation-mismatch.md` for details
+  - This is an intentional design decision to optimize compute costs (SHA-256 on-chain, Poseidon in circuits)
 
 ### Low Issues (0 remaining)
 - All low severity issues have been mitigated and removed
@@ -46,6 +48,13 @@ The following issues were addressed and removed from the audit folder:
 7. ✅ **Hook Required Accounts Length Overflow Risk** - Fixed and removed
 8. ✅ **Hook Config Unwrap Could Panic** - Fixed and removed
 9. ✅ **Proof Format Validation Function Unused** - Fixed and removed
+
+### Latest Mitigations (2025-01-26)
+1. ✅ **Fee Override Not Applied** - Fixed: Implemented fee override in `calculate_fee` function
+2. ✅ **Hook Whitelist Integrity Not Validated** - Fixed: Added `validate_integrity()` calls in all whitelist operations
+3. ✅ **Fee Override Validation Inconsistency** - Fixed: Applied same 10% limit in `apply_mint_update` as in `register_mint`
+4. ✅ **Recent Commitments Length Overflow Risk** - Fixed: Added bounds validation to cap `recent_len` at `MAX_CANOPY`
+5. ✅ **Append Many Bounds Check Missing** - Fixed: Added explicit bounds checks for array accesses
 
 ### Previous Mitigations
 1. ✅ **Pause/Unpause Implementation** - Fixed: Both functions now properly require timelock queue
