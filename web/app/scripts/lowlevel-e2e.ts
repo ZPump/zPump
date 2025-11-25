@@ -46,7 +46,8 @@ import {
   deriveFactoryState,
   deriveVerifyingKey,
   deriveHookConfig,
-  deriveHookWhitelist
+  deriveHookWhitelist,
+  deriveTokenMetadata
 } from '../lib/onchain/pdas';
 import { ensureFetchPolyfill } from './utils/fetch-polyfill';
 
@@ -1889,6 +1890,320 @@ async function main() {
   // The accept_root function was removed because it allowed authority to manipulate
   // Merkle tree roots without proof verification, creating a critical security vulnerability.
   console.info('[test-12] SKIPPED: accept_root instruction test (function removed for security)');
+
+  // test-13: Native zToken minting, shielding, and unshielding
+  console.info('[test-13] Testing native zToken minting, shielding, and unshielding');
+  const nativeMinter = Keypair.generate();
+  await faucetSol(connection, nativeMinter.publicKey);
+
+  // Create metadata for native zToken
+  const nativeTokenName = 'Native Test Token';
+  const nativeTokenSymbol = 'NTT';
+  const nativeTokenDecimals = 6;
+  const nativeTokenSupply = WRAP_AMOUNT * 10n; // 10x wrap amount
+  const nativeTokenUri = 'ipfs://QmTest123'; // Mock IPFS URI for testing
+
+  // Generate mint keypair
+  const nativeMintKeypair = Keypair.generate();
+  const nativeOriginMint = nativeMintKeypair.publicKey;
+
+  // Derive PDAs
+  const nativeMetadata = deriveTokenMetadata(nativeOriginMint);
+  const nativeMintMapping = deriveMintMapping(nativeOriginMint);
+  const nativePoolState = derivePoolState(nativeOriginMint);
+  const nativeVaultState = deriveVaultState(nativeOriginMint);
+  const nativeCommitmentTree = deriveCommitmentTree(nativeOriginMint);
+  const nativeNullifierSet = deriveNullifierSet(nativeOriginMint);
+  const nativeNoteLedger = deriveNoteLedger(nativeOriginMint);
+  const nativeHookConfig = deriveHookConfig(nativeOriginMint);
+  const nativeHookWhitelist = deriveHookWhitelist(nativeOriginMint);
+  const nativeFactoryState = deriveFactoryState();
+  const nativeVerifyingKey = deriveVerifyingKey();
+
+  // Get user's token account
+  const nativeUserTokenAccount = await getAssociatedTokenAddress(
+    nativeOriginMint,
+    nativeMinter.publicKey,
+    false,
+    TOKEN_PROGRAM_ID,
+    ASSOCIATED_TOKEN_PROGRAM_ID
+  );
+
+  // Check if token account exists, create if not
+  const nativeUserTokenAccountInfo = await connection.getAccountInfo(nativeUserTokenAccount);
+  const nativeMintInstructions: TransactionInstruction[] = [];
+  
+  if (!nativeUserTokenAccountInfo) {
+    nativeMintInstructions.push(
+      createAssociatedTokenAccountInstruction(
+        nativeMinter.publicKey,
+        nativeUserTokenAccount,
+        nativeMinter.publicKey,
+        nativeOriginMint,
+        TOKEN_PROGRAM_ID,
+        ASSOCIATED_TOKEN_PROGRAM_ID
+      )
+    );
+  }
+
+  // Build mint_native_ztoken instruction
+  const nativeMintData = factoryCoder.instruction.encode('mint_native_ztoken', {
+    name: nativeTokenName,
+    symbol: nativeTokenSymbol,
+    uri: nativeTokenUri,
+    decimals: nativeTokenDecimals,
+    initialSupply: new BN(nativeTokenSupply.toString()),
+    featureFlags: null,
+    feeBpsOverride: null,
+  });
+
+  const nativeMintKeys = [
+    { pubkey: nativeFactoryState, isSigner: false, isWritable: true },
+    { pubkey: nativeMinter.publicKey, isSigner: true, isWritable: true }, // authority
+    { pubkey: nativeMinter.publicKey, isSigner: true, isWritable: true }, // payer
+    { pubkey: nativeOriginMint, isSigner: true, isWritable: true }, // mint (keypair)
+    { pubkey: nativeMetadata, isSigner: false, isWritable: true },
+    { pubkey: nativeMintMapping, isSigner: false, isWritable: true },
+    { pubkey: POOL_PROGRAM_ID, isSigner: false, isWritable: false }, // pool_program
+    { pubkey: VAULT_PROGRAM_ID, isSigner: false, isWritable: false }, // vault_program
+    { pubkey: nativePoolState, isSigner: false, isWritable: true },
+    { pubkey: nativeVaultState, isSigner: false, isWritable: true },
+    { pubkey: nativeCommitmentTree, isSigner: false, isWritable: true },
+    { pubkey: nativeNullifierSet, isSigner: false, isWritable: true },
+    { pubkey: nativeNoteLedger, isSigner: false, isWritable: true },
+    { pubkey: nativeHookConfig, isSigner: false, isWritable: true },
+    { pubkey: nativeHookWhitelist, isSigner: false, isWritable: true },
+    { pubkey: VERIFIER_PROGRAM_ID, isSigner: false, isWritable: false },
+    { pubkey: nativeVerifyingKey, isSigner: false, isWritable: false },
+    { pubkey: nativeUserTokenAccount, isSigner: false, isWritable: true },
+    { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
+    { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+    { pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false },
+  ];
+
+  nativeMintInstructions.push(
+    new TransactionInstruction({
+      programId: FACTORY_PROGRAM_ID,
+      keys: nativeMintKeys,
+      data: nativeMintData,
+    })
+  );
+
+  // Add compute budget
+  nativeMintInstructions.unshift(
+    ComputeBudgetProgram.setComputeUnitLimit({
+      units: 1_400_000,
+    })
+  );
+
+  // Send transaction
+  const nativeMintTx = new Transaction().add(...nativeMintInstructions);
+  nativeMintTx.feePayer = nativeMinter.publicKey;
+  nativeMintTx.recentBlockhash = (await connection.getLatestBlockhash('confirmed')).blockhash;
+  nativeMintTx.partialSign(nativeMintKeypair);
+  const nativeMintSig = await connection.sendRawTransaction(nativeMintTx.serialize(), {
+    skipPreflight: false
+  });
+  await connection.confirmTransaction(nativeMintSig, 'confirmed');
+  console.info('[test-13] Native zToken minted:', nativeMintSig);
+
+  // Verify mint mapping was created
+  const nativeMappingAccount = await connection.getAccountInfo(nativeMintMapping);
+  if (!nativeMappingAccount) {
+    throw new Error('[test-13] Mint mapping account not found');
+  }
+  const nativeMapping = factoryCoder.accounts.decode('MintMapping', nativeMappingAccount.data);
+  if (nativeMapping.originMint.toBase58() !== nativeOriginMint.toBase58()) {
+    throw new Error('[test-13] Mint mapping origin_mint mismatch');
+  }
+  if (!nativeMapping.isNativeZtoken) {
+    throw new Error('[test-13] Mint mapping is_native_ztoken flag not set');
+  }
+  console.info('[test-13] Mint mapping verified, is_native_ztoken:', nativeMapping.isNativeZtoken);
+
+  // Verify tokens were minted to user
+  const nativeUserTokenBalance = await connection.getTokenAccountBalance(nativeUserTokenAccount);
+  if (nativeUserTokenBalance.value.amount !== nativeTokenSupply.toString()) {
+    throw new Error(`[test-13] Token balance mismatch: expected ${nativeTokenSupply}, got ${nativeUserTokenBalance.value.amount}`);
+  }
+  console.info('[test-13] User token balance verified:', nativeUserTokenBalance.value.amount);
+
+  // Now test shielding the native zToken (same as regular shield)
+  const nativeDepositId = randomFieldScalar();
+  const nativeBlinding = randomFieldScalar();
+  const nativeNoteAmount = nativeTokenSupply / 2n; // Shield half
+
+  const nativeShieldProof = await proofClient.requestProof('wrap', {
+    depositId: nativeDepositId,
+    blinding: nativeBlinding,
+    amount: nativeNoteAmount.toString(),
+    mintId: nativeOriginMint.toBase58(),
+    poolId: nativePoolState.toBase58()
+  });
+
+  const nativeDecodedShieldProof = decodeProofPayload(nativeShieldProof);
+  const nativeAmountCommitmentBytes = await poseidonHashMany([nativeNoteAmount, BigInt(nativeBlinding)]);
+
+  const nativeShieldArgs = {
+    amount_commit: Array.from(nativeAmountCommitmentBytes),
+    amount: new BN(nativeNoteAmount.toString()),
+    proof: nativeDecodedShieldProof.proof,
+    public_inputs: nativeDecodedShieldProof.publicInputs
+  };
+
+  const nativeShieldData = poolCoder.instruction.encode('shield', { args: nativeShieldArgs });
+  const nativeShieldClaim = deriveShieldClaim(nativePoolState);
+
+  const nativeShieldKeys = [
+    { pubkey: nativePoolState, isSigner: false, isWritable: true },
+    { pubkey: nativeHookConfig, isSigner: false, isWritable: false },
+    { pubkey: nativeHookWhitelist, isSigner: false, isWritable: true },
+    { pubkey: nativeNullifierSet, isSigner: false, isWritable: true },
+    { pubkey: nativeCommitmentTree, isSigner: false, isWritable: true },
+    { pubkey: nativeNoteLedger, isSigner: false, isWritable: true },
+    { pubkey: nativeVaultState, isSigner: false, isWritable: true },
+    { pubkey: await getAssociatedTokenAddress(nativeOriginMint, nativeVaultState, true, TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID), isSigner: false, isWritable: true },
+    { pubkey: nativeUserTokenAccount, isSigner: false, isWritable: true },
+    { pubkey: POOL_PROGRAM_ID, isSigner: false, isWritable: false }, // No zToken mint for native zTokens
+    { pubkey: VERIFIER_PROGRAM_ID, isSigner: false, isWritable: false },
+    { pubkey: nativeVerifyingKey, isSigner: false, isWritable: false },
+    { pubkey: nativeShieldClaim, isSigner: false, isWritable: true },
+    { pubkey: nativeMinter.publicKey, isSigner: true, isWritable: true },
+    { pubkey: nativeOriginMint, isSigner: false, isWritable: false },
+    { pubkey: nativeMintMapping, isSigner: false, isWritable: false },
+    { pubkey: VAULT_PROGRAM_ID, isSigner: false, isWritable: false },
+    { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
+    { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+    { pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false }
+  ];
+
+  const nativeShieldIx = new TransactionInstruction({
+    programId: POOL_PROGRAM_ID,
+    keys: nativeShieldKeys,
+    data: nativeShieldData
+  });
+
+  const nativeFinalizeLedgerIx = new TransactionInstruction({
+    programId: POOL_PROGRAM_ID,
+    keys: [
+      { pubkey: nativePoolState, isSigner: false, isWritable: true },
+      { pubkey: nativeHookConfig, isSigner: false, isWritable: false },
+      { pubkey: nativeNoteLedger, isSigner: false, isWritable: true },
+      { pubkey: nativeShieldClaim, isSigner: false, isWritable: true },
+      { pubkey: nativeHookWhitelist, isSigner: false, isWritable: false }
+    ],
+    data: poolCoder.instruction.encode('shield_finalize_ledger', {})
+  });
+
+  await sendAndConfirmInstructions(
+    connection,
+    nativeMinter,
+    [ComputeBudgetProgram.setComputeUnitLimit({ units: 1_200_000 }), nativeShieldIx, nativeFinalizeLedgerIx],
+    undefined
+  );
+
+  const nativeFinalizeTreeIx = new TransactionInstruction({
+    programId: POOL_PROGRAM_ID,
+    keys: [
+      { pubkey: nativePoolState, isSigner: false, isWritable: true },
+      { pubkey: nativeCommitmentTree, isSigner: false, isWritable: true },
+      { pubkey: nativeShieldClaim, isSigner: false, isWritable: true }
+    ],
+    data: poolCoder.instruction.encode('shield_finalize_tree', {})
+  });
+  await sendAndConfirmInstructions(connection, nativeMinter, [nativeFinalizeTreeIx], undefined);
+
+  const nativeCheckInvariantIx = new TransactionInstruction({
+    programId: POOL_PROGRAM_ID,
+    keys: [
+      { pubkey: nativePoolState, isSigner: false, isWritable: false },
+      { pubkey: nativeNoteLedger, isSigner: false, isWritable: false },
+      { pubkey: nativeShieldClaim, isSigner: false, isWritable: true },
+      { pubkey: await getAssociatedTokenAddress(nativeOriginMint, nativeVaultState, true, TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID), isSigner: false, isWritable: true },
+      { pubkey: POOL_PROGRAM_ID, isSigner: false, isWritable: false }
+    ],
+    data: poolCoder.instruction.encode('shield_check_invariant', {})
+  });
+  await sendAndConfirmInstructions(connection, nativeMinter, [nativeCheckInvariantIx], undefined);
+  await waitForShieldClaimCleared(connection, nativeShieldClaim);
+
+  // Verify tokens were deposited to vault
+  const nativeVaultTokenAccount = await getAssociatedTokenAddress(nativeOriginMint, nativeVaultState, false, TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID);
+  const nativeVaultBalance = await connection.getTokenAccountBalance(nativeVaultTokenAccount);
+  if (nativeVaultBalance.value.amount !== nativeNoteAmount.toString()) {
+    throw new Error(`[test-13] Vault balance mismatch: expected ${nativeNoteAmount}, got ${nativeVaultBalance.value.amount}`);
+  }
+  console.info('[test-13] Native zToken shielded successfully, vault balance:', nativeVaultBalance.value.amount);
+
+  // Test unshielding native zToken
+  const nativePoolRoot = await fetchPoolStateRoot(connection, nativePoolState.toBase58());
+  const nativeUnshieldProof = await proofClient.requestProof('unwrap', {
+    oldRoot: canonicalizeHex(nativePoolRoot.root),
+    mintId: nativeOriginMint.toBase58(),
+    poolId: nativePoolState.toBase58(),
+    noteId: nativeDepositId,
+    spendingKey: nativeBlinding,
+    noteAmount: nativeNoteAmount.toString(),
+    destPubkey: nativeMinter.publicKey.toBase58(),
+    mode: 'origin'
+  });
+
+  const nativeDecodedUnshieldProof = decodeProofPayload(nativeUnshieldProof);
+  const nativeNullifierBytes = Buffer.from(await poseidonHashMany([BigInt(nativeDepositId), BigInt(nativeBlinding)])).reverse();
+
+  const nativeUnshieldArgs = {
+    old_root: toFixedArray(nativeDecodedUnshieldProof.fields[0]!, 'old_root'),
+    new_root: toFixedArray(nativeDecodedUnshieldProof.fields[1]!, 'new_root'),
+    nullifier: Array.from(nativeNullifierBytes),
+    proof: nativeDecodedUnshieldProof.proof,
+    public_inputs: nativeDecodedUnshieldProof.publicInputs
+  };
+
+  const nativeUnshieldData = poolCoder.instruction.encode('unshield', { args: nativeUnshieldArgs });
+
+  const nativeUnshieldKeys = [
+    { pubkey: nativePoolState, isSigner: false, isWritable: true },
+    { pubkey: nativeHookConfig, isSigner: false, isWritable: false },
+    { pubkey: nativeHookWhitelist, isSigner: false, isWritable: false },
+    { pubkey: nativeNullifierSet, isSigner: false, isWritable: true },
+    { pubkey: nativeCommitmentTree, isSigner: false, isWritable: true },
+    { pubkey: nativeNoteLedger, isSigner: false, isWritable: true },
+    { pubkey: nativeMintMapping, isSigner: false, isWritable: false },
+    { pubkey: VERIFIER_PROGRAM_ID, isSigner: false, isWritable: false },
+    { pubkey: nativeVerifyingKey, isSigner: false, isWritable: false },
+    { pubkey: nativeVaultState, isSigner: false, isWritable: true },
+    { pubkey: nativeVaultTokenAccount, isSigner: false, isWritable: true },
+    { pubkey: nativeUserTokenAccount, isSigner: false, isWritable: true },
+    { pubkey: VAULT_PROGRAM_ID, isSigner: false, isWritable: false },
+    { pubkey: nativeFactoryState, isSigner: false, isWritable: false },
+    { pubkey: FACTORY_PROGRAM_ID, isSigner: false, isWritable: false },
+    { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
+    { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+    { pubkey: nativeMinter.publicKey, isSigner: true, isWritable: true },
+    { pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false }
+  ];
+
+  const nativeUnshieldIx = new TransactionInstruction({
+    programId: POOL_PROGRAM_ID,
+    keys: nativeUnshieldKeys,
+    data: nativeUnshieldData
+  });
+
+  await sendAndConfirmInstructions(
+    connection,
+    nativeMinter,
+    [ComputeBudgetProgram.setComputeUnitLimit({ units: 1_400_000 }), nativeUnshieldIx],
+    undefined
+  );
+
+  // Verify tokens were returned to user
+  const nativeFinalUserBalance = await connection.getTokenAccountBalance(nativeUserTokenAccount);
+  const expectedFinalBalance = nativeTokenSupply; // Should have all tokens back (half was shielded, then unshielded)
+  if (nativeFinalUserBalance.value.amount !== expectedFinalBalance.toString()) {
+    throw new Error(`[test-13] Final user balance mismatch: expected ${expectedFinalBalance}, got ${nativeFinalUserBalance.value.amount}`);
+  }
+  console.info('[test-13] Native zToken unshielded successfully, final user balance:', nativeFinalUserBalance.value.amount);
+  console.info('[test-13] Native zToken minting, shielding, and unshielding test completed successfully');
 
   console.info('[lowlevel-e2e] All low-level E2E tests completed successfully');
 }

@@ -74,6 +74,12 @@ else
   log_skip "High-Level E2E"
 fi
 
+if [[ "${SKIP_MINT_REG}" != "true" ]]; then
+  run_test "Mint Registration Reliability" npx tsx web/app/scripts/test-mint-registration.ts || exit 1
+else
+  log_skip "Mint Registration Reliability"
+fi
+
 log_section "Test Summary"
 printf "${GREEN}Passed: ${PASSED}${NC} | ${RED}Failed: ${FAILED}${NC} | ${YELLOW}Skipped: ${SKIPPED}${NC}\n"
 log "Test suite completed: Passed=${PASSED} Failed=${FAILED} Skipped=${SKIPPED}"

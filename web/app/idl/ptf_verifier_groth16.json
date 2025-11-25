@@ -7,6 +7,108 @@
   },
   "instructions": [
     {
+      "name": "initialize_verifier_config",
+      "discriminator": [
+        25,
+        128,
+        200,
+        77,
+        123,
+        145,
+        42,
+        199
+      ],
+      "accounts": [
+        {
+          "name": "verifier_config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  101,
+                  114,
+                  105,
+                  102,
+                  105,
+                  101,
+                  114,
+                  45,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              },
+              {
+                "kind": "const",
+                "value": [
+                  38,
+                  57,
+                  3,
+                  34,
+                  108,
+                  77,
+                  52,
+                  18,
+                  0,
+                  172,
+                  119,
+                  48,
+                  147,
+                  10,
+                  28,
+                  58,
+                  178,
+                  48,
+                  205,
+                  113,
+                  114,
+                  123,
+                  249,
+                  80,
+                  249,
+                  17,
+                  11,
+                  34,
+                  38,
+                  78,
+                  104,
+                  225
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "authority",
+          "signer": true
+        },
+        {
+          "name": "factory_program"
+        },
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "factory_program_id",
+          "type": "pubkey"
+        }
+      ]
+    },
+    {
       "name": "initialize_verifying_key",
       "discriminator": [
         201,
@@ -22,6 +124,73 @@
         {
           "name": "verifier_state",
           "writable": true
+        },
+        {
+          "name": "verifier_config",
+          "docs": [
+            "CRITICAL FIX: VerifierConfig stores the factory program ID (required, no backwards compatibility)"
+          ],
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  101,
+                  114,
+                  105,
+                  102,
+                  105,
+                  101,
+                  114,
+                  45,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              },
+              {
+                "kind": "const",
+                "value": [
+                  38,
+                  57,
+                  3,
+                  34,
+                  108,
+                  77,
+                  52,
+                  18,
+                  0,
+                  172,
+                  119,
+                  48,
+                  147,
+                  10,
+                  28,
+                  58,
+                  178,
+                  48,
+                  205,
+                  113,
+                  114,
+                  123,
+                  249,
+                  80,
+                  249,
+                  17,
+                  11,
+                  34,
+                  38,
+                  78,
+                  104,
+                  225
+                ]
+              }
+            ]
+          }
         },
         {
           "name": "authority",
@@ -79,6 +248,165 @@
       ]
     },
     {
+      "name": "revoke_verifying_key",
+      "discriminator": [
+        252,
+        17,
+        31,
+        191,
+        245,
+        24,
+        11,
+        136
+      ],
+      "accounts": [
+        {
+          "name": "verifier_state",
+          "writable": true
+        },
+        {
+          "name": "authority",
+          "signer": true
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "update_factory_program_id",
+      "discriminator": [
+        66,
+        74,
+        217,
+        241,
+        89,
+        139,
+        172,
+        148
+      ],
+      "accounts": [
+        {
+          "name": "verifier_config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  101,
+                  114,
+                  105,
+                  102,
+                  105,
+                  101,
+                  114,
+                  45,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              },
+              {
+                "kind": "const",
+                "value": [
+                  38,
+                  57,
+                  3,
+                  34,
+                  108,
+                  77,
+                  52,
+                  18,
+                  0,
+                  172,
+                  119,
+                  48,
+                  147,
+                  10,
+                  28,
+                  58,
+                  178,
+                  48,
+                  205,
+                  113,
+                  114,
+                  123,
+                  249,
+                  80,
+                  249,
+                  17,
+                  11,
+                  34,
+                  38,
+                  78,
+                  104,
+                  225
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "authority",
+          "signer": true
+        },
+        {
+          "name": "new_factory_program"
+        }
+      ],
+      "args": [
+        {
+          "name": "new_factory_program_id",
+          "type": "pubkey"
+        }
+      ]
+    },
+    {
+      "name": "update_verifying_key",
+      "discriminator": [
+        123,
+        57,
+        133,
+        205,
+        34,
+        45,
+        181,
+        64
+      ],
+      "accounts": [
+        {
+          "name": "verifier_state",
+          "writable": true
+        },
+        {
+          "name": "authority",
+          "signer": true
+        }
+      ],
+      "args": [
+        {
+          "name": "new_hash",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        },
+        {
+          "name": "new_version",
+          "type": "u8"
+        },
+        {
+          "name": "new_verifying_key_data",
+          "type": "bytes"
+        }
+      ]
+    },
+    {
       "name": "verify_groth16",
       "discriminator": [
         228,
@@ -118,6 +446,19 @@
   ],
   "accounts": [
     {
+      "name": "VerifierConfig",
+      "discriminator": [
+        176,
+        103,
+        248,
+        36,
+        138,
+        167,
+        176,
+        220
+      ]
+    },
+    {
       "name": "VerifyingKeyAccount",
       "discriminator": [
         5,
@@ -133,6 +474,19 @@
   ],
   "events": [
     {
+      "name": "FactoryProgramIdUpdated",
+      "discriminator": [
+        37,
+        128,
+        17,
+        65,
+        177,
+        122,
+        223,
+        180
+      ]
+    },
+    {
       "name": "ProofVerified",
       "discriminator": [
         181,
@@ -143,6 +497,19 @@
         73,
         131,
         232
+      ]
+    },
+    {
+      "name": "VerifierConfigInitialized",
+      "discriminator": [
+        45,
+        145,
+        230,
+        104,
+        97,
+        160,
+        253,
+        43
       ]
     },
     {
@@ -157,31 +524,163 @@
         164,
         205
       ]
+    },
+    {
+      "name": "VerifyingKeyRevoked",
+      "discriminator": [
+        139,
+        201,
+        46,
+        17,
+        211,
+        136,
+        221,
+        42
+      ]
+    },
+    {
+      "name": "VerifyingKeyUpdated",
+      "discriminator": [
+        64,
+        66,
+        76,
+        1,
+        76,
+        30,
+        129,
+        10
+      ]
     }
   ],
   "errors": [
     {
       "code": 6000,
       "name": "InvalidProof",
-      "msg": "invalid proof"
+      "msg": "Invalid proof"
     },
     {
       "code": 6001,
       "name": "HashMismatch",
-      "msg": "verifying key hash mismatch"
+      "msg": "Hash mismatch"
     },
     {
       "code": 6002,
       "name": "EmptyVerifyingKey",
-      "msg": "verifying key data must not be empty"
+      "msg": "Verifying key data must not be empty"
     },
     {
       "code": 6003,
       "name": "InvalidVerifyingKeyId",
-      "msg": "verifying key id must be provided"
+      "msg": "Verifying key id must be provided"
+    },
+    {
+      "code": 6004,
+      "name": "EmptyProof",
+      "msg": "Proof must not be empty"
+    },
+    {
+      "code": 6005,
+      "name": "EmptyPublicInputs",
+      "msg": "Public inputs must not be empty"
+    },
+    {
+      "code": 6006,
+      "name": "UnauthorizedAuthority",
+      "msg": "Unauthorized authority - only factory can create keys"
+    },
+    {
+      "code": 6007,
+      "name": "ProofTooLarge",
+      "msg": "Proof too large"
+    },
+    {
+      "code": 6008,
+      "name": "PublicInputsTooLarge",
+      "msg": "Public inputs too large"
+    },
+    {
+      "code": 6009,
+      "name": "VersionTooOld",
+      "msg": "Verifying key version is too old and no longer supported"
+    },
+    {
+      "code": 6010,
+      "name": "VerifyingKeyTooLarge",
+      "msg": "Verifying key exceeds maximum allowed size"
+    },
+    {
+      "code": 6011,
+      "name": "InvalidKeyFormat",
+      "msg": "Verifying key format is invalid"
+    },
+    {
+      "code": 6012,
+      "name": "KeyRevoked",
+      "msg": "Verifying key has been revoked"
+    },
+    {
+      "code": 6013,
+      "name": "AlreadyRevoked",
+      "msg": "Verifying key is already revoked"
+    },
+    {
+      "code": 6014,
+      "name": "InvalidAccountOwner",
+      "msg": "Invalid account owner"
+    },
+    {
+      "code": 6015,
+      "name": "InvalidPDA",
+      "msg": "Invalid PDA"
+    },
+    {
+      "code": 6016,
+      "name": "InvalidBump",
+      "msg": "Invalid bump seed"
+    },
+    {
+      "code": 6017,
+      "name": "DataLengthMismatch",
+      "msg": "Data length mismatch"
+    },
+    {
+      "code": 6018,
+      "name": "AccountSizeMismatch",
+      "msg": "Account size mismatch"
+    },
+    {
+      "code": 6019,
+      "name": "InvalidProofFormat",
+      "msg": "Invalid proof format"
+    },
+    {
+      "code": 6020,
+      "name": "InvalidProgramId",
+      "msg": "Invalid program ID"
+    },
+    {
+      "code": 6021,
+      "name": "InvalidCircuitTag",
+      "msg": "Invalid circuit tag"
     }
   ],
   "types": [
+    {
+      "name": "FactoryProgramIdUpdated",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "old_factory_program_id",
+            "type": "pubkey"
+          },
+          {
+            "name": "new_factory_program_id",
+            "type": "pubkey"
+          }
+        ]
+      }
+    },
     {
       "name": "ProofVerified",
       "type": {
@@ -217,6 +716,42 @@
           {
             "name": "version",
             "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "VerifierConfig",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "factory_program_id",
+            "type": "pubkey"
+          },
+          {
+            "name": "authority",
+            "type": "pubkey"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "VerifierConfigInitialized",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "factory_program_id",
+            "type": "pubkey"
+          },
+          {
+            "name": "authority",
+            "type": "pubkey"
           }
         ]
       }
@@ -268,6 +803,16 @@
           {
             "name": "verifying_key",
             "type": "bytes"
+          },
+          {
+            "name": "revoked",
+            "type": "bool"
+          },
+          {
+            "name": "revoked_at",
+            "type": {
+              "option": "i64"
+            }
           }
         ]
       }
@@ -310,6 +855,57 @@
           },
           {
             "name": "version",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "VerifyingKeyRevoked",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "verifying_key_id",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "revoked_at",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "VerifyingKeyUpdated",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "verifying_key_id",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "new_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "new_version",
             "type": "u8"
           }
         ]

@@ -127,9 +127,41 @@ async function handlePost(req: NextApiRequest, res: NextApiResponse) {
     }
     res.status(200).json({ mint: mapGeneratedMint(created) });
   } catch (error) {
-    console.error('[api/mints] mint registration failed', error);
-    res.status(500).json({
-      error: (error as Error).message ?? 'mint_registration_failed'
+    const errorMessage = (error as Error).message ?? 'mint_registration_failed';
+    const errorStack = (error as Error).stack ?? '';
+    console.error('[api/mints] mint registration failed', {
+      message: errorMessage,
+      stack: errorStack,
+      error: error
+    });
+    
+    // Provide more helpful error messages for common issues
+    let statusCode = 500;
+    let errorResponse = errorMessage;
+    
+    if (errorMessage.includes('0x0') || errorMessage.includes('custom program error: 0x0')) {
+      // Log the full error for debugging
+      console.error('[api/mints] 0x0 error details:', {
+        fullError: String(error),
+        message: errorMessage,
+        stack: errorStack
+      });
+      errorResponse = `Account already exists in uninitialized state. Full error: ${errorMessage}`;
+      statusCode = 409; // Conflict
+    } else if (errorMessage.includes('InvalidMintFormat') || errorMessage.includes('Invalid mint format')) {
+      errorResponse = 'Mint account is in an invalid state. The mint_mapping account may exist but be owned by the wrong program. Try using a different mint.';
+      statusCode = 400;
+    } else if (errorMessage.includes('AlreadyRegistered')) {
+      errorResponse = 'This mint is already registered.';
+      statusCode = 409;
+    } else if (errorMessage.includes('Cannot register mint') && errorMessage.includes('uninitialized')) {
+      // This is our check failing - the mint_mapping is uninitialized
+      errorResponse = errorMessage;
+      statusCode = 400;
+    }
+    
+    res.status(statusCode).json({
+      error: errorResponse
     });
   } finally {
     bootstrapInFlight = false;

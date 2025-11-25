@@ -1,5 +1,5 @@
 {
-  "address": "4z618BY2dXGqAUiegqDt8omo3e81TSdXRHt64ikX1bTy",
+  "address": "YNZGqPEsKkMcUopmXThpigDdxfCYPE6jS1QtsXfRzjV",
   "metadata": {
     "name": "ptf_factory",
     "version": "0.1.0",
@@ -143,6 +143,9 @@
         },
         {
           "name": "verifier_program"
+        },
+        {
+          "name": "verifier_config"
         },
         {
           "name": "verifier_state",
@@ -355,38 +358,38 @@
               {
                 "kind": "const",
                 "value": [
-                  59,
-                  50,
-                  210,
-                  164,
-                  223,
-                  35,
-                  36,
-                  179,
-                  192,
-                  127,
-                  194,
-                  187,
-                  77,
-                  118,
-                  214,
-                  109,
-                  89,
-                  154,
-                  25,
-                  124,
-                  156,
-                  82,
-                  239,
-                  156,
-                  100,
-                  188,
-                  53,
-                  24,
-                  228,
-                  191,
+                  8,
+                  9,
+                  97,
+                  7,
+                  43,
+                  189,
                   65,
-                  100
+                  208,
+                  219,
+                  145,
+                  192,
+                  86,
+                  163,
+                  5,
+                  194,
+                  142,
+                  247,
+                  67,
+                  90,
+                  120,
+                  114,
+                  17,
+                  184,
+                  157,
+                  65,
+                  38,
+                  80,
+                  58,
+                  51,
+                  0,
+                  78,
+                  132
                 ]
               }
             ]
@@ -454,38 +457,38 @@
               {
                 "kind": "const",
                 "value": [
-                  59,
-                  50,
-                  210,
-                  164,
-                  223,
-                  35,
-                  36,
-                  179,
-                  192,
-                  127,
-                  194,
-                  187,
-                  77,
-                  118,
-                  214,
-                  109,
-                  89,
-                  154,
-                  25,
-                  124,
-                  156,
-                  82,
-                  239,
-                  156,
-                  100,
-                  188,
-                  53,
-                  24,
-                  228,
-                  191,
+                  8,
+                  9,
+                  97,
+                  7,
+                  43,
+                  189,
                   65,
-                  100
+                  208,
+                  219,
+                  145,
+                  192,
+                  86,
+                  163,
+                  5,
+                  194,
+                  142,
+                  247,
+                  67,
+                  90,
+                  120,
+                  114,
+                  17,
+                  184,
+                  157,
+                  65,
+                  38,
+                  80,
+                  58,
+                  51,
+                  0,
+                  78,
+                  132
                 ]
               }
             ]
@@ -544,6 +547,181 @@
       ]
     },
     {
+      "name": "mint_native_ztoken",
+      "discriminator": [
+        213,
+        18,
+        94,
+        228,
+        13,
+        193,
+        186,
+        151
+      ],
+      "accounts": [
+        {
+          "name": "factory_state",
+          "writable": true
+        },
+        {
+          "name": "authority",
+          "signer": true,
+          "relations": [
+            "factory_state"
+          ]
+        },
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "origin_mint",
+          "writable": true
+        },
+        {
+          "name": "metadata",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  109,
+                  101,
+                  116,
+                  97,
+                  100,
+                  97,
+                  116,
+                  97
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "origin_mint"
+              }
+            ]
+          }
+        },
+        {
+          "name": "mint_mapping",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  109,
+                  97,
+                  112
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "origin_mint"
+              }
+            ]
+          }
+        },
+        {
+          "name": "factory_config",
+          "docs": [
+            "Optional factory config account"
+          ],
+          "optional": true
+        },
+        {
+          "name": "pool_program"
+        },
+        {
+          "name": "vault_program"
+        },
+        {
+          "name": "pool_state",
+          "writable": true
+        },
+        {
+          "name": "vault_state",
+          "writable": true
+        },
+        {
+          "name": "commitment_tree",
+          "writable": true
+        },
+        {
+          "name": "nullifier_set",
+          "writable": true
+        },
+        {
+          "name": "note_ledger",
+          "writable": true
+        },
+        {
+          "name": "hook_config",
+          "writable": true
+        },
+        {
+          "name": "hook_whitelist",
+          "writable": true
+        },
+        {
+          "name": "verifier_program"
+        },
+        {
+          "name": "verifying_key"
+        },
+        {
+          "name": "user_token_account"
+        },
+        {
+          "name": "token_program"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        },
+        {
+          "name": "rent",
+          "address": "SysvarRent111111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "name",
+          "type": "string"
+        },
+        {
+          "name": "symbol",
+          "type": "string"
+        },
+        {
+          "name": "uri",
+          "type": "string"
+        },
+        {
+          "name": "decimals",
+          "type": "u8"
+        },
+        {
+          "name": "initial_supply",
+          "type": "u64"
+        },
+        {
+          "name": "feature_flags",
+          "type": {
+            "option": "u8"
+          }
+        },
+        {
+          "name": "fee_bps_override",
+          "type": {
+            "option": "u16"
+          }
+        }
+      ]
+    },
+    {
       "name": "mint_ptkn",
       "discriminator": [
         231,
@@ -576,38 +754,38 @@
               {
                 "kind": "const",
                 "value": [
-                  59,
-                  50,
-                  210,
-                  164,
-                  223,
-                  35,
-                  36,
-                  179,
-                  192,
-                  127,
-                  194,
-                  187,
-                  77,
-                  118,
-                  214,
-                  109,
-                  89,
-                  154,
-                  25,
-                  124,
-                  156,
-                  82,
-                  239,
-                  156,
-                  100,
-                  188,
-                  53,
-                  24,
-                  228,
-                  191,
+                  8,
+                  9,
+                  97,
+                  7,
+                  43,
+                  189,
                   65,
-                  100
+                  208,
+                  219,
+                  145,
+                  192,
+                  86,
+                  163,
+                  5,
+                  194,
+                  142,
+                  247,
+                  67,
+                  90,
+                  120,
+                  114,
+                  17,
+                  184,
+                  157,
+                  65,
+                  38,
+                  80,
+                  58,
+                  51,
+                  0,
+                  78,
+                  132
                 ]
               }
             ]
@@ -1118,6 +1296,19 @@
         118,
         196
       ]
+    },
+    {
+      "name": "TokenMetadata",
+      "discriminator": [
+        237,
+        215,
+        132,
+        182,
+        24,
+        127,
+        175,
+        173
+      ]
     }
   ],
   "events": [
@@ -1360,222 +1551,272 @@
     {
       "code": 6000,
       "name": "AlreadyRegistered",
-      "msg": "E_ALREADY_REGISTERED"
+      "msg": "Already registered"
     },
     {
       "code": 6001,
       "name": "Paused",
-      "msg": "E_FACTORY_PAUSED"
+      "msg": "Factory paused"
     },
     {
       "code": 6002,
-      "name": "PtknMintMissing",
-      "msg": "E_PTKN_MINT_MISSING"
+      "name": "NotPaused",
+      "msg": "Factory not paused"
     },
     {
       "code": 6003,
-      "name": "InvalidFeeBps",
-      "msg": "E_INVALID_FEE_BPS"
+      "name": "PtknMintMissing",
+      "msg": "PTKN mint missing"
     },
     {
       "code": 6004,
-      "name": "Unauthorized",
-      "msg": "E_UNAUTHORIZED"
+      "name": "InvalidFeeBps",
+      "msg": "Invalid fee basis points"
     },
     {
       "code": 6005,
-      "name": "InvalidDecimals",
-      "msg": "E_INVALID_DECIMALS"
+      "name": "Unauthorized",
+      "msg": "Unauthorized"
     },
     {
       "code": 6006,
-      "name": "PtknMintMismatch",
-      "msg": "E_PTKN_MINT_MISMATCH"
+      "name": "InvalidDecimals",
+      "msg": "Invalid decimals"
     },
     {
       "code": 6007,
-      "name": "PtknAuthorityMissing",
-      "msg": "E_PTKN_AUTHORITY_MISSING"
+      "name": "PtknMintMismatch",
+      "msg": "PTKN mint mismatch"
     },
     {
       "code": 6008,
-      "name": "TokenProgramMissing",
-      "msg": "E_TOKEN_PROGRAM_MISSING"
+      "name": "PtknAuthorityMissing",
+      "msg": "PTKN authority missing"
     },
     {
       "code": 6009,
-      "name": "RentMissing",
-      "msg": "E_RENT_MISSING"
+      "name": "TokenProgramMissing",
+      "msg": "Token program missing"
     },
     {
       "code": 6010,
-      "name": "PtknPayerMissing",
-      "msg": "E_PTKN_PAYER_MISSING"
+      "name": "RentMissing",
+      "msg": "Rent missing"
     },
     {
       "code": 6011,
-      "name": "PtknMintDisabled",
-      "msg": "E_PTKN_DISABLED"
+      "name": "PtknPayerMissing",
+      "msg": "PTKN payer missing"
     },
     {
       "code": 6012,
-      "name": "PoolAuthorityMismatch",
-      "msg": "E_POOL_AUTHORITY_MISMATCH"
+      "name": "PtknMintDisabled",
+      "msg": "PTKN mint disabled"
     },
     {
       "code": 6013,
-      "name": "TimelockOverflow",
-      "msg": "E_TIMELOCK_OVERFLOW"
+      "name": "PoolAuthorityMismatch",
+      "msg": "Pool authority mismatch"
     },
     {
       "code": 6014,
-      "name": "TimelockConsumed",
-      "msg": "E_TIMELOCK_CONSUMED"
+      "name": "TimelockOverflow",
+      "msg": "Timelock overflow"
     },
     {
       "code": 6015,
-      "name": "ChangeCanceled",
-      "msg": "E_CHANGE_CANCELED"
+      "name": "TimelockConsumed",
+      "msg": "Timelock consumed"
     },
     {
       "code": 6016,
-      "name": "TimelockNotReady",
-      "msg": "E_TIMELOCK_NOT_READY"
+      "name": "ChangeCanceled",
+      "msg": "Change canceled"
     },
     {
       "code": 6017,
-      "name": "TimelockNotExpired",
-      "msg": "E_TIMELOCK_NOT_EXPIRED"
+      "name": "TimelockNotReady",
+      "msg": "Timelock not ready"
     },
     {
       "code": 6018,
-      "name": "TimelockMissingMapping",
-      "msg": "E_TIMELOCK_MINT_MAPPING_MISSING"
+      "name": "TimelockNotExpired",
+      "msg": "Timelock not expired"
     },
     {
       "code": 6019,
-      "name": "TimelockInvalidFactory",
-      "msg": "E_TIMELOCK_INVALID_FACTORY"
+      "name": "TimelockMissingMapping",
+      "msg": "Timelock mint mapping missing"
     },
     {
       "code": 6020,
-      "name": "TimelockOnlyQueue",
-      "msg": "E_TIMELOCK_ONLY_QUEUE"
+      "name": "TimelockInvalidFactory",
+      "msg": "Timelock invalid factory"
     },
     {
       "code": 6021,
-      "name": "SerializationError",
-      "msg": "E_SERIALIZATION_ERROR"
+      "name": "TimelockOnlyQueue",
+      "msg": "Timelock only queue"
     },
     {
       "code": 6022,
-      "name": "OriginMintMismatch",
-      "msg": "E_ORIGIN_MINT_MISMATCH"
+      "name": "SerializationError",
+      "msg": "Serialization error"
     },
     {
       "code": 6023,
-      "name": "MintFrozen",
-      "msg": "E_MINT_FROZEN"
+      "name": "OriginMintMismatch",
+      "msg": "Origin mint mismatch"
     },
     {
       "code": 6024,
-      "name": "InvalidAmount",
-      "msg": "E_INVALID_AMOUNT"
+      "name": "InsufficientSignatures",
+      "msg": "Insufficient signatures"
     },
     {
       "code": 6025,
-      "name": "AmountTooLarge",
-      "msg": "E_AMOUNT_TOO_LARGE"
+      "name": "EmergencyPauseNotConfigured",
+      "msg": "Emergency pause not configured"
     },
     {
       "code": 6026,
-      "name": "InvalidDestination",
-      "msg": "E_INVALID_DESTINATION"
+      "name": "InsufficientEmergencySignatures",
+      "msg": "Insufficient emergency signatures"
     },
     {
       "code": 6027,
-      "name": "TimelockTooShort",
-      "msg": "E_TIMELOCK_TOO_SHORT"
+      "name": "MintFrozen",
+      "msg": "Mint frozen"
     },
     {
       "code": 6028,
-      "name": "TimelockHashMismatch",
-      "msg": "E_TIMELOCK_HASH_MISMATCH"
+      "name": "InvalidAmount",
+      "msg": "Invalid amount"
     },
     {
       "code": 6029,
-      "name": "VerifyingKeyHashMismatch",
-      "msg": "E_VERIFYING_KEY_HASH_MISMATCH"
+      "name": "AmountTooLarge",
+      "msg": "Amount too large"
     },
     {
       "code": 6030,
-      "name": "VerifyingKeyTooLarge",
-      "msg": "E_VERIFYING_KEY_TOO_LARGE"
+      "name": "InvalidDestination",
+      "msg": "Invalid destination"
     },
     {
       "code": 6031,
-      "name": "DuplicateAction",
-      "msg": "E_DUPLICATE_ACTION"
+      "name": "TimelockTooShort",
+      "msg": "Timelock too short"
     },
     {
       "code": 6032,
-      "name": "TooManyPendingActions",
-      "msg": "E_TOO_MANY_PENDING_ACTIONS"
+      "name": "TimelockHashMismatch",
+      "msg": "Hash mismatch"
     },
     {
       "code": 6033,
-      "name": "SequenceOverflow",
-      "msg": "E_SEQUENCE_OVERFLOW"
+      "name": "VerifyingKeyHashMismatch",
+      "msg": "Hash mismatch"
     },
     {
       "code": 6034,
-      "name": "ActionRateLimitExceeded",
-      "msg": "E_ACTION_RATE_LIMIT_EXCEEDED"
+      "name": "VerifyingKeyTooLarge",
+      "msg": "Verifying key too large"
     },
     {
       "code": 6035,
-      "name": "InvalidAuthority",
-      "msg": "E_INVALID_AUTHORITY"
+      "name": "DuplicateAction",
+      "msg": "Duplicate action"
     },
     {
       "code": 6036,
-      "name": "AuthorityUnchanged",
-      "msg": "E_AUTHORITY_UNCHANGED"
+      "name": "TooManyPendingActions",
+      "msg": "Too many pending actions"
     },
     {
       "code": 6037,
-      "name": "ConfigNotInitialized",
-      "msg": "E_CONFIG_NOT_INITIALIZED"
+      "name": "GlobalActionRateLimitExceeded",
+      "msg": "Global action rate limit exceeded"
     },
     {
       "code": 6038,
-      "name": "ConfigFactoryMismatch",
-      "msg": "E_CONFIG_FACTORY_MISMATCH"
+      "name": "ActionExpired",
+      "msg": "Action expired"
     },
     {
       "code": 6039,
-      "name": "AccountDataReadFailed",
-      "msg": "E_ACCOUNT_DATA_READ_FAILED"
+      "name": "SequenceOverflow",
+      "msg": "Sequence overflow"
     },
     {
       "code": 6040,
-      "name": "AccountDataTooShort",
-      "msg": "E_ACCOUNT_DATA_TOO_SHORT"
+      "name": "ActionRateLimitExceeded",
+      "msg": "Action rate limit exceeded"
     },
     {
       "code": 6041,
-      "name": "InvalidMintFormat",
-      "msg": "E_INVALID_MINT_FORMAT"
+      "name": "InvalidAuthority",
+      "msg": "Invalid authority"
     },
     {
       "code": 6042,
-      "name": "DecimalsMismatch",
-      "msg": "E_DECIMALS_MISMATCH"
+      "name": "AuthorityUnchanged",
+      "msg": "Authority unchanged"
     },
     {
       "code": 6043,
+      "name": "ConfigNotInitialized",
+      "msg": "Config not initialized"
+    },
+    {
+      "code": 6044,
+      "name": "ConfigFactoryMismatch",
+      "msg": "Config factory mismatch"
+    },
+    {
+      "code": 6045,
+      "name": "AccountDataReadFailed",
+      "msg": "Account data read failed"
+    },
+    {
+      "code": 6046,
+      "name": "AccountDataTooShort",
+      "msg": "Account data too short"
+    },
+    {
+      "code": 6047,
+      "name": "InvalidMintFormat",
+      "msg": "Invalid mint format"
+    },
+    {
+      "code": 6048,
+      "name": "DecimalsMismatch",
+      "msg": "Decimals mismatch"
+    },
+    {
+      "code": 6049,
       "name": "InvalidVerifierProgram",
-      "msg": "E_INVALID_VERIFIER_PROGRAM"
+      "msg": "Invalid verifier program"
+    },
+    {
+      "code": 6050,
+      "name": "NativeZTokenAlreadyExists",
+      "msg": "Native zToken already exists"
+    },
+    {
+      "code": 6051,
+      "name": "InvalidMetadataURI",
+      "msg": "Invalid metadata URI"
+    },
+    {
+      "code": 6052,
+      "name": "MetadataTooLong",
+      "msg": "Metadata too long"
+    },
+    {
+      "code": 6053,
+      "name": "InitialSupplyAlreadyMinted",
+      "msg": "Initial supply already minted"
     }
   ],
   "types": [
@@ -1762,6 +2003,30 @@
           {
             "name": "last_action_time",
             "type": "i64"
+          },
+          {
+            "name": "last_global_action_time",
+            "type": "i64"
+          },
+          {
+            "name": "multi_sig_signers",
+            "type": {
+              "vec": "pubkey"
+            }
+          },
+          {
+            "name": "multi_sig_threshold",
+            "type": "u8"
+          },
+          {
+            "name": "emergency_pause_signers",
+            "type": {
+              "vec": "pubkey"
+            }
+          },
+          {
+            "name": "emergency_pause_threshold",
+            "type": "u8"
           }
         ]
       }
@@ -1850,6 +2115,10 @@
           {
             "name": "bump",
             "type": "u8"
+          },
+          {
+            "name": "is_native_ztoken",
+            "type": "bool"
           }
         ]
       }
@@ -2136,6 +2405,10 @@
           {
             "name": "sequence",
             "type": "u64"
+          },
+          {
+            "name": "expires_at",
+            "type": "i64"
           }
         ]
       }
@@ -2239,6 +2512,38 @@
           {
             "name": "sequence",
             "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "TokenMetadata",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "name",
+            "type": "string"
+          },
+          {
+            "name": "symbol",
+            "type": "string"
+          },
+          {
+            "name": "uri",
+            "type": "string"
+          },
+          {
+            "name": "mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "update_authority",
+            "type": "pubkey"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
           }
         ]
       }

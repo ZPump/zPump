@@ -158,6 +158,17 @@ The program includes several security measures to prevent common attack vectors:
 - After wraps, POST the new root to Photon (`/roots/:mint`). The frontend now does this automatically.
 - When toggling features or fees, rebuild the frontend to pick up new configuration.
 
+## Native zToken Support
+
+Native zTokens (zTokens minted directly, not converted from traditional tokens) work identically to regular tokens:
+- Shield/unshield flow works the same way
+- No special logic needed in pool program
+- The `is_native_ztoken` flag in `MintMapping` is informational only (for frontend/metadata purposes)
+- Tokens are deposited to vault normally during shield
+- Tokens are released from vault normally during unshield
+
+See [Native zToken Minting System](./native-ztoken-minting.md) for complete documentation.
+
 ## References
 
 - [Source: `programs/pool/src/lib.rs`](../../programs/pool/src/lib.rs)

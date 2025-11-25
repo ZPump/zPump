@@ -174,10 +174,91 @@
       ]
     },
     {
+      "name": "cancel_authority_change",
+      "docs": [
+        "Cancel a proposed authority change"
+      ],
+      "discriminator": [
+        254,
+        193,
+        5,
+        128,
+        8,
+        87,
+        30,
+        194
+      ],
+      "accounts": [
+        {
+          "name": "pool_state",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  111,
+                  111,
+                  108
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "pool_state"
+              }
+            ]
+          }
+        },
+        {
+          "name": "authority",
+          "signer": true,
+          "relations": [
+            "pool_state"
+          ]
+        },
+        {
+          "name": "pending_change",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  101,
+                  110,
+                  100,
+                  105,
+                  110,
+                  103,
+                  45,
+                  97,
+                  117,
+                  116,
+                  104
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "pool_state"
+              },
+              {
+                "kind": "account",
+                "path": "pending_change.sequence",
+                "account": "PendingAuthorityChange"
+              }
+            ]
+          }
+        }
+      ],
+      "args": []
+    },
+    {
       "name": "change_authority",
       "docs": [
         "Change the pool authority",
-        "CRITICAL SECURITY: Only the current authority can change to a new authority"
+        "DEPRECATED: Use propose_authority_change instead for timelock-based changes",
+        "This function is kept for backwards compatibility during migration"
       ],
       "discriminator": [
         50,
@@ -362,6 +443,116 @@
           }
         }
       ]
+    },
+    {
+      "name": "execute_authority_change",
+      "docs": [
+        "Execute an authority change after timelock"
+      ],
+      "discriminator": [
+        206,
+        91,
+        164,
+        210,
+        187,
+        23,
+        161,
+        101
+      ],
+      "accounts": [
+        {
+          "name": "pool_state",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  111,
+                  111,
+                  108
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "pool_state"
+              }
+            ]
+          }
+        },
+        {
+          "name": "pending_change",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  101,
+                  110,
+                  100,
+                  105,
+                  110,
+                  103,
+                  45,
+                  97,
+                  117,
+                  116,
+                  104
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "pool_state"
+              },
+              {
+                "kind": "account",
+                "path": "pending_change.sequence",
+                "account": "PendingAuthorityChange"
+              }
+            ]
+          }
+        },
+        {
+          "name": "executor",
+          "signer": true
+        },
+        {
+          "name": "hook_whitelist",
+          "writable": true,
+          "optional": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  104,
+                  111,
+                  111,
+                  107,
+                  45,
+                  119,
+                  104,
+                  105,
+                  116,
+                  101,
+                  108,
+                  105,
+                  115,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "pool_state"
+              }
+            ]
+          }
+        }
+      ],
+      "args": []
     },
     {
       "name": "initialize_pool",
@@ -686,38 +877,38 @@
             "program": {
               "kind": "const",
               "value": [
-                59,
-                50,
-                210,
-                164,
-                223,
-                35,
-                36,
-                179,
-                192,
-                127,
-                194,
-                187,
-                77,
-                118,
-                214,
-                109,
-                89,
-                154,
-                25,
-                124,
-                156,
-                82,
-                239,
-                156,
-                100,
-                188,
-                53,
-                24,
-                228,
-                191,
+                8,
+                9,
+                97,
+                7,
+                43,
+                189,
                 65,
-                100
+                208,
+                219,
+                145,
+                192,
+                86,
+                163,
+                5,
+                194,
+                142,
+                247,
+                67,
+                90,
+                120,
+                114,
+                17,
+                184,
+                157,
+                65,
+                38,
+                80,
+                58,
+                51,
+                0,
+                78,
+                132
               ]
             }
           }
@@ -751,6 +942,101 @@
               "name": "TransferArgs"
             }
           }
+        }
+      ]
+    },
+    {
+      "name": "propose_authority_change",
+      "docs": [
+        "Propose an authority change with timelock",
+        "CRITICAL FIX: Implements timelock-based authority changes for security consistency with vault"
+      ],
+      "discriminator": [
+        22,
+        224,
+        215,
+        238,
+        184,
+        2,
+        83,
+        146
+      ],
+      "accounts": [
+        {
+          "name": "pool_state",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  111,
+                  111,
+                  108
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "pool_state"
+              }
+            ]
+          }
+        },
+        {
+          "name": "authority",
+          "signer": true,
+          "relations": [
+            "pool_state"
+          ]
+        },
+        {
+          "name": "pending_change",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  101,
+                  110,
+                  100,
+                  105,
+                  110,
+                  103,
+                  45,
+                  97,
+                  117,
+                  116,
+                  104
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "pool_state"
+              },
+              {
+                "kind": "account",
+                "path": "pool_state"
+              }
+            ]
+          }
+        },
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "new_authority",
+          "type": "pubkey"
         }
       ]
     },
@@ -1063,6 +1349,85 @@
       ]
     },
     {
+      "name": "set_reject_expired_roots",
+      "docs": [
+        "Set expired root rejection flag",
+        "CRITICAL FIX: Allows authority to enable strict expiration enforcement after migration"
+      ],
+      "discriminator": [
+        158,
+        145,
+        149,
+        237,
+        52,
+        209,
+        95,
+        8
+      ],
+      "accounts": [
+        {
+          "name": "authority",
+          "signer": true,
+          "relations": [
+            "pool_state"
+          ]
+        },
+        {
+          "name": "pool_state",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  111,
+                  111,
+                  108
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "pool_state"
+              }
+            ]
+          }
+        },
+        {
+          "name": "nullifier_set",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  110,
+                  117,
+                  108,
+                  108,
+                  115
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "pool_state"
+              }
+            ]
+          }
+        },
+        {
+          "name": "rent",
+          "address": "SysvarRent111111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "reject",
+          "type": "bool"
+        }
+      ]
+    },
+    {
       "name": "shield",
       "discriminator": [
         220,
@@ -1292,38 +1657,38 @@
             "program": {
               "kind": "const",
               "value": [
-                59,
-                50,
-                210,
-                164,
-                223,
-                35,
-                36,
-                179,
-                192,
-                127,
-                194,
-                187,
-                77,
-                118,
-                214,
-                109,
-                89,
-                154,
-                25,
-                124,
-                156,
-                82,
-                239,
-                156,
-                100,
-                188,
-                53,
-                24,
-                228,
-                191,
+                8,
+                9,
+                97,
+                7,
+                43,
+                189,
                 65,
-                100
+                208,
+                219,
+                145,
+                192,
+                86,
+                163,
+                5,
+                194,
+                142,
+                247,
+                67,
+                90,
+                120,
+                114,
+                17,
+                184,
+                157,
+                65,
+                38,
+                80,
+                58,
+                51,
+                0,
+                78,
+                132
               ]
             }
           }
@@ -1780,38 +2145,38 @@
             "program": {
               "kind": "const",
               "value": [
-                59,
-                50,
-                210,
-                164,
-                223,
-                35,
-                36,
-                179,
-                192,
-                127,
-                194,
-                187,
-                77,
-                118,
-                214,
-                109,
-                89,
-                154,
-                25,
-                124,
-                156,
-                82,
-                239,
-                156,
-                100,
-                188,
-                53,
-                24,
-                228,
-                191,
+                8,
+                9,
+                97,
+                7,
+                43,
+                189,
                 65,
-                100
+                208,
+                219,
+                145,
+                192,
+                86,
+                163,
+                5,
+                194,
+                142,
+                247,
+                67,
+                90,
+                120,
+                114,
+                17,
+                184,
+                157,
+                65,
+                38,
+                80,
+                58,
+                51,
+                0,
+                78,
+                132
               ]
             }
           }
@@ -2043,38 +2408,38 @@
             "program": {
               "kind": "const",
               "value": [
-                59,
-                50,
-                210,
-                164,
-                223,
-                35,
-                36,
-                179,
-                192,
-                127,
-                194,
-                187,
-                77,
-                118,
-                214,
-                109,
-                89,
-                154,
-                25,
-                124,
-                156,
-                82,
-                239,
-                156,
-                100,
-                188,
-                53,
-                24,
-                228,
-                191,
+                8,
+                9,
+                97,
+                7,
+                43,
+                189,
                 65,
-                100
+                208,
+                219,
+                145,
+                192,
+                86,
+                163,
+                5,
+                194,
+                142,
+                247,
+                67,
+                90,
+                120,
+                114,
+                17,
+                184,
+                157,
+                65,
+                38,
+                80,
+                58,
+                51,
+                0,
+                78,
+                132
               ]
             }
           }
@@ -2126,83 +2491,83 @@
               {
                 "kind": "const",
                 "value": [
-                  59,
-                  50,
-                  210,
-                  164,
-                  223,
-                  35,
-                  36,
-                  179,
-                  192,
-                  127,
-                  194,
-                  187,
-                  77,
-                  118,
-                  214,
-                  109,
-                  89,
-                  154,
-                  25,
-                  124,
-                  156,
-                  82,
-                  239,
-                  156,
-                  100,
-                  188,
-                  53,
-                  24,
-                  228,
-                  191,
+                  8,
+                  9,
+                  97,
+                  7,
+                  43,
+                  189,
                   65,
-                  100
+                  208,
+                  219,
+                  145,
+                  192,
+                  86,
+                  163,
+                  5,
+                  194,
+                  142,
+                  247,
+                  67,
+                  90,
+                  120,
+                  114,
+                  17,
+                  184,
+                  157,
+                  65,
+                  38,
+                  80,
+                  58,
+                  51,
+                  0,
+                  78,
+                  132
                 ]
               }
             ],
             "program": {
               "kind": "const",
               "value": [
-                59,
-                50,
-                210,
-                164,
-                223,
-                35,
-                36,
-                179,
-                192,
-                127,
-                194,
-                187,
-                77,
-                118,
-                214,
-                109,
-                89,
-                154,
-                25,
-                124,
-                156,
-                82,
-                239,
-                156,
-                100,
-                188,
-                53,
-                24,
-                228,
-                191,
+                8,
+                9,
+                97,
+                7,
+                43,
+                189,
                 65,
-                100
+                208,
+                219,
+                145,
+                192,
+                86,
+                163,
+                5,
+                194,
+                142,
+                247,
+                67,
+                90,
+                120,
+                114,
+                17,
+                184,
+                157,
+                65,
+                38,
+                80,
+                58,
+                51,
+                0,
+                78,
+                132
               ]
             }
           }
         },
         {
           "name": "factory_program",
-          "address": "4z618BY2dXGqAUiegqDt8omo3e81TSdXRHt64ikX1bTy"
+          "address": "YNZGqPEsKkMcUopmXThpigDdxfCYPE6jS1QtsXfRzjV"
         },
         {
           "name": "token_program"
@@ -2402,38 +2767,38 @@
             "program": {
               "kind": "const",
               "value": [
-                59,
-                50,
-                210,
-                164,
-                223,
-                35,
-                36,
-                179,
-                192,
-                127,
-                194,
-                187,
-                77,
-                118,
-                214,
-                109,
-                89,
-                154,
-                25,
-                124,
-                156,
-                82,
-                239,
-                156,
-                100,
-                188,
-                53,
-                24,
-                228,
-                191,
+                8,
+                9,
+                97,
+                7,
+                43,
+                189,
                 65,
-                100
+                208,
+                219,
+                145,
+                192,
+                86,
+                163,
+                5,
+                194,
+                142,
+                247,
+                67,
+                90,
+                120,
+                114,
+                17,
+                184,
+                157,
+                65,
+                38,
+                80,
+                58,
+                51,
+                0,
+                78,
+                132
               ]
             }
           }
@@ -2485,83 +2850,83 @@
               {
                 "kind": "const",
                 "value": [
-                  59,
-                  50,
-                  210,
-                  164,
-                  223,
-                  35,
-                  36,
-                  179,
-                  192,
-                  127,
-                  194,
-                  187,
-                  77,
-                  118,
-                  214,
-                  109,
-                  89,
-                  154,
-                  25,
-                  124,
-                  156,
-                  82,
-                  239,
-                  156,
-                  100,
-                  188,
-                  53,
-                  24,
-                  228,
-                  191,
+                  8,
+                  9,
+                  97,
+                  7,
+                  43,
+                  189,
                   65,
-                  100
+                  208,
+                  219,
+                  145,
+                  192,
+                  86,
+                  163,
+                  5,
+                  194,
+                  142,
+                  247,
+                  67,
+                  90,
+                  120,
+                  114,
+                  17,
+                  184,
+                  157,
+                  65,
+                  38,
+                  80,
+                  58,
+                  51,
+                  0,
+                  78,
+                  132
                 ]
               }
             ],
             "program": {
               "kind": "const",
               "value": [
-                59,
-                50,
-                210,
-                164,
-                223,
-                35,
-                36,
-                179,
-                192,
-                127,
-                194,
-                187,
-                77,
-                118,
-                214,
-                109,
-                89,
-                154,
-                25,
-                124,
-                156,
-                82,
-                239,
-                156,
-                100,
-                188,
-                53,
-                24,
-                228,
-                191,
+                8,
+                9,
+                97,
+                7,
+                43,
+                189,
                 65,
-                100
+                208,
+                219,
+                145,
+                192,
+                86,
+                163,
+                5,
+                194,
+                142,
+                247,
+                67,
+                90,
+                120,
+                114,
+                17,
+                184,
+                157,
+                65,
+                38,
+                80,
+                58,
+                51,
+                0,
+                78,
+                132
               ]
             }
           }
         },
         {
           "name": "factory_program",
-          "address": "4z618BY2dXGqAUiegqDt8omo3e81TSdXRHt64ikX1bTy"
+          "address": "YNZGqPEsKkMcUopmXThpigDdxfCYPE6jS1QtsXfRzjV"
         },
         {
           "name": "token_program"
@@ -2770,6 +3135,19 @@
       ]
     },
     {
+      "name": "PendingAuthorityChange",
+      "discriminator": [
+        80,
+        222,
+        56,
+        83,
+        100,
+        219,
+        134,
+        91
+      ]
+    },
+    {
       "name": "PoolState",
       "discriminator": [
         247,
@@ -2823,6 +3201,45 @@
     }
   ],
   "events": [
+    {
+      "name": "AuthorityChangeCanceled",
+      "discriminator": [
+        51,
+        101,
+        9,
+        91,
+        223,
+        100,
+        130,
+        156
+      ]
+    },
+    {
+      "name": "AuthorityChangeExecuted",
+      "discriminator": [
+        166,
+        21,
+        195,
+        91,
+        195,
+        173,
+        181,
+        0
+      ]
+    },
+    {
+      "name": "AuthorityChangeProposed",
+      "discriminator": [
+        109,
+        230,
+        24,
+        90,
+        150,
+        78,
+        41,
+        3
+      ]
+    },
     {
       "name": "AuthorityChanged",
       "discriminator": [
@@ -3069,408 +3486,496 @@
         84,
         99
       ]
+    },
+    {
+      "name": "RejectExpiredRootsUpdated",
+      "discriminator": [
+        61,
+        205,
+        4,
+        105,
+        210,
+        45,
+        129,
+        65
+      ]
     }
   ],
   "errors": [
     {
       "code": 6000,
       "name": "InvalidAccountOwner",
-      "msg": "account is not owned by expected program"
+      "msg": "Invalid account owner"
     },
     {
       "code": 6001,
       "name": "InvalidFeeBps",
-      "msg": "E_INVALID_FEE_BPS"
+      "msg": "Invalid fee basis points"
     },
     {
       "code": 6002,
       "name": "PoolAlreadyInitialized",
-      "msg": "E_POOL_ALREADY_INITIALIZED"
+      "msg": "Pool already initialized"
     },
     {
       "code": 6003,
       "name": "VerifierMismatch",
-      "msg": "E_VERIFIER_MISMATCH"
+      "msg": "Verifier mismatch"
     },
     {
       "code": 6004,
       "name": "VerifyingKeyHashMismatch",
-      "msg": "E_VERIFYING_KEY_HASH_MISMATCH"
+      "msg": "Hash mismatch"
     },
     {
       "code": 6005,
       "name": "InvalidPublicInputs",
-      "msg": "E_INVALID_PUBLIC_INPUTS"
+      "msg": "Invalid public inputs"
     },
     {
       "code": 6006,
       "name": "InvalidFieldElement",
-      "msg": "E_INVALID_FIELD_ELEMENT"
+      "msg": "Invalid field element"
     },
     {
       "code": 6007,
       "name": "InvalidStateTransition",
-      "msg": "E_INVALID_STATE_TRANSITION"
+      "msg": "Invalid state transition"
     },
     {
       "code": 6008,
       "name": "InvalidBump",
-      "msg": "E_INVALID_BUMP"
+      "msg": "Invalid bump seed"
     },
     {
       "code": 6009,
       "name": "PublicInputsTooLarge",
-      "msg": "E_PUBLIC_INPUTS_TOO_LARGE"
+      "msg": "Public inputs too large"
     },
     {
       "code": 6010,
-      "name": "PublicInputMismatch",
-      "msg": "E_PUBLIC_INPUT_MISMATCH"
+      "name": "ProofTooLarge",
+      "msg": "Proof too large"
     },
     {
       "code": 6011,
-      "name": "UnknownRoot",
-      "msg": "E_UNKNOWN_ROOT"
+      "name": "PublicInputMismatch",
+      "msg": "Public input mismatch"
     },
     {
       "code": 6012,
-      "name": "NullifierReuse",
-      "msg": "E_NULLIFIER_REUSE"
+      "name": "UnknownRoot",
+      "msg": "Unknown root"
     },
     {
       "code": 6013,
-      "name": "AmountOverflow",
-      "msg": "E_AMOUNT_OVERFLOW"
+      "name": "NullifierReuse",
+      "msg": "Nullifier reuse"
     },
     {
       "code": 6014,
-      "name": "InvalidAmount",
-      "msg": "E_INVALID_AMOUNT"
+      "name": "AmountOverflow",
+      "msg": "Amount overflow"
     },
     {
       "code": 6015,
-      "name": "AmountTooLarge",
-      "msg": "E_AMOUNT_TOO_LARGE"
+      "name": "InvalidAmount",
+      "msg": "Invalid amount"
     },
     {
       "code": 6016,
-      "name": "InsufficientLiquidity",
-      "msg": "E_INSUFFICIENT_LIQUIDITY"
+      "name": "AmountTooLarge",
+      "msg": "Amount too large"
     },
     {
       "code": 6017,
-      "name": "InsufficientFees",
-      "msg": "E_INSUFFICIENT_FEES"
+      "name": "InsufficientLiquidity",
+      "msg": "Insufficient liquidity"
     },
     {
       "code": 6018,
-      "name": "FeatureDisabled",
-      "msg": "E_FEATURE_DISABLED"
+      "name": "InsufficientFees",
+      "msg": "Insufficient fees"
     },
     {
       "code": 6019,
-      "name": "MintFrozen",
-      "msg": "E_MINT_FROZEN"
+      "name": "FeatureDisabled",
+      "msg": "Feature disabled"
     },
     {
       "code": 6020,
-      "name": "ShieldFinalizationRequired",
-      "msg": "E_SHIELD_FINALIZATION_REQUIRED"
+      "name": "MintFrozen",
+      "msg": "Mint frozen"
     },
     {
       "code": 6021,
-      "name": "MismatchedVaultAuthority",
-      "msg": "E_VAULT_AUTHORITY_MISMATCH"
+      "name": "ShieldFinalizationRequired",
+      "msg": "Shield finalization required"
     },
     {
       "code": 6022,
-      "name": "OriginMintMismatch",
-      "msg": "E_ORIGIN_MINT_MISMATCH"
+      "name": "MismatchedVaultAuthority",
+      "msg": "Vault authority mismatch"
     },
     {
       "code": 6023,
-      "name": "MintMappingCorrupt",
-      "msg": "E_MINT_MAPPING_CORRUPT"
+      "name": "OriginMintMismatch",
+      "msg": "Origin mint mismatch"
     },
     {
       "code": 6024,
-      "name": "AccountDataTooShort",
-      "msg": "E_ACCOUNT_DATA_TOO_SHORT"
+      "name": "MintMappingCorrupt",
+      "msg": "Mint mapping corrupt"
     },
     {
       "code": 6025,
-      "name": "InvalidAccountDiscriminator",
-      "msg": "E_INVALID_ACCOUNT_DISCRIMINATOR"
+      "name": "AccountDataTooShort",
+      "msg": "Account data too short"
     },
     {
       "code": 6026,
-      "name": "AccountDataCorrupt",
-      "msg": "E_ACCOUNT_DATA_CORRUPT"
+      "name": "InvalidAccountDiscriminator",
+      "msg": "Invalid discriminator"
     },
     {
       "code": 6027,
-      "name": "VaultTokenAccountMismatch",
-      "msg": "E_VAULT_TOKEN_ACCOUNT_MISMATCH"
+      "name": "AccountDataCorrupt",
+      "msg": "Account data corrupt"
     },
     {
       "code": 6028,
-      "name": "InvalidDepositorAccount",
-      "msg": "E_INVALID_DEPOSITOR_ACCOUNT"
+      "name": "VaultTokenAccountMismatch",
+      "msg": "Vault token account mismatch"
     },
     {
       "code": 6029,
-      "name": "TwinMintMismatch",
-      "msg": "E_TWIN_MINT_MISMATCH"
+      "name": "InvalidDepositorAccount",
+      "msg": "Invalid depositor account"
     },
     {
       "code": 6030,
-      "name": "TwinMintNotConfigured",
-      "msg": "E_TWIN_MINT_NOT_CONFIGURED"
+      "name": "TwinMintMismatch",
+      "msg": "Twin mint mismatch"
     },
     {
       "code": 6031,
-      "name": "TwinMintAuthorityMismatch",
-      "msg": "E_TWIN_MINT_AUTHORITY_MISMATCH"
+      "name": "TwinMintNotConfigured",
+      "msg": "Twin mint not configured"
     },
     {
       "code": 6032,
-      "name": "TwinMintDecimalsMismatch",
-      "msg": "E_TWIN_MINT_DECIMALS_MISMATCH"
+      "name": "TwinMintAuthorityMismatch",
+      "msg": "Twin mint authority mismatch"
     },
     {
       "code": 6033,
-      "name": "InvariantBreach",
-      "msg": "E_INVARIANT_BREACH"
+      "name": "TwinMintDecimalsMismatch",
+      "msg": "Twin mint decimals mismatch"
     },
     {
       "code": 6034,
-      "name": "HooksDisabled",
-      "msg": "E_HOOKS_DISABLED"
+      "name": "InvariantBreach",
+      "msg": "Invariant breach"
     },
     {
       "code": 6035,
-      "name": "TooManyHookAccounts",
-      "msg": "E_TOO_MANY_HOOK_ACCOUNTS"
+      "name": "HooksDisabled",
+      "msg": "Hooks disabled"
     },
     {
       "code": 6036,
-      "name": "HookConfigInvalid",
-      "msg": "E_HOOK_CONFIG_INVALID"
+      "name": "TooManyHookAccounts",
+      "msg": "Too many hook accounts"
     },
     {
       "code": 6037,
-      "name": "HookAccountMismatch",
-      "msg": "E_HOOK_ACCOUNT_MISMATCH"
+      "name": "HookConfigInvalid",
+      "msg": "Hook config invalid"
     },
     {
       "code": 6038,
-      "name": "HookAccountMissing",
-      "msg": "E_HOOK_ACCOUNT_MISSING"
+      "name": "HookAccountMismatch",
+      "msg": "Hook account mismatch"
     },
     {
       "code": 6039,
-      "name": "HookAccountUnexpected",
-      "msg": "E_HOOK_ACCOUNT_UNEXPECTED"
+      "name": "HookAccountMissing",
+      "msg": "Hook account missing"
     },
     {
       "code": 6040,
-      "name": "NoteLedgerMismatch",
-      "msg": "E_NOTE_LEDGER_MISMATCH"
+      "name": "HookAccountUnexpected",
+      "msg": "Hook account unexpected"
     },
     {
       "code": 6041,
-      "name": "CommitmentTreeMismatch",
-      "msg": "E_TREE_MISMATCH"
+      "name": "NoteLedgerMismatch",
+      "msg": "Note ledger mismatch"
     },
     {
       "code": 6042,
-      "name": "InvalidChangeNoteCount",
-      "msg": "E_INVALID_CHANGE_NOTE_COUNT"
+      "name": "CommitmentTreeMismatch",
+      "msg": "Tree mismatch"
     },
     {
       "code": 6043,
-      "name": "OutputSetMismatch",
-      "msg": "E_OUTPUT_SET_MISMATCH"
+      "name": "InvalidChangeNoteCount",
+      "msg": "Invalid change note count"
     },
     {
       "code": 6044,
-      "name": "CanopyDepthInvalid",
-      "msg": "E_CANOPY_DEPTH_INVALID"
+      "name": "OutputSetMismatch",
+      "msg": "Output set mismatch"
     },
     {
       "code": 6045,
-      "name": "TreeFull",
-      "msg": "E_TREE_FULL"
+      "name": "CanopyDepthInvalid",
+      "msg": "Canopy depth invalid"
     },
     {
       "code": 6046,
-      "name": "RootMismatch",
-      "msg": "E_ROOT_MISMATCH"
+      "name": "TreeFull",
+      "msg": "Tree full"
     },
     {
       "code": 6047,
-      "name": "RootDrift",
-      "msg": "E_ROOT_DRIFT"
+      "name": "RootMismatch",
+      "msg": "Root mismatch"
     },
     {
       "code": 6048,
-      "name": "PendingShieldInFlight",
-      "msg": "E_PENDING_SHIELD_IN_FLIGHT"
+      "name": "RootDrift",
+      "msg": "Root drift"
     },
     {
       "code": 6049,
-      "name": "NoPendingShield",
-      "msg": "E_NO_PENDING_SHIELD"
+      "name": "PendingShieldInFlight",
+      "msg": "Pending shield in flight"
     },
     {
       "code": 6050,
-      "name": "PendingShieldMismatch",
-      "msg": "E_PENDING_SHIELD_MISMATCH"
+      "name": "NoPendingShield",
+      "msg": "No pending shield"
     },
     {
       "code": 6051,
-      "name": "MissingShieldFinalize",
-      "msg": "E_SHIELD_FINALIZE_MISSING"
+      "name": "PendingShieldMismatch",
+      "msg": "Pending shield mismatch"
     },
     {
       "code": 6052,
-      "name": "ShieldClaimMismatch",
-      "msg": "E_SHIELD_CLAIM_MISMATCH"
+      "name": "MissingShieldFinalize",
+      "msg": "Shield finalize missing"
     },
     {
       "code": 6053,
-      "name": "ShieldClaimStage",
-      "msg": "E_SHIELD_CLAIM_STAGE"
+      "name": "ShieldClaimMismatch",
+      "msg": "Shield claim mismatch"
     },
     {
       "code": 6054,
-      "name": "AllowancePoolMismatch",
-      "msg": "E_ALLOWANCE_POOL_MISMATCH"
+      "name": "ShieldClaimStage",
+      "msg": "Shield claim stage"
     },
     {
       "code": 6055,
-      "name": "AllowanceOwnerMismatch",
-      "msg": "E_ALLOWANCE_OWNER_MISMATCH"
+      "name": "AllowancePoolMismatch",
+      "msg": "Allowance pool mismatch"
     },
     {
       "code": 6056,
-      "name": "AllowanceSpenderMismatch",
-      "msg": "E_ALLOWANCE_SPENDER_MISMATCH"
+      "name": "AllowanceOwnerMismatch",
+      "msg": "Allowance owner mismatch"
     },
     {
       "code": 6057,
-      "name": "AllowanceMintMismatch",
-      "msg": "E_ALLOWANCE_MINT_MISMATCH"
+      "name": "AllowanceSpenderMismatch",
+      "msg": "Allowance spender mismatch"
     },
     {
       "code": 6058,
-      "name": "AllowanceInsufficient",
-      "msg": "E_ALLOWANCE_INSUFFICIENT"
+      "name": "AllowanceMintMismatch",
+      "msg": "Allowance mint mismatch"
     },
     {
       "code": 6059,
-      "name": "AllowanceAmountInvalid",
-      "msg": "E_ALLOWANCE_AMOUNT_INVALID"
+      "name": "AllowanceInsufficient",
+      "msg": "Allowance insufficient"
     },
     {
       "code": 6060,
-      "name": "AllowanceAmountMismatch",
-      "msg": "E_ALLOWANCE_AMOUNT_MISMATCH"
+      "name": "AllowanceAmountInvalid",
+      "msg": "Allowance amount invalid"
     },
     {
       "code": 6061,
-      "name": "AllowanceTooLarge",
-      "msg": "E_ALLOWANCE_TOO_LARGE"
+      "name": "AllowanceAmountMismatch",
+      "msg": "Allowance amount mismatch"
     },
     {
       "code": 6062,
-      "name": "AllowanceExpired",
-      "msg": "E_ALLOWANCE_EXPIRED"
+      "name": "AllowanceTooLarge",
+      "msg": "Allowance too large"
     },
     {
       "code": 6063,
-      "name": "InvalidExpiration",
-      "msg": "E_INVALID_EXPIRATION"
+      "name": "AllowanceExpired",
+      "msg": "Allowance expired"
     },
     {
       "code": 6064,
-      "name": "NullifierSetMismatch",
-      "msg": "E_NULLIFIER_SET_MISMATCH"
+      "name": "InvalidExpiration",
+      "msg": "Invalid expiration"
     },
     {
       "code": 6065,
-      "name": "HookNotWhitelisted",
-      "msg": "E_HOOK_NOT_WHITELISTED"
+      "name": "NullifierSetMismatch",
+      "msg": "Nullifier set mismatch"
     },
     {
       "code": 6066,
-      "name": "HookReentrancyDetected",
-      "msg": "E_HOOK_REENTRANCY_DETECTED"
+      "name": "HookNotWhitelisted",
+      "msg": "Hook not whitelisted"
     },
     {
       "code": 6067,
-      "name": "HookExecutionFailed",
-      "msg": "E_HOOK_EXECUTION_FAILED"
+      "name": "HookReentrancyDetected",
+      "msg": "Reentrancy detected"
     },
     {
       "code": 6068,
-      "name": "HookAlreadyWhitelisted",
-      "msg": "E_HOOK_ALREADY_WHITELISTED"
+      "name": "HookExecutionFailed",
+      "msg": "Hook execution failed"
     },
     {
       "code": 6069,
-      "name": "WhitelistFull",
-      "msg": "E_WHITELIST_FULL"
+      "name": "HookAlreadyWhitelisted",
+      "msg": "Hook already whitelisted"
     },
     {
       "code": 6070,
-      "name": "Unauthorized",
-      "msg": "E_UNAUTHORIZED"
+      "name": "WhitelistFull",
+      "msg": "Whitelist full"
     },
     {
       "code": 6071,
-      "name": "InvalidAuthority",
-      "msg": "E_INVALID_AUTHORITY"
+      "name": "Unauthorized",
+      "msg": "Unauthorized"
     },
     {
       "code": 6072,
+      "name": "InvalidAuthority",
+      "msg": "Invalid authority"
+    },
+    {
+      "code": 6073,
       "name": "AuthorityUnchanged",
       "msg": "E_AUTHORITY_UNCHANGED"
     },
     {
-      "code": 6073,
+      "code": 6074,
+      "name": "TimelockOverflow",
+      "msg": "Timelock overflow"
+    },
+    {
+      "code": 6075,
+      "name": "TimelockNotReady",
+      "msg": "Timelock not ready"
+    },
+    {
+      "code": 6076,
+      "name": "ChangeExpired",
+      "msg": "Change expired"
+    },
+    {
+      "code": 6077,
+      "name": "ChangeNotExpired",
+      "msg": "Change not expired"
+    },
+    {
+      "code": 6078,
+      "name": "StaleProposal",
+      "msg": "Stale proposal"
+    },
+    {
+      "code": 6079,
+      "name": "SequenceOverflow",
+      "msg": "Sequence overflow"
+    },
+    {
+      "code": 6080,
+      "name": "AuthorityChangeRateLimited",
+      "msg": "Authority change rate limited"
+    },
+    {
+      "code": 6081,
+      "name": "AlreadyExecuted",
+      "msg": "Already executed"
+    },
+    {
+      "code": 6082,
+      "name": "ChangeCanceled",
+      "msg": "Change canceled"
+    },
+    {
+      "code": 6083,
+      "name": "HashMismatch",
+      "msg": "Hash mismatch"
+    },
+    {
+      "code": 6084,
       "name": "NullifierSetFull",
       "msg": "E_NULLIFIER_SET_FULL"
     },
     {
-      "code": 6074,
+      "code": 6085,
       "name": "InsufficientRent",
       "msg": "E_INSUFFICIENT_RENT"
     },
     {
-      "code": 6075,
+      "code": 6086,
       "name": "NullifierSetCorrupt",
       "msg": "E_NULLIFIER_SET_CORRUPT"
     },
     {
-      "code": 6076,
+      "code": 6087,
       "name": "InvalidCommitmentFormat",
       "msg": "E_INVALID_COMMITMENT_FORMAT"
     },
     {
-      "code": 6077,
+      "code": 6088,
       "name": "DuplicateCommitment",
       "msg": "E_DUPLICATE_COMMITMENT"
     },
     {
-      "code": 6078,
+      "code": 6089,
       "name": "CommitmentMismatch",
       "msg": "E_COMMITMENT_MISMATCH"
     },
     {
-      "code": 6079,
+      "code": 6090,
       "name": "OutputCountMismatch",
       "msg": "E_OUTPUT_COUNT_MISMATCH"
+    },
+    {
+      "code": 6091,
+      "name": "TooManyNullifiers",
+      "msg": "Too many nullifiers in single operation"
+    },
+    {
+      "code": 6092,
+      "name": "RentCalculationError",
+      "msg": "Rent calculation error"
+    },
+    {
+      "code": 6093,
+      "name": "InvalidFeatureFlags",
+      "msg": "Invalid feature flags"
+    },
+    {
+      "code": 6094,
+      "name": "InvalidTimestamp",
+      "msg": "Invalid timestamp"
     }
   ],
   "types": [
@@ -3539,6 +4044,110 @@
             "type": {
               "option": "i64"
             }
+          }
+        ]
+      }
+    },
+    {
+      "name": "AuthorityChangeCanceled",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "pool_state",
+            "type": "pubkey"
+          },
+          {
+            "name": "origin_mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "canceled_at",
+            "type": "i64"
+          },
+          {
+            "name": "authority",
+            "type": "pubkey"
+          }
+        ]
+      }
+    },
+    {
+      "name": "AuthorityChangeExecuted",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "pool_state",
+            "type": "pubkey"
+          },
+          {
+            "name": "origin_mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "old_authority",
+            "type": "pubkey"
+          },
+          {
+            "name": "new_authority",
+            "type": "pubkey"
+          },
+          {
+            "name": "executed_at",
+            "type": "i64"
+          },
+          {
+            "name": "executed_by",
+            "type": "pubkey"
+          },
+          {
+            "name": "sequence",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "AuthorityChangeProposed",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "pool_state",
+            "type": "pubkey"
+          },
+          {
+            "name": "origin_mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "current_authority",
+            "type": "pubkey"
+          },
+          {
+            "name": "new_authority",
+            "type": "pubkey"
+          },
+          {
+            "name": "proposed_at",
+            "type": "i64"
+          },
+          {
+            "name": "execute_after",
+            "type": "i64"
+          },
+          {
+            "name": "expires_at",
+            "type": "i64"
+          },
+          {
+            "name": "sequence",
+            "type": "u64"
+          },
+          {
+            "name": "proposed_by",
+            "type": "pubkey"
           }
         ]
       }
@@ -4097,6 +4706,10 @@
           {
             "name": "bump",
             "type": "u8"
+          },
+          {
+            "name": "is_native_ztoken",
+            "type": "bool"
           }
         ]
       }
@@ -4444,6 +5057,127 @@
       }
     },
     {
+      "name": "PendingShield",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "active",
+            "type": "u8"
+          },
+          {
+            "name": "old_root",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "new_root",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "commitment",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "amount_commit",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "amount",
+            "type": "u64"
+          },
+          {
+            "name": "depositor",
+            "type": "pubkey"
+          },
+          {
+            "name": "next_index",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "PendingAuthorityChange",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "pool_state",
+            "type": "pubkey"
+          },
+          {
+            "name": "current_authority",
+            "type": "pubkey"
+          },
+          {
+            "name": "new_authority",
+            "type": "pubkey"
+          },
+          {
+            "name": "proposed_at",
+            "type": "i64"
+          },
+          {
+            "name": "execute_after",
+            "type": "i64"
+          },
+          {
+            "name": "expires_at",
+            "type": "i64"
+          },
+          {
+            "name": "integrity_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "proposed_by",
+            "type": "pubkey"
+          },
+          {
+            "name": "sequence",
+            "type": "u64"
+          },
+          {
+            "name": "executed",
+            "type": "bool"
+          },
+          {
+            "name": "canceled",
+            "type": "bool"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
       "name": "PoolInitialized",
       "type": {
         "kind": "struct",
@@ -4609,6 +5343,20 @@
           {
             "name": "shield_sequence",
             "type": "u64"
+          },
+          {
+            "name": "authority_change_sequence",
+            "type": "u64"
+          },
+          {
+            "name": "last_authority_change_time",
+            "type": {
+              "option": "i64"
+            }
+          },
+          {
+            "name": "reject_expired_roots",
+            "type": "bool"
           }
         ]
       }
@@ -4629,6 +5377,54 @@
           {
             "name": "remaining",
             "type": "u128"
+          }
+        ]
+      }
+    },
+    {
+      "name": "RateLimiterState",
+      "docs": [
+        "Serialized rate-limiter state stored inside on-chain accounts."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "last_action_time",
+            "docs": [
+              "Last unix timestamp when the action was performed (0 = never)."
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "window_start",
+            "docs": [
+              "Start of the rolling window that counts burst actions (0 = unset)."
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "action_count",
+            "docs": [
+              "Number of actions that occurred inside the current window."
+            ],
+            "type": "u32"
+          }
+        ]
+      }
+    },
+    {
+      "name": "RejectExpiredRootsUpdated",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "origin_mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "reject_expired_roots",
+            "type": "bool"
           }
         ]
       }
@@ -4960,6 +5756,31 @@
             "type": {
               "option": "i64"
             }
+          },
+          {
+            "name": "deposit_rate_limit",
+            "type": {
+              "defined": {
+                "name": "RateLimiterState"
+              }
+            }
+          },
+          {
+            "name": "release_rate_limit",
+            "type": {
+              "defined": {
+                "name": "RateLimiterState"
+              }
+            }
+          },
+          {
+            "name": "integrity_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
           }
         ]
       }
@@ -5021,66 +5842,6 @@
             "type": {
               "option": "i64"
             }
-          }
-        ]
-      }
-    },
-    {
-      "name": "PendingShield",
-      "type": {
-        "kind": "struct",
-        "fields": [
-          {
-            "name": "active",
-            "type": "u8"
-          },
-          {
-            "name": "old_root",
-            "type": {
-              "array": [
-                "u8",
-                32
-              ]
-            }
-          },
-          {
-            "name": "new_root",
-            "type": {
-              "array": [
-                "u8",
-                32
-              ]
-            }
-          },
-          {
-            "name": "commitment",
-            "type": {
-              "array": [
-                "u8",
-                32
-              ]
-            }
-          },
-          {
-            "name": "amount_commit",
-            "type": {
-              "array": [
-                "u8",
-                32
-              ]
-            }
-          },
-          {
-            "name": "amount",
-            "type": "u64"
-          },
-          {
-            "name": "depositor",
-            "type": "pubkey"
-          },
-          {
-            "name": "next_index",
-            "type": "u64"
           }
         ]
       }

@@ -67,7 +67,7 @@ import {
 } from '@solana/spl-token';
 import { Buffer } from 'buffer';
 import { ProofClient } from '../../lib/proofClient';
-import { transfer } from '../../lib/sdk';
+import { transfer, getTokenMetadata } from '../../lib/sdk';
 import { canonicalizeHex } from '../../lib/onchain/utils';
 import { poseidonHashMany } from '../../lib/onchain/poseidon';
 import type { StoredNoteRecord } from '../../lib/notes/storage';
