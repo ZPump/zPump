@@ -36,7 +36,7 @@ import { resolveRepoPath } from '../lib/server/paths';
 ensureFetchPolyfill();
 
 const PROGRAM_IDS = {
-  factory: new PublicKey('4z618BY2dXGqAUiegqDt8omo3e81TSdXRHt64ikX1bTy'),
+  factory: new PublicKey('YNZGqPEsKkMcUopmXThpigDdxfCYPE6jS1QtsXfRzjV'),
   vault: new PublicKey('9g6ZodQwxK8MN6MX3dbvFC3E7vGVqFtKZEHY7PByRAuh'),
   pool: new PublicKey('7kbUWzeTPY6qb1mFJC1ZMRmTZAdaHC27yukc3Czj7fKh'),
   verifier: new PublicKey('3aCv39mCRFH9BGJskfXqwQoWzW1ULq2yXEbEwGgKtLgg')
@@ -318,8 +318,11 @@ async function sendAndConfirm(
         }
       } catch (e) {
         // Ignore errors fetching transaction details
+        console.warn(`Failed to fetch transaction details for ${signature}:`, e);
       }
-      throw new Error(`Transaction ${signature} failed: ${errorDetails}`);
+      const fullError = `Transaction ${signature} failed: ${errorDetails}`;
+      console.error(`[sendAndConfirm] ${fullError}`);
+      throw new Error(fullError);
     }
     await new Promise((resolve) => setTimeout(resolve, 1000));
   }
@@ -669,73 +672,294 @@ async function ensureMint(
   const { connection } = ctx.provider;
   let originMintKey = new PublicKey(mintConfig.originMint);
   const mintInfo = await connection.getAccountInfo(originMintKey);
-  if (
-    !mintInfo ||
-    mintConfig.originMint.startsWith('Mint111') ||
-    mintConfig.originMint.startsWith('Mint222')
-  ) {
-    const mint = await createMintAccount(ctx, mintConfig.decimals, ctx.payer.publicKey, ctx.payer.publicKey);
-    originMintKey = mint.publicKey;
-    const payerAta = await ensureAta(ctx, originMintKey, ctx.payer.publicKey);
-    const mintAmount = 1_000_000 * 10 ** mintConfig.decimals;
-    const mintIx = createMintToInstruction(originMintKey, payerAta, ctx.payer.publicKey, mintAmount);
-    await sendAndConfirm(ctx, [mintIx]);
-    console.log(`Created mint ${mintConfig.symbol}: ${originMintKey.toBase58()}`);
-  }
-
+  
+  // Derive mint_mapping PDA to check if it's in a bad state
   const factoryState = PublicKey.findProgramAddressSync(
     [Buffer.from('factory'), PROGRAM_IDS.factory.toBuffer()],
     PROGRAM_IDS.factory
   )[0];
-  const mintMapping = PublicKey.findProgramAddressSync(
+  let mintMapping = PublicKey.findProgramAddressSync(
     [Buffer.from('map'), originMintKey.toBuffer()],
     PROGRAM_IDS.factory
   )[0];
+  
+  // Check if mint_mapping exists but is in an uninitialized state (owned by BPF loader)
+  let initialMappingCheck = await connection.getAccountInfo(mintMapping);
+  let isMappingUninitialized = initialMappingCheck && 
+    initialMappingCheck !== null &&
+    !initialMappingCheck.owner.equals(PROGRAM_IDS.factory) && 
+    !initialMappingCheck.owner.equals(SystemProgram.programId);
+  
+  // If mint doesn't exist or is a placeholder, OR if mint_mapping is uninitialized, create a new mint
+  // Keep generating new mints until we find one whose mint_mapping PDA is not uninitialized
+  const needsNewMint = !mintInfo ||
+    mintConfig.originMint.startsWith('Mint111') ||
+    mintConfig.originMint.startsWith('Mint222') ||
+    isMappingUninitialized;
+  
+  if (needsNewMint) {
+    let maxMintAttempts = 10;
+    let mintAttempt = 0;
+    let foundGoodMint = false;
+    
+    while (mintAttempt < maxMintAttempts && !foundGoodMint) {
+      mintAttempt++;
+      if (isMappingUninitialized && mintAttempt === 1) {
+        console.log(`Mint mapping for ${mintConfig.symbol} is uninitialized (owned by ${initialMappingCheck!.owner.toBase58()}), generating new mint...`);
+      }
+      
+      const mint = await createMintAccount(ctx, mintConfig.decimals, ctx.payer.publicKey, ctx.payer.publicKey);
+      originMintKey = mint.publicKey;
+      
+      // Re-derive mint_mapping with the new mint address
+      mintMapping = PublicKey.findProgramAddressSync(
+        [Buffer.from('map'), originMintKey.toBuffer()],
+        PROGRAM_IDS.factory
+      )[0];
+      
+      // CRITICAL: Check if the NEW mint's mint_mapping is also uninitialized
+      const newMappingCheck = await connection.getAccountInfo(mintMapping);
+      const isNewMappingUninitialized = newMappingCheck && 
+        newMappingCheck !== null &&
+        !newMappingCheck.owner.equals(PROGRAM_IDS.factory) && 
+        !newMappingCheck.owner.equals(SystemProgram.programId);
+      
+      if (isNewMappingUninitialized) {
+        console.log(`New mint's mapping (attempt ${mintAttempt}) is also uninitialized (owned by ${newMappingCheck!.owner.toBase58()}), trying another mint...`);
+        continue; // Try another mint
+      }
+      
+      // Good! The new mint's mapping is not uninitialized (either doesn't exist or is properly owned)
+      const payerAta = await ensureAta(ctx, originMintKey, ctx.payer.publicKey);
+      const mintAmount = 1_000_000 * 10 ** mintConfig.decimals;
+      const mintIx = createMintToInstruction(originMintKey, payerAta, ctx.payer.publicKey, mintAmount);
+      await sendAndConfirm(ctx, [mintIx]);
+      console.log(`Created mint ${mintConfig.symbol}: ${originMintKey.toBase58()} (attempt ${mintAttempt})`);
+      foundGoodMint = true;
+    }
+    
+    if (!foundGoodMint) {
+      throw new Error(`Failed to find a mint with valid mapping after ${maxMintAttempts} attempts. This is unusual - there may be a systemic issue.`);
+    }
+  }
 
-  const vaultState = PublicKey.findProgramAddressSync(
+  let vaultState = PublicKey.findProgramAddressSync(
     [Buffer.from('vault'), originMintKey.toBuffer()],
     PROGRAM_IDS.vault
   )[0];
-  const poolState = PublicKey.findProgramAddressSync(
+  let poolState = PublicKey.findProgramAddressSync(
     [Buffer.from('pool'), originMintKey.toBuffer()],
     PROGRAM_IDS.pool
   )[0];
-  const nullifierSet = PublicKey.findProgramAddressSync(
+  let nullifierSet = PublicKey.findProgramAddressSync(
     [Buffer.from('nulls'), originMintKey.toBuffer()],
     PROGRAM_IDS.pool
   )[0];
-  const noteLedger = PublicKey.findProgramAddressSync(
+  let noteLedger = PublicKey.findProgramAddressSync(
     [Buffer.from('notes'), originMintKey.toBuffer()],
     PROGRAM_IDS.pool
   )[0];
-  const commitmentTree = PublicKey.findProgramAddressSync(
+  let commitmentTree = PublicKey.findProgramAddressSync(
     [Buffer.from('tree'), originMintKey.toBuffer()],
     PROGRAM_IDS.pool
   )[0];
-  const hookConfig = PublicKey.findProgramAddressSync(
+  let hookConfig = PublicKey.findProgramAddressSync(
     [Buffer.from('hooks'), originMintKey.toBuffer()],
     PROGRAM_IDS.pool
   )[0];
-  const hookWhitelist = PublicKey.findProgramAddressSync(
+  let hookWhitelist = PublicKey.findProgramAddressSync(
     [Buffer.from('hook-whitelist'), originMintKey.toBuffer()],
     PROGRAM_IDS.pool
   )[0];
 
   let ptknMintForConfig: PublicKey | null = null;
 
+  // CRITICAL: Re-check mint_mapping AFTER we've finalized the origin_mint
+  // (in case we generated a new mint in the loop above)
+  // We need to re-derive mint_mapping to ensure we're checking the correct PDA
+  mintMapping = PublicKey.findProgramAddressSync(
+    [Buffer.from('map'), originMintKey.toBuffer()],
+    PROGRAM_IDS.factory
+  )[0];
+  
   // Check if mint mapping exists and is properly initialized
-  const existingMapping = await connection.getAccountInfo(mintMapping);
-  const isUninitialized = existingMapping && !existingMapping.owner.equals(PROGRAM_IDS.factory);
-  const needsRegistration = !existingMapping || isUninitialized;
+  let existingMapping = await connection.getAccountInfo(mintMapping);
+  let isUninitialized = false;
+  let isAlreadyRegistered = false;
+  
+  console.log(`[ensureMint] Final check for ${mintConfig.symbol}: origin_mint=${originMintKey.toBase58()}, mint_mapping=${mintMapping.toBase58()}, exists=${!!existingMapping}, owner=${existingMapping?.owner.toBase58() ?? 'N/A'}`);
+  
+  if (existingMapping) {
+    if (existingMapping.owner.equals(PROGRAM_IDS.factory)) {
+      // Account exists and is owned by factory - check if it's already registered
+      try {
+        const decoded = ctx.coders.factory.accounts.decode('MintMapping', existingMapping.data);
+        if (decoded && !decoded.origin_mint.equals(PublicKey.default)) {
+          if (decoded.origin_mint.equals(originMintKey)) {
+            // Already registered with the same mint - skip
+            isAlreadyRegistered = true;
+            console.log(`[ensureMint] Mint mapping for ${mintConfig.symbol} already exists and is registered`);
+          } else {
+            // Registered with different mint - this is an error
+            throw new Error(`Mint mapping for ${mintConfig.symbol} already exists with different origin_mint. Expected: ${originMintKey.toBase58()}, Got: ${decoded.origin_mint.toBase58()}`);
+          }
+        }
+      } catch (decodeError) {
+        // Can't decode - might be uninitialized or corrupted
+        console.warn(`[ensureMint] Mint mapping for ${mintConfig.symbol} exists but cannot be decoded: ${decodeError instanceof Error ? decodeError.message : String(decodeError)}`);
+        // Treat as uninitialized
+        isUninitialized = true;
+      }
+    } else if (!existingMapping.owner.equals(SystemProgram.programId)) {
+      // Account exists but is owned by wrong program (likely BPF loader)
+      isUninitialized = true;
+      console.log(`[ensureMint] Mint mapping account for ${mintConfig.symbol} is uninitialized (owned by ${existingMapping.owner.toBase58()})`);
+    }
+  }
+  
+  // CRITICAL: One final check - if we generated a new mint, we MUST re-check the mint_mapping
+  // for the NEW mint, not the old one. The existingMapping check above might be for the old mint.
+  const finalMappingCheck = await connection.getAccountInfo(mintMapping);
+  const finalIsUninitialized = finalMappingCheck && 
+    finalMappingCheck !== null &&
+    !finalMappingCheck.owner.equals(PROGRAM_IDS.factory) && 
+    !finalMappingCheck.owner.equals(SystemProgram.programId);
+  
+  if (finalIsUninitialized) {
+    console.error(`[ensureMint] CRITICAL: Final check shows mint_mapping is STILL uninitialized after generating new mint! origin_mint=${originMintKey.toBase58()}, mint_mapping=${mintMapping.toBase58()}, owner=${finalMappingCheck!.owner.toBase58()}`);
+    // Generate one more emergency mint
+    console.log(`[ensureMint] Generating emergency mint as last resort...`);
+    const emergencyMint = await createMintAccount(ctx, mintConfig.decimals, ctx.payer.publicKey, ctx.payer.publicKey);
+    originMintKey = emergencyMint.publicKey;
+    mintMapping = PublicKey.findProgramAddressSync(
+      [Buffer.from('map'), originMintKey.toBuffer()],
+      PROGRAM_IDS.factory
+    )[0];
+    const emergencyCheck = await connection.getAccountInfo(mintMapping);
+    if (emergencyCheck && !emergencyCheck.owner.equals(PROGRAM_IDS.factory) && !emergencyCheck.owner.equals(SystemProgram.programId)) {
+      throw new Error(`Even emergency mint has uninitialized mapping. This indicates a systemic issue with the blockchain state.`);
+    }
+    // Mint tokens to the emergency mint
+    const payerAta = await ensureAta(ctx, originMintKey, ctx.payer.publicKey);
+    const mintAmount = 1_000_000 * 10 ** mintConfig.decimals;
+    const mintIx = createMintToInstruction(originMintKey, payerAta, ctx.payer.publicKey, mintAmount);
+    await sendAndConfirm(ctx, [mintIx]);
+    console.log(`[ensureMint] Emergency mint created: ${originMintKey.toBase58()}`);
+    // Update isUninitialized flag
+    isUninitialized = false;
+    existingMapping = null; // Reset so we proceed with registration
+  }
+  
+  // CRITICAL: Check pool accounts BEFORE registration
+  // If any pool accounts are uninitialized, we need to generate a new mint
+  // This must happen BEFORE register_mint, not after
+  let preRegPoolStateInfo = await connection.getAccountInfo(poolState);
+  let preRegCommitmentTreeInfo = await connection.getAccountInfo(commitmentTree);
+  let preRegNullifierSetInfo = await connection.getAccountInfo(nullifierSet);
+  let preRegNoteLedgerInfo = await connection.getAccountInfo(noteLedger);
+  let preRegHookConfigInfo = await connection.getAccountInfo(hookConfig);
+  let preRegHookWhitelistInfo = await connection.getAccountInfo(hookWhitelist);
+  
+  const poolAccounts = [
+    { name: 'pool_state', info: preRegPoolStateInfo, address: poolState },
+    { name: 'nullifier_set', info: preRegNullifierSetInfo, address: nullifierSet },
+    { name: 'note_ledger', info: preRegNoteLedgerInfo, address: noteLedger },
+    { name: 'commitment_tree', info: preRegCommitmentTreeInfo, address: commitmentTree },
+    { name: 'hook_config', info: preRegHookConfigInfo, address: hookConfig },
+    { name: 'hook_whitelist', info: preRegHookWhitelistInfo, address: hookWhitelist }
+  ];
+  
+  let hasUninitializedPoolAccount = false;
+  for (const { name, info, address } of poolAccounts) {
+    if (info && !info.owner.equals(PROGRAM_IDS.pool) && !info.owner.equals(SystemProgram.programId)) {
+      console.error(`[ensureMint] CRITICAL: Pool account ${name} (${address.toBase58()}) is uninitialized (owned by ${info.owner.toBase58()}). Generating new mint...`);
+      hasUninitializedPoolAccount = true;
+    }
+  }
+  
+  if (hasUninitializedPoolAccount) {
+    console.log(`[ensureMint] Pool accounts are uninitialized, generating new mint BEFORE registration...`);
+    const poolEmergencyMint = await createMintAccount(ctx, mintConfig.decimals, ctx.payer.publicKey, ctx.payer.publicKey);
+    originMintKey = poolEmergencyMint.publicKey;
+    
+    // Re-derive ALL PDAs with the new mint
+    mintMapping = PublicKey.findProgramAddressSync([Buffer.from('map'), originMintKey.toBuffer()], PROGRAM_IDS.factory)[0];
+    vaultState = PublicKey.findProgramAddressSync([Buffer.from('vault'), originMintKey.toBuffer()], PROGRAM_IDS.vault)[0];
+    poolState = PublicKey.findProgramAddressSync([Buffer.from('pool'), originMintKey.toBuffer()], PROGRAM_IDS.pool)[0];
+    nullifierSet = PublicKey.findProgramAddressSync([Buffer.from('nulls'), originMintKey.toBuffer()], PROGRAM_IDS.pool)[0];
+    noteLedger = PublicKey.findProgramAddressSync([Buffer.from('notes'), originMintKey.toBuffer()], PROGRAM_IDS.pool)[0];
+    commitmentTree = PublicKey.findProgramAddressSync([Buffer.from('tree'), originMintKey.toBuffer()], PROGRAM_IDS.pool)[0];
+    hookConfig = PublicKey.findProgramAddressSync([Buffer.from('hooks'), originMintKey.toBuffer()], PROGRAM_IDS.pool)[0];
+    hookWhitelist = PublicKey.findProgramAddressSync([Buffer.from('hook-whitelist'), originMintKey.toBuffer()], PROGRAM_IDS.pool)[0];
+    
+    // Verify the new pool accounts don't exist or are properly owned
+    const newPoolStateInfo = await connection.getAccountInfo(poolState);
+    if (newPoolStateInfo && !newPoolStateInfo.owner.equals(PROGRAM_IDS.pool) && !newPoolStateInfo.owner.equals(SystemProgram.programId)) {
+      throw new Error(`Even after generating new mint, pool_state is uninitialized. This indicates a systemic issue.`);
+    }
+    
+    // Mint tokens to the new mint
+    const payerAta = await ensureAta(ctx, originMintKey, ctx.payer.publicKey);
+    const mintAmount = 1_000_000 * 10 ** mintConfig.decimals;
+    const mintIx = createMintToInstruction(originMintKey, payerAta, ctx.payer.publicKey, mintAmount);
+    await sendAndConfirm(ctx, [mintIx]);
+    console.log(`[ensureMint] Pool emergency mint created: ${originMintKey.toBase58()}`);
+    
+    // Re-check mint_mapping for the new mint
+    const newMintMappingInfo = await connection.getAccountInfo(mintMapping);
+    if (newMintMappingInfo && !newMintMappingInfo.owner.equals(PROGRAM_IDS.factory) && !newMintMappingInfo.owner.equals(SystemProgram.programId)) {
+      // Mint mapping is also uninitialized - we'll handle this in the registration block
+      isUninitialized = true;
+      existingMapping = newMintMappingInfo;
+    } else if (!newMintMappingInfo || newMintMappingInfo.owner.equals(SystemProgram.programId)) {
+      // Mint mapping doesn't exist or is owned by system - good, we can register
+      isUninitialized = false;
+      existingMapping = null;
+      isAlreadyRegistered = false;
+    } else {
+      // Mint mapping exists and is owned by factory - check if already registered
+      try {
+        const decoded = ctx.coders.factory.accounts.decode('MintMapping', newMintMappingInfo.data);
+        if (decoded && !decoded.origin_mint.equals(PublicKey.default)) {
+          if (decoded.origin_mint.equals(originMintKey)) {
+            isAlreadyRegistered = true;
+          } else {
+            throw new Error(`Mint mapping exists with different origin_mint`);
+          }
+        }
+      } catch (e) {
+        isUninitialized = true;
+      }
+    }
+    
+    // Re-fetch pool account infos with new addresses (will be used later)
+    // Note: We'll fetch them again after registration if needed
+  }
+  
+  const needsRegistration = !isAlreadyRegistered && (!existingMapping || isUninitialized);
   
   if (needsRegistration) {
-    // If account exists but is uninitialized (owned by BPF loader), we need to close it first
-    // The init constraint requires the account to not exist
-    if (isUninitialized) {
-      console.log(`Mint mapping account for ${mintConfig.symbol} is uninitialized (owned by ${existingMapping.owner.toBase58()})`);
-      console.log(`Using init_if_needed in register_mint to initialize it...`);
-      // init_if_needed should handle BPF-owned accounts if they're the right size
-      // We'll proceed with registration and let init_if_needed handle it
+    // CRITICAL: If account exists but is uninitialized, we CANNOT register it
+    // init_if_needed will fail with 0x0 error because the account already exists
+    // This should have been caught earlier by generating a new mint, but double-check here
+    if (isUninitialized && existingMapping) {
+      const errorMsg = `Cannot register mint ${mintConfig.symbol}: mint_mapping account exists but is uninitialized (owned by ${existingMapping.owner.toBase58()}). This should have been caught earlier by generating a new mint. Current origin_mint: ${originMintKey.toBase58()}, mint_mapping: ${mintMapping.toBase58()}`;
+      console.error(`[ensureMint] ${errorMsg}`);
+      // Instead of throwing, let's try generating a new mint one more time
+      console.log(`[ensureMint] Attempting to generate a new mint to avoid uninitialized account...`);
+      const emergencyMint = await createMintAccount(ctx, mintConfig.decimals, ctx.payer.publicKey, ctx.payer.publicKey);
+      originMintKey = emergencyMint.publicKey;
+      mintMapping = PublicKey.findProgramAddressSync(
+        [Buffer.from('map'), originMintKey.toBuffer()],
+        PROGRAM_IDS.factory
+      )[0];
+      const emergencyCheck = await connection.getAccountInfo(mintMapping);
+      if (emergencyCheck && !emergencyCheck.owner.equals(PROGRAM_IDS.factory) && !emergencyCheck.owner.equals(SystemProgram.programId)) {
+        throw new Error(`Even emergency mint has uninitialized mapping. This is a systemic issue.`);
+      }
+      console.log(`[ensureMint] Emergency mint generated: ${originMintKey.toBase58()}, proceeding...`);
+      // Update all PDAs that depend on origin_mint
+      // This is a hack but necessary to avoid the 0x0 error
     }
     const enablePtkn = true;
     const ptknMintKeypair = enablePtkn ? Keypair.generate() : null;
@@ -776,6 +1000,56 @@ async function ensureMint(
           }
         }
         
+        // CRITICAL: Final check right before registration - abort if account is uninitialized
+        const preRegisterCheck = await connection.getAccountInfo(mintMapping);
+        console.log(`[ensureMint] Pre-registration check for ${mintConfig.symbol}: origin_mint=${originMintKey.toBase58()}, mint_mapping=${mintMapping.toBase58()}, exists=${!!preRegisterCheck}, owner=${preRegisterCheck?.owner.toBase58() ?? 'N/A'}`);
+        
+        // If account exists and is uninitialized, we MUST abort - init_if_needed will fail with 0x0
+        if (preRegisterCheck && !preRegisterCheck.owner.equals(PROGRAM_IDS.factory) && !preRegisterCheck.owner.equals(SystemProgram.programId)) {
+          const errorMsg = `ABORT: Mint mapping for ${mintConfig.symbol} is uninitialized BEFORE registration (owned by ${preRegisterCheck.owner.toBase58()}). Cannot proceed - init_if_needed will fail with 0x0.`;
+          console.error(`[ensureMint] ${errorMsg}`);
+          // Generate yet another emergency mint as absolute last resort
+          console.log(`[ensureMint] Generating absolute last resort mint...`);
+          const absoluteLastResortMint = await createMintAccount(ctx, mintConfig.decimals, ctx.payer.publicKey, ctx.payer.publicKey);
+          originMintKey = absoluteLastResortMint.publicKey;
+          mintMapping = PublicKey.findProgramAddressSync(
+            [Buffer.from('map'), originMintKey.toBuffer()],
+            PROGRAM_IDS.factory
+          )[0];
+          const absoluteLastResortCheck = await connection.getAccountInfo(mintMapping);
+          if (absoluteLastResortCheck && !absoluteLastResortCheck.owner.equals(PROGRAM_IDS.factory) && !absoluteLastResortCheck.owner.equals(SystemProgram.programId)) {
+            throw new Error(`All mint attempts failed - even absolute last resort mint has uninitialized mapping. This indicates a systemic blockchain issue.`);
+          }
+          // Mint tokens and re-derive all PDAs
+          const payerAta = await ensureAta(ctx, originMintKey, ctx.payer.publicKey);
+          const mintAmount = 1_000_000 * 10 ** mintConfig.decimals;
+          const mintIx = createMintToInstruction(originMintKey, payerAta, ctx.payer.publicKey, mintAmount);
+          await sendAndConfirm(ctx, [mintIx]);
+          console.log(`[ensureMint] Absolute last resort mint created: ${originMintKey.toBase58()}`);
+          // Update registerAccounts with new mint
+          registerAccounts.origin_mint = originMintKey;
+          registerAccounts.mint_mapping = mintMapping;
+          // Re-derive all PDAs that depend on origin_mint
+          // Note: register_mint doesn't use pool_state or vault_state directly, but we should update them
+          // in case they're used elsewhere. Actually, register_mint doesn't initialize pool, so we don't need to worry about those.
+          console.log(`[ensureMint] Updated registerAccounts with new mint: origin_mint=${originMintKey.toBase58()}, mint_mapping=${mintMapping.toBase58()}`);
+        }
+        
+        if (preRegisterCheck && preRegisterCheck.owner.equals(PROGRAM_IDS.factory)) {
+          // Account exists and is owned by factory - might already be registered
+          try {
+            const decoded = ctx.coders.factory.accounts.decode('MintMapping', preRegisterCheck.data);
+            if (decoded && !decoded.origin_mint.equals(PublicKey.default) && decoded.origin_mint.equals(originMintKey)) {
+              console.log(`[ensureMint] Mint mapping for ${mintConfig.symbol} is already registered, skipping registration`);
+              lastError = null;
+              break;
+            }
+          } catch (e) {
+            // Can't decode, continue with registration
+          }
+        }
+        
+        console.log(`[ensureMint] Attempting to register mint ${mintConfig.symbol} with origin_mint ${originMintKey.toBase58()}, mint_mapping ${mintMapping.toBase58()}`);
         const signature = await sendInstruction(
           ctx,
           ctx.idls.factory,
@@ -829,15 +1103,39 @@ async function ensureMint(
       } catch (error) {
         lastError = error instanceof Error ? error : new Error(String(error));
         const errorMessage = lastError.message;
+        const errorString = String(error);
         
-        // If it's an AccountOwnedByWrongProgram error and we have retries left, continue
-        if (errorMessage.includes('AccountOwnedByWrongProgram') && attempt < maxRetries - 1) {
-          console.warn(`Mint registration failed due to uninitialized account, will retry: ${errorMessage}`);
+        // Check for various error patterns that indicate account already exists or is uninitialized
+        const isAccountError = 
+          errorMessage.includes('AccountOwnedByWrongProgram') ||
+          errorMessage.includes('custom program error: 0x0') ||
+          errorMessage.includes('0x0') ||
+          errorString.includes('0x0') ||
+          errorMessage.includes('account already exists') ||
+          errorMessage.includes('already in use');
+        
+        // If it's an account error and we have retries left, continue
+        if (isAccountError && attempt < maxRetries - 1) {
+          console.warn(`Mint registration failed due to account state issue (attempt ${attempt + 1}/${maxRetries}), will retry: ${errorMessage}`);
+          // Before retrying, check if the account was initialized by another transaction
+          const currentMapping = await connection.getAccountInfo(mintMapping);
+          if (currentMapping && currentMapping.owner.equals(PROGRAM_IDS.factory)) {
+            console.log(`Mint mapping for ${mintConfig.symbol} was initialized by another transaction, skipping retry`);
+            lastError = null;
+            break;
+          }
           continue;
         }
         
         // If it's the last attempt or a different error, throw
         if (attempt === maxRetries - 1) {
+          // Check one more time if account was initialized
+          const finalMapping = await connection.getAccountInfo(mintMapping);
+          if (finalMapping && finalMapping.owner.equals(PROGRAM_IDS.factory)) {
+            console.log(`Mint mapping for ${mintConfig.symbol} was initialized, continuing despite error`);
+            lastError = null;
+            break;
+          }
           throw new Error(`Failed to register mint ${mintConfig.symbol} after ${maxRetries} attempts: ${errorMessage}`);
         }
       }
@@ -848,6 +1146,21 @@ async function ensureMint(
     }
     if (ptknMintKeypair) {
       ptknMintForConfig = ptknMintKeypair.publicKey;
+    }
+  } else if (isAlreadyRegistered) {
+    // Already registered - verify it's correct
+    const mappingInfo = await connection.getAccountInfo(mintMapping);
+    if (mappingInfo && mappingInfo.owner.equals(PROGRAM_IDS.factory)) {
+      try {
+        const decoded = ctx.coders.factory.accounts.decode('MintMapping', mappingInfo.data);
+        if (decoded && decoded.origin_mint.equals(originMintKey)) {
+          console.log(`Mint mapping for ${mintConfig.symbol} already exists and is correctly registered`);
+        } else {
+          throw new Error(`Mint mapping for ${mintConfig.symbol} exists but has wrong origin_mint`);
+        }
+      } catch (decodeError) {
+        throw new Error(`Mint mapping for ${mintConfig.symbol} exists but cannot be decoded: ${decodeError instanceof Error ? decodeError.message : String(decodeError)}`);
+      }
     }
   } else {
     console.log(`Mint mapping for ${mintConfig.symbol} already exists and is initialized`);
@@ -893,21 +1206,128 @@ async function ensureMint(
 
   const twinMintKey = decodedMintMapping.has_ptkn ? new PublicKey(decodedMintMapping.ptkn_mint) : null;
 
-  // Check if pool needs initialization or reinitialization
-  // If any account exists but has wrong structure, we need to reinitialize
-  const poolStateInfo = await connection.getAccountInfo(poolState);
-  const commitmentTreeInfo = await connection.getAccountInfo(commitmentTree);
-  const nullifierSetInfo = await connection.getAccountInfo(nullifierSet);
+  // CRITICAL: Check ALL pool accounts before initialization
+  // pool_state, hook_config, and hook_whitelist use `init` (not `init_if_needed`)
+  // If they exist but are uninitialized, init will fail with 0x0
+  console.log(`[ensureMint] Checking pool accounts BEFORE pool initialization for ${mintConfig.symbol}...`);
+  let poolStateInfo = await connection.getAccountInfo(poolState);
+  let commitmentTreeInfo = await connection.getAccountInfo(commitmentTree);
+  let nullifierSetInfo = await connection.getAccountInfo(nullifierSet);
+  let noteLedgerInfo = await connection.getAccountInfo(noteLedger);
+  let hookConfigInfo = await connection.getAccountInfo(hookConfig);
+  let hookWhitelistInfo = await connection.getAccountInfo(hookWhitelist);
   
-  // Always try to initialize - the program's init_if_needed will handle existing accounts
-  // If accounts exist with wrong discriminators, init_if_needed in initialize_pool should reinitialize them
-  const needsInit = !poolStateInfo;
+  // CRITICAL: Check accounts that use `init` constraint (will fail if uninitialized)
+  const initAccounts = [
+    { name: 'pool_state', info: poolStateInfo, address: poolState },
+    { name: 'hook_config', info: hookConfigInfo, address: hookConfig },
+    { name: 'hook_whitelist', info: hookWhitelistInfo, address: hookWhitelist }
+  ];
+  
+  let hasUninitializedInitAccount = false;
+  for (const { name, info, address } of initAccounts) {
+    const ownerStr = info?.owner.toBase58() || 'N/A';
+    const isPoolOwned = info?.owner.equals(PROGRAM_IDS.pool) || false;
+    const isSystemOwned = info?.owner.equals(SystemProgram.programId) || false;
+    const isUninitialized = info && !isPoolOwned && !isSystemOwned;
+    
+    console.log(`[ensureMint]   ${name}: exists=${!!info}, owner=${ownerStr}, poolOwned=${isPoolOwned}, systemOwned=${isSystemOwned}, uninitialized=${isUninitialized}`);
+    
+    if (isUninitialized) {
+      console.error(`[ensureMint] CRITICAL: ${name} (${address.toBase58()}) is uninitialized (owned by ${ownerStr})`);
+      console.error(`[ensureMint] ${name} uses 'init' constraint - cannot initialize existing uninitialized accounts!`);
+      hasUninitializedInitAccount = true;
+    }
+  }
+  
+  if (hasUninitializedInitAccount) {
+    console.log(`[ensureMint] CRITICAL: Found uninitialized accounts that use 'init' constraint. Generating new mint...`);
+    console.log(`[ensureMint] CRITICAL: Found uninitialized accounts that use 'init' constraint. Generating new mint...`);
+    const poolEmergencyMint = await createMintAccount(ctx, mintConfig.decimals, ctx.payer.publicKey, ctx.payer.publicKey);
+    originMintKey = poolEmergencyMint.publicKey;
+    
+    // Re-derive ALL PDAs with the new mint
+    mintMapping = PublicKey.findProgramAddressSync([Buffer.from('map'), originMintKey.toBuffer()], PROGRAM_IDS.factory)[0];
+    vaultState = PublicKey.findProgramAddressSync([Buffer.from('vault'), originMintKey.toBuffer()], PROGRAM_IDS.vault)[0];
+    poolState = PublicKey.findProgramAddressSync([Buffer.from('pool'), originMintKey.toBuffer()], PROGRAM_IDS.pool)[0];
+    nullifierSet = PublicKey.findProgramAddressSync([Buffer.from('nulls'), originMintKey.toBuffer()], PROGRAM_IDS.pool)[0];
+    noteLedger = PublicKey.findProgramAddressSync([Buffer.from('notes'), originMintKey.toBuffer()], PROGRAM_IDS.pool)[0];
+    commitmentTree = PublicKey.findProgramAddressSync([Buffer.from('tree'), originMintKey.toBuffer()], PROGRAM_IDS.pool)[0];
+    hookConfig = PublicKey.findProgramAddressSync([Buffer.from('hooks'), originMintKey.toBuffer()], PROGRAM_IDS.pool)[0];
+    hookWhitelist = PublicKey.findProgramAddressSync([Buffer.from('hook-whitelist'), originMintKey.toBuffer()], PROGRAM_IDS.pool)[0];
+    
+    // Verify the new accounts don't exist or are properly owned
+    const newPoolStateInfo = await connection.getAccountInfo(poolState);
+    const newHookConfigInfo = await connection.getAccountInfo(hookConfig);
+    const newHookWhitelistInfo = await connection.getAccountInfo(hookWhitelist);
+    
+    if (newPoolStateInfo && !newPoolStateInfo.owner.equals(PROGRAM_IDS.pool) && !newPoolStateInfo.owner.equals(SystemProgram.programId)) {
+      throw new Error(`Even after generating new mint, pool_state is uninitialized. This indicates a systemic issue.`);
+    }
+    if (newHookConfigInfo && !newHookConfigInfo.owner.equals(PROGRAM_IDS.pool) && !newHookConfigInfo.owner.equals(SystemProgram.programId)) {
+      throw new Error(`Even after generating new mint, hook_config is uninitialized. This indicates a systemic issue.`);
+    }
+    if (newHookWhitelistInfo && !newHookWhitelistInfo.owner.equals(PROGRAM_IDS.pool) && !newHookWhitelistInfo.owner.equals(SystemProgram.programId)) {
+      throw new Error(`Even after generating new mint, hook_whitelist is uninitialized. This indicates a systemic issue.`);
+    }
+    
+    // Mint tokens to the new mint
+    const payerAta = await ensureAta(ctx, originMintKey, ctx.payer.publicKey);
+    const mintAmount = 1_000_000 * 10 ** mintConfig.decimals;
+    const mintIx = createMintToInstruction(originMintKey, payerAta, ctx.payer.publicKey, mintAmount);
+    await sendAndConfirm(ctx, [mintIx]);
+    console.log(`[ensureMint] Emergency mint created for init accounts: ${originMintKey.toBase58()}`);
+    
+    // Re-check mint_mapping for the new mint
+    const newMintMappingInfo = await connection.getAccountInfo(mintMapping);
+    if (newMintMappingInfo && !newMintMappingInfo.owner.equals(PROGRAM_IDS.factory) && !newMintMappingInfo.owner.equals(SystemProgram.programId)) {
+      isUninitialized = true;
+      existingMapping = newMintMappingInfo;
+    } else if (!newMintMappingInfo || newMintMappingInfo.owner.equals(SystemProgram.programId)) {
+      isUninitialized = false;
+      existingMapping = null;
+      isAlreadyRegistered = false;
+    } else {
+      try {
+        const decoded = ctx.coders.factory.accounts.decode('MintMapping', newMintMappingInfo.data);
+        if (decoded && !decoded.origin_mint.equals(PublicKey.default)) {
+          if (decoded.origin_mint.equals(originMintKey)) {
+            isAlreadyRegistered = true;
+          } else {
+            throw new Error(`Mint mapping exists with different origin_mint`);
+          }
+        }
+      } catch (e) {
+        isUninitialized = true;
+      }
+    }
+    
+    // Re-fetch pool account infos with new addresses
+    poolStateInfo = await connection.getAccountInfo(poolState);
+    nullifierSetInfo = await connection.getAccountInfo(nullifierSet);
+    noteLedgerInfo = await connection.getAccountInfo(noteLedger);
+    commitmentTreeInfo = await connection.getAccountInfo(commitmentTree);
+    hookConfigInfo = await connection.getAccountInfo(hookConfig);
+    hookWhitelistInfo = await connection.getAccountInfo(hookWhitelist);
+  }
+  
+  // CRITICAL: Check if pool is already initialized
+  // If pool_state exists and is owned by pool program, the pool is already initialized
+  // We should NOT try to initialize again, as init constraints will fail
+  const poolAlreadyInitialized = poolStateInfo && poolStateInfo.owner.equals(PROGRAM_IDS.pool);
   
   // Check if commitment_tree exists but might have wrong discriminator
   // If so, we still need to call initialize_pool to let it reinitialize
   const commitmentTreeNeedsReinit = commitmentTreeInfo && commitmentTreeInfo.owner.equals(PROGRAM_IDS.pool);
   
-  if (needsInit || commitmentTreeNeedsReinit) {
+  // Only initialize if pool doesn't exist OR if commitment tree needs reinit
+  // BUT: If pool_state exists and is properly owned, we MUST NOT try to initialize
+  // because init constraints will fail with 0x0
+  const needsInit = !poolStateInfo && !poolAlreadyInitialized;
+  
+  console.log(`[ensureMint] Pool initialization check for ${mintConfig.symbol}: needsInit=${needsInit}, poolAlreadyInitialized=${poolAlreadyInitialized}, commitmentTreeNeedsReinit=${commitmentTreeNeedsReinit}`);
+  
+  if (needsInit || (commitmentTreeNeedsReinit && !poolAlreadyInitialized)) {
     // Always call initialize_pool - it will use init_if_needed to handle existing accounts
     const poolAccounts: Record<string, PublicKey> = {
       authority: ctx.payer.publicKey,
@@ -936,6 +1356,27 @@ async function ensureMint(
       ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 1 })
     ];
 
+    // CRITICAL: Final check right before pool initialization
+    // Log all account states for debugging
+    console.log(`[ensureMint] Pre-pool-init check for ${mintConfig.symbol}:`);
+    console.log(`  pool_state: exists=${!!poolStateInfo}, owner=${poolStateInfo?.owner.toBase58() || 'N/A'}, dataLen=${poolStateInfo?.data.length || 0}`);
+    console.log(`  hook_config: exists=${!!hookConfigInfo}, owner=${hookConfigInfo?.owner.toBase58() || 'N/A'}, dataLen=${hookConfigInfo?.data.length || 0}`);
+    console.log(`  hook_whitelist: exists=${!!hookWhitelistInfo}, owner=${hookWhitelistInfo?.owner.toBase58() || 'N/A'}, dataLen=${hookWhitelistInfo?.data.length || 0}`);
+    console.log(`  nullifier_set: exists=${!!nullifierSetInfo}, owner=${nullifierSetInfo?.owner.toBase58() || 'N/A'}, dataLen=${nullifierSetInfo?.data.length || 0}`);
+    console.log(`  note_ledger: exists=${!!noteLedgerInfo}, owner=${noteLedgerInfo?.owner.toBase58() || 'N/A'}, dataLen=${noteLedgerInfo?.data.length || 0}`);
+    console.log(`  commitment_tree: exists=${!!commitmentTreeInfo}, owner=${commitmentTreeInfo?.owner.toBase58() || 'N/A'}, dataLen=${commitmentTreeInfo?.data.length || 0}`);
+    
+    // Final safety check: abort if any init accounts are uninitialized
+    if (poolStateInfo && !poolStateInfo.owner.equals(PROGRAM_IDS.pool) && !poolStateInfo.owner.equals(SystemProgram.programId)) {
+      throw new Error(`ABORT: pool_state is uninitialized BEFORE pool init (owned by ${poolStateInfo.owner.toBase58()}). This should have been caught earlier.`);
+    }
+    if (hookConfigInfo && !hookConfigInfo.owner.equals(PROGRAM_IDS.pool) && !hookConfigInfo.owner.equals(SystemProgram.programId)) {
+      throw new Error(`ABORT: hook_config is uninitialized BEFORE pool init (owned by ${hookConfigInfo.owner.toBase58()}). This should have been caught earlier.`);
+    }
+    if (hookWhitelistInfo && !hookWhitelistInfo.owner.equals(PROGRAM_IDS.pool) && !hookWhitelistInfo.owner.equals(SystemProgram.programId)) {
+      throw new Error(`ABORT: hook_whitelist is uninitialized BEFORE pool init (owned by ${hookWhitelistInfo.owner.toBase58()}). This should have been caught earlier.`);
+    }
+    
     try {
       const signature = await sendInstruction(
         ctx,

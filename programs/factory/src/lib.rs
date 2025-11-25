@@ -14,15 +14,19 @@ use ptf_common::security::{AccessController, AccessLevel, AccountValidator, Inpu
 use solana_program::pubkey;
 use sha3::{Digest, Keccak256};
 use ptf_verifier_groth16;
+use anchor_lang::solana_program::program::invoke_signed;
+use anchor_lang::solana_program::instruction::{Instruction, AccountMeta};
+use anchor_lang::AnchorSerialize;
 
 const PTF_POOL_PROGRAM_ID: Pubkey = pubkey!("7kbUWzeTPY6qb1mFJC1ZMRmTZAdaHC27yukc3Czj7fKh");
+const PTF_VAULT_PROGRAM_ID: Pubkey = pubkey!("9g6ZodQwxK8MN6MX3dbvFC3E7vGVqFtKZEHY7PByRAuh");
 // CRITICAL FIX: Minimum timelock duration in seconds (24 hours)
 const MIN_TIMELOCK_SECONDS: i64 = 24 * 60 * 60; // 86400 seconds = 24 hours
 // Authority changes require longer timelock (7 days)
 const AUTHORITY_CHANGE_TIMELOCK_SECONDS: i64 = 7 * 24 * 60 * 60; // 604800 seconds = 7 days
 const TIMELOCK_STALE_GRACE_SECONDS: i64 = 30 * 24 * 60 * 60; // 30 days
 
-declare_id!("4z618BY2dXGqAUiegqDt8omo3e81TSdXRHt64ikX1bTy");
+declare_id!("YNZGqPEsKkMcUopmXThpigDdxfCYPE6jS1QtsXfRzjV");
 
 #[program]
 pub mod ptf_factory {
@@ -152,6 +156,22 @@ pub mod ptf_factory {
             FactoryError::DecimalsMismatch
         );
 
+        // CRITICAL FIX: Check if mint_mapping account exists but is owned by wrong program
+        // init_if_needed can fail if account exists but is owned by BPF loader
+        // We need to check BEFORE init_if_needed runs, but we can't do that in the constraint.
+        // So we check here and reject if the account is in a bad state.
+        let mapping_info = ctx.accounts.mint_mapping.to_account_info();
+        
+        // If account exists and is owned by wrong program (not factory, not system), reject
+        // This means a previous transaction partially initialized it and it's stuck
+        if !mapping_info.data_is_empty() {
+            if mapping_info.owner != &crate::ID && mapping_info.owner != &anchor_lang::solana_program::system_program::ID {
+                // Account exists but is owned by wrong program (e.g., BPF loader)
+                // init_if_needed will fail with 0x0 - reject early with better error
+                return err!(FactoryError::InvalidMintFormat);
+            }
+        }
+
         let mapping = &mut ctx.accounts.mint_mapping;
         // CRITICAL FIX: Only allow initialization, not updates
         // All updates must go through update_mint instruction which has proper authorization
@@ -172,6 +192,7 @@ pub mod ptf_factory {
         mapping.bump = ctx.bumps.mint_mapping;
         mapping.has_ptkn = false;
         mapping.ptkn_mint = Pubkey::default();
+        mapping.is_native_ztoken = false; // Regular tokens are not native zTokens
 
         let effective_fee_bps = fee_bps_override.unwrap_or(state.default_fee_bps);
 
@@ -978,6 +999,275 @@ pub mod ptf_factory {
         token_interface::mint_to(cpi_ctx, amount)?;
         Ok(())
     }
+
+    pub fn mint_native_ztoken(
+        ctx: Context<MintNativeZToken>,
+        name: String,
+        symbol: String,
+        uri: String,
+        decimals: u8,
+        initial_supply: u64,
+        feature_flags: Option<u8>,
+        fee_bps_override: Option<u16>,
+    ) -> Result<()> {
+        let state = &ctx.accounts.factory_state;
+        require!(!state.paused, FactoryError::Paused);
+        
+        // Validate inputs
+        require!(decimals <= 12, FactoryError::InvalidDecimals);
+        require!(!name.is_empty() && name.len() <= TokenMetadata::MAX_NAME_LEN, FactoryError::MetadataTooLong);
+        require!(!symbol.is_empty() && symbol.len() <= TokenMetadata::MAX_SYMBOL_LEN, FactoryError::MetadataTooLong);
+        require!(!uri.is_empty() && uri.len() <= TokenMetadata::MAX_URI_LEN, FactoryError::MetadataTooLong);
+        require!(initial_supply > 0, FactoryError::InvalidAmount);
+        
+        // Validate URI format (should start with "ipfs://" or be a valid CID)
+        let is_valid_uri = uri.starts_with("ipfs://") || 
+                          (uri.len() >= 46 && uri.chars().all(|c| c.is_alphanumeric() || c == '-'));
+        require!(is_valid_uri, FactoryError::InvalidMetadataURI);
+        
+        // Validate fee override if provided
+        const MAX_FEE_BPS_OVERRIDE: u16 = 1000;
+        if let Some(fee) = fee_bps_override {
+            require!(fee <= MAX_BPS, FactoryError::InvalidFeeBps);
+            require!(fee <= MAX_FEE_BPS_OVERRIDE, FactoryError::InvalidFeeBps);
+        }
+        
+        // Check if mint_mapping already exists (prevent duplicate) - do this before any mutable borrows
+        {
+            let mapping_info = ctx.accounts.mint_mapping.to_account_info();
+            if mapping_info.data_len() >= 8 {
+                let mapping_data = mapping_info.try_borrow_data()?;
+                if mapping_data.len() >= 8 + 32 {
+                    let body = &mapping_data[8..];
+                    let origin_bytes: [u8; 32] = body[0..32]
+                        .try_into()
+                        .map_err(|_| FactoryError::AccountDataTooShort)?;
+                    let existing_origin = Pubkey::new_from_array(origin_bytes);
+                    if existing_origin != Pubkey::default() {
+                        return err!(FactoryError::NativeZTokenAlreadyExists);
+                    }
+                }
+            }
+        }
+        
+        // Create traditional SPL mint with 0 supply, factory as mint authority
+        let origin_mint_key = create_origin_mint(
+            state,
+            &ctx.accounts.origin_mint,
+            &ctx.accounts.token_program,
+            &ctx.accounts.rent,
+            &ctx.accounts.payer,
+            decimals,
+        )?;
+        
+        // Create metadata account
+        let metadata = &mut ctx.accounts.metadata;
+        metadata.name = name;
+        metadata.symbol = symbol;
+        metadata.uri = uri;
+        metadata.mint = origin_mint_key;
+        metadata.update_authority = state.key();
+        metadata.bump = ctx.bumps.metadata;
+        
+        // Register mint in factory with is_native_ztoken = true
+        {
+            let mapping = &mut ctx.accounts.mint_mapping;
+            mapping.origin_mint = origin_mint_key;
+            mapping.status = MintStatus::Active as u8;
+            mapping.decimals = decimals;
+            mapping.features = FeatureFlags::from(feature_flags.unwrap_or_else(|| state.default_features.bits()));
+            mapping.has_fee_override = fee_bps_override.is_some();
+            mapping.fee_bps_override = fee_bps_override.unwrap_or_default();
+            mapping.bump = ctx.bumps.mint_mapping;
+            mapping.has_ptkn = false;
+            mapping.ptkn_mint = Pubkey::default();
+            mapping.is_native_ztoken = true; // Mark as native zToken
+        } // Drop mutable borrow here
+        
+        // Validate pool and vault program IDs
+        let pool_program_id = if let Some(config) = ctx.accounts.factory_config.as_ref() {
+            require_keys_eq!(
+                config.factory,
+                state.key(),
+                FactoryError::ConfigFactoryMismatch
+            );
+            config.pool_program_id
+        } else {
+            PTF_POOL_PROGRAM_ID
+        };
+        require_keys_eq!(
+            ctx.accounts.pool_program.key(),
+            pool_program_id,
+            FactoryError::InvalidVerifierProgram
+        );
+        
+        // Validate vault program ID (use hardcoded for now, could add to config later)
+        require_keys_eq!(
+            ctx.accounts.vault_program.key(),
+            PTF_VAULT_PROGRAM_ID,
+            FactoryError::InvalidVerifierProgram
+        );
+        
+        let fee_bps = fee_bps_override.unwrap_or(state.default_fee_bps);
+        let features = feature_flags.unwrap_or_else(|| state.default_features.bits());
+        
+        // Initialize pool via invoke_signed (avoiding circular dependency)
+        // Compute instruction discriminator: sha256("global:initialize_pool")[0..8]
+        let pool_discriminator = hashv(&[b"global:initialize_pool"]).to_bytes()[0..8].to_vec();
+        
+        // Serialize args: fee_bps (u16) + features (u8)
+        let mut pool_data = pool_discriminator;
+        pool_data.extend_from_slice(&fee_bps.to_le_bytes());
+        pool_data.push(features);
+        
+        // Build account metas for pool initialization
+        let mut pool_accounts = vec![
+            AccountMeta::new(ctx.accounts.factory_state.key(), true), // authority (factory PDA, signer)
+            AccountMeta::new(ctx.accounts.pool_state.key(), false), // pool_state
+            AccountMeta::new(ctx.accounts.nullifier_set.key(), false), // nullifier_set
+            AccountMeta::new(ctx.accounts.note_ledger.key(), false), // note_ledger
+            AccountMeta::new(ctx.accounts.commitment_tree.key(), false), // commitment_tree
+            AccountMeta::new(ctx.accounts.hook_config.key(), false), // hook_config
+            AccountMeta::new(ctx.accounts.hook_whitelist.key(), false), // hook_whitelist
+            AccountMeta::new(ctx.accounts.vault_state.key(), false), // vault_state
+            AccountMeta::new_readonly(ctx.accounts.origin_mint.key(), false), // origin_mint
+            AccountMeta::new_readonly(ctx.accounts.mint_mapping.key(), false), // mint_mapping
+            AccountMeta::new_readonly(ctx.accounts.factory_state.key(), false), // factory_state
+            AccountMeta::new_readonly(ctx.accounts.verifier_program.key(), false), // verifier_program
+            AccountMeta::new_readonly(ctx.accounts.verifying_key.key(), false), // verifying_key
+            AccountMeta::new(ctx.accounts.payer.key(), true), // payer (signer)
+            AccountMeta::new_readonly(ctx.accounts.system_program.key(), false), // system_program
+            AccountMeta::new_readonly(ctx.accounts.token_program.key(), false), // token_program
+        ];
+        
+        let pool_ix = Instruction {
+            program_id: pool_program_id,
+            accounts: pool_accounts,
+            data: pool_data,
+        };
+        
+        let factory_bump = state.bump;
+        let signer_seeds: [&[u8]; 3] = [seeds::FACTORY, crate::ID.as_ref(), &[factory_bump]];
+        let account_infos = vec![
+            ctx.accounts.factory_state.to_account_info(),
+            ctx.accounts.pool_state.to_account_info(),
+            ctx.accounts.nullifier_set.to_account_info(),
+            ctx.accounts.note_ledger.to_account_info(),
+            ctx.accounts.commitment_tree.to_account_info(),
+            ctx.accounts.hook_config.to_account_info(),
+            ctx.accounts.hook_whitelist.to_account_info(),
+            ctx.accounts.vault_state.to_account_info(),
+            ctx.accounts.origin_mint.to_account_info(),
+            ctx.accounts.mint_mapping.to_account_info(),
+            ctx.accounts.factory_state.to_account_info(),
+            ctx.accounts.verifier_program.to_account_info(),
+            ctx.accounts.verifying_key.to_account_info(),
+            ctx.accounts.payer.to_account_info(),
+            ctx.accounts.system_program.to_account_info(),
+            ctx.accounts.token_program.to_account_info(),
+        ];
+        
+        invoke_signed(&pool_ix, &account_infos, &[&signer_seeds])?;
+        
+        // Initialize vault via invoke_signed
+        let (pool_authority, _) = Pubkey::find_program_address(
+            &[seeds::POOL, origin_mint_key.as_ref()],
+            &pool_program_id,
+        );
+        
+        // Compute vault instruction discriminator: sha256("global:initialize_vault")[0..8]
+        let vault_discriminator = hashv(&[b"global:initialize_vault"]).to_bytes()[0..8].to_vec();
+        
+        // Serialize args: pool_authority (Pubkey = 32 bytes)
+        let mut vault_data = vault_discriminator;
+        vault_data.extend_from_slice(pool_authority.as_ref());
+        
+        let vault_accounts = vec![
+            AccountMeta::new(ctx.accounts.vault_state.key(), false), // vault_state
+            AccountMeta::new_readonly(ctx.accounts.origin_mint.key(), false), // origin_mint
+            AccountMeta::new(ctx.accounts.payer.key(), true), // payer (signer)
+            AccountMeta::new_readonly(ctx.accounts.token_program.key(), false), // token_program
+            AccountMeta::new_readonly(ctx.accounts.system_program.key(), false), // system_program
+        ];
+        
+        let vault_ix = Instruction {
+            program_id: PTF_VAULT_PROGRAM_ID,
+            accounts: vault_accounts,
+            data: vault_data,
+        };
+        
+        let vault_account_infos = vec![
+            ctx.accounts.vault_state.to_account_info(),
+            ctx.accounts.origin_mint.to_account_info(),
+            ctx.accounts.payer.to_account_info(),
+            ctx.accounts.token_program.to_account_info(),
+            ctx.accounts.system_program.to_account_info(),
+        ];
+        
+        invoke_signed(&vault_ix, &vault_account_infos, &[&signer_seeds])?;
+        
+        // Mint initial supply to user's token account
+        let mint_accounts = MintTo {
+            mint: ctx.accounts.origin_mint.to_account_info(),
+            to: ctx.accounts.user_token_account.to_account_info(),
+            authority: ctx.accounts.factory_state.to_account_info(),
+        };
+        let signer_seeds_slice: &[&[u8]] = &signer_seeds;
+        let signer_seeds_for_cpi = [signer_seeds_slice];
+        let mint_cpi_ctx = CpiContext::new_with_signer(
+            ctx.accounts.token_program.to_account_info(),
+            mint_accounts,
+            &signer_seeds_for_cpi,
+        );
+        token_interface::mint_to(mint_cpi_ctx, initial_supply)?;
+        
+        let features_bits = FeatureFlags::from(feature_flags.unwrap_or_else(|| state.default_features.bits())).bits();
+        emit!(MintRegistered {
+            origin_mint: origin_mint_key,
+            ptkn_mint: Pubkey::default(),
+            decimals,
+            features: features_bits,
+            fee_bps: fee_bps,
+        });
+        
+        Ok(())
+    }
+}
+
+fn create_origin_mint<'info>(
+    factory_state: &Account<'info, FactoryState>,
+    mint_account: &UncheckedAccount<'info>,
+    token_program: &Interface<'info, TokenInterface>,
+    rent: &Sysvar<'info, Rent>,
+    payer: &Signer<'info>,
+    decimals: u8,
+) -> Result<Pubkey> {
+    let mint_info = mint_account.to_account_info();
+    
+    // Create mint account if it doesn't exist
+    if mint_info.owner == &system_program::ID && mint_info.data_is_empty() {
+        let mint_space = <Token2022Mint as Token2022Pack>::LEN;
+        let lamports = rent.minimum_balance(mint_space);
+        let create_ix = system_instruction::create_account(
+            payer.key,
+            mint_info.key,
+            lamports,
+            mint_space as u64,
+            token_program.key,
+        );
+        invoke(&create_ix, &[payer.to_account_info(), mint_info.clone()])?;
+        
+        // Initialize mint with factory as mint authority, no freeze authority
+        let init_accounts = token_interface::InitializeMint2 {
+            mint: mint_info.clone(),
+        };
+        let init_ctx = CpiContext::new(token_program.to_account_info(), init_accounts);
+        token_interface::initialize_mint2(init_ctx, decimals, &factory_state.key(), None)?;
+    } else {
+        return err!(FactoryError::InvalidMintFormat);
+    }
+    
+    Ok(*mint_info.key)
 }
 
 #[derive(Accounts)]
@@ -1155,6 +1445,71 @@ pub struct MintPtkn<'info> {
 }
 
 #[derive(Accounts)]
+pub struct MintNativeZToken<'info> {
+    #[account(mut, has_one = authority)]
+    pub factory_state: Account<'info, FactoryState>,
+    pub authority: Signer<'info>,
+    #[account(mut)]
+    pub payer: Signer<'info>,
+    /// CHECK: Will be created as uninitialized mint account
+    #[account(mut)]
+    pub origin_mint: UncheckedAccount<'info>,
+    #[account(
+        init,
+        payer = payer,
+        seeds = [b"metadata", origin_mint.key().as_ref()],
+        bump,
+        space = TokenMetadata::SPACE,
+    )]
+    pub metadata: Account<'info, TokenMetadata>,
+    #[account(
+        init_if_needed,
+        payer = payer,
+        seeds = [seeds::MINT_MAPPING, origin_mint.key().as_ref()],
+        bump,
+        space = MintMapping::SPACE,
+    )]
+    pub mint_mapping: Account<'info, MintMapping>,
+    /// Optional factory config account
+    /// CHECK: Validated in instruction if provided
+    pub factory_config: Option<Account<'info, FactoryConfig>>,
+    /// CHECK: Pool program account - validated in instruction
+    pub pool_program: AccountInfo<'info>,
+    /// CHECK: Vault program account - validated in instruction
+    pub vault_program: AccountInfo<'info>,
+    /// CHECK: Pool state PDA - will be initialized by pool program
+    #[account(mut)]
+    pub pool_state: UncheckedAccount<'info>,
+    /// CHECK: Vault state PDA - will be initialized by vault program
+    #[account(mut)]
+    pub vault_state: UncheckedAccount<'info>,
+    /// CHECK: Commitment tree PDA - will be initialized by pool program
+    #[account(mut)]
+    pub commitment_tree: UncheckedAccount<'info>,
+    /// CHECK: Nullifier set PDA - will be initialized by pool program
+    #[account(mut)]
+    pub nullifier_set: UncheckedAccount<'info>,
+    /// CHECK: Note ledger PDA - will be initialized by pool program
+    #[account(mut)]
+    pub note_ledger: UncheckedAccount<'info>,
+    /// CHECK: Hook config PDA - will be initialized by pool program
+    #[account(mut)]
+    pub hook_config: UncheckedAccount<'info>,
+    /// CHECK: Hook whitelist PDA - will be initialized by pool program
+    #[account(mut)]
+    pub hook_whitelist: UncheckedAccount<'info>,
+    /// CHECK: Verifier program account
+    pub verifier_program: UncheckedAccount<'info>,
+    /// CHECK: Verifying key account
+    pub verifying_key: UncheckedAccount<'info>,
+    /// CHECK: User's token account - will receive minted tokens
+    pub user_token_account: InterfaceAccount<'info, TokenAccount>,
+    pub token_program: Interface<'info, TokenInterface>,
+    pub system_program: Program<'info, System>,
+    pub rent: Sysvar<'info, Rent>,
+}
+
+#[derive(Accounts)]
 pub struct CreateVerifyingKey<'info> {
     #[account(has_one = authority)]
     pub factory_state: Account<'info, FactoryState>,
@@ -1327,10 +1682,31 @@ pub struct MintMapping {
     pub fee_bps_override: u16,
     pub has_fee_override: bool,
     pub bump: u8,
+    pub is_native_ztoken: bool,
 }
 
 impl MintMapping {
-    pub const SPACE: usize = 8 + 32 + 32 + 1 + 1 + 1 + 1 + 2 + 1 + 1 + 4;
+    // SPACE = discriminator[8] + origin_mint[32] + ptkn_mint[32] + has_ptkn[1] + status[1] + decimals[1] + features[1] + fee_bps_override[2] + has_fee_override[1] + bump[1] + is_native_ztoken[1] + padding[3]
+    pub const SPACE: usize = 8 + 32 + 32 + 1 + 1 + 1 + 1 + 2 + 1 + 1 + 1 + 4;
+}
+
+#[account]
+pub struct TokenMetadata {
+    pub name: String,
+    pub symbol: String,
+    pub uri: String, // IPFS CID (e.g., "ipfs://Qm...")
+    pub mint: Pubkey,
+    pub update_authority: Pubkey,
+    pub bump: u8,
+}
+
+impl TokenMetadata {
+    // SPACE = discriminator[8] + name[4+32] + symbol[4+10] + uri[4+200] + mint[32] + update_authority[32] + bump[1]
+    // Using String with max lengths: name max 32 bytes, symbol max 10 bytes, uri max 200 bytes
+    pub const MAX_NAME_LEN: usize = 32;
+    pub const MAX_SYMBOL_LEN: usize = 10;
+    pub const MAX_URI_LEN: usize = 200;
+    pub const SPACE: usize = 8 + 4 + Self::MAX_NAME_LEN + 4 + Self::MAX_SYMBOL_LEN + 4 + Self::MAX_URI_LEN + 32 + 32 + 1;
 }
 
 #[account]
@@ -1821,4 +2197,13 @@ pub enum FactoryError {
     DecimalsMismatch,
     #[msg("Invalid verifier program")]
     InvalidVerifierProgram,
+    // Native zToken errors
+    #[msg("Native zToken already exists")]
+    NativeZTokenAlreadyExists,
+    #[msg("Invalid metadata URI")]
+    InvalidMetadataURI,
+    #[msg("Metadata too long")]
+    MetadataTooLong,
+    #[msg("Initial supply already minted")]
+    InitialSupplyAlreadyMinted,
 }

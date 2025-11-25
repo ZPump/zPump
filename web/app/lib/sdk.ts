@@ -8,6 +8,7 @@ import {
   AddressLookupTableAccount,
   ComputeBudgetProgram,
   Connection,
+  Keypair,
   PublicKey,
   SYSVAR_INSTRUCTIONS_PUBKEY,
   SYSVAR_RENT_PUBKEY,
@@ -39,7 +40,9 @@ import {
   deriveVerifyingKey,
   deriveMintMapping,
   deriveFactoryState,
-  deriveShieldClaim
+  deriveShieldClaim,
+  deriveTokenMetadata,
+  derivePoolState
 } from './onchain/pdas';
 import { decodeCommitmentTree } from './onchain/commitmentTree';
 import {
@@ -164,6 +167,18 @@ interface TransferFromParams extends TransferParams {
   // CRITICAL FIX: Actual spend amount (sum of outputs to others, excluding change back to spender)
   // This must match allowanceAmount to prevent bypass attacks
   spendAmount: bigint | number | string;
+}
+
+interface MintNativeZTokenParams {
+  connection: Connection;
+  wallet: WalletContextState;
+  name: string;
+  symbol: string;
+  uri: string; // IPFS URI (e.g., "ipfs://Qm...")
+  decimals: number;
+  initialSupply: bigint | number | string;
+  featureFlags?: number;
+  feeBpsOverride?: number;
 }
 
 type SplTokenProgramKind = 'token' | 'token-2022';
@@ -1643,9 +1658,156 @@ export async function revokeSplTokenApproval(params: RevokeSplTokenParams): Prom
   return signature;
 }
 
+export async function getTokenMetadata(connection: Connection, mint: PublicKey): Promise<{ name: string; symbol: string; uri: string } | null> {
+  try {
+    const metadataKey = deriveTokenMetadata(mint);
+    const account = await connection.getAccountInfo(metadataKey, 'confirmed');
+    if (!account) {
+      return null;
+    }
+    const decoded = factoryCoder.accounts.decode('TokenMetadata', account.data);
+    return {
+      name: decoded.name,
+      symbol: decoded.symbol,
+      uri: decoded.uri
+    };
+  } catch (error) {
+    console.warn('[getTokenMetadata] Failed to fetch metadata:', error);
+    return null;
+  }
+}
+
 export async function resolvePublicKey(maybeKey: string | undefined, fallback: PublicKey): Promise<PublicKey> {
   if (!maybeKey) {
     return fallback;
   }
   return new PublicKey(maybeKey);
+}
+
+export async function mintNativeZToken(params: MintNativeZTokenParams): Promise<string> {
+  assertWallet(params.wallet);
+  const { connection, wallet } = params;
+
+  // Generate a new mint keypair
+  const mintKeypair = Keypair.generate();
+  const originMint = mintKeypair.publicKey;
+
+  // Derive all PDAs
+  const factoryState = deriveFactoryState();
+  const mintMapping = deriveMintMapping(originMint);
+  const metadata = deriveTokenMetadata(originMint);
+  const poolState = derivePoolState(originMint);
+  const vaultState = deriveVaultState(originMint);
+  const commitmentTree = deriveCommitmentTree(originMint);
+  const nullifierSet = deriveNullifierSet(originMint);
+  const noteLedger = deriveNoteLedger(originMint);
+  const hookConfig = deriveHookConfig(originMint);
+  const hookWhitelist = deriveHookWhitelist(originMint);
+  const verifyingKey = deriveVerifyingKey();
+
+  // Get user's token account (create if needed)
+  const userTokenAccount = await getAssociatedTokenAddress(
+    originMint,
+    wallet.publicKey,
+    false,
+    TOKEN_PROGRAM_ID,
+    ASSOCIATED_TOKEN_PROGRAM_ID
+  );
+
+  // Check if token account exists, create if not
+  const userTokenAccountInfo = await connection.getAccountInfo(userTokenAccount);
+  const instructions: TransactionInstruction[] = [];
+  
+  if (!userTokenAccountInfo) {
+    instructions.push(
+      createAssociatedTokenAccountInstruction(
+        wallet.publicKey,
+        userTokenAccount,
+        wallet.publicKey,
+        originMint,
+        TOKEN_PROGRAM_ID,
+        ASSOCIATED_TOKEN_PROGRAM_ID
+      )
+    );
+  }
+
+  // Build mint_native_ztoken instruction
+  const mintData = factoryCoder.instruction.encode('mint_native_ztoken', {
+    name: params.name,
+    symbol: params.symbol,
+    uri: params.uri,
+    decimals: params.decimals,
+    initialSupply: new BN(params.initialSupply.toString()),
+    featureFlags: params.featureFlags ? { some: params.featureFlags } : null,
+    feeBpsOverride: params.feeBpsOverride ? { some: params.feeBpsOverride } : null,
+  });
+
+  const mintKeys = [
+    { pubkey: factoryState, isSigner: false, isWritable: true },
+    { pubkey: wallet.publicKey, isSigner: true, isWritable: true }, // authority
+    { pubkey: wallet.publicKey, isSigner: true, isWritable: true }, // payer
+    { pubkey: originMint, isSigner: true, isWritable: true }, // mint (keypair)
+    { pubkey: metadata, isSigner: false, isWritable: true },
+    { pubkey: mintMapping, isSigner: false, isWritable: true },
+    // factory_config is optional, skip for now (will be None)
+    { pubkey: POOL_PROGRAM_ID, isSigner: false, isWritable: false }, // pool_program
+    { pubkey: VAULT_PROGRAM_ID, isSigner: false, isWritable: false }, // vault_program
+    { pubkey: poolState, isSigner: false, isWritable: true },
+    { pubkey: vaultState, isSigner: false, isWritable: true },
+    { pubkey: commitmentTree, isSigner: false, isWritable: true },
+    { pubkey: nullifierSet, isSigner: false, isWritable: true },
+    { pubkey: noteLedger, isSigner: false, isWritable: true },
+    { pubkey: hookConfig, isSigner: false, isWritable: true },
+    { pubkey: hookWhitelist, isSigner: false, isWritable: true },
+    { pubkey: VERIFIER_PROGRAM_ID, isSigner: false, isWritable: false },
+    { pubkey: verifyingKey, isSigner: false, isWritable: false },
+    { pubkey: userTokenAccount, isSigner: false, isWritable: true },
+    { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
+    { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+    { pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false },
+  ];
+
+  instructions.push(
+    new TransactionInstruction({
+      programId: FACTORY_PROGRAM_ID,
+      keys: mintKeys,
+      data: mintData,
+    })
+  );
+
+  // Add compute budget
+  instructions.unshift(
+    ComputeBudgetProgram.setComputeUnitLimit({
+      units: 1_400_000, // High limit for minting + pool/vault initialization
+    })
+  );
+
+  const computePriceEnv =
+    process.env.MINT_COMPUTE_UNIT_PRICE ?? process.env.NEXT_PUBLIC_MINT_COMPUTE_UNIT_PRICE;
+  if (computePriceEnv) {
+    const microLamports = Number(computePriceEnv);
+    if (!Number.isNaN(microLamports) && microLamports > 0) {
+      instructions.splice(1, 0, ComputeBudgetProgram.setComputeUnitPrice({ microLamports }));
+    }
+  }
+
+  // Send transaction
+  const latestBlockhash = await connection.getLatestBlockhash('confirmed');
+  const transaction = new Transaction().add(...instructions);
+  transaction.feePayer = wallet.publicKey;
+  transaction.recentBlockhash = latestBlockhash.blockhash;
+  
+  // Sign with mint keypair
+  transaction.partialSign(mintKeypair);
+  
+  const signature = await wallet.sendTransaction(transaction, connection, { skipPreflight: false });
+
+  await waitForSignatureConfirmation(
+    connection,
+    signature,
+    latestBlockhash.blockhash,
+    latestBlockhash.lastValidBlockHeight
+  );
+
+  return signature;
 }

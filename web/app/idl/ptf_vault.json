@@ -1,11 +1,162 @@
 {
-  "address": "9g6ZodQwxK8MN6MX3dbvFC3E7vGVqFtKZEHY7PByRAuh",
+  "address": "ABUQvsF8kdY9HCFrVEomafg9ABbq4zVQuxLfevpwGnvb",
   "metadata": {
     "name": "ptf_vault",
     "version": "0.1.0",
     "spec": "0.1.0"
   },
   "instructions": [
+    {
+      "name": "cancel_authority_change",
+      "discriminator": [
+        254,
+        193,
+        5,
+        128,
+        8,
+        87,
+        30,
+        194
+      ],
+      "accounts": [
+        {
+          "name": "vault_state",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "vault_state.origin_mint",
+                "account": "VaultState"
+              }
+            ]
+          }
+        },
+        {
+          "name": "authority",
+          "signer": true
+        },
+        {
+          "name": "pending_change",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  101,
+                  110,
+                  100,
+                  105,
+                  110,
+                  103,
+                  45,
+                  97,
+                  117,
+                  116,
+                  104
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "vault_state"
+              }
+            ]
+          }
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "cleanup_expired_change",
+      "discriminator": [
+        58,
+        46,
+        91,
+        118,
+        24,
+        125,
+        63,
+        46
+      ],
+      "accounts": [
+        {
+          "name": "vault_state",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "vault_state.origin_mint",
+                "account": "VaultState"
+              }
+            ]
+          }
+        },
+        {
+          "name": "pending_change",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  101,
+                  110,
+                  100,
+                  105,
+                  110,
+                  103,
+                  45,
+                  97,
+                  117,
+                  116,
+                  104
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "vault_state"
+              }
+            ]
+          }
+        },
+        {
+          "name": "cleaner",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": []
+    },
     {
       "name": "deposit",
       "discriminator": [
@@ -70,6 +221,83 @@
       ]
     },
     {
+      "name": "execute_authority_change",
+      "discriminator": [
+        206,
+        91,
+        164,
+        210,
+        187,
+        23,
+        161,
+        101
+      ],
+      "accounts": [
+        {
+          "name": "vault_state",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "vault_state.origin_mint",
+                "account": "VaultState"
+              }
+            ]
+          }
+        },
+        {
+          "name": "pending_change",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  101,
+                  110,
+                  100,
+                  105,
+                  110,
+                  103,
+                  45,
+                  97,
+                  117,
+                  116,
+                  104
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "vault_state"
+              }
+            ]
+          }
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        },
+        {
+          "name": "executor",
+          "writable": true,
+          "signer": true
+        }
+      ],
+      "args": []
+    },
+    {
       "name": "initialize_vault",
       "discriminator": [
         48,
@@ -105,12 +333,18 @@
           }
         },
         {
-          "name": "origin_mint"
+          "name": "origin_mint",
+          "docs": [
+            "CRITICAL FIX: Use InterfaceAccount to validate mint"
+          ]
         },
         {
           "name": "payer",
           "writable": true,
           "signer": true
+        },
+        {
+          "name": "token_program"
         },
         {
           "name": "system_program",
@@ -123,6 +357,131 @@
           "type": "pubkey"
         }
       ]
+    },
+    {
+      "name": "propose_authority_change",
+      "discriminator": [
+        22,
+        224,
+        215,
+        238,
+        184,
+        2,
+        83,
+        146
+      ],
+      "accounts": [
+        {
+          "name": "vault_state",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "vault_state.origin_mint",
+                "account": "VaultState"
+              }
+            ]
+          }
+        },
+        {
+          "name": "authority",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "pending_change",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  101,
+                  110,
+                  100,
+                  105,
+                  110,
+                  103,
+                  45,
+                  97,
+                  117,
+                  116,
+                  104
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "vault_state"
+              }
+            ]
+          }
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "new_pool_authority",
+          "type": "pubkey"
+        }
+      ]
+    },
+    {
+      "name": "recover_lock",
+      "discriminator": [
+        40,
+        118,
+        11,
+        96,
+        40,
+        70,
+        20,
+        66
+      ],
+      "accounts": [
+        {
+          "name": "vault_state",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "vault_state.origin_mint",
+                "account": "VaultState"
+              }
+            ]
+          }
+        },
+        {
+          "name": "authority",
+          "signer": true
+        }
+      ],
+      "args": []
     },
     {
       "name": "release",
@@ -169,7 +528,8 @@
           "writable": true
         },
         {
-          "name": "pool_authority"
+          "name": "pool_authority",
+          "signer": true
         },
         {
           "name": "token_program"
@@ -181,58 +541,22 @@
           "type": "u64"
         }
       ]
-    },
-    {
-      "name": "set_pool_authority",
-      "discriminator": [
-        34,
-        30,
-        182,
-        81,
-        149,
-        198,
-        62,
-        181
-      ],
-      "accounts": [
-        {
-          "name": "authority",
-          "writable": true,
-          "signer": true
-        },
-        {
-          "name": "vault_state",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  118,
-                  97,
-                  117,
-                  108,
-                  116
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "vault_state.origin_mint",
-                "account": "VaultState"
-              }
-            ]
-          }
-        }
-      ],
-      "args": [
-        {
-          "name": "new_pool_authority",
-          "type": "pubkey"
-        }
-      ]
     }
   ],
   "accounts": [
+    {
+      "name": "PendingAuthorityChange",
+      "discriminator": [
+        80,
+        222,
+        56,
+        83,
+        100,
+        219,
+        134,
+        91
+      ]
+    },
     {
       "name": "VaultState",
       "discriminator": [
@@ -248,6 +572,71 @@
     }
   ],
   "events": [
+    {
+      "name": "AuthorityChangeCanceled",
+      "discriminator": [
+        51,
+        101,
+        9,
+        91,
+        223,
+        100,
+        130,
+        156
+      ]
+    },
+    {
+      "name": "AuthorityChangeExecuted",
+      "discriminator": [
+        166,
+        21,
+        195,
+        91,
+        195,
+        173,
+        181,
+        0
+      ]
+    },
+    {
+      "name": "AuthorityChangeProposed",
+      "discriminator": [
+        109,
+        230,
+        24,
+        90,
+        150,
+        78,
+        41,
+        3
+      ]
+    },
+    {
+      "name": "ExpiredChangeCleaned",
+      "discriminator": [
+        243,
+        84,
+        193,
+        216,
+        109,
+        181,
+        147,
+        101
+      ]
+    },
+    {
+      "name": "LockRecovered",
+      "discriminator": [
+        137,
+        135,
+        243,
+        216,
+        147,
+        251,
+        10,
+        206
+      ]
+    },
     {
       "name": "VaultDeposit",
       "discriminator": [
@@ -278,26 +667,373 @@
   "errors": [
     {
       "code": 6000,
-      "name": "UnauthorizedCaller",
-      "msg": "E_UNAUTHORIZED_CALLER"
+      "name": "InvalidBump",
+      "msg": "Invalid bump seed"
     },
     {
       "code": 6001,
-      "name": "InvalidMint",
-      "msg": "E_INVALID_MINT"
+      "name": "UnauthorizedCaller",
+      "msg": "Unauthorized caller"
     },
     {
       "code": 6002,
-      "name": "InvalidDepositAmount",
-      "msg": "E_INVALID_DEPOSIT_AMOUNT"
+      "name": "InvalidMint",
+      "msg": "Invalid mint"
     },
     {
       "code": 6003,
+      "name": "InvalidDepositAmount",
+      "msg": "Invalid amount"
+    },
+    {
+      "code": 6004,
       "name": "InvalidReleaseAmount",
-      "msg": "E_INVALID_RELEASE_AMOUNT"
+      "msg": "Invalid amount"
+    },
+    {
+      "code": 6005,
+      "name": "InsufficientBalance",
+      "msg": "Insufficient balance"
+    },
+    {
+      "code": 6006,
+      "name": "InvalidVaultAccount",
+      "msg": "Invalid vault account"
+    },
+    {
+      "code": 6007,
+      "name": "InvalidDepositorAccount",
+      "msg": "Invalid depositor account"
+    },
+    {
+      "code": 6008,
+      "name": "ReentrancyDetected",
+      "msg": "Reentrancy detected"
+    },
+    {
+      "code": 6009,
+      "name": "TimelockOverflow",
+      "msg": "Timelock overflow"
+    },
+    {
+      "code": 6010,
+      "name": "TimelockNotReady",
+      "msg": "Timelock not ready"
+    },
+    {
+      "code": 6011,
+      "name": "AlreadyExecuted",
+      "msg": "Already executed"
+    },
+    {
+      "code": 6012,
+      "name": "ChangeCanceled",
+      "msg": "Change canceled"
+    },
+    {
+      "code": 6013,
+      "name": "VaultMismatch",
+      "msg": "Vault mismatch"
+    },
+    {
+      "code": 6014,
+      "name": "AuthorityMismatch",
+      "msg": "Authority mismatch"
+    },
+    {
+      "code": 6015,
+      "name": "InvalidAuthorityChange",
+      "msg": "Invalid authority change"
+    },
+    {
+      "code": 6016,
+      "name": "AlreadyCanceled",
+      "msg": "Already canceled"
+    },
+    {
+      "code": 6017,
+      "name": "InvalidTokenProgram",
+      "msg": "Invalid token program"
+    },
+    {
+      "code": 6018,
+      "name": "InvalidPoolAuthority",
+      "msg": "Invalid pool authority"
+    },
+    {
+      "code": 6019,
+      "name": "PendingChangeExists",
+      "msg": "Pending change exists"
+    },
+    {
+      "code": 6020,
+      "name": "AuthorityChangeRateLimited",
+      "msg": "Authority change rate limited"
+    },
+    {
+      "code": 6021,
+      "name": "ChangeExpired",
+      "msg": "Change expired"
+    },
+    {
+      "code": 6022,
+      "name": "ChangeNotExpired",
+      "msg": "Change not expired"
+    },
+    {
+      "code": 6023,
+      "name": "IntegrityCheckFailed",
+      "msg": "Integrity check failed"
+    },
+    {
+      "code": 6024,
+      "name": "StaleProposal",
+      "msg": "Stale proposal"
+    },
+    {
+      "code": 6025,
+      "name": "SequenceOverflow",
+      "msg": "Sequence overflow"
     }
   ],
   "types": [
+    {
+      "name": "AuthorityChangeCanceled",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "vault_state",
+            "type": "pubkey"
+          },
+          {
+            "name": "origin_mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "canceled_at",
+            "type": "i64"
+          },
+          {
+            "name": "authority",
+            "type": "pubkey"
+          }
+        ]
+      }
+    },
+    {
+      "name": "AuthorityChangeExecuted",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "vault_state",
+            "type": "pubkey"
+          },
+          {
+            "name": "origin_mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "old_authority",
+            "type": "pubkey"
+          },
+          {
+            "name": "new_authority",
+            "type": "pubkey"
+          },
+          {
+            "name": "executed_at",
+            "type": "i64"
+          },
+          {
+            "name": "executed_by",
+            "type": "pubkey"
+          },
+          {
+            "name": "sequence",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "AuthorityChangeProposed",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "vault_state",
+            "type": "pubkey"
+          },
+          {
+            "name": "origin_mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "current_authority",
+            "type": "pubkey"
+          },
+          {
+            "name": "new_authority",
+            "type": "pubkey"
+          },
+          {
+            "name": "proposed_at",
+            "type": "i64"
+          },
+          {
+            "name": "execute_after",
+            "type": "i64"
+          },
+          {
+            "name": "expires_at",
+            "type": "i64"
+          },
+          {
+            "name": "sequence",
+            "type": "u64"
+          },
+          {
+            "name": "proposed_by",
+            "type": "pubkey"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ExpiredChangeCleaned",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "vault_state",
+            "type": "pubkey"
+          },
+          {
+            "name": "cleaned_at",
+            "type": "i64"
+          },
+          {
+            "name": "cleaned_by",
+            "type": "pubkey"
+          }
+        ]
+      }
+    },
+    {
+      "name": "LockRecovered",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "vault_state",
+            "type": "pubkey"
+          },
+          {
+            "name": "recovered_at",
+            "type": "i64"
+          },
+          {
+            "name": "authority",
+            "type": "pubkey"
+          }
+        ]
+      }
+    },
+    {
+      "name": "PendingAuthorityChange",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "vault_state",
+            "type": "pubkey"
+          },
+          {
+            "name": "current_authority",
+            "type": "pubkey"
+          },
+          {
+            "name": "new_authority",
+            "type": "pubkey"
+          },
+          {
+            "name": "proposed_at",
+            "type": "i64"
+          },
+          {
+            "name": "execute_after",
+            "type": "i64"
+          },
+          {
+            "name": "expires_at",
+            "type": "i64"
+          },
+          {
+            "name": "integrity_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "proposed_by",
+            "type": "pubkey"
+          },
+          {
+            "name": "sequence",
+            "type": "u64"
+          },
+          {
+            "name": "executed",
+            "type": "bool"
+          },
+          {
+            "name": "canceled",
+            "type": "bool"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "RateLimiterState",
+      "docs": [
+        "Serialized rate-limiter state stored inside on-chain accounts."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "last_action_time",
+            "docs": [
+              "Last unix timestamp when the action was performed (0 = never)."
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "window_start",
+            "docs": [
+              "Start of the rolling window that counts burst actions (0 = unset)."
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "action_count",
+            "docs": [
+              "Number of actions that occurred inside the current window."
+            ],
+            "type": "u32"
+          }
+        ]
+      }
+    },
     {
       "name": "VaultDeposit",
       "type": {
@@ -354,6 +1090,51 @@
           {
             "name": "bump",
             "type": "u8"
+          },
+          {
+            "name": "locked",
+            "type": "bool"
+          },
+          {
+            "name": "lock_timestamp",
+            "type": {
+              "option": "i64"
+            }
+          },
+          {
+            "name": "authority_change_sequence",
+            "type": "u64"
+          },
+          {
+            "name": "last_authority_change_time",
+            "type": {
+              "option": "i64"
+            }
+          },
+          {
+            "name": "deposit_rate_limit",
+            "type": {
+              "defined": {
+                "name": "RateLimiterState"
+              }
+            }
+          },
+          {
+            "name": "release_rate_limit",
+            "type": {
+              "defined": {
+                "name": "RateLimiterState"
+              }
+            }
+          },
+          {
+            "name": "integrity_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
           }
         ]
       }

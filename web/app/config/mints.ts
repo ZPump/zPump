@@ -9,6 +9,8 @@ export interface MintConfig {
     wrappedTransfers: boolean;
   };
   lookupTable?: string;
+  isNativeZToken?: boolean;
+  metadataUri?: string;
 }
 
 interface GeneratedMint {
@@ -41,7 +43,9 @@ export const MINTS: MintConfig[] = generated.map((entry) => ({
   zTokenMint: entry.zTokenMint ?? undefined,
   decimals: entry.decimals,
   features: entry.features,
-  lookupTable: entry.lookupTable ?? undefined
+  lookupTable: entry.lookupTable ?? undefined,
+  isNativeZToken: (entry as any).isNativeZToken ?? false,
+  metadataUri: (entry as any).metadataUri ?? undefined
 }));
 
 export function getMintConfig(originMint: string): MintConfig | undefined {

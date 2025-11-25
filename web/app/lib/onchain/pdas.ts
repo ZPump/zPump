@@ -46,6 +46,10 @@ export function deriveMintMapping(originMint: PublicKey): PublicKey {
   return PublicKey.findProgramAddressSync([textEncoder.encode('map'), originMint.toBuffer()], FACTORY_PROGRAM_ID)[0];
 }
 
+export function deriveTokenMetadata(mint: PublicKey): PublicKey {
+  return PublicKey.findProgramAddressSync([textEncoder.encode('metadata'), mint.toBuffer()], FACTORY_PROGRAM_ID)[0];
+}
+
 export function deriveFactoryState(): PublicKey {
   return PublicKey.findProgramAddressSync(
     [textEncoder.encode('factory'), FACTORY_PROGRAM_ID.toBuffer()],

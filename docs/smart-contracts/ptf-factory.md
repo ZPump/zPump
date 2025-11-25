@@ -20,6 +20,7 @@ The `ptf_factory` Anchor program manages the registry of pools, origin mints, an
 |-----|-------|-------------|
 | Factory State | `["factory"]` | Global configuration (authority, number of pools, bump). |
 | Mint Mapping | `["mint-mapping", origin_mint]` | Stores pool ID, twin mint, feature bits for each origin mint. |
+| Token Metadata | `["metadata", mint]` | Stores on-chain metadata for native zTokens (name, symbol, IPFS URI). |
 
 Fields inside `MintMapping`:
 - `pool`: Pool PDA address.
@@ -27,6 +28,15 @@ Fields inside `MintMapping`:
 - `ptkn_mint`: Optional twin mint (Token-2022) for privacy transfers.
 - `has_ptkn: bool` – Whether `ptkn_mint` is valid.
 - `features.bits` – Bit flags for future extension (currently used to expose zToken support).
+- `is_native_ztoken: bool` – Whether this is a native zToken (minted as zToken, not converted from traditional token).
+
+Fields inside `TokenMetadata`:
+- `name: String` – Token name (max 32 bytes).
+- `symbol: String` – Token symbol (max 10 bytes).
+- `uri: String` – IPFS URI for full metadata (max 200 bytes).
+- `mint: Pubkey` – Associated mint address.
+- `update_authority: Pubkey` – Authority that can update metadata (factory PDA).
+- `bump: u8` – PDA bump seed.
 
 ## Instructions
 
@@ -46,6 +56,18 @@ Entry point used during `ptf_pool::unshield_to_ptkn`.
 - Accounts: factory state, mint mapping, pool authority, `ptkn_mint`, destination ATA, token program.
 - Ensures `has_ptkn` is true, `ptkn_mint` matches mapping, and signs with pool PDA seeds to mint tokens.
 - No proof verification—the caller (`ptf_pool`) is responsible for verifying the Groth16 proof before invoking the CPI.
+
+### `mint_native_ztoken`
+
+Creates a new native zToken (zToken that doesn't start from a traditional Solana token).
+- Accounts: factory state, authority, payer, origin_mint (uninitialized), metadata (PDA), mint_mapping (PDA), pool_state (PDA), vault_state (PDA), commitment_tree (PDA), nullifier_set (PDA), note_ledger (PDA), hook_config (PDA), hook_whitelist (PDA), verifier_program, verifying_key, user_token_account, token_program, system_program, rent.
+- Creates traditional SPL Token-2022 mint with factory PDA as mint authority.
+- Creates metadata account with name, symbol, and IPFS URI.
+- Registers mint in factory with `is_native_ztoken: true`.
+- Initializes pool and vault via CPI.
+- Mints initial supply to user's token account.
+- User can then shield these tokens using existing shield flow.
+- See [Native zToken Minting System](./native-ztoken-minting.md) for complete documentation.
 
 ## Integration Points
 

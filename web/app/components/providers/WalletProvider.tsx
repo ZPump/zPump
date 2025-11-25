@@ -20,11 +20,20 @@ export function WalletProvider({ children }: WalletProviderProps) {
     const raw = process.env.NEXT_PUBLIC_RPC_URL ?? fallback;
     try {
       const url = new URL(raw);
+      // If RPC URL is localhost/127.0.0.1 and we're on a production domain, use the tunnel
       if (
         (url.hostname === '127.0.0.1' || url.hostname === 'localhost') &&
         typeof window !== 'undefined'
       ) {
-        url.hostname = window.location.hostname;
+        const currentHost = window.location.hostname;
+        // If we're on alpha.zpump.xyz, use devnet-rpc.zpump.xyz for RPC
+        if (currentHost === 'alpha.zpump.xyz' || currentHost.includes('zpump.xyz')) {
+          url.hostname = 'devnet-rpc.zpump.xyz';
+          url.port = ''; // Remove port, Cloudflare tunnel handles it
+          url.protocol = 'https:'; // Cloudflare tunnels use HTTPS
+        } else {
+          url.hostname = currentHost;
+        }
       }
       return url.toString();
     } catch {

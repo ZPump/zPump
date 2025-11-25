@@ -8,7 +8,19 @@ interface ProofClientOptions {
   baseUrl?: string;
 }
 
-const DEFAULT_BASE_URL = process.env.NEXT_PUBLIC_PROOF_RPC_URL ?? '/api/proof';
+// Use Cloudflare tunnel URL if on production domain, otherwise use local or API proxy
+const getDefaultProofUrl = (): string => {
+  if (typeof window !== 'undefined') {
+    const hostname = window.location.hostname;
+    if (hostname === 'alpha.zpump.xyz' || hostname.includes('zpump.xyz')) {
+      // Use Cloudflare tunnel for proof service (HTTPS)
+      return 'https://proof.zpump.xyz';
+    }
+  }
+  return process.env.NEXT_PUBLIC_PROOF_RPC_URL ?? '/api/proof';
+};
+
+const DEFAULT_BASE_URL = getDefaultProofUrl();
 
 const CIRCUIT_ALIAS = {
   wrap: 'shield',
