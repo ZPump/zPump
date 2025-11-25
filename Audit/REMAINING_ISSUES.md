@@ -1,41 +1,31 @@
 # Remaining Security Audit Issues
 
-**Last Updated:** 2025-01-26  
-**Status:** All issues mitigated (0 remaining, 1 BY DESIGN)  
+**Last Updated:** 2025-02-02
+**Status:** 4 outstanding issues (2 CRITICAL, 2 HIGH) + 1 BY DESIGN
 **Last Cleanup:** 2025-01-26 - Deleted all mitigated audit files
 
 ## Summary
 
-All security audit issues have been successfully mitigated. The following issues were resolved:
+Two new high-severity issues remain open alongside the previously documented BY DESIGN behavior:
 
-### ✅ All Issues Mitigated (2025-01-26)
+### ⚠️ Outstanding Issues (2025-02-02)
 
-#### MEDIUM Severity (1 issue - ✅ MITIGATED)
-1. **Fee Override Not Applied in Fee Calculation** (`fee-override-not-applied.md`)
-   - **Status:** ✅ MITIGATED
-   - **Resolution:** Implemented fee override in `calculate_fee` function. Updated to accept optional `fee_override` parameter and use it when provided. Updated `process_unshield` to pass override from mint mapping.
+#### CRITICAL Severity
+1. **Verifier Config Can Be Hijacked During Initialization** (`ptf_verifier_groth16/critical/unauthorized-verifier-config-initialization.md`)
+   - Anyone can initialize the verifier config PDA and set a permissive `factory_program_id`, enabling arbitrary verifying-key registration without factory governance.
+2. **Dev-skip Build Flag Bypasses Proof Verification** (`ptf_verifier_groth16/critical/dev-skip-feature-allows-proof-bypass.md`)
+   - Building the verifier with `groth16-dev-skip` causes `groth16_verify` to always return `true`, allowing any proof to pass on-chain with no enforcement to prevent production deployment of the dev build.
 
-#### LOW Severity (4 issues - ✅ MITIGATED)
-2. **Hook Whitelist Integrity Not Validated on Read** (`hook-whitelist-integrity-not-validated.md`)
-   - **Status:** ✅ MITIGATED
-   - **Resolution:** Added `validate_integrity()` calls in `is_allowed`, `add_hook_to_whitelist`, and `remove_hook_from_whitelist` functions.
-
-3. **Fee Override Validation Inconsistency** (`fee-override-validation-inconsistency.md`)
-   - **Status:** ✅ MITIGATED
-   - **Resolution:** Applied same 10% limit (1000 bps) in `apply_mint_update` as in `register_mint` for consistency.
-
-4. **Recent Commitments Length Overflow Risk** (`recent-len-overflow-risk.md`)
-   - **Status:** ✅ MITIGATED
-   - **Resolution:** Added bounds validation to cap `recent_len` at `MAX_CANOPY` if corrupted, and keep it at `MAX_CANOPY` in else branch.
-
-5. **Append Many Bounds Check Missing** (`append-many-bounds-check-missing.md`)
-   - **Status:** ✅ MITIGATED
-   - **Resolution:** Added explicit bounds checks for `current_level[0]` and `level_nodes[level][pos]` accesses.
+#### HIGH Severity
+3. **Missing Authority Check in Factory Config Initialization** (`ptf_factory/high/unauthorized-factory-config-initialization.md`)
+   - Factory config can be front-run and initialized with attacker-controlled pool/verifier program IDs because no authority signer is required.
+4. **Pool-controlled PTKN Minting Lacks Governance Guardrails** (`ptf_factory/high/unrestricted-ptkn-minting-by-pool.md`)
+   - Factory allows PTKN minting whenever the pool PDA signs, without factory authority approval or linkage to deposits, enabling unchecked inflation if the pool program is exploited or upgraded maliciously.
 
 ### BY DESIGN (1 issue)
 
 #### ptf_pool (1 issue)
-4. **Root Computation Mismatch Between Circuit and Tree** (`root-computation-mismatch.md`)
+3. **Root Computation Mismatch Between Circuit and Tree** (`root-computation-mismatch.md`)
    - **Location:** `programs/pool/src/lib.rs:1895-1904` (transfer) and `2251-2263` (unshield)
    - **Status:** BY DESIGN (intentional optimization)
    - **Description:** Tree uses SHA-256 (cheap syscall), circuits use Poseidon (ZK-friendly). This is an intentional design decision to optimize compute costs.
@@ -67,11 +57,10 @@ The following issues were addressed in the latest implementation (Commit d1cf0fd
 
 ## Notes
 
-- ✅ All CRITICAL and HIGH severity issues have been resolved
-- ⚠️ 1 MEDIUM and 2 LOW severity issues found in latest audit (2025-01-26)
+- ⚠️ Newly reported CRITICAL and HIGH issues require remediation
+- ⚠️ Medium/low findings from 2025-01-26 remain mitigated or BY DESIGN as documented
 - ✅ The root computation mismatch is BY DESIGN and documented as an intentional optimization
-- ✅ The system is production-ready from a security perspective
-- ✅ All previous fixes have been tested and verified with the full test suite
+- ✅ Previous fixes remain in place; run the full test suite after applying new remediations
 
 ## Latest Audit Findings (2025-01-26)
 
