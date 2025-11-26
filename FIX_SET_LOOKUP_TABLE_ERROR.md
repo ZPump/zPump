@@ -144,3 +144,51 @@ The fix is successful when:
 3. The test suite passes: `./scripts/run-full-test-suite.sh`
 4. Both old (85-byte) and new (118-byte) `MintMapping` accounts are handled correctly
 
+## Update: Current Error Status
+
+**Current Error**: The instruction now panics with `"Illegal base58 char"` at `src/lib.rs:12:40`. This is a runtime panic, not a constraint error.
+
+**Error Details**:
+- Error Type: `ProgramFailedToComplete` with panic message
+- Panic Location: `src/lib.rs:12:40` (this is line 12 in the imports, suggesting it's in Anchor's internal code)
+- Panic Message: `"Illegal base58 char"`
+- Note: Line 12 in `programs/factory/src/lib.rs` is: `use spl_token_2022::state::Mint as Token2022Mint;`
+
+**What We've Tried**:
+1. ✅ Fixed account order (added `origin_mint` and `system_program` to instruction) - PR merged
+2. ❌ Removed `emit!` call - panic still occurs
+3. ❌ Simplified PDA validation (commented out) - panic still occurs
+4. ❌ Simplified lookup table deserialization (commented out) - panic still occurs
+5. ❌ Changed `realloc` to use zero-init (`true` instead of `false`) - panic still occurs
+6. ❌ Added validation for account initialization before resizing - panic still occurs
+
+**Hypothesis**:
+The panic appears to be occurring in Anchor's internal account validation or error formatting code, possibly when:
+- Anchor tries to format a `Pubkey` for error messages
+- Anchor validates `UncheckedAccount` constraints
+- Anchor processes the `has_one = authority` constraint on `factory_state`
+- Anchor's internal logging tries to format account keys
+
+**Potential Solutions to Try**:
+1. Check if the panic occurs before our instruction code runs (in Anchor's account validation)
+2. Try using `Account<'info, MintMapping>` instead of `UncheckedAccount` and handle the size mismatch differently
+3. Check Anchor version compatibility - may need to update or use different Anchor features
+4. Try removing the `has_one = authority` constraint and validate manually
+5. Check if there's an issue with how we're accessing `ctx.accounts.origin_mint.key()` or other account keys
+6. Look for any `msg!` or debug logging that might be trying to format pubkeys
+7. Check if the issue is with the account order in the IDL vs actual instruction
+
+**Current Code State**:
+- Account resizing logic is in place
+- Lookup table field writing is simplified (direct byte manipulation)
+- PDA validation is commented out (for debugging)
+- Lookup table deserialization is simplified (for debugging)
+- Event emission is commented out (for debugging)
+- Panic still occurs, suggesting it's in Anchor's pre-instruction validation
+
+**Next Steps**:
+1. Investigate Anchor's account validation for `UncheckedAccount` with manual constraints
+2. Check if the panic occurs in `Context<SetLookupTable>` initialization
+3. Try a minimal instruction that only resizes the account to isolate the issue
+4. Check Anchor version and known issues with account resizing
+
