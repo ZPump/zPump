@@ -962,7 +962,9 @@ async function main() {
         { pubkey: factoryState, isSigner: false, isWritable: true },
         { pubkey: adminAuthority.publicKey, isSigner: true, isWritable: false },
         { pubkey: mintMapping, isSigner: false, isWritable: true },
-        { pubkey: lookupTableAddress, isSigner: false, isWritable: false }
+        { pubkey: originMintKey, isSigner: false, isWritable: false },
+        { pubkey: lookupTableAddress, isSigner: false, isWritable: false },
+        { pubkey: SystemProgram.programId, isSigner: false, isWritable: false }
       ],
       data: setLookupTableData
     });
