@@ -369,6 +369,7 @@ pub mod ptf_factory {
         }
 
         let current_size = mint_mapping_info.data_len();
+        // SPACE includes discriminator (8 bytes), so required_size is the full account size
         let required_size = MintMapping::SPACE;
 
         // Only resize if account is smaller than required
@@ -402,25 +403,66 @@ pub mod ptf_factory {
             }
 
             // Resize the account (zero-initialize new bytes)
-            mint_mapping_info.realloc(required_size, true)?; // Use zero-init (true) instead of false
+            mint_mapping_info.realloc(required_size, true)?; // Use zero-init (true)
+            
+            // Verify resize succeeded - re-check size after realloc
+            let verify_size = mint_mapping_info.data_len();
+            require!(
+                verify_size >= required_size,
+                FactoryError::AccountDataTooShort
+            );
         }
 
         // Now update the lookup_table field directly in the account data
         // For Option<Pubkey>, Anchor serializes as: 1 byte (0=None, 1=Some) + 32 bytes (Pubkey if Some)
         // The lookup_table field starts at offset 85 (after discriminator + 85 bytes of other fields)
+        // Re-borrow data after potential resize to get updated size
         let mut mint_mapping_data = mint_mapping_info.try_borrow_mut_data()?;
+        let actual_data_size = mint_mapping_data.len();
+        
+        // Ensure account is at least the required size (should have been resized above if needed)
         require!(
-            mint_mapping_data.len() >= required_size,
+            actual_data_size >= required_size,
             FactoryError::AccountDataTooShort
         );
 
         // Use origin_mint from accounts struct (already validated via PDA check)
         let origin_mint = ctx.accounts.origin_mint.key();
 
-        // Write lookup_table field at offset 85 (after discriminator)
-        // Option<Pubkey> format: 1 byte (1 = Some) + 32 bytes (Pubkey)
-        mint_mapping_data[85] = 1; // Some
-        mint_mapping_data[86..118].copy_from_slice(lookup_table_info.key().as_ref());
+        // Write lookup_table field
+        // MintMapping::SPACE is 114 bytes total
+        // Field layout: 8 (discriminator) + 32 (origin_mint) + 32 (ptkn_mint) + 1 (has_ptkn) + 
+        //              1 (status) + 1 (decimals) + 1 (features) + 2 (fee_bps_override) + 
+        //              1 (has_fee_override) + 1 (bump) + 1 (is_native_ztoken) + 33 (lookup_table)
+        // Total struct fields: 32+32+1+1+1+1+2+1+1+1 = 73 bytes
+        // But old accounts had 4 bytes padding, making them 77 bytes + 4 = 81 bytes
+        // So old account size: 8 + 81 = 89 bytes
+        // New account size: 8 + 73 + 33 = 114 bytes
+        // Lookup table offset: 8 + 73 = 81 (after all struct fields, before old padding)
+        require!(
+            actual_data_size >= required_size, // 114 bytes
+            FactoryError::AccountDataTooShort
+        );
+        
+        // Calculate lookup_table offset: after discriminator (8) + all struct fields (73) = 81
+        let lookup_table_offset = 81;
+        require!(
+            actual_data_size >= lookup_table_offset + 33,
+            FactoryError::AccountDataTooShort
+        );
+        // Write lookup_table field: Option<Pubkey> = 1 byte (Some) + 32 bytes (Pubkey)
+        let lookup_table_key = lookup_table_info.key();
+        let lookup_table_bytes = lookup_table_key.as_ref();
+        require!(
+            lookup_table_bytes.len() == 32,
+            FactoryError::AccountDataCorrupt
+        );
+        require!(
+            actual_data_size >= lookup_table_offset + 33,
+            FactoryError::AccountDataTooShort
+        );
+        mint_mapping_data[lookup_table_offset] = 1; // Some (Option discriminator)
+        mint_mapping_data[lookup_table_offset + 1..lookup_table_offset + 33].copy_from_slice(lookup_table_bytes);
 
         drop(mint_mapping_data);
 
