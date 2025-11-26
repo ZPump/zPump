@@ -450,18 +450,22 @@ async function ensureLookupTableForMint(
     uniqueAddresses.push(factoryState);
   }
 
-  // Create lookup table with factory state as authority
+  // Create lookup table with wallet as authority (to avoid PDA signing issues)
+  // Note: The Rust program doesn't validate lookup table authority matches factory state
+  // Get current slot and blockhash right before creating instruction to minimize staleness
   const recentSlot = await connection.getSlot('confirmed');
   const [createIx, lookupTableAddress] = AddressLookupTableProgram.createLookupTable({
-    authority: factoryState,
+    authority: wallet.publicKey!,
     payer: wallet.publicKey!,
     recentSlot
   });
 
-  const createTx = new Transaction().add(createIx);
-  createTx.feePayer = wallet.publicKey!;
+  // Get fresh blockhash right before sending to minimize staleness
   const createBlockhash = await connection.getLatestBlockhash('confirmed');
+  const createTx = new Transaction();
+  createTx.feePayer = wallet.publicKey!;
   createTx.recentBlockhash = createBlockhash.blockhash;
+  createTx.add(createIx);
 
   const createSignature = await wallet.sendTransaction(createTx, connection, {
     skipPreflight: false
@@ -480,16 +484,18 @@ async function ensureLookupTableForMint(
   for (let i = 0; i < uniqueAddresses.length; i += CHUNK_SIZE) {
     const chunk = uniqueAddresses.slice(i, i + CHUNK_SIZE);
     const extendIx = AddressLookupTableProgram.extendLookupTable({
-      authority: factoryState,
+      authority: wallet.publicKey!,
       payer: wallet.publicKey!,
       lookupTable: lookupTableAddress,
       addresses: chunk
     });
 
-    const extendTx = new Transaction().add(extendIx);
-    extendTx.feePayer = wallet.publicKey!;
+    // Get fresh blockhash right before sending
     const extendBlockhash = await connection.getLatestBlockhash('confirmed');
+    const extendTx = new Transaction();
+    extendTx.feePayer = wallet.publicKey!;
     extendTx.recentBlockhash = extendBlockhash.blockhash;
+    extendTx.add(extendIx);
     
     const extendSignature = await wallet.sendTransaction(extendTx, connection, {
       skipPreflight: false
