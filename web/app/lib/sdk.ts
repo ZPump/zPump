@@ -1465,6 +1465,13 @@ export async function unwrap(params: UnwrapParams): Promise<string> {
     originMintKey
   );
   ensureMintActive(mintMapping);
+  
+  // Read lookup table from MintMapping if not provided
+  let lookupTableAddress: string | undefined = params.lookupTable;
+  if (!lookupTableAddress && mintMapping.lookupTable) {
+    lookupTableAddress = mintMapping.lookupTable.toBase58();
+  }
+  
   if (mintMapping.hasPtkn) {
     const candidate = new PublicKey(mintMapping.ptknMint);
     if (candidate.equals(PublicKey.default)) {
@@ -1658,13 +1665,98 @@ export async function unwrap(params: UnwrapParams): Promise<string> {
     })
   );
 
+  // Collect all addresses used in unwrap instruction
+  const allAddresses: PublicKey[] = [];
+  instructions.forEach(ix => {
+    ix.keys.forEach(key => {
+      if (!allAddresses.some(addr => addr.equals(key.pubkey))) {
+        allAddresses.push(key.pubkey);
+      }
+    });
+  });
+  
   const lookupTables: AddressLookupTableAccount[] = [];
-  if (params.lookupTable) {
+  if (lookupTableAddress) {
     try {
-      const tableKey = new PublicKey(params.lookupTable);
+      const tableKey = new PublicKey(lookupTableAddress);
       const lookupResponse = await connection.getAddressLookupTable(tableKey);
-      if (lookupResponse.value) {
-        lookupTables.push(lookupResponse.value);
+      if (lookupResponse.value && lookupResponse.value.state) {
+        // Verify lookup table is active
+        const deactivationSlot = lookupResponse.value.state.deactivationSlot;
+        const U64_MAX = BigInt('18446744073709551615');
+        const DEVNET_ACTIVE = BigInt('18446744069414584321'); // 0xFFFFFFFF00000001
+        const isActive = deactivationSlot === null || 
+                         (typeof deactivationSlot === 'bigint' && (deactivationSlot === U64_MAX || deactivationSlot >= DEVNET_ACTIVE)) ||
+                         (typeof deactivationSlot === 'number' && (deactivationSlot === Number(U64_MAX) || deactivationSlot >= Number(DEVNET_ACTIVE))) ||
+                         (typeof deactivationSlot === 'string' && (BigInt(deactivationSlot) === U64_MAX || BigInt(deactivationSlot) >= DEVNET_ACTIVE));
+        
+        if (isActive) {
+          const tableAddresses = lookupResponse.value.state.addresses;
+          const hasAllAddresses = allAddresses.every(addr => 
+            tableAddresses.some(tableAddr => tableAddr.equals(addr))
+          );
+          
+          if (hasAllAddresses) {
+            // Use lookup table from MintMapping
+            lookupTables.push(lookupResponse.value);
+            console.info(`[unwrap] Using lookup table from MintMapping: ${lookupTableAddress}`);
+          } else {
+            // Lookup table exists but missing addresses - extend it
+            console.info(`[unwrap] Lookup table from MintMapping missing addresses, extending...`);
+            const missingAddresses = allAddresses.filter(addr => 
+              !tableAddresses.some(tableAddr => tableAddr.equals(addr))
+            );
+            
+            if (missingAddresses.length > 0) {
+              // Get the lookup table authority - use wallet as authority (same as creation)
+              const CHUNK_SIZE = 20;
+              for (let i = 0; i < missingAddresses.length; i += CHUNK_SIZE) {
+                const chunk = missingAddresses.slice(i, i + CHUNK_SIZE);
+                const extendIx = AddressLookupTableProgram.extendLookupTable({
+                  authority: wallet.publicKey!,
+                  payer: wallet.publicKey!,
+                  lookupTable: tableKey,
+                  addresses: chunk
+                });
+
+                const extendTx = new Transaction().add(extendIx);
+                extendTx.feePayer = wallet.publicKey!;
+                const extendBlockhash = await connection.getLatestBlockhash('confirmed');
+                extendTx.recentBlockhash = extendBlockhash.blockhash;
+                
+                const extendSignature = await wallet.sendTransaction(extendTx, connection, {
+                  skipPreflight: false
+                });
+                await waitForSignatureConfirmation(
+                  connection,
+                  extendSignature,
+                  extendBlockhash.blockhash,
+                  extendBlockhash.lastValidBlockHeight
+                );
+              }
+              
+              // Wait a bit for extension to propagate, then reload lookup table after extension
+              await sleep(1000);
+              const updatedResponse = await connection.getAddressLookupTable(tableKey);
+              if (updatedResponse.value) {
+                // Verify all addresses are now in the lookup table
+                const updatedTableAddresses = updatedResponse.value.state.addresses;
+                const hasAllAddressesNow = allAddresses.every(addr => 
+                  updatedTableAddresses.some(tableAddr => tableAddr.equals(addr))
+                );
+                if (hasAllAddressesNow) {
+                  lookupTables.push(updatedResponse.value);
+                  console.info(`[unwrap] Extended lookup table from MintMapping: ${lookupTableAddress}`);
+                } else {
+                  console.warn(`[unwrap] Lookup table still missing addresses after extension, transaction may fail`);
+                  lookupTables.push(updatedResponse.value);
+                }
+              }
+            }
+          }
+        } else {
+          console.warn(`[unwrap] Lookup table from MintMapping is deactivated`);
+        }
       } else {
         console.warn(`[unwrap] lookup table ${tableKey.toBase58()} not found`);
       }
@@ -1727,6 +1819,12 @@ export async function transfer(params: TransferParams): Promise<string> {
     originMintKey
   );
   ensureMintActive(mintMapping);
+  
+  // Read lookup table from MintMapping if not provided
+  let lookupTableAddress: string | undefined = params.lookupTable;
+  if (!lookupTableAddress && mintMapping.lookupTable) {
+    lookupTableAddress = mintMapping.lookupTable.toBase58();
+  }
 
   const expectedFieldCount =
     2 + params.nullifiers.length + params.outputCommitments.length + 2;
@@ -1798,13 +1896,89 @@ export async function transfer(params: TransferParams): Promise<string> {
     })
   );
 
+  // Collect all addresses used in transfer instruction
+  const allAddresses: PublicKey[] = [];
+  instructions.forEach(ix => {
+    ix.keys.forEach(key => {
+      if (!allAddresses.some(addr => addr.equals(key.pubkey))) {
+        allAddresses.push(key.pubkey);
+      }
+    });
+  });
+  
   const lookupTables: AddressLookupTableAccount[] = [];
-  if (params.lookupTable) {
+  if (lookupTableAddress) {
     try {
-      const tableKey = new PublicKey(params.lookupTable);
+      const tableKey = new PublicKey(lookupTableAddress);
       const response = await connection.getAddressLookupTable(tableKey);
-      if (response.value) {
-        lookupTables.push(response.value);
+      if (response.value && response.value.state) {
+        // Verify lookup table is active
+        const deactivationSlot = response.value.state.deactivationSlot;
+        const U64_MAX = BigInt('18446744073709551615');
+        const DEVNET_ACTIVE = BigInt('18446744069414584321'); // 0xFFFFFFFF00000001
+        const isActive = deactivationSlot === null || 
+                         (typeof deactivationSlot === 'bigint' && (deactivationSlot === U64_MAX || deactivationSlot >= DEVNET_ACTIVE)) ||
+                         (typeof deactivationSlot === 'number' && (deactivationSlot === Number(U64_MAX) || deactivationSlot >= Number(DEVNET_ACTIVE))) ||
+                         (typeof deactivationSlot === 'string' && (BigInt(deactivationSlot) === U64_MAX || BigInt(deactivationSlot) >= DEVNET_ACTIVE));
+        
+        if (isActive) {
+          const tableAddresses = response.value.state.addresses;
+          const hasAllAddresses = allAddresses.every(addr => 
+            tableAddresses.some(tableAddr => tableAddr.equals(addr))
+          );
+          
+          if (hasAllAddresses) {
+            // Use lookup table from MintMapping
+            lookupTables.push(response.value);
+            console.info(`[transfer] Using lookup table from MintMapping: ${lookupTableAddress}`);
+          } else {
+            // Lookup table exists but missing addresses - extend it
+            console.info(`[transfer] Lookup table from MintMapping missing addresses, extending...`);
+            const missingAddresses = allAddresses.filter(addr => 
+              !tableAddresses.some(tableAddr => tableAddr.equals(addr))
+            );
+            
+            if (missingAddresses.length > 0) {
+              // Get the lookup table authority - it should be the wallet that created it
+              // Since we use wallet as authority when creating lookup tables, we can extend with wallet
+              const factoryState = deriveFactoryState();
+              const CHUNK_SIZE = 20;
+              for (let i = 0; i < missingAddresses.length; i += CHUNK_SIZE) {
+                const chunk = missingAddresses.slice(i, i + CHUNK_SIZE);
+                const extendIx = AddressLookupTableProgram.extendLookupTable({
+                  authority: wallet.publicKey!, // Use wallet as authority (same as creation)
+                  payer: wallet.publicKey!,
+                  lookupTable: tableKey,
+                  addresses: chunk
+                });
+
+                const extendTx = new Transaction().add(extendIx);
+                extendTx.feePayer = wallet.publicKey!;
+                const extendBlockhash = await connection.getLatestBlockhash('confirmed');
+                extendTx.recentBlockhash = extendBlockhash.blockhash;
+                
+                const extendSignature = await wallet.sendTransaction(extendTx, connection, {
+                  skipPreflight: false
+                });
+                await waitForSignatureConfirmation(
+                  connection,
+                  extendSignature,
+                  extendBlockhash.blockhash,
+                  extendBlockhash.lastValidBlockHeight
+                );
+              }
+              
+              // Reload lookup table after extension
+              const updatedResponse = await connection.getAddressLookupTable(tableKey);
+              if (updatedResponse.value) {
+                lookupTables.push(updatedResponse.value);
+                console.info(`[transfer] Extended lookup table from MintMapping: ${lookupTableAddress}`);
+              }
+            }
+          }
+        } else {
+          console.warn(`[transfer] Lookup table from MintMapping is deactivated`);
+        }
       }
     } catch (error) {
       console.warn('[transfer] failed to load lookup table', error);
@@ -1885,6 +2059,12 @@ export async function transferFrom(params: TransferFromParams): Promise<string> 
     originMintKey
   );
   ensureMintActive(mintMapping);
+  
+  // Read lookup table from MintMapping if not provided
+  let lookupTableAddress: string | undefined = params.lookupTable;
+  if (!lookupTableAddress && mintMapping.lookupTable) {
+    lookupTableAddress = mintMapping.lookupTable.toBase58();
+  }
 
   const expectedFieldCount =
     2 + params.nullifiers.length + params.outputCommitments.length + 2;
@@ -1964,16 +2144,102 @@ export async function transferFrom(params: TransferFromParams): Promise<string> 
     })
   );
 
+  // Collect all addresses used in transferFrom instruction
+  const allAddresses: PublicKey[] = [];
+  instructions.forEach(ix => {
+    ix.keys.forEach(key => {
+      if (!allAddresses.some(addr => addr.equals(key.pubkey))) {
+        allAddresses.push(key.pubkey);
+      }
+    });
+  });
+  
   const lookupTables: AddressLookupTableAccount[] = [];
-  if (params.lookupTable) {
+  if (lookupTableAddress) {
     try {
-      const tableKey = new PublicKey(params.lookupTable);
+      const tableKey = new PublicKey(lookupTableAddress);
       const response = await connection.getAddressLookupTable(tableKey);
-      if (response.value) {
-        lookupTables.push(response.value);
+      if (response.value && response.value.state) {
+        // Verify lookup table is active
+        const deactivationSlot = response.value.state.deactivationSlot;
+        const U64_MAX = BigInt('18446744073709551615');
+        const DEVNET_ACTIVE = BigInt('18446744069414584321'); // 0xFFFFFFFF00000001
+        const isActive = deactivationSlot === null || 
+                         (typeof deactivationSlot === 'bigint' && (deactivationSlot === U64_MAX || deactivationSlot >= DEVNET_ACTIVE)) ||
+                         (typeof deactivationSlot === 'number' && (deactivationSlot === Number(U64_MAX) || deactivationSlot >= Number(DEVNET_ACTIVE))) ||
+                         (typeof deactivationSlot === 'string' && (BigInt(deactivationSlot) === U64_MAX || BigInt(deactivationSlot) >= DEVNET_ACTIVE));
+        
+        if (isActive) {
+          const tableAddresses = response.value.state.addresses;
+          const hasAllAddresses = allAddresses.every(addr => 
+            tableAddresses.some(tableAddr => tableAddr.equals(addr))
+          );
+          
+          if (hasAllAddresses) {
+            // Use lookup table from MintMapping
+            lookupTables.push(response.value);
+            console.info(`[transferFrom] Using lookup table from MintMapping: ${lookupTableAddress}`);
+          } else {
+            // Lookup table exists but missing addresses - extend it
+            console.info(`[transferFrom] Lookup table from MintMapping missing addresses, extending...`);
+            const missingAddresses = allAddresses.filter(addr => 
+              !tableAddresses.some(tableAddr => tableAddr.equals(addr))
+            );
+            
+            if (missingAddresses.length > 0) {
+              // Check if we have authority to extend the lookup table
+              const tableAuthority = response.value.state.authority;
+              const canExtend = tableAuthority && tableAuthority.equals(wallet.publicKey!);
+              
+              if (canExtend) {
+                // Get the lookup table authority - use wallet as authority (same as creation)
+                const CHUNK_SIZE = 20;
+                for (let i = 0; i < missingAddresses.length; i += CHUNK_SIZE) {
+                  const chunk = missingAddresses.slice(i, i + CHUNK_SIZE);
+                  const extendIx = AddressLookupTableProgram.extendLookupTable({
+                    authority: wallet.publicKey!,
+                    payer: wallet.publicKey!,
+                    lookupTable: tableKey,
+                    addresses: chunk
+                  });
+
+                  const extendTx = new Transaction().add(extendIx);
+                  extendTx.feePayer = wallet.publicKey!;
+                  const extendBlockhash = await connection.getLatestBlockhash('confirmed');
+                  extendTx.recentBlockhash = extendBlockhash.blockhash;
+                  
+                  const extendSignature = await wallet.sendTransaction(extendTx, connection, {
+                    skipPreflight: false
+                  });
+                  await waitForSignatureConfirmation(
+                    connection,
+                    extendSignature,
+                    extendBlockhash.blockhash,
+                    extendBlockhash.lastValidBlockHeight
+                  );
+                }
+                
+                // Wait a bit for extension to propagate, then reload lookup table after extension
+                await sleep(1000);
+                const updatedResponse = await connection.getAddressLookupTable(tableKey);
+                if (updatedResponse.value) {
+                  lookupTables.push(updatedResponse.value);
+                  console.info(`[transferFrom] Extended lookup table from MintMapping: ${lookupTableAddress}`);
+                }
+              } else {
+                // Don't have authority to extend, use existing table as-is
+                // Transaction may be too large, but that's expected
+                console.warn(`[transferFrom] Lookup table missing addresses but no authority to extend, using existing table`);
+                lookupTables.push(response.value);
+              }
+            }
+          }
+        } else {
+          console.warn(`[transferFrom] Lookup table from MintMapping is deactivated`);
+        }
       }
     } catch (error) {
-      console.warn('[transfer_from] failed to load lookup table', error);
+      console.warn('[transferFrom] failed to load lookup table', error);
     }
   }
 
