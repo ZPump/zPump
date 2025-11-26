@@ -141,6 +141,8 @@ interface WrapParams extends BaseParams {
   recipient?: string;
   twinMint?: string | null;
   lookupTable?: string;
+  // Optional authority wallet used for privileged lookup table updates (factory authority)
+  lookupTableAuthority?: WalletContextState;
 }
 
 interface UnwrapParams extends BaseParams {
@@ -442,7 +444,8 @@ async function ensureLookupTableForMint(
   wallet: WalletContextState,
   factoryState: PublicKey,
   originMint: PublicKey,
-  addresses: PublicKey[]
+  addresses: PublicKey[],
+  authorityWallet?: WalletContextState
 ): Promise<PublicKey> {
   // Remove duplicates and ensure factory state is included
   const uniqueAddresses = Array.from(new Set(addresses.map(a => a.toBase58()))).map(a => new PublicKey(a));
@@ -586,7 +589,8 @@ async function ensureLookupTableForMint(
   }
 
   // Store lookup table in MintMapping
-  await setLookupTableForMint(connection, wallet, originMint, lookupTableAddress);
+  const authority = authorityWallet ?? wallet;
+  await setLookupTableForMint(connection, authority, originMint, lookupTableAddress);
 
   return lookupTableAddress;
 }
@@ -596,7 +600,7 @@ async function ensureLookupTableForMint(
  */
 export async function setLookupTableForMint(
   connection: Connection,
-  wallet: WalletContextState,
+  authorityWallet: WalletContextState,
   originMint: PublicKey,
   lookupTable: PublicKey
 ): Promise<string> {
@@ -615,7 +619,7 @@ export async function setLookupTableForMint(
     programId: FACTORY_PROGRAM_ID,
     keys: [
       { pubkey: factoryState, isSigner: false, isWritable: true },
-      { pubkey: wallet.publicKey!, isSigner: true, isWritable: false }, // authority doesn't need to be writable
+      { pubkey: authorityWallet.publicKey!, isSigner: true, isWritable: false }, // authority doesn't need to be writable
       { pubkey: mintMapping, isSigner: false, isWritable: true },
       { pubkey: originMint, isSigner: false, isWritable: false },
       { pubkey: lookupTable, isSigner: false, isWritable: false },
@@ -626,20 +630,20 @@ export async function setLookupTableForMint(
 
   const blockhash = await connection.getLatestBlockhash('confirmed');
   const transaction = new Transaction().add(setLookupTableInstruction);
-  transaction.feePayer = wallet.publicKey!;
+  transaction.feePayer = authorityWallet.publicKey!;
   transaction.recentBlockhash = blockhash.blockhash;
   
   // Sign the transaction using signTransaction to match lowlevel-e2e behavior
   // This bypasses the wallet adapter's sendTransaction which might have issues
   let signature: string;
-  if (wallet.signTransaction) {
-    const signedTx = await wallet.signTransaction(transaction);
+  if (authorityWallet.signTransaction) {
+    const signedTx = await authorityWallet.signTransaction(transaction);
     signature = await connection.sendRawTransaction(signedTx.serialize(), {
       skipPreflight: true // Use skipPreflight to avoid simulation issues with stale account data
     });
   } else {
     // Fallback to wallet.sendTransaction if signTransaction is not available
-    signature = await wallet.sendTransaction(transaction, connection, {
+    signature = await authorityWallet.sendTransaction(transaction, connection, {
       skipPreflight: true
     });
   }
@@ -652,8 +656,6 @@ export async function setLookupTableForMint(
   );
   
   return signature;
-
-  return signature;
 }
 
 export async function wrap(params: WrapParams): Promise<string> {
@@ -661,6 +663,7 @@ export async function wrap(params: WrapParams): Promise<string> {
 
   const wallet = params.wallet;
   const connection = params.connection;
+  const lookupTableAuthority = params.lookupTableAuthority ?? wallet;
 
   const originMintKey = new PublicKey(params.originMint);
   const poolState = new PublicKey(params.poolId);
@@ -1118,7 +1121,8 @@ export async function wrap(params: WrapParams): Promise<string> {
         wallet,
         factoryState,
         originMintKey,
-        allAddresses
+        allAddresses,
+        lookupTableAuthority
       );
       lookupTableAddress = newLookupTable.toBase58();
       
