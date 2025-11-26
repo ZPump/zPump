@@ -628,19 +628,30 @@ export async function setLookupTableForMint(
   const transaction = new Transaction().add(setLookupTableInstruction);
   transaction.feePayer = wallet.publicKey!;
   transaction.recentBlockhash = blockhash.blockhash;
-
-  // Use skipPreflight: true for set_lookup_table to avoid simulation issues
-  // Similar to how lowlevel-e2e handles this
-  const signature = await wallet.sendTransaction(transaction, connection, {
-    skipPreflight: true
-  });
-
+  
+  // Sign the transaction using signTransaction to match lowlevel-e2e behavior
+  // This bypasses the wallet adapter's sendTransaction which might have issues
+  let signature: string;
+  if (wallet.signTransaction) {
+    const signedTx = await wallet.signTransaction(transaction);
+    signature = await connection.sendRawTransaction(signedTx.serialize(), {
+      skipPreflight: true // Use skipPreflight to avoid simulation issues with stale account data
+    });
+  } else {
+    // Fallback to wallet.sendTransaction if signTransaction is not available
+    signature = await wallet.sendTransaction(transaction, connection, {
+      skipPreflight: true
+    });
+  }
+  
   await waitForSignatureConfirmation(
     connection,
     signature,
     blockhash.blockhash,
     blockhash.lastValidBlockHeight
   );
+  
+  return signature;
 
   return signature;
 }
