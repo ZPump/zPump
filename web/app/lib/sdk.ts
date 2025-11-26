@@ -1062,16 +1062,21 @@ export async function wrap(params: WrapParams): Promise<string> {
             );
             
             if (missingAddresses.length > 0) {
-              // Extend lookup table with missing addresses (in chunks of 20)
-              const CHUNK_SIZE = 20;
-              for (let i = 0; i < missingAddresses.length; i += CHUNK_SIZE) {
-                const chunk = missingAddresses.slice(i, i + CHUNK_SIZE);
-                const extendIx = AddressLookupTableProgram.extendLookupTable({
-                  authority: factoryState,
-                  payer: wallet.publicKey!,
-                  lookupTable: tableKey,
-                  addresses: chunk
-                });
+              // Check the lookup table authority - should be the wallet that created it
+              const tableAuthority = lookupResponse.value.state.authority;
+              const canExtend = tableAuthority && tableAuthority.equals(wallet.publicKey!);
+              
+              if (canExtend) {
+                // Extend lookup table with missing addresses (in chunks of 20)
+                const CHUNK_SIZE = 20;
+                for (let i = 0; i < missingAddresses.length; i += CHUNK_SIZE) {
+                  const chunk = missingAddresses.slice(i, i + CHUNK_SIZE);
+                  const extendIx = AddressLookupTableProgram.extendLookupTable({
+                    authority: wallet.publicKey!,
+                    payer: wallet.publicKey!,
+                    lookupTable: tableKey,
+                    addresses: chunk
+                  });
 
                 const extendTx = new Transaction().add(extendIx);
                 extendTx.feePayer = wallet.publicKey!;
@@ -1089,12 +1094,19 @@ export async function wrap(params: WrapParams): Promise<string> {
                 );
               }
               
-              // Reload lookup table after extension
+              // Wait a bit for extension to propagate, then reload lookup table after extension
+              await sleep(1000);
               const updatedResponse = await connection.getAddressLookupTable(tableKey);
               if (updatedResponse.value) {
                 lookupTableAddress = tableKey.toBase58();
                 lookupTables.push(updatedResponse.value);
                 console.info(`[wrap] Extended lookup table from MintMapping: ${lookupTableAddress}`);
+              }
+              } else {
+                // Don't have authority to extend, use existing table as-is
+                console.warn(`[wrap] Lookup table missing addresses but no authority to extend, using existing table`);
+                lookupTableAddress = tableKey.toBase58();
+                lookupTables.push(lookupResponse.value);
               }
             }
           }
@@ -1708,16 +1720,21 @@ export async function unwrap(params: UnwrapParams): Promise<string> {
             );
             
             if (missingAddresses.length > 0) {
-              // Get the lookup table authority - use wallet as authority (same as creation)
-              const CHUNK_SIZE = 20;
-              for (let i = 0; i < missingAddresses.length; i += CHUNK_SIZE) {
-                const chunk = missingAddresses.slice(i, i + CHUNK_SIZE);
-                const extendIx = AddressLookupTableProgram.extendLookupTable({
-                  authority: wallet.publicKey!,
-                  payer: wallet.publicKey!,
-                  lookupTable: tableKey,
-                  addresses: chunk
-                });
+              // Check if we have authority to extend the lookup table
+              const tableAuthority = lookupResponse.value.state.authority;
+              const canExtend = tableAuthority && tableAuthority.equals(wallet.publicKey!);
+              
+              if (canExtend) {
+                // Get the lookup table authority - use wallet as authority (same as creation)
+                const CHUNK_SIZE = 20;
+                for (let i = 0; i < missingAddresses.length; i += CHUNK_SIZE) {
+                  const chunk = missingAddresses.slice(i, i + CHUNK_SIZE);
+                  const extendIx = AddressLookupTableProgram.extendLookupTable({
+                    authority: wallet.publicKey!,
+                    payer: wallet.publicKey!,
+                    lookupTable: tableKey,
+                    addresses: chunk
+                  });
 
                 const extendTx = new Transaction().add(extendIx);
                 extendTx.feePayer = wallet.publicKey!;
@@ -1751,6 +1768,11 @@ export async function unwrap(params: UnwrapParams): Promise<string> {
                   console.warn(`[unwrap] Lookup table still missing addresses after extension, transaction may fail`);
                   lookupTables.push(updatedResponse.value);
                 }
+              }
+              } else {
+                // Don't have authority to extend, use existing table as-is
+                console.warn(`[unwrap] Lookup table missing addresses but no authority to extend, using existing table`);
+                lookupTables.push(lookupResponse.value);
               }
             }
           }
@@ -1939,18 +1961,22 @@ export async function transfer(params: TransferParams): Promise<string> {
             );
             
             if (missingAddresses.length > 0) {
-              // Get the lookup table authority - it should be the wallet that created it
-              // Since we use wallet as authority when creating lookup tables, we can extend with wallet
-              const factoryState = deriveFactoryState();
-              const CHUNK_SIZE = 20;
-              for (let i = 0; i < missingAddresses.length; i += CHUNK_SIZE) {
-                const chunk = missingAddresses.slice(i, i + CHUNK_SIZE);
-                const extendIx = AddressLookupTableProgram.extendLookupTable({
-                  authority: wallet.publicKey!, // Use wallet as authority (same as creation)
-                  payer: wallet.publicKey!,
-                  lookupTable: tableKey,
-                  addresses: chunk
-                });
+              // Check if we have authority to extend the lookup table
+              const tableAuthority = response.value.state.authority;
+              const canExtend = tableAuthority && tableAuthority.equals(wallet.publicKey!);
+              
+              if (canExtend) {
+                // Get the lookup table authority - it should be the wallet that created it
+                // Since we use wallet as authority when creating lookup tables, we can extend with wallet
+                const CHUNK_SIZE = 20;
+                for (let i = 0; i < missingAddresses.length; i += CHUNK_SIZE) {
+                  const chunk = missingAddresses.slice(i, i + CHUNK_SIZE);
+                  const extendIx = AddressLookupTableProgram.extendLookupTable({
+                    authority: wallet.publicKey!, // Use wallet as authority (same as creation)
+                    payer: wallet.publicKey!,
+                    lookupTable: tableKey,
+                    addresses: chunk
+                  });
 
                 const extendTx = new Transaction().add(extendIx);
                 extendTx.feePayer = wallet.publicKey!;
@@ -1968,11 +1994,17 @@ export async function transfer(params: TransferParams): Promise<string> {
                 );
               }
               
-              // Reload lookup table after extension
+              // Wait a bit for extension to propagate, then reload lookup table after extension
+              await sleep(1000);
               const updatedResponse = await connection.getAddressLookupTable(tableKey);
               if (updatedResponse.value) {
                 lookupTables.push(updatedResponse.value);
                 console.info(`[transfer] Extended lookup table from MintMapping: ${lookupTableAddress}`);
+              }
+              } else {
+                // Don't have authority to extend, use existing table as-is
+                console.warn(`[transfer] Lookup table missing addresses but no authority to extend, using existing table`);
+                lookupTables.push(response.value);
               }
             }
           }
