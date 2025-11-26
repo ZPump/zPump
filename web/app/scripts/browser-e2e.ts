@@ -642,16 +642,17 @@ function createWalletAdapter(payer: Keypair, connection: Connection): WalletLike
     visible: false,
     setVisible: () => {},
     supportedTransactionVersions: null,
-    async sendTransaction(transaction: Transaction | VersionedTransaction): Promise<string> {
+    async sendTransaction(transaction: Transaction | VersionedTransaction, connection: Connection, options?: { skipPreflight?: boolean }): Promise<string> {
       if (transaction instanceof VersionedTransaction) {
         transaction.sign([payer]);
-        return connection.sendRawTransaction(transaction.serialize(), { skipPreflight: false });
+        return connection.sendRawTransaction(transaction.serialize(), { skipPreflight: options?.skipPreflight ?? false });
       }
-      transaction.partialSign(payer);
-      return connection.sendRawTransaction(transaction.serialize(), { skipPreflight: false });
+      // Fully sign the transaction (not partialSign) to ensure it's valid
+      transaction.sign(payer);
+      return connection.sendRawTransaction(transaction.serialize(), { skipPreflight: options?.skipPreflight ?? false });
     },
     async signTransaction(transaction: Transaction) {
-      transaction.partialSign(payer);
+      transaction.sign(payer);
       return transaction;
     },
     async signAllTransactions(transactions: (Transaction | VersionedTransaction)[]) {
@@ -659,7 +660,7 @@ function createWalletAdapter(payer: Keypair, connection: Connection): WalletLike
         if (tx instanceof VersionedTransaction) {
           tx.sign([payer]);
         } else {
-          tx.partialSign(payer);
+          tx.sign(payer);
         }
       });
       return transactions;
