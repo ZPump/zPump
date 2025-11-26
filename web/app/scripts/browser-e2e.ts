@@ -935,6 +935,7 @@ async function main() {
     const signature = await wrap({
       connection,
       wallet: ownerAdapter,
+      lookupTableAuthority: createWalletAdapter(adminAuthority, connection),
       originMint: mintConfig.originMint,
       amount: noteAmount,
       poolId,
