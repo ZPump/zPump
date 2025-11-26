@@ -6,6 +6,7 @@ if (typeof globalThis.Buffer === 'undefined') {
 }
 import {
   AddressLookupTableAccount,
+  AddressLookupTableProgram,
   ComputeBudgetProgram,
   Connection,
   Keypair,
@@ -283,17 +284,52 @@ function decodeProofPayload(payload: ProofResponse | null): DecodedProofPayload 
   };
 }
 
+export interface MintMappingAccount {
+  originMint: PublicKey;
+  ptknMint: PublicKey;
+  hasPtkn: boolean;
+  status: number;
+  decimals: number;
+  features: number;
+  feeBpsOverride: number;
+  hasFeeOverride: boolean;
+  bump: number;
+  isNativeZtoken: boolean;
+  lookupTable?: PublicKey | null;
+}
+
 export async function fetchMintMappingAccount(
   connection: Connection,
   originMint: PublicKey
-): Promise<{ key: PublicKey; decoded: any }> {
+): Promise<{ key: PublicKey; decoded: MintMappingAccount }> {
   const key = deriveMintMapping(originMint);
   const account = await connection.getAccountInfo(key, 'confirmed');
   if (!account) {
     throw new Error('Mint mapping account missing on chain');
   }
-  const decoded = factoryCoder.accounts.decode('MintMapping', account.data);
-  return { key, decoded };
+  
+  // Handle backward compatibility: old accounts are 85 bytes, new are 118 bytes
+  // If account is old size, lookup_table will be undefined
+  const decoded = factoryCoder.accounts.decode('MintMapping', account.data) as any;
+  
+  // Normalize field names (Anchor uses snake_case, we use camelCase)
+  const normalized: MintMappingAccount = {
+    originMint: new PublicKey(decoded.originMint || decoded.origin_mint),
+    ptknMint: new PublicKey(decoded.ptknMint || decoded.ptkn_mint),
+    hasPtkn: decoded.hasPtkn ?? decoded.has_ptkn ?? false,
+    status: decoded.status ?? 0,
+    decimals: decoded.decimals ?? 0,
+    features: decoded.features ?? 0,
+    feeBpsOverride: decoded.feeBpsOverride ?? decoded.fee_bps_override ?? 0,
+    hasFeeOverride: decoded.hasFeeOverride ?? decoded.has_fee_override ?? false,
+    bump: decoded.bump ?? 0,
+    isNativeZtoken: decoded.isNativeZtoken ?? decoded.is_native_ztoken ?? false,
+    lookupTable: decoded.lookupTable || decoded.lookup_table 
+      ? new PublicKey(decoded.lookupTable || decoded.lookup_table)
+      : null
+  };
+  
+  return { key, decoded: normalized };
 }
 
 function ensureMintActive(mapping: { status?: number }): void {
@@ -395,6 +431,160 @@ async function waitForPendingShieldInactive(
   }
   
   throw new Error(`pending_shield did not become inactive within ${timeoutMs}ms`);
+}
+
+
+/**
+ * Creates a lookup table with factory state as authority and stores it in MintMapping
+ */
+async function ensureLookupTableForMint(
+  connection: Connection,
+  wallet: WalletContextState,
+  factoryState: PublicKey,
+  originMint: PublicKey,
+  addresses: PublicKey[]
+): Promise<PublicKey> {
+  // Remove duplicates and ensure factory state is included
+  const uniqueAddresses = Array.from(new Set(addresses.map(a => a.toBase58()))).map(a => new PublicKey(a));
+  if (!uniqueAddresses.some(a => a.equals(factoryState))) {
+    uniqueAddresses.push(factoryState);
+  }
+
+  // Create lookup table with factory state as authority
+  const recentSlot = await connection.getSlot('confirmed');
+  const [createIx, lookupTableAddress] = AddressLookupTableProgram.createLookupTable({
+    authority: factoryState,
+    payer: wallet.publicKey!,
+    recentSlot
+  });
+
+  const createTx = new Transaction().add(createIx);
+  createTx.feePayer = wallet.publicKey!;
+  const createBlockhash = await connection.getLatestBlockhash('confirmed');
+  createTx.recentBlockhash = createBlockhash.blockhash;
+
+  const createSignature = await wallet.sendTransaction(createTx, connection, {
+    skipPreflight: false
+  });
+  await waitForSignatureConfirmation(
+    connection,
+    createSignature,
+    createBlockhash.blockhash,
+    createBlockhash.lastValidBlockHeight
+  );
+
+  const creationSlot = recentSlot;
+
+  // Extend lookup table with addresses (in chunks of 20)
+  const CHUNK_SIZE = 20;
+  for (let i = 0; i < uniqueAddresses.length; i += CHUNK_SIZE) {
+    const chunk = uniqueAddresses.slice(i, i + CHUNK_SIZE);
+    const extendIx = AddressLookupTableProgram.extendLookupTable({
+      authority: factoryState,
+      payer: wallet.publicKey!,
+      lookupTable: lookupTableAddress,
+      addresses: chunk
+    });
+
+    const extendTx = new Transaction().add(extendIx);
+    extendTx.feePayer = wallet.publicKey!;
+    const extendBlockhash = await connection.getLatestBlockhash('confirmed');
+    extendTx.recentBlockhash = extendBlockhash.blockhash;
+    
+    const extendSignature = await wallet.sendTransaction(extendTx, connection, {
+      skipPreflight: false
+    });
+    await waitForSignatureConfirmation(
+      connection,
+      extendSignature,
+      extendBlockhash.blockhash,
+      extendBlockhash.lastValidBlockHeight
+    );
+  }
+
+  // Wait for lookup table to be activated
+  let activated = false;
+  let attempts = 0;
+  const maxAttempts = 60; // 30 seconds max
+
+  console.info(`[ensureLookupTableForMint] Created lookup table at slot ${creationSlot}, waiting for activation...`);
+  
+  while (!activated && attempts < maxAttempts) {
+    await sleep(500);
+    attempts++;
+    
+    try {
+      const currentSlot = await connection.getSlot('confirmed');
+      const tableResponse = await connection.getAddressLookupTable(lookupTableAddress);
+      
+      if (tableResponse.value && tableResponse.value.state) {
+        if (currentSlot >= creationSlot + 1 && tableResponse.value.state.deactivationSlot === null) {
+          activated = true;
+          console.info(`[ensureLookupTableForMint] Lookup table activated at slot ${currentSlot}`);
+        } else if (attempts % 10 === 0) {
+          console.info(`[ensureLookupTableForMint] Waiting for activation... current slot: ${currentSlot}, need: ${creationSlot + 1}`);
+        }
+      }
+    } catch (error) {
+      if (attempts % 10 === 0) {
+        console.info(`[ensureLookupTableForMint] Waiting for lookup table to be available (attempt ${attempts}/${maxAttempts})...`);
+      }
+    }
+  }
+
+  if (!activated) {
+    throw new Error(`Lookup table not activated within ${maxAttempts * 0.5} seconds`);
+  }
+
+  // Store lookup table in MintMapping
+  await setLookupTableForMint(connection, wallet, originMint, lookupTableAddress);
+
+  return lookupTableAddress;
+}
+
+/**
+ * Sets the lookup table address in MintMapping via set_lookup_table instruction
+ */
+export async function setLookupTableForMint(
+  connection: Connection,
+  wallet: WalletContextState,
+  originMint: PublicKey,
+  lookupTable: PublicKey
+): Promise<string> {
+  const factoryState = deriveFactoryState();
+  const mintMapping = deriveMintMapping(originMint);
+
+  const setLookupTableData = factoryCoder.instruction.encode('set_lookup_table', {});
+  const setLookupTableInstruction = new TransactionInstruction({
+    programId: FACTORY_PROGRAM_ID,
+    keys: [
+      { pubkey: factoryState, isSigner: false, isWritable: true },
+      { pubkey: wallet.publicKey!, isSigner: true, isWritable: true },
+      { pubkey: mintMapping, isSigner: false, isWritable: true },
+      { pubkey: originMint, isSigner: false, isWritable: false },
+      { pubkey: lookupTable, isSigner: false, isWritable: false },
+      { pubkey: SystemProgram.programId, isSigner: false, isWritable: false }
+    ],
+    data: setLookupTableData
+  });
+
+  const blockhash = await connection.getLatestBlockhash('confirmed');
+  const transaction = new Transaction().add(setLookupTableInstruction);
+  transaction.feePayer = wallet.publicKey!;
+  transaction.recentBlockhash = blockhash.blockhash;
+
+  const signature = await wallet.sendTransaction(transaction, connection, {
+    skipPreflight: false
+  });
+
+  await waitForSignatureConfirmation(
+    connection,
+    signature,
+    blockhash.blockhash,
+    blockhash.lastValidBlockHeight
+  );
+
+  return signature;
 }
 
 export async function wrap(params: WrapParams): Promise<string> {
@@ -722,25 +912,161 @@ export async function wrap(params: WrapParams): Promise<string> {
     data: checkInvariantData
   });
 
+  // Read lookup table from MintMapping
   const lookupTables: AddressLookupTableAccount[] = [];
-  if (params.lookupTable) {
-    try {
-      const tableKey = new PublicKey(params.lookupTable);
-      const lookupResponse = await connection.getAddressLookupTable(tableKey);
-      if (lookupResponse.value) {
-        lookupTables.push(lookupResponse.value);
-      } else {
-        console.warn(`[wrap] lookup table ${tableKey.toBase58()} not found`);
-      }
-    } catch (error) {
-      console.warn('[wrap] failed to resolve lookup table', error);
-    }
-  } else {
-    console.warn('[wrap] no lookup table provided');
+  let lookupTableAddress: string | undefined = params.lookupTable;
+  const factoryState = deriveFactoryState();
+
+  // Collect all addresses that will be used in the transaction
+  const allAddresses: PublicKey[] = [
+    poolState,
+    hookConfig,
+    hookWhitelist,
+    nullifierSet,
+    commitmentTreeKey,
+    noteLedger,
+    vaultState,
+    vaultTokenAccount,
+    depositorTokenAccount,
+    VERIFIER_PROGRAM_ID,
+    verifyingKey,
+    shieldClaim,
+    wallet.publicKey!,
+    originMintKey,
+    mintMappingKey,
+    VAULT_PROGRAM_ID,
+    TOKEN_PROGRAM_ID,
+    SystemProgram.programId,
+    SYSVAR_RENT_PUBKEY
+  ];
+  
+  if (twinMintKey) {
+    allAddresses.push(twinMintKey);
+  }
+  
+  // Add any addresses from pre-instructions
+  if (instructions.length > 0) {
+    instructions.forEach(ix => {
+      ix.keys.forEach(key => {
+        if (!allAddresses.some(addr => addr.equals(key.pubkey))) {
+          allAddresses.push(key.pubkey);
+        }
+      });
+    });
   }
 
+  // Check if lookup table is stored in MintMapping
+  if (mintMapping.lookupTable) {
+    try {
+      const tableKey = mintMapping.lookupTable;
+      const lookupResponse = await connection.getAddressLookupTable(tableKey);
+      if (lookupResponse.value && lookupResponse.value.state) {
+        // Verify lookup table is active
+        // Handle all activation formats: null, u64::MAX, and devnet value (0xFFFFFFFF00000001)
+        const deactivationSlot = lookupResponse.value.state.deactivationSlot;
+        const U64_MAX = BigInt('18446744073709551615');
+        const DEVNET_ACTIVE = BigInt('18446744069414584321'); // 0xFFFFFFFF00000001
+        const isActive = deactivationSlot === null || 
+                         (typeof deactivationSlot === 'bigint' && (deactivationSlot === U64_MAX || deactivationSlot >= DEVNET_ACTIVE)) ||
+                         (typeof deactivationSlot === 'number' && (deactivationSlot === Number(U64_MAX) || deactivationSlot >= Number(DEVNET_ACTIVE))) ||
+                         (typeof deactivationSlot === 'string' && (BigInt(deactivationSlot) === U64_MAX || BigInt(deactivationSlot) >= DEVNET_ACTIVE));
+        
+        if (isActive) {
+          const tableAddresses = lookupResponse.value.state.addresses;
+          const hasAllAddresses = allAddresses.every(addr => 
+            tableAddresses.some(tableAddr => tableAddr.equals(addr))
+          );
+          
+          if (hasAllAddresses) {
+            // Use lookup table from MintMapping
+            lookupTableAddress = tableKey.toBase58();
+            lookupTables.push(lookupResponse.value);
+            console.info(`[wrap] Using lookup table from MintMapping: ${lookupTableAddress}`);
+          } else {
+            // Lookup table exists but missing addresses - extend it
+            console.info(`[wrap] Lookup table from MintMapping missing addresses, extending...`);
+            const missingAddresses = allAddresses.filter(addr => 
+              !tableAddresses.some(tableAddr => tableAddr.equals(addr))
+            );
+            
+            if (missingAddresses.length > 0) {
+              // Extend lookup table with missing addresses (in chunks of 20)
+              const CHUNK_SIZE = 20;
+              for (let i = 0; i < missingAddresses.length; i += CHUNK_SIZE) {
+                const chunk = missingAddresses.slice(i, i + CHUNK_SIZE);
+                const extendIx = AddressLookupTableProgram.extendLookupTable({
+                  authority: factoryState,
+                  payer: wallet.publicKey!,
+                  lookupTable: tableKey,
+                  addresses: chunk
+                });
+
+                const extendTx = new Transaction().add(extendIx);
+                extendTx.feePayer = wallet.publicKey!;
+                const extendBlockhash = await connection.getLatestBlockhash('confirmed');
+                extendTx.recentBlockhash = extendBlockhash.blockhash;
+                
+                const extendSignature = await wallet.sendTransaction(extendTx, connection, {
+                  skipPreflight: false
+                });
+                await waitForSignatureConfirmation(
+                  connection,
+                  extendSignature,
+                  extendBlockhash.blockhash,
+                  extendBlockhash.lastValidBlockHeight
+                );
+              }
+              
+              // Reload lookup table after extension
+              const updatedResponse = await connection.getAddressLookupTable(tableKey);
+              if (updatedResponse.value) {
+                lookupTableAddress = tableKey.toBase58();
+                lookupTables.push(updatedResponse.value);
+                console.info(`[wrap] Extended lookup table from MintMapping: ${lookupTableAddress}`);
+              }
+            }
+          }
+        } else {
+          console.warn(`[wrap] Lookup table from MintMapping is deactivated, creating new one...`);
+          lookupTableAddress = undefined;
+        }
+      } else {
+        console.warn(`[wrap] Lookup table from MintMapping not found, creating new one...`);
+        lookupTableAddress = undefined;
+      }
+    } catch (error) {
+      console.warn('[wrap] Failed to load lookup table from MintMapping:', error);
+      lookupTableAddress = undefined;
+    }
+  }
+
+  // If no lookup table available, create one and store in MintMapping
   if (lookupTables.length === 0) {
-    console.warn('[wrap] proceeding without lookup tables; transaction size may exceed limit');
+    console.info('[wrap] No lookup table in MintMapping, creating new one...');
+    try {
+      const newLookupTable = await ensureLookupTableForMint(
+        connection,
+        wallet,
+        factoryState,
+        originMintKey,
+        allAddresses
+      );
+      lookupTableAddress = newLookupTable.toBase58();
+      
+      // Load the newly created lookup table
+      const lookupResponse = await connection.getAddressLookupTable(newLookupTable);
+      if (lookupResponse.value) {
+        lookupTables.push(lookupResponse.value);
+        console.info(`[wrap] Successfully created and stored lookup table in MintMapping: ${lookupTableAddress}`);
+      } else {
+        throw new Error('Failed to load newly created lookup table');
+      }
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      console.error('[wrap] Failed to create lookup table:', errorMessage);
+      console.error('[wrap] Error details:', error);
+      throw new Error(`Failed to create lookup table: ${errorMessage}. Transaction cannot proceed without it.`);
+    }
   }
 
   let latestBlockhash = await connection.getLatestBlockhash('confirmed');
@@ -1670,23 +1996,70 @@ export async function revokeSplTokenApproval(params: RevokeSplTokenParams): Prom
   return signature;
 }
 
+// Cache and throttle for getTokenMetadata to prevent excessive getAccountInfo calls
+interface MetadataCacheEntry {
+  data: { name: string; symbol: string; uri: string } | null;
+  timestamp: number;
+}
+
+const metadataCache = new Map<string, MetadataCacheEntry>();
+const metadataThrottle = new Map<string, Promise<{ name: string; symbol: string; uri: string } | null>>();
+const CACHE_TTL_MS = 5_000; // Cache for 5 seconds
+const THROTTLE_WINDOW_MS = 5_000; // Max once every 5 seconds per mint
+
+function getCacheKey(mint: PublicKey): string {
+  return mint.toBase58();
+}
+
 export async function getTokenMetadata(connection: Connection, mint: PublicKey): Promise<{ name: string; symbol: string; uri: string } | null> {
-  try {
-    const metadataKey = deriveTokenMetadata(mint);
-    const account = await connection.getAccountInfo(metadataKey, 'confirmed');
-    if (!account) {
-      return null;
-    }
-    const decoded = factoryCoder.accounts.decode('TokenMetadata', account.data);
-    return {
-      name: decoded.name,
-      symbol: decoded.symbol,
-      uri: decoded.uri
-    };
-  } catch (error) {
-    console.warn('[getTokenMetadata] Failed to fetch metadata:', error);
-    return null;
+  const cacheKey = getCacheKey(mint);
+  const now = Date.now();
+  
+  // Check cache first
+  const cached = metadataCache.get(cacheKey);
+  if (cached && (now - cached.timestamp) < CACHE_TTL_MS) {
+    return cached.data;
   }
+  
+  // Check if there's already a pending request for this mint
+  const pending = metadataThrottle.get(cacheKey);
+  if (pending) {
+    return pending;
+  }
+  
+  // Create new request
+  const fetchPromise = (async () => {
+    try {
+      const metadataKey = deriveTokenMetadata(mint);
+      const account = await connection.getAccountInfo(metadataKey, 'confirmed');
+      if (!account) {
+        const result: { name: string; symbol: string; uri: string } | null = null;
+        metadataCache.set(cacheKey, { data: result, timestamp: now });
+        return result;
+      }
+      const decoded = factoryCoder.accounts.decode('TokenMetadata', account.data);
+      const result = {
+        name: decoded.name,
+        symbol: decoded.symbol,
+        uri: decoded.uri
+      };
+      metadataCache.set(cacheKey, { data: result, timestamp: now });
+      return result;
+    } catch (error) {
+      console.warn('[getTokenMetadata] Failed to fetch metadata:', error);
+      const result: { name: string; symbol: string; uri: string } | null = null;
+      metadataCache.set(cacheKey, { data: result, timestamp: now });
+      return result;
+    } finally {
+      // Remove from throttle map after a delay to allow throttling
+      setTimeout(() => {
+        metadataThrottle.delete(cacheKey);
+      }, THROTTLE_WINDOW_MS);
+    }
+  })();
+  
+  metadataThrottle.set(cacheKey, fetchPromise);
+  return fetchPromise;
 }
 
 export async function resolvePublicKey(maybeKey: string | undefined, fallback: PublicKey): Promise<PublicKey> {

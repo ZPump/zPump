@@ -12,15 +12,22 @@ import {
   FormLabel,
   Heading,
   HStack,
+  Icon,
+  IconButton,
   Input,
+  InputGroup,
+  InputLeftElement,
   NumberInput,
   NumberInputField,
   Select,
   Stack,
   Switch,
   Text,
-  useBoolean
+  Tooltip,
+  useBoolean,
+  VStack
 } from '@chakra-ui/react';
+import { X } from 'lucide-react';
 import { useConnection, useWallet } from '@solana/wallet-adapter-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -28,7 +35,8 @@ import {
   AccountLayout,
   TOKEN_PROGRAM_ID,
   TOKEN_2022_PROGRAM_ID,
-  getAssociatedTokenAddress
+  getAssociatedTokenAddress,
+  getMint
 } from '@solana/spl-token';
 import { LAMPORTS_PER_SOL, PublicKey, SendTransactionError } from '@solana/web3.js';
 import type { MintConfig } from '../../config/mints';
@@ -38,11 +46,13 @@ import {
   unwrap as unwrapSdk,
   resolvePublicKey,
   fetchMintMappingAccount,
+  getTokenMetadata,
   MINT_STATUS
 } from '../../lib/sdk';
 import { IndexerClient, IndexerNote } from '../../lib/indexerClient';
 import { getCachedRoots, setCachedRoots, getCachedNullifiers, setCachedNullifiers } from '../../lib/indexerCache';
 import { poseidonHashMany } from '../../lib/onchain/poseidon';
+import { derivePoolState } from '../../lib/onchain/pdas';
 import type { StoredNoteRecord } from '../../lib/notes/storage';
 import { readStoredNotes, writeStoredNotes } from '../../lib/notes/storage';
 import { formatBaseUnitsToUi } from '../../lib/format';
@@ -81,10 +91,13 @@ interface TokenOption {
   balance: bigint;
   displayBalance: string;
   symbol: string;
+  name?: string;
+  image?: string;
   decimals: number;
   disabled: boolean;
   zTokenMint?: string;
   isFrozen: boolean;
+  isOwned: boolean;
 }
 
 const createRandomSeed = () => Math.floor(Math.random() * 1_000_000).toString();
@@ -217,8 +230,29 @@ export function ConvertForm() {
   const [mintStatusError, setMintStatusError] = useState<string | null>(null);
 
   const [tokenOptions, setTokenOptions] = useState<TokenOption[]>([]);
+  const [tokenSearchQuery, setTokenSearchQuery] = useState<string>('');
+  const [isTokenDropdownOpen, setIsTokenDropdownOpen] = useState(false);
+  const [pastedMint, setPastedMint] = useState<string>('');
+  const [pastedMintLoading, setPastedMintLoading] = useState(false);
+  const [pastedMintError, setPastedMintError] = useState<string | null>(null);
+  const [customMints, setCustomMints] = useState<Map<string, { symbol: string; decimals: number; name?: string; image?: string; lookupTable?: string }>>(new Map());
+  const [lookupTableCache, setLookupTableCache] = useState<Map<string, string>>(new Map());
+  const [tokenMetadataMap, setTokenMetadataMap] = useState<Record<string, { name: string; symbol: string; image?: string }>>({});
+  const [selectedTokenDisplayText, setSelectedTokenDisplayText] = useState<string>('');
   const originMint = tokenSelection.originMint;
   const tokenVariant = tokenSelection.variant;
+
+  // Debug logging
+  useEffect(() => {
+    console.log('🔍 TOKEN SELECTION STATE:', { originMint, tokenVariant, isTokenDropdownOpen, shouldShowBadge: originMint && !isTokenDropdownOpen });
+  }, [originMint, tokenVariant, isTokenDropdownOpen]);
+
+  // Force close dropdown when token is selected
+  useEffect(() => {
+    if (originMint) {
+      setIsTokenDropdownOpen(false);
+    }
+  }, [originMint]);
 
   const mintConfig = useMemo<MintConfig | undefined>(
     () => mints.find((mint) => mint.originMint === originMint),
@@ -227,15 +261,10 @@ export function ConvertForm() {
 
   const decimals = mintConfig?.decimals ?? 0;
 
-  const zTokenSymbol = useMemo(() => `z${mintConfig?.symbol ?? 'TOKEN'}`, [mintConfig?.symbol]);
-  const redeemDisplaySymbol = useMemo(
-    () => (mode === 'to-private' ? zTokenSymbol : mintConfig?.symbol ?? 'TOKEN'),
-    [mode, zTokenSymbol, mintConfig?.symbol]
-  );
-
   const proofClient = useMemo(() => new ProofClient(), []);
   const indexerClient = useMemo(() => new IndexerClient(), []);
   const mountedRef = useRef(true);
+  const selectingTokenRef = useRef(false);
 
   const requestAutoSolAirdrop = useCallback(async () => {
     if (!wallet.publicKey) {
@@ -328,26 +357,56 @@ export function ConvertForm() {
       return [];
     }
 
-    const buildOptions = (publicBalances: Map<string, bigint>, privateBalances: Map<string, bigint>) => {
+    const buildOptions = (publicBalances: Map<string, bigint>, privateBalances: Map<string, bigint>, mintsToUse: Map<string, { symbol: string; decimals: number; name?: string; image?: string }> = customMints) => {
       const walletConnected = Boolean(walletKey);
       const options: TokenOption[] = [];
+      
+      // Add custom mints (pasted mints and auto-detected wallet tokens)
+      mintsToUse.forEach((customMint, mintAddress) => {
+        const publicBalance = publicBalances.get(mintAddress) ?? 0n;
+        const publicDisplay = formatBaseUnitsToUi(publicBalance, customMint.decimals);
+        const status = mintStatuses[mintAddress];
+        const isMintFrozen = status === MINT_STATUS.FROZEN;
+        const freezeSuffix = isMintFrozen ? ' — Frozen by governance' : '';
+        const metadata = tokenMetadataMap[mintAddress];
+        options.push({
+          originMint: mintAddress,
+          variant: 'public',
+          label: `${customMint.name || customMint.symbol} (${customMint.symbol}) — ${publicDisplay}${freezeSuffix}`,
+          balance: publicBalance,
+          displayBalance: publicDisplay,
+          symbol: customMint.symbol,
+          name: customMint.name || metadata?.name,
+          image: customMint.image || metadata?.image,
+          decimals: customMint.decimals,
+          disabled: !walletConnected || isMintFrozen, // Allow selection even with 0 balance
+          zTokenMint: undefined,
+          isFrozen: isMintFrozen,
+          isOwned: publicBalance > 0n
+        });
+      });
+      
       mints.forEach((mint) => {
         const status = mintStatuses[mint.originMint];
         const isMintFrozen = status === MINT_STATUS.FROZEN;
         const freezeSuffix = isMintFrozen ? ' — Frozen by governance' : '';
         const publicBalance = publicBalances.get(mint.originMint) ?? 0n;
         const publicDisplay = formatBaseUnitsToUi(publicBalance, mint.decimals);
+        const metadata = tokenMetadataMap[mint.originMint];
         options.push({
           originMint: mint.originMint,
           variant: 'public',
-          label: `${mint.symbol} (public) — ${publicDisplay}${freezeSuffix}`,
+          label: `${metadata?.name || mint.symbol} (${mint.symbol}) — ${publicDisplay}${freezeSuffix}`,
           balance: publicBalance,
           displayBalance: publicDisplay,
           symbol: mint.symbol,
+          name: metadata?.name,
+          image: metadata?.image,
           decimals: mint.decimals,
-          disabled: !walletConnected || publicBalance === 0n || isMintFrozen,
+          disabled: !walletConnected || isMintFrozen, // Allow selection even with 0 balance
           zTokenMint: mint.zTokenMint,
-          isFrozen: isMintFrozen
+          isFrozen: isMintFrozen,
+          isOwned: publicBalance > 0n
         });
         if (mint.zTokenMint) {
           const privateBalance = privateBalances.get(mint.zTokenMint) ?? 0n;
@@ -355,17 +414,21 @@ export function ConvertForm() {
           options.push({
             originMint: mint.originMint,
             variant: 'private',
-            label: `z${mint.symbol} (private) — ${privateDisplay}${freezeSuffix}`,
+            label: `z${metadata?.name || mint.symbol} (z${mint.symbol}) — ${privateDisplay}${freezeSuffix}`,
             balance: privateBalance,
             displayBalance: privateDisplay,
             symbol: `z${mint.symbol}`,
+            name: metadata?.name ? `z${metadata.name}` : undefined,
+            image: metadata?.image,
             decimals: mint.decimals,
-            disabled: !walletConnected || privateBalance === 0n || isMintFrozen,
+            disabled: !walletConnected || isMintFrozen, // Allow selection even with 0 balance
             zTokenMint: mint.zTokenMint,
-            isFrozen: isMintFrozen
+            isFrozen: isMintFrozen,
+            isOwned: privateBalance > 0n
           });
         }
       });
+      
       return options;
     };
 
@@ -421,7 +484,159 @@ export function ConvertForm() {
         console.warn('[convert-form] failed to fetch private balances', error);
       }
 
-      const options = buildOptions(publicBalances, privateBalances);
+      // Auto-detect tokens from wallet that aren't in catalog
+      const catalogMintSet = new Set(mints.map(m => m.originMint));
+      const walletMintsToAdd = new Map<string, { decimals: number; symbol: string; name?: string; image?: string }>();
+      
+      for (const [mintAddress, balance] of publicBalances.entries()) {
+        // Skip if already in catalog or custom mints
+        if (catalogMintSet.has(mintAddress)) continue;
+        if (customMints.has(mintAddress)) continue;
+        // Only add if user has a balance (owned tokens)
+        if (balance === 0n) continue;
+        
+        // Check if we already have info cached
+        const existingMetadata = tokenMetadataMap[mintAddress];
+        const existingCustomMint = customMints.get(mintAddress);
+        
+        if (existingCustomMint) {
+          walletMintsToAdd.set(mintAddress, existingCustomMint);
+        } else {
+          // Will fetch metadata below, for now use defaults
+          walletMintsToAdd.set(mintAddress, {
+            decimals: existingMetadata ? 9 : 9, // Will be updated when we fetch
+            symbol: existingMetadata?.symbol ?? mintAddress.slice(0, 8),
+            name: existingMetadata?.name,
+            image: existingMetadata?.image
+          });
+        }
+      }
+      
+      // Add wallet mints to custom mints if not already there
+      const newCustomMints = new Map(customMints);
+      walletMintsToAdd.forEach((info, mintAddress) => {
+        if (!newCustomMints.has(mintAddress)) {
+          newCustomMints.set(mintAddress, info);
+        }
+      });
+      if (newCustomMints.size !== customMints.size) {
+        setCustomMints(newCustomMints);
+      }
+
+      // Fetch metadata for all unique mints (including newly detected wallet tokens)
+      const uniqueMints = new Set<string>();
+      mints.forEach(m => {
+        uniqueMints.add(m.originMint);
+        if (m.zTokenMint) uniqueMints.add(m.zTokenMint);
+      });
+      newCustomMints.forEach((_, mint) => uniqueMints.add(mint));
+      
+      const metadataPromises = Array.from(uniqueMints).map(async (mintAddress) => {
+        try {
+          const mintKey = new PublicKey(mintAddress);
+          
+          // Fetch decimals if not already known (for wallet tokens)
+          let decimals: number | undefined;
+          const existingCustomMint = newCustomMints.get(mintAddress);
+          if (!existingCustomMint || existingCustomMint.decimals === 9) {
+            // Try to get decimals from mint account
+            try {
+              const mintInfo = await getMint(connection, mintKey, undefined, TOKEN_PROGRAM_ID);
+              decimals = mintInfo.decimals;
+            } catch {
+              try {
+                const mintInfo = await getMint(connection, mintKey, undefined, TOKEN_2022_PROGRAM_ID);
+                decimals = mintInfo.decimals;
+              } catch {
+                // Keep existing decimals
+              }
+            }
+          }
+          
+          const metadata = await getTokenMetadata(connection, mintKey);
+          if (metadata) {
+            let image: string | undefined;
+            if (metadata.uri && metadata.uri.startsWith('ipfs://')) {
+              const cid = metadata.uri.replace('ipfs://', '');
+              image = `https://ipfs.io/ipfs/${cid}`;
+              try {
+                const metadataResponse = await fetch(`https://ipfs.io/ipfs/${cid}`);
+                if (metadataResponse.ok) {
+                  const metadataJson = await metadataResponse.json();
+                  if (metadataJson.image) {
+                    if (metadataJson.image.startsWith('ipfs://')) {
+                      const imageCid = metadataJson.image.replace('ipfs://', '');
+                      image = `https://ipfs.io/ipfs/${imageCid}`;
+                    } else {
+                      image = metadataJson.image;
+                    }
+                  }
+                }
+              } catch {
+                // Ignore IPFS fetch errors
+              }
+            } else if (metadata.uri) {
+              image = metadata.uri;
+            }
+            return { 
+              mint: mintAddress, 
+              metadata: { name: metadata.name, symbol: metadata.symbol, image },
+              decimals
+            };
+          } else if (decimals !== undefined) {
+            // No metadata but we got decimals, update custom mint
+            return { mint: mintAddress, metadata: null, decimals };
+          }
+        } catch (error) {
+          console.warn(`[convert-form] Failed to fetch metadata for ${mintAddress}:`, error);
+        }
+        return null;
+      });
+      
+      const metadataResults = await Promise.all(metadataPromises);
+      const newMetadataMap: Record<string, { name: string; symbol: string; image?: string }> = {};
+      const finalCustomMints = new Map(newCustomMints);
+      
+      metadataResults.forEach((result) => {
+        if (result) {
+          if (result.metadata) {
+            newMetadataMap[result.mint] = result.metadata;
+          }
+          // Update decimals if we fetched them
+          if (result.decimals !== undefined) {
+            const existing = finalCustomMints.get(result.mint);
+            if (existing) {
+              finalCustomMints.set(result.mint, { ...existing, decimals: result.decimals });
+            } else if (result.metadata) {
+              // New mint with metadata
+              finalCustomMints.set(result.mint, {
+                symbol: result.metadata.symbol,
+                decimals: result.decimals,
+                name: result.metadata.name,
+                image: result.metadata.image
+              });
+            } else {
+              // Just decimals, no metadata
+              finalCustomMints.set(result.mint, {
+                symbol: result.mint.slice(0, 8),
+                decimals: result.decimals
+              });
+            }
+          }
+        }
+      });
+      
+      setTokenMetadataMap(newMetadataMap);
+      if (finalCustomMints.size !== customMints.size || 
+          Array.from(finalCustomMints.entries()).some(([k, v]) => {
+            const old = customMints.get(k);
+            return !old || old.decimals !== v.decimals || old.symbol !== v.symbol;
+          })) {
+        setCustomMints(finalCustomMints);
+      }
+
+      // Update buildOptions to use final custom mints
+      const options = buildOptions(publicBalances, privateBalances, finalCustomMints);
       setTokenOptions(options);
       return options;
     } catch (error) {
@@ -430,7 +645,128 @@ export function ConvertForm() {
       setTokenOptions(options);
       return options;
     }
-  }, [wallet.publicKey, connection, indexerClient, mints, mintStatuses]);
+  }, [wallet.publicKey, connection, indexerClient, mints, mintStatuses, customMints, tokenMetadataMap]);
+  
+  const handlePasteMint = useCallback(async () => {
+    if (!pastedMint.trim()) {
+      return;
+    }
+    
+    setPastedMintLoading(true);
+    setPastedMintError(null);
+    
+    try {
+      const mintKey = new PublicKey(pastedMint.trim());
+      
+      // Check if mint already exists in catalog
+      if (mints.some(m => m.originMint === mintKey.toBase58())) {
+        setPastedMintError('This mint is already in the token list');
+        setPastedMintLoading(false);
+        return;
+      }
+      
+      // Check if mint already in custom mints
+      if (customMints.has(mintKey.toBase58())) {
+        setPastedMintError('This mint is already added');
+        setPastedMintLoading(false);
+        return;
+      }
+      
+      // Fetch mint account info to get decimals
+      let decimals = 9; // Default
+      let programId = TOKEN_PROGRAM_ID;
+      
+      try {
+        const mintInfo = await getMint(connection, mintKey, undefined, TOKEN_PROGRAM_ID);
+        decimals = mintInfo.decimals;
+      } catch {
+        try {
+          const mintInfo = await getMint(connection, mintKey, undefined, TOKEN_2022_PROGRAM_ID);
+          decimals = mintInfo.decimals;
+          programId = TOKEN_2022_PROGRAM_ID;
+        } catch (error) {
+          throw new Error('Invalid mint address or mint account not found');
+        }
+      }
+      
+      // Fetch metadata
+      let symbol = mintKey.toBase58().slice(0, 8);
+      let name = symbol;
+      let image: string | undefined;
+      
+      try {
+        // Add timeout to prevent hanging
+        const metadata = await Promise.race([
+          getTokenMetadata(connection, mintKey),
+          new Promise<null>((resolve) => setTimeout(() => resolve(null), 10000))
+        ]);
+        if (metadata) {
+          name = metadata.name;
+          symbol = metadata.symbol;
+          
+          // Try to fetch image from IPFS URI if available
+          if (metadata.uri && metadata.uri.startsWith('ipfs://')) {
+            const cid = metadata.uri.replace('ipfs://', '');
+            image = `https://ipfs.io/ipfs/${cid}`;
+            
+            // Try to fetch full metadata JSON from IPFS
+            try {
+              const metadataResponse = await fetch(`https://ipfs.io/ipfs/${cid}`);
+              if (metadataResponse.ok) {
+                const metadataJson = await metadataResponse.json();
+                if (metadataJson.image) {
+                  if (metadataJson.image.startsWith('ipfs://')) {
+                    const imageCid = metadataJson.image.replace('ipfs://', '');
+                    image = `https://ipfs.io/ipfs/${imageCid}`;
+                  } else {
+                    image = metadataJson.image;
+                  }
+                }
+              }
+            } catch {
+              // Ignore IPFS metadata fetch errors
+            }
+          } else if (metadata.uri) {
+            image = metadata.uri;
+          }
+        }
+      } catch (error) {
+        console.warn('[convert-form] Failed to fetch metadata for pasted mint:', error);
+        // Continue with default values
+      }
+      
+      // Add to custom mints
+      const newCustomMints = new Map(customMints);
+      newCustomMints.set(mintKey.toBase58(), { symbol, decimals, name, image });
+      setCustomMints(newCustomMints);
+      
+      // Update metadata map
+      if (name || image) {
+        setTokenMetadataMap(prev => ({
+          ...prev,
+          [mintKey.toBase58()]: { name: name || symbol, symbol, image }
+        }));
+      }
+      
+      // Select this mint (even if not owned, it will show greyed out)
+      setTokenSelection({
+        originMint: mintKey.toBase58(),
+        variant: 'public'
+      });
+      
+      // Clear inputs
+      setPastedMint('');
+      setTokenSearchQuery('');
+      setIsTokenDropdownOpen(false);
+      
+      // Refresh token options
+      await refreshTokenOptions();
+    } catch (error) {
+      setPastedMintError((error as Error).message ?? 'Failed to add mint');
+    } finally {
+      setPastedMintLoading(false);
+    }
+  }, [pastedMint, connection, mints, customMints, refreshTokenOptions]);
 
   useEffect(() => {
     void refreshTokenOptions();
@@ -482,67 +818,188 @@ export function ConvertForm() {
     () => tokenOptions.filter((option) => option.variant === allowedVariant),
     [tokenOptions, allowedVariant]
   );
-  const tokenSelectValue =
-    filteredTokenOptions.length > 0 ? `${tokenVariant}:${originMint}` : '__none';
+  
+  // Filter options based on search query
+  const searchableTokenOptions = useMemo(() => {
+    if (!tokenSearchQuery.trim()) {
+      // Default: show all owned tokens for the current mode, sorted by balance
+      return filteredTokenOptions
+        .filter(opt => opt.isOwned)
+        .sort((a, b) => {
+          // Sort by balance descending
+          if (b.balance > a.balance) return 1;
+          if (a.balance > b.balance) return -1;
+          return 0;
+        });
+    }
+    
+    const query = tokenSearchQuery.toLowerCase().trim();
+    const matching = filteredTokenOptions.filter((option) => {
+      const searchableText = `${option.name || ''} ${option.symbol} ${option.originMint}`.toLowerCase();
+      return searchableText.includes(query);
+    });
+    
+    // Sort: owned first, then by balance
+    return matching.sort((a, b) => {
+      if (a.isOwned && !b.isOwned) return -1;
+      if (!a.isOwned && b.isOwned) return 1;
+      if (b.balance > a.balance) return 1;
+      if (a.balance > b.balance) return -1;
+      return 0;
+    });
+  }, [filteredTokenOptions, tokenSearchQuery]);
+  
+  // Handle pasting mint address - check if it's a valid public key
+  useEffect(() => {
+    if (pastedMint.trim() && !pastedMintLoading) {
+      const trimmed = pastedMint.trim();
+      // Check if it's a valid public key format (Solana addresses are base58, typically 32-44 chars)
+      // Minimum length: Solana addresses are at least 32 characters
+      if (trimmed.length >= 32) {
+        try {
+          const mintKey = new PublicKey(trimmed);
+          const mintStr = mintKey.toBase58();
+          // Valid format, check if we need to fetch it
+          const existsInOptions = filteredTokenOptions.some(opt => opt.originMint === mintStr);
+          if (!existsInOptions && !customMints.has(mintStr)) {
+            // New mint, fetch it
+            void handlePasteMint();
+          } else {
+            // Already exists, just select it
+            const option = filteredTokenOptions.find(opt => opt.originMint === mintStr);
+            if (option) {
+              setTokenSelection({
+                originMint: option.originMint,
+                variant: option.variant
+              });
+              setIsTokenDropdownOpen(false);
+              setTokenSearchQuery('');
+              setPastedMint('');
+            }
+          }
+        } catch {
+          // Not a valid public key, treat as search query - already handled by tokenSearchQuery
+        }
+      }
+    }
+  }, [pastedMint, pastedMintLoading, filteredTokenOptions, customMints, handlePasteMint]);
+  // Update search query when selection changes (removed - handled by selectedTokenDisplayText)
+  
+  // Close dropdown when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      const target = event.target as HTMLElement;
+      if (!target.closest('[data-token-selector]')) {
+        setIsTokenDropdownOpen(false);
+      }
+    };
+    if (isTokenDropdownOpen) {
+      document.addEventListener('mousedown', handleClickOutside);
+      return () => document.removeEventListener('mousedown', handleClickOutside);
+    }
+  }, [isTokenDropdownOpen]);
   const selectedTokenOption = useMemo(
-    () => tokenOptions.find((option) => option.originMint === originMint && option.variant === tokenVariant) ?? null,
+    () => {
+      return tokenOptions.find((option) => option.originMint === originMint && option.variant === tokenVariant) ?? null;
+    },
     [tokenOptions, originMint, tokenVariant]
   );
+  
+  // Compute token info for display, with fallbacks
+  const tokenDisplayInfo = useMemo<{ name?: string; symbol: string; image?: string; displayBalance: string } | null>(() => {
+    if (!originMint) {
+      return null;
+    }
+    
+    if (selectedTokenOption) {
+      return {
+        name: selectedTokenOption.name,
+        symbol: selectedTokenOption.symbol,
+        image: selectedTokenOption.image,
+        displayBalance: selectedTokenOption.displayBalance
+      };
+    }
+    
+    // Fallback to mintConfig and metadata
+    if (mintConfig) {
+      return {
+        name: tokenMetadataMap[originMint]?.name || undefined,
+        symbol: tokenVariant === 'private' ? `z${mintConfig.symbol}` : (mintConfig.symbol || tokenMetadataMap[originMint]?.symbol || originMint.slice(0, 8)),
+        image: tokenMetadataMap[originMint]?.image,
+        displayBalance: ''
+      };
+    }
+    
+    // Last resort: use metadata or mint address
+    return {
+      name: tokenMetadataMap[originMint]?.name,
+      symbol: tokenMetadataMap[originMint]?.symbol || originMint.slice(0, 8),
+      image: tokenMetadataMap[originMint]?.image,
+      displayBalance: ''
+    };
+  }, [originMint, selectedTokenOption, mintConfig, tokenMetadataMap, tokenVariant]);
+  
+  // Prioritize tokenMetadataMap since it has the actual symbol from chain metadata
+  const selectedTokenSymbol = useMemo(() => {
+    // tokenMetadataMap has the most accurate symbol (from chain metadata)
+    if (tokenMetadataMap[originMint]?.symbol) {
+      return tokenMetadataMap[originMint].symbol;
+    }
+    // Then try tokenDisplayInfo (which may have fallbacks)
+    if (tokenDisplayInfo?.symbol) {
+      return tokenDisplayInfo.symbol;
+    }
+    // Then selectedTokenOption, mintConfig, or default
+    return selectedTokenOption?.symbol || mintConfig?.symbol || 'TOKEN';
+  }, [originMint, tokenMetadataMap, tokenDisplayInfo?.symbol, selectedTokenOption?.symbol, mintConfig?.symbol]);
+  
+  const zTokenSymbol = useMemo(() => `z${selectedTokenSymbol}`, [selectedTokenSymbol]);
+  const redeemDisplaySymbol = useMemo(
+    () => (mode === 'to-private' ? zTokenSymbol : selectedTokenSymbol),
+    [mode, zTokenSymbol, selectedTokenSymbol]
+  );
+  
   const selectedMintStatus = mintStatuses[originMint];
   const mintIsFrozen = selectedMintStatus === MINT_STATUS.FROZEN;
 
   useEffect(() => {
     if (!mints.length) {
       setSelectionInitialized(false);
-      if (tokenSelection.originMint) {
+      if (tokenSelection.originMint && !tokenOptions.some(opt => opt.originMint === tokenSelection.originMint)) {
+        console.log('🚫 CLEARING: No mints available and token not in options');
         setTokenSelection((prev) => ({ ...prev, originMint: '' }));
+        setSelectedTokenDisplayText('');
       }
       return;
     }
     const desiredVariant: 'public' | 'private' = mode === 'to-private' ? 'public' : 'private';
     if (!selectionInitialized) {
-      setTokenSelection({
-        originMint: mints[0].originMint,
-        variant: desiredVariant
-      });
+      // Don't auto-select a token - let user choose
       setSelectionInitialized(true);
       return;
     }
-    if (tokenSelection.originMint && !mints.some((mint) => mint.originMint === tokenSelection.originMint)) {
+    // Only clear if token is not in catalog AND not in tokenOptions (custom tokens)
+    if (tokenSelection.originMint && 
+        !mints.some((mint) => mint.originMint === tokenSelection.originMint) &&
+        !tokenOptions.some(opt => opt.originMint === tokenSelection.originMint)) {
+      // If selected token is no longer valid anywhere, clear selection
+      console.log('🚫 CLEARING: Token not in mints catalog or tokenOptions:', tokenSelection.originMint);
       setTokenSelection({
-        originMint: mints[0].originMint,
+        originMint: '',
         variant: desiredVariant
       });
+      setSelectedTokenDisplayText('');
       return;
     }
     if (tokenSelection.variant !== desiredVariant) {
+      console.log('🔄 UPDATING VARIANT:', { from: tokenSelection.variant, to: desiredVariant, originMint: tokenSelection.originMint });
       setTokenSelection((prev) => ({
         ...prev,
         variant: desiredVariant
       }));
     }
-  }, [mints, selectionInitialized, tokenSelection.originMint, tokenSelection.variant, mode]);
+  }, [mints, selectionInitialized, tokenSelection.originMint, tokenSelection.variant, mode, tokenOptions]);
 
-  useEffect(() => {
-    if (!tokenOptions.length) {
-      return;
-    }
-    const desiredVariant: 'public' | 'private' = mode === 'to-private' ? 'public' : 'private';
-    const candidates = tokenOptions.filter((option) => option.variant === desiredVariant);
-    if (!candidates.length) {
-      return;
-    }
-    const hasCurrent = candidates.some((option) => option.originMint === originMint);
-    if (tokenVariant !== desiredVariant || !hasCurrent) {
-      const nextOption = hasCurrent
-        ? candidates.find((option) => option.originMint === originMint)!
-        : candidates[0];
-      setTokenSelection({
-        originMint: nextOption.originMint,
-        variant: desiredVariant
-      });
-    }
-  }, [mode, tokenOptions, originMint, tokenVariant]);
 
   useEffect(() => {
     return () => {
@@ -936,15 +1393,17 @@ export function ConvertForm() {
       if (!wallet.publicKey) {
         throw new Error('Connect your wallet before converting.');
       }
-      if (!mintConfig) {
-        throw new Error('Select a supported token.');
-      }
       if (!selectedTokenOption) {
         throw new Error('Select a token before converting.');
       }
+      if (!originMint) {
+        throw new Error('Select a token before converting.');
+      }
 
-      const poolId = mintConfig.poolId;
-      const mintId = mintConfig.originMint;
+      // Derive poolId from originMint (works for all SPL tokens)
+      const originMintKey = new PublicKey(originMint);
+      const poolId = mintConfig?.poolId ?? derivePoolState(originMintKey).toBase58();
+      const mintId = originMint;
 
       let rootValue = resolvedOldRoot;
       const latestRoots = await refreshRoots();
@@ -956,7 +1415,15 @@ export function ConvertForm() {
         throw new Error('Unable to resolve the current commitment tree root. Refresh and try again.');
       }
 
-      const decimals = mintConfig.decimals;
+      // Get decimals from mintConfig, selectedTokenOption, or customMints
+      let decimals = mintConfig?.decimals ?? selectedTokenOption?.decimals ?? 0;
+      if (decimals === 0 && !mintConfig) {
+        // Try to get decimals from customMints if available
+        const customMint = customMints.get(originMint);
+        if (customMint?.decimals) {
+          decimals = customMint.decimals;
+        }
+      }
 
       if (mode === 'to-private') {
         if (tokenVariant !== 'public') {
@@ -996,14 +1463,14 @@ export function ConvertForm() {
           proof: wrapAdvanced.useProofRpc ? proofResponse : null,
           commitmentHint: proofResponse?.publicInputs?.[2] ?? null,
           recipient: wallet.publicKey.toBase58(),
-          twinMint: mintConfig.zTokenMint ?? null,
-          lookupTable: mintConfig.lookupTable
+          twinMint: mintConfig?.zTokenMint ?? null,
+          lookupTable: mintConfig?.lookupTable ?? lookupTableCache.get(originMint) ?? undefined
         });
 
         try {
           await indexerClient.adjustBalance(
             wallet.publicKey.toBase58(),
-            mintConfig.zTokenMint ?? originMint,
+            mintConfig?.zTokenMint ?? originMint,
             baseAmount
           );
         } catch (error) {
@@ -1023,7 +1490,7 @@ export function ConvertForm() {
             amount: displayAmount,
             rawAmount: baseAmount.toString(),
             decimals,
-            mint: mintConfig.zTokenMint ?? mintConfig.originMint,
+            mint: mintConfig?.zTokenMint ?? originMint,
             owner: wallet.publicKey.toBase58(),
             createdAt: Date.now()
           };
@@ -1050,7 +1517,7 @@ export function ConvertForm() {
         if (tokenVariant !== 'private') {
           throw new Error('Select a private token to redeem.');
         }
-        if (!mintConfig.zTokenMint) {
+        if (!mintConfig?.zTokenMint) {
           throw new Error('This token does not support private redemptions.');
         }
         await ensureWalletFeeBalance();
@@ -1164,7 +1631,7 @@ export function ConvertForm() {
           throw new Error('This note appears to be already spent. Refresh and pick a different note.');
         }
 
-        const privateMint = mintConfig.zTokenMint;
+        const privateMint = mintConfig?.zTokenMint;
 
         const unwrapParams = {
           connection,
@@ -1175,8 +1642,8 @@ export function ConvertForm() {
           destination: destinationKey.toBase58(),
           mode: 'origin',
           proof: proofResponse,
-          lookupTable: mintConfig.lookupTable,
-          twinMint: mintConfig.zTokenMint
+          lookupTable: mintConfig?.lookupTable,
+          twinMint: mintConfig?.zTokenMint
         } as {
           connection: typeof connection;
           wallet: typeof wallet;
@@ -1259,7 +1726,19 @@ export function ConvertForm() {
         void handleFetchNotes();
       }
     } catch (caught) {
-      setError((caught as Error).message);
+      const error = caught as Error;
+      let errorMessage = error.message;
+      
+      // Provide helpful error message for transaction size issues
+      if (errorMessage.includes('Transaction too large') || errorMessage.includes('transaction size')) {
+        if (!mintConfig) {
+          errorMessage = 'Transaction too large. This token needs to be registered in the catalog with a lookup table to reduce transaction size. Please contact support to register this token, or use a token that is already in the catalog.';
+        } else {
+          errorMessage = 'Transaction too large. The transaction exceeds Solana\'s size limit. Try reducing the amount or contact support.';
+        }
+      }
+      
+      setError(errorMessage);
     } finally {
       setSubmitting.off();
     }
@@ -1327,45 +1806,276 @@ export function ConvertForm() {
 
         <FormControl>
           <FormLabel color="whiteAlpha.700">Mode</FormLabel>
-          <Select value={mode} onChange={handleModeChange} bg="rgba(18, 16, 14, 0.78)">
-            <option value="to-private">Public → Private (mint zTokens)</option>
-            <option value="to-public">Private → Public (redeem zTokens)</option>
-          </Select>
+          <HStack spacing={4}>
+            <Button
+              size="md"
+              variant={mode === 'to-private' ? 'solid' : 'outline'}
+              colorScheme="brand"
+              onClick={() => {
+                setMode('to-private');
+                setTokenSelection((prev) => ({ ...prev, variant: 'public' }));
+              }}
+            >
+              Shield
+            </Button>
+            <Button
+              size="md"
+              variant={mode === 'to-public' ? 'solid' : 'outline'}
+              colorScheme="brand"
+              onClick={() => {
+                setMode('to-public');
+                setTokenSelection((prev) => ({ ...prev, variant: 'private' }));
+              }}
+            >
+              Unshield
+            </Button>
+          </HStack>
+          <FormHelperText color="whiteAlpha.500">
+            {mode === 'to-private' ? 'Convert public tokens to private zTokens' : 'Convert private zTokens to public tokens'}
+          </FormHelperText>
         </FormControl>
 
-        <FormControl isDisabled={!tokenOptions.length || mintCatalogLoading}>
+        <FormControl isDisabled={mintCatalogLoading}>
           <FormLabel color="whiteAlpha.700">Token</FormLabel>
-          <Select
-            value={tokenSelectValue}
-            onChange={(event) => {
-              const { value } = event.target;
-              if (value === '__none') {
-                return;
-              }
-              const [variant, mint] = value.split(':');
-              setTokenSelection({
-                originMint: mint,
-                variant: variant === 'private' ? 'private' : 'public'
-              });
-            }}
-            bg="rgba(18, 16, 14, 0.78)"
-          >
-            {filteredTokenOptions.length > 0 ? (
-              filteredTokenOptions.map((option) => (
-                <option
-                  key={`${option.variant}:${option.originMint}`}
-                  value={`${option.variant}:${option.originMint}`}
-                  disabled={option.disabled}
-                >
-                  {option.label}
-                </option>
-              ))
+          <Box position="relative" data-token-selector>
+            {originMint && !isTokenDropdownOpen ? (
+              <Box
+                bg="rgba(18, 16, 14, 0.78)"
+                border="1px solid rgba(245,178,27,0.24)"
+                rounded="lg"
+                p={3}
+                cursor="pointer"
+                onClick={() => {
+                  setIsTokenDropdownOpen(true);
+                  setTokenSearchQuery('');
+                }}
+                _hover={{ bg: 'rgba(18, 16, 14, 0.88)', borderColor: 'rgba(245,178,27,0.36)' }}
+                transition="all 0.2s"
+              >
+                <HStack spacing={3} align="center" justify="space-between">
+                  <HStack spacing={3} align="center" flex={1} minW={0}>
+                    {tokenDisplayInfo?.image && (
+                      <Box
+                        w={10}
+                        h={10}
+                        rounded="full"
+                        bg="whiteAlpha.100"
+                        border="1px solid"
+                        borderColor="whiteAlpha.200"
+                        overflow="hidden"
+                        flexShrink={0}
+                      >
+                        <img
+                          src={tokenDisplayInfo.image}
+                          alt={tokenDisplayInfo.symbol || ''}
+                          style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                          onError={(e) => {
+                            (e.target as HTMLImageElement).style.display = 'none';
+                          }}
+                        />
+                      </Box>
+                    )}
+                    <VStack spacing={0} align="start" flex={1} minW={0}>
+                      <Text fontSize="md" color="whiteAlpha.900" fontWeight="medium" isTruncated maxW="100%">
+                        {tokenDisplayInfo?.name || tokenDisplayInfo?.symbol || originMint.slice(0, 8)}
+                      </Text>
+                      {tokenDisplayInfo?.name && (
+                        <Text fontSize="sm" color="whiteAlpha.600" isTruncated maxW="100%">
+                          {tokenDisplayInfo.symbol}
+                        </Text>
+                      )}
+                    </VStack>
+                  </HStack>
+                  <IconButton
+                    aria-label="Clear token selection"
+                    icon={<Icon as={X} size={18} />}
+                    size="sm"
+                    variant="ghost"
+                    colorScheme="whiteAlpha"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setTokenSelection({ originMint: '', variant: 'public' });
+                      setTokenSearchQuery('');
+                      setPastedMint('');
+                    }}
+                  />
+                </HStack>
+              </Box>
             ) : (
-              <option value="__none" disabled>
-                No tokens available
-              </option>
+              <InputGroup>
+                <Input
+                  placeholder={mode === 'to-private' ? 'Search or paste mint address...' : 'Search or paste zToken mint...'}
+                  value={tokenSearchQuery}
+                  onChange={(e) => {
+                    setTokenSearchQuery(e.target.value);
+                    setPastedMint(e.target.value);
+                    setIsTokenDropdownOpen(true);
+                  }}
+                  onPaste={(e) => {
+                    const pastedText = e.clipboardData.getData('text/plain');
+                    if (pastedText) {
+                      setTokenSearchQuery(pastedText);
+                      setPastedMint(pastedText);
+                      setIsTokenDropdownOpen(true);
+                      e.preventDefault();
+                    }
+                  }}
+                  onFocus={() => setIsTokenDropdownOpen(true)}
+                  onBlur={(e) => {
+                    const relatedTarget = e.relatedTarget as HTMLElement;
+                    if (!relatedTarget || !relatedTarget.closest('[data-token-selector]')) {
+                      setTimeout(() => {
+                        if (!selectingTokenRef.current) {
+                          setIsTokenDropdownOpen(false);
+                          if (!originMint) {
+                            setTokenSearchQuery('');
+                            setPastedMint('');
+                          }
+                        }
+                      }, 200);
+                    }
+                  }}
+                  bg="rgba(18, 16, 14, 0.78)"
+                  onClick={() => setIsTokenDropdownOpen(true)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && searchableTokenOptions.length === 1) {
+                      e.preventDefault();
+                      const option = searchableTokenOptions[0];
+                      setTokenSelection({
+                        originMint: option.originMint,
+                        variant: option.variant
+                      });
+                      setIsTokenDropdownOpen(false);
+                      setTokenSearchQuery('');
+                      setPastedMint('');
+                    } else if (e.key === 'Escape') {
+                      setIsTokenDropdownOpen(false);
+                      setTokenSearchQuery('');
+                      setPastedMint('');
+                    }
+                  }}
+                />
+              </InputGroup>
             )}
-          </Select>
+            {isTokenDropdownOpen && searchableTokenOptions.length > 0 && (
+              <Box
+                position="absolute"
+                top="100%"
+                left={0}
+                right={0}
+                mt={1}
+                bg="rgba(18, 16, 14, 0.98)"
+                border="1px solid rgba(245,178,27,0.24)"
+                rounded="lg"
+                maxH="300px"
+                overflowY="auto"
+                zIndex={1000}
+                boxShadow="0 4px 12px rgba(0,0,0,0.5)"
+              >
+                <VStack spacing={0} align="stretch">
+                  {searchableTokenOptions.map((option) => {
+                    const displayName = option.name || option.symbol;
+                    const displaySymbol = option.symbol;
+                    const isSelected = option.originMint === originMint && option.variant === tokenVariant;
+                    return (
+                      <Tooltip
+                        key={`${option.variant}:${option.originMint}`}
+                        label={`Mint: ${option.originMint}`}
+                        placement="right"
+                      >
+                        <Box
+                          px={4}
+                          py={3}
+                          cursor={option.disabled && !option.isOwned ? 'not-allowed' : 'pointer'}
+                          bg={isSelected ? 'rgba(245,178,27,0.1)' : 'transparent'}
+                          _hover={!option.disabled || option.isOwned ? { bg: 'rgba(245,178,27,0.05)' } : {}}
+                          onMouseDown={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            selectingTokenRef.current = true;
+                          }}
+                          onClick={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            console.log('🖱️ TOKEN CLICKED:', { originMint: option.originMint, variant: option.variant });
+                            selectingTokenRef.current = true;
+                            setTokenSelection({
+                              originMint: option.originMint,
+                              variant: option.variant
+                            });
+                            console.log('✅ SET TOKEN SELECTION:', { originMint: option.originMint, variant: option.variant });
+                            setIsTokenDropdownOpen(false);
+                            setTokenSearchQuery('');
+                            setPastedMint('');
+                            setTimeout(() => {
+                              selectingTokenRef.current = false;
+                            }, 100);
+                          }}
+                          opacity={!option.isOwned ? 0.5 : 1}
+                          borderBottom="1px solid"
+                          borderColor="whiteAlpha.100"
+                        >
+                          <HStack spacing={3} align="center">
+                            {option.image && (
+                              <Box
+                                w={8}
+                                h={8}
+                                rounded="full"
+                                bg="whiteAlpha.100"
+                                border="1px solid"
+                                borderColor="whiteAlpha.200"
+                                overflow="hidden"
+                                flexShrink={0}
+                              >
+                                <img
+                                  src={option.image}
+                                  alt={displayName}
+                                  style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                                  onError={(e) => {
+                                    (e.target as HTMLImageElement).style.display = 'none';
+                                  }}
+                                />
+                              </Box>
+                            )}
+                            <VStack spacing={0} align="start" flex={1} minW={0}>
+                              <HStack spacing={2}>
+                                <Text fontWeight="medium" color="whiteAlpha.900" isTruncated>
+                                  {displayName}
+                                </Text>
+                                {displaySymbol !== displayName && (
+                                  <Text fontSize="xs" color="whiteAlpha.500">
+                                    ({displaySymbol})
+                                  </Text>
+                                )}
+                              </HStack>
+                              <HStack spacing={2} fontSize="xs" color="whiteAlpha.600">
+                                <Text>
+                                  {option.displayBalance} {displaySymbol}
+                                </Text>
+                                {!option.isOwned && (
+                                  <Text color="red.300">(Not owned)</Text>
+                                )}
+                              </HStack>
+                            </VStack>
+                          </HStack>
+                        </Box>
+                      </Tooltip>
+                    );
+                  })}
+                </VStack>
+              </Box>
+            )}
+            {pastedMintError && (
+              <Text fontSize="xs" color="red.300" mt={1}>
+                {pastedMintError}
+              </Text>
+            )}
+            {pastedMintLoading && (
+              <Text fontSize="xs" color="whiteAlpha.500" mt={1}>
+                Loading mint info...
+              </Text>
+            )}
+          </Box>
           <FormHelperText color="whiteAlpha.500">
             {mode === 'to-private'
               ? `Private balance will appear as ${zTokenSymbol}.`

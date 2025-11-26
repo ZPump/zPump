@@ -336,6 +336,7 @@ function WalletDrawerContent({ disclosure }: { disclosure: ReturnType<typeof use
   const [solLamports, setSolLamports] = useState<number>(0);
   const [loadingBalances, setLoadingBalances] = useBoolean(false);
   const [loadingTransactions, setLoadingTransactions] = useBoolean(false);
+  const [tokenMetadata, setTokenMetadata] = useState<Record<string, { name: string; symbol: string; image?: string }>>({});
   const [createOpen, setCreateOpen] = useBoolean(false);
   const [importOpen, setImportOpen] = useBoolean(false);
   const [newLabel, setNewLabel] = useState('');
@@ -531,6 +532,38 @@ function WalletDrawerContent({ disclosure }: { disclosure: ReturnType<typeof use
           .filter((entry) => entry.amount > 0);
 
         setBalances(rows);
+        
+        // Fetch metadata for all tokens
+        const metadataPromises = rows.map(async (token) => {
+          try {
+            const mintKey = new PublicKey(token.mint);
+            const metadata = await getTokenMetadata(connection, mintKey);
+            if (metadata) {
+              // Try to fetch image from IPFS URI if available
+              let image: string | undefined;
+              if (metadata.uri && metadata.uri.startsWith('ipfs://')) {
+                const cid = metadata.uri.replace('ipfs://', '');
+                image = `https://ipfs.io/ipfs/${cid}`;
+              } else if (metadata.uri) {
+                image = metadata.uri;
+              }
+              return { mint: token.mint, metadata: { name: metadata.name, symbol: metadata.symbol, image } };
+            }
+          } catch (error) {
+            console.warn(`[wallet drawer] Failed to fetch metadata for ${token.mint}:`, error);
+          }
+          return null;
+        });
+        
+        const metadataResults = await Promise.all(metadataPromises);
+        const metadataMap: Record<string, { name: string; symbol: string; image?: string }> = {};
+        metadataResults.forEach((result) => {
+          if (result) {
+            metadataMap[result.mint] = result.metadata;
+          }
+        });
+        setTokenMetadata(metadataMap);
+        
         await loadPrivateBalances(activeAccount.publicKey);
         await refreshTransactions(showSpinner);
       } catch (error) {
@@ -1201,16 +1234,78 @@ function WalletDrawerContent({ disclosure }: { disclosure: ReturnType<typeof use
                       </Button>
                     </Flex>
                     <SimpleGrid columns={1} spacing={3}>
-                      {balances.map((token) => (
-                        <Flex key={token.mint} align="center" justify="space-between" gap={3} wrap="wrap">
-                          <Stack spacing={0}>
-                            <Text fontWeight="medium" color="whiteAlpha.800">
-                              {token.symbol}
-                            </Text>
-                            <Text fontSize="xs" color="whiteAlpha.500">
-                              {formatAddress(token.mint)}
-                            </Text>
-                          </Stack>
+                      {balances.map((token) => {
+                        const metadata = tokenMetadata[token.mint];
+                        const displayName = metadata?.name ?? token.symbol;
+                        const displaySymbol = metadata?.symbol ?? token.symbol;
+                        return (
+                          <Flex key={token.mint} align="center" justify="space-between" gap={3} wrap="wrap">
+                            <HStack spacing={2} flex={1}>
+                              {metadata?.image && (
+                                <Box
+                                  w={8}
+                                  h={8}
+                                  rounded="full"
+                                  bg="whiteAlpha.100"
+                                  border="1px solid"
+                                  borderColor="whiteAlpha.200"
+                                  overflow="hidden"
+                                  flexShrink={0}
+                                >
+                                  <img
+                                    src={metadata.image}
+                                    alt={displayName}
+                                    style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                                    onError={(e) => {
+                                      // Hide image on error
+                                      (e.target as HTMLImageElement).style.display = 'none';
+                                    }}
+                                  />
+                                </Box>
+                              )}
+                              <Stack spacing={0} flex={1} minW={0}>
+                                <HStack spacing={1}>
+                                  <Text fontWeight="medium" color="whiteAlpha.800" isTruncated>
+                                    {displayName}
+                                  </Text>
+                                  {displaySymbol !== displayName && (
+                                    <Text fontSize="xs" color="whiteAlpha.500">
+                                      ({displaySymbol})
+                                    </Text>
+                                  )}
+                                </HStack>
+                                <HStack spacing={1} align="center">
+                                  <Tooltip label="Click to copy full mint address">
+                                    <Text 
+                                      fontSize="xs" 
+                                      color="whiteAlpha.500" 
+                                      isTruncated
+                                      cursor="pointer"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        if (typeof navigator !== 'undefined' && navigator.clipboard) {
+                                          navigator.clipboard.writeText(token.mint).catch(() => undefined);
+                                          toast({
+                                            title: 'Mint address copied',
+                                            status: 'success',
+                                            duration: 1500,
+                                            isClosable: true
+                                          });
+                                        }
+                                      }}
+                                      _hover={{ color: 'whiteAlpha.700' }}
+                                    >
+                                      {formatAddress(token.mint)}
+                                    </Text>
+                                  </Tooltip>
+                                  <CopyAddressButton
+                                    value={token.mint}
+                                    ariaLabel="Copy mint address"
+                                    stopPropagation
+                                  />
+                                </HStack>
+                              </Stack>
+                            </HStack>
                           <HStack spacing={2}>
                             <Text fontWeight="semibold" color="whiteAlpha.900">
                               {token.amount.toLocaleString(undefined, {
@@ -1246,7 +1341,8 @@ function WalletDrawerContent({ disclosure }: { disclosure: ReturnType<typeof use
                             </Button>
                           </HStack>
                         </Flex>
-                      ))}
+                        );
+                      })}
                     </SimpleGrid>
                     {privateBalanceEntries.length > 0 && (
                       <Stack spacing={2}>
@@ -1254,16 +1350,77 @@ function WalletDrawerContent({ disclosure }: { disclosure: ReturnType<typeof use
                           Shielded balances
                         </Text>
                         <SimpleGrid columns={1} spacing={3}>
-                          {privateBalanceEntries.map((entry) => (
-                            <Flex key={`private-${entry.mint}`} align="center" justify="space-between" gap={3} wrap="wrap">
-                              <Stack spacing={0}>
-                                <Text fontWeight="medium" color="whiteAlpha.800">
-                                  {entry.symbol}
-                                </Text>
-                                <Text fontSize="xs" color="whiteAlpha.500">
-                                  {formatAddress(entry.mint)}
-                                </Text>
-                              </Stack>
+                          {privateBalanceEntries.map((entry) => {
+                            const metadata = tokenMetadata[entry.mint];
+                            const displayName = metadata?.name ? `z${metadata.name}` : entry.symbol;
+                            const displaySymbol = metadata?.symbol ? `z${metadata.symbol}` : entry.symbol;
+                            return (
+                              <Flex key={`private-${entry.mint}`} align="center" justify="space-between" gap={3} wrap="wrap">
+                                <HStack spacing={2} flex={1}>
+                                  {metadata?.image && (
+                                    <Box
+                                      w={8}
+                                      h={8}
+                                      rounded="full"
+                                      bg="whiteAlpha.100"
+                                      border="1px solid"
+                                      borderColor="whiteAlpha.200"
+                                      overflow="hidden"
+                                      flexShrink={0}
+                                    >
+                                      <img
+                                        src={metadata.image}
+                                        alt={displayName}
+                                        style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                                        onError={(e) => {
+                                          (e.target as HTMLImageElement).style.display = 'none';
+                                        }}
+                                      />
+                                    </Box>
+                                  )}
+                                  <Stack spacing={0} flex={1} minW={0}>
+                                    <HStack spacing={1}>
+                                      <Text fontWeight="medium" color="whiteAlpha.800" isTruncated>
+                                        {displayName}
+                                      </Text>
+                                      {displaySymbol !== displayName && (
+                                        <Text fontSize="xs" color="whiteAlpha.500">
+                                          ({displaySymbol})
+                                        </Text>
+                                      )}
+                                    </HStack>
+                                    <HStack spacing={1} align="center">
+                                      <Tooltip label="Click to copy full mint address">
+                                        <Text 
+                                          fontSize="xs" 
+                                          color="whiteAlpha.500" 
+                                          isTruncated
+                                          cursor="pointer"
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            if (typeof navigator !== 'undefined' && navigator.clipboard) {
+                                              navigator.clipboard.writeText(entry.mint).catch(() => undefined);
+                                              toast({
+                                                title: 'Mint address copied',
+                                                status: 'success',
+                                                duration: 1500,
+                                                isClosable: true
+                                              });
+                                            }
+                                          }}
+                                          _hover={{ color: 'whiteAlpha.700' }}
+                                        >
+                                          {formatAddress(entry.mint)}
+                                        </Text>
+                                      </Tooltip>
+                                      <CopyAddressButton
+                                        value={entry.mint}
+                                        ariaLabel="Copy mint address"
+                                        stopPropagation
+                                      />
+                                    </HStack>
+                                  </Stack>
+                                </HStack>
                               <HStack spacing={2}>
                                 <Text fontWeight="semibold" color="whiteAlpha.900">
                                   {entry.formatted}
@@ -1294,7 +1451,8 @@ function WalletDrawerContent({ disclosure }: { disclosure: ReturnType<typeof use
                                 </Tooltip>
                               </HStack>
                             </Flex>
-                          ))}
+                            );
+                          })}
                         </SimpleGrid>
                       </Stack>
                     )}

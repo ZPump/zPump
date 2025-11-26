@@ -82,10 +82,12 @@ jest.mock('../lib/onchain/poseidon', () => ({
   poseidonHashMany: jest.fn().mockResolvedValue(new Uint8Array(32))
 }));
 
+const fetchMintMappingAccountMock = jest.fn();
 jest.mock('../lib/sdk', () => ({
   wrap: (...args: unknown[]) => wrapMock(...args),
   unwrap: (...args: unknown[]) => unwrapMock(...args),
-  resolvePublicKey: (...args: unknown[]) => resolvePublicKeyMock(...args)
+  resolvePublicKey: (...args: unknown[]) => resolvePublicKeyMock(...args),
+  fetchMintMappingAccount: (...args: unknown[]) => fetchMintMappingAccountMock(...args)
 }));
 
 jest.mock('../lib/indexerClient', () => ({

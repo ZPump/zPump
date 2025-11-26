@@ -84,7 +84,10 @@ for program_info in "${PROGRAMS[@]}"; do
   if [[ -n "${show_output}" ]]; then
     current_authority="$(printf '%s\n' "${show_output}" | awk '/Authority:/ {print $2; exit}')"
     if [[ "${current_authority}" == "11111111111111111111111111111111" ]]; then
-      log_info "${program_name} already loaded with immutable authority; skipping redeploy."
+      log_info "${program_name} already loaded with immutable authority."
+      log_info "For systemd-managed validators, programs are loaded via --bpf-program flags at startup."
+      log_info "Programs have been built and validator has been restarted - new programs should be loaded."
+      log_info "Skipping deployment (programs loaded via --bpf-program cannot be upgraded via deploy)."
       continue
     fi
   fi
