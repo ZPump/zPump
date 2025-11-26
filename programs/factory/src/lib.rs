@@ -5,30 +5,29 @@ use anchor_spl::token_interface::{
     spl_token_2022::{self, instruction::AuthorityType},
     Mint, MintTo, SetAuthority, TokenAccount, TokenInterface,
 };
+use solana_program::address_lookup_table::state::{AddressLookupTable, LOOKUP_TABLE_META_SIZE};
 use solana_program::program_option::COption;
 use solana_program::program_pack::Pack as Token2022Pack;
 use solana_program::{hash::hashv, program::invoke, system_instruction, system_program};
-use solana_program::address_lookup_table::state::AddressLookupTable;
-use spl_token_2022::state::Mint as Token2022Mint;
 use spl_associated_token_account_client::{
-    address::get_associated_token_address_with_program_id,
-    instruction as ata_instruction,
+    address::get_associated_token_address_with_program_id, instruction as ata_instruction,
 };
+use spl_token_2022::state::Mint as Token2022Mint;
 
-use ptf_common::{seeds, FeatureFlags, MAX_BPS};
-use ptf_common::security::{AccessController, AccessLevel, AccountValidator, InputValidator};
-use solana_program::pubkey;
-use sha3::{Digest, Keccak256};
-use ptf_verifier_groth16;
+use anchor_lang::solana_program::instruction::{AccountMeta, Instruction};
 use anchor_lang::solana_program::program::invoke_signed;
-use anchor_lang::solana_program::instruction::{Instruction, AccountMeta};
 use anchor_lang::AnchorSerialize;
+use ptf_common::security::{AccessController, AccessLevel, AccountValidator, InputValidator};
+use ptf_common::{seeds, FeatureFlags, MAX_BPS};
+use ptf_verifier_groth16;
+use sha3::{Digest, Keccak256};
+use solana_program::pubkey;
 
 const PTF_POOL_PROGRAM_ID: Pubkey = pubkey!("GBfBiuyXm5YZjnCPkZNjakht41rxEkMRxawQcocowwdi");
 const PTF_VAULT_PROGRAM_ID: Pubkey = pubkey!("ABUQvsF8kdY9HCFrVEomafg9ABbq4zVQuxLfevpwGnvb");
 // CRITICAL FIX: Minimum timelock duration in seconds (24 hours)
 const MIN_TIMELOCK_SECONDS: i64 = 24 * 60 * 60; // 86400 seconds = 24 hours
-// Authority changes require longer timelock (7 days)
+                                                // Authority changes require longer timelock (7 days)
 const AUTHORITY_CHANGE_TIMELOCK_SECONDS: i64 = 7 * 24 * 60 * 60; // 604800 seconds = 7 days
 const TIMELOCK_STALE_GRACE_SECONDS: i64 = 30 * 24 * 60 * 60; // 30 days
 
@@ -46,7 +45,7 @@ pub mod ptf_factory {
     ) -> Result<()> {
         // CRITICAL FIX: Use centralized input validation
         InputValidator::validate_fee_bps(default_fee_bps)?;
-        
+
         // CRITICAL FIX: Enforce minimum timelock (allow 0 for test/devnet initialization)
         // In production, timelock should be at least 24 hours, but for devnet/testing we allow 0
         if timelock_seconds > 0 {
@@ -134,7 +133,7 @@ pub mod ptf_factory {
         let state = &ctx.accounts.factory_state;
         require!(!state.paused, FactoryError::Paused);
         require!(decimals <= 12, FactoryError::InvalidDecimals);
-        
+
         // CRITICAL FIX: Validate fee override limits to prevent abuse
         // Allow 0 to 1000 bps (0% to 10%) for reasonable fee ranges
         const MAX_FEE_BPS_OVERRIDE: u16 = 1000; // 10% maximum override
@@ -151,27 +150,23 @@ pub mod ptf_factory {
         let token_2022_program_id = spl_token_2022::ID;
         let is_valid_token_program = origin_mint_info.owner == &token_program_id
             || origin_mint_info.owner == &token_2022_program_id;
-        require!(
-            is_valid_token_program,
-            FactoryError::InvalidMintFormat
-        );
+        require!(is_valid_token_program, FactoryError::InvalidMintFormat);
         // Validate decimals match
         let mint_decimals = load_mint_decimals(&origin_mint_info)?;
-        require!(
-            mint_decimals == decimals,
-            FactoryError::DecimalsMismatch
-        );
+        require!(mint_decimals == decimals, FactoryError::DecimalsMismatch);
 
         // CRITICAL FIX: Check if mint_mapping account exists but is owned by wrong program
         // init_if_needed can fail if account exists but is owned by BPF loader
         // We need to check BEFORE init_if_needed runs, but we can't do that in the constraint.
         // So we check here and reject if the account is in a bad state.
         let mapping_info = ctx.accounts.mint_mapping.to_account_info();
-        
+
         // If account exists and is owned by wrong program (not factory, not system), reject
         // This means a previous transaction partially initialized it and it's stuck
         if !mapping_info.data_is_empty() {
-            if mapping_info.owner != &crate::ID && mapping_info.owner != &anchor_lang::solana_program::system_program::ID {
+            if mapping_info.owner != &crate::ID
+                && mapping_info.owner != &anchor_lang::solana_program::system_program::ID
+            {
                 // Account exists but is owned by wrong program (e.g., BPF loader)
                 // init_if_needed will fail with 0x0 - reject early with better error
                 return err!(FactoryError::InvalidMintFormat);
@@ -186,7 +181,7 @@ pub mod ptf_factory {
             mapping.origin_mint == Pubkey::default(),
             FactoryError::AlreadyRegistered
         );
-        
+
         // Initialize new mapping - all fields set from scratch
         mapping.origin_mint = ctx.accounts.origin_mint.key();
         mapping.status = MintStatus::Active as u8;
@@ -302,9 +297,9 @@ pub mod ptf_factory {
 
         // Validate lookup table account
         let lookup_table_info = &ctx.accounts.lookup_table;
-        
+
         // Verify lookup table is owned by AddressLookupTableProgram
-        let address_lookup_table_program_id = solana_program::pubkey!("AddressLookupTable1111111111111111111111111");
+        let address_lookup_table_program_id = solana_program::address_lookup_table::program::ID;
         require_keys_eq!(
             *lookup_table_info.owner,
             address_lookup_table_program_id,
@@ -313,39 +308,34 @@ pub mod ptf_factory {
 
         // Verify lookup table account has minimum size
         require!(
-            lookup_table_info.data_len() >= 56, // Minimum size for AddressLookupTable account
+            lookup_table_info.data_len() >= LOOKUP_TABLE_META_SIZE,
             FactoryError::AccountDataTooShort
         );
 
         // Read and validate lookup table state
-        // Temporarily simplified to avoid potential panic in deserialization
         let lookup_table_data = lookup_table_info.try_borrow_data()?;
-        // Skip deserialization for now to debug panic
-        // let lookup_table = AddressLookupTable::deserialize(&lookup_table_data)
-        //     .map_err(|_| FactoryError::AccountDataCorrupt)?;
+        let lookup_table = AddressLookupTable::deserialize(&lookup_table_data)
+            .map_err(|_| FactoryError::AccountDataCorrupt)?;
 
-        // Verify lookup table is active - simplified check
-        // Just check that data length is sufficient and skip detailed validation
+        // Verify lookup table is active (not deactivated)
         require!(
-            lookup_table_data.len() >= 56,
-            FactoryError::AccountDataTooShort
+            lookup_table.meta.deactivation_slot == u64::MAX,
+            FactoryError::InvalidAccountState
         );
 
         drop(lookup_table_data);
 
         // Validate mint_mapping PDA matches origin_mint
-        // Temporarily simplified to avoid potential panic in PDA derivation
         let origin_mint_key = ctx.accounts.origin_mint.key();
-        // Skip PDA validation for now to debug panic
-        // let (expected_mint_mapping, _bump) = Pubkey::find_program_address(
-        //     &[seeds::MINT_MAPPING, origin_mint_key.as_ref()],
-        //     &crate::ID,
-        // );
-        // require_keys_eq!(
-        //     ctx.accounts.mint_mapping.key(),
-        //     expected_mint_mapping,
-        //     FactoryError::InvalidAccountOwner
-        // );
+        let (expected_mint_mapping, _bump) = Pubkey::find_program_address(
+            &[seeds::MINT_MAPPING, origin_mint_key.as_ref()],
+            &crate::ID,
+        );
+        require_keys_eq!(
+            ctx.accounts.mint_mapping.key(),
+            expected_mint_mapping,
+            FactoryError::InvalidAccountOwner
+        );
 
         // Handle account resizing if needed (for migration from old 85-byte accounts to new 118-byte accounts)
         // We use UncheckedAccount to avoid Anchor's automatic deserialization which fails on old-size accounts
@@ -355,16 +345,32 @@ pub mod ptf_factory {
             crate::ID,
             FactoryError::InvalidAccountOwner
         );
-        
+
         // Validate account is initialized (has at least discriminator)
         require!(
             mint_mapping_info.data_len() >= 8,
             FactoryError::AccountDataTooShort
         );
-        
+
+        // Validate the stored origin mint matches the provided origin mint
+        {
+            let mapping_data = mint_mapping_info.try_borrow_data()?;
+            require!(
+                mapping_data.len() >= 40, // discriminator + origin mint
+                FactoryError::AccountDataTooShort
+            );
+            let stored_origin_mint = Pubkey::try_from_slice(&mapping_data[8..40])
+                .map_err(|_| FactoryError::AccountDataCorrupt)?;
+            require_keys_eq!(
+                stored_origin_mint,
+                origin_mint_key,
+                FactoryError::OriginMintMismatch
+            );
+        }
+
         let current_size = mint_mapping_info.data_len();
         let required_size = MintMapping::SPACE;
-        
+
         // Only resize if account is smaller than required
         // New accounts created after migration will already be 118 bytes
         if current_size < required_size {
@@ -373,7 +379,7 @@ pub mod ptf_factory {
                 current_size >= 93, // 8 (discriminator) + 85 (old struct size)
                 FactoryError::AccountDataTooShort
             );
-            
+
             // Account needs to be resized - similar to pool program's nullifier set reallocation
             let rent_sysvar = anchor_lang::solana_program::sysvar::rent::Rent::get()?;
             let new_minimum_balance = rent_sysvar.minimum_balance(required_size);
@@ -381,20 +387,20 @@ pub mod ptf_factory {
             let additional_rent = new_minimum_balance
                 .checked_sub(current_minimum_balance)
                 .ok_or(FactoryError::AccountDataTooShort)?;
-            
+
             // Check authority has sufficient balance
             let authority_info = ctx.accounts.authority.to_account_info();
             require!(
                 authority_info.lamports() >= additional_rent,
                 FactoryError::AccountDataTooShort
             );
-            
+
             // Transfer additional lamports from authority to account for rent
             if additional_rent > 0 {
                 **mint_mapping_info.try_borrow_mut_lamports()? += additional_rent;
                 **authority_info.try_borrow_mut_lamports()? -= additional_rent;
             }
-            
+
             // Resize the account (zero-initialize new bytes)
             mint_mapping_info.realloc(required_size, true)?; // Use zero-init (true) instead of false
         }
@@ -407,15 +413,15 @@ pub mod ptf_factory {
             mint_mapping_data.len() >= required_size,
             FactoryError::AccountDataTooShort
         );
-        
+
         // Use origin_mint from accounts struct (already validated via PDA check)
         let origin_mint = ctx.accounts.origin_mint.key();
-        
+
         // Write lookup_table field at offset 85 (after discriminator)
         // Option<Pubkey> format: 1 byte (1 = Some) + 32 bytes (Pubkey)
         mint_mapping_data[85] = 1; // Some
         mint_mapping_data[86..118].copy_from_slice(lookup_table_info.key().as_ref());
-        
+
         drop(mint_mapping_data);
 
         // Emit event
@@ -433,7 +439,10 @@ pub mod ptf_factory {
         // CRITICAL FIX: Only allow emergency pause without timelock for security incidents
         // Regular pause must go through timelock to prevent abuse
         // Check if this is emergency pause (via emergency signers)
-        if state.require_emergency_pause_signers(ctx.remaining_accounts).is_ok() {
+        if state
+            .require_emergency_pause_signers(ctx.remaining_accounts)
+            .is_ok()
+        {
             // Emergency pause - no timelock needed for immediate response
             state.paused = true;
             emit!(FactoryPausedEmergency {
@@ -464,33 +473,35 @@ pub mod ptf_factory {
         require!(!state.paused, FactoryError::Paused);
 
         let clock = Clock::get()?;
-        
+
         // CRITICAL FIX: Rate limiting - prevent rapid queue filling
         // Remove migration case - always enforce rate limiting if last_action_time is set
         // This prevents bypass attacks
         if state.last_action_time > 0 {
             require!(
-                clock.unix_timestamp >= state.last_action_time + FactoryState::MIN_TIME_BETWEEN_ACTIONS,
+                clock.unix_timestamp
+                    >= state.last_action_time + FactoryState::MIN_TIME_BETWEEN_ACTIONS,
                 FactoryError::ActionRateLimitExceeded
             );
         }
         state.last_action_time = clock.unix_timestamp;
-        
+
         // CRITICAL FIX: Global rate limiting to prevent coordinated attacks
         if state.last_global_action_time > 0 {
             require!(
-                clock.unix_timestamp >= state.last_global_action_time + FactoryState::MIN_TIME_BETWEEN_ACTIONS,
+                clock.unix_timestamp
+                    >= state.last_global_action_time + FactoryState::MIN_TIME_BETWEEN_ACTIONS,
                 FactoryError::GlobalActionRateLimitExceeded
             );
         }
         state.last_global_action_time = clock.unix_timestamp;
-        
+
         // Determine timelock duration based on action type
         let timelock_duration = match &action {
             TimelockAction::ChangeAuthority { .. } => AUTHORITY_CHANGE_TIMELOCK_SECONDS,
             _ => state.timelock_seconds,
         };
-        
+
         let execute_after = clock
             .unix_timestamp
             .checked_add(timelock_duration)
@@ -499,7 +510,7 @@ pub mod ptf_factory {
         let action_bytes = action
             .try_to_vec()
             .map_err(|_| error!(FactoryError::SerializationError))?;
-        
+
         // CRITICAL FIX: Use sequence for unique entry address
         // Anchor's PDA constraint reads factory_state.last_action_sequence BEFORE the instruction runs
         // So the PDA seeds use the CURRENT sequence value. We set entry.sequence to match the PDA.
@@ -509,7 +520,7 @@ pub mod ptf_factory {
         let next_sequence = current_sequence
             .checked_add(1)
             .ok_or(FactoryError::SequenceOverflow)?;
-        
+
         // CRITICAL FIX: Compute action hash including salt and sequence for additional entropy
         // This prevents hash collisions and makes each action unique
         // Use current_sequence (the one that will be in the entry) for hash computation
@@ -520,15 +531,19 @@ pub mod ptf_factory {
             &execute_after.to_le_bytes(),
             &current_sequence.to_le_bytes(), // CRITICAL FIX: Include sequence for additional entropy
         ]);
-        
+
         // CRITICAL FIX: Check for duplicate actions
         // Optimized: Use position() for O(n) check (same as contains but allows removal)
         let action_hash_bytes = action_hash.to_bytes();
         require!(
-            state.pending_action_hashes.iter().position(|&h| h == action_hash_bytes).is_none(),
+            state
+                .pending_action_hashes
+                .iter()
+                .position(|&h| h == action_hash_bytes)
+                .is_none(),
             FactoryError::DuplicateAction
         );
-        
+
         // CRITICAL FIX: Check maximum pending actions
         require!(
             state.pending_action_hashes.len() < FactoryState::MAX_PENDING_ACTIONS,
@@ -549,7 +564,8 @@ pub mod ptf_factory {
                     FactoryError::OriginMintMismatch
                 );
             }
-            TimelockAction::FreezeMint { origin_mint } | TimelockAction::ThawMint { origin_mint } => {
+            TimelockAction::FreezeMint { origin_mint }
+            | TimelockAction::ThawMint { origin_mint } => {
                 let mapping = ctx
                     .accounts
                     .mint_mapping
@@ -586,7 +602,7 @@ pub mod ptf_factory {
         }
 
         // CRITICAL FIX: Reuse current_sequence and next_sequence calculated above (no duplicate calculation)
-        
+
         // Create the entry with the CURRENT sequence value (matches PDA)
         let entry = &mut ctx.accounts.timelock_entry;
         entry.factory = state.key();
@@ -605,7 +621,7 @@ pub mod ptf_factory {
         entry.expires_at = execute_after
             .checked_add(TIMELOCK_STALE_GRACE_SECONDS)
             .ok_or(FactoryError::TimelockOverflow)?;
-        
+
         // CRITICAL FIX: Increment sequence AFTER entry is created
         // This ensures the next entry uses a different sequence
         state.last_action_sequence = next_sequence;
@@ -615,7 +631,7 @@ pub mod ptf_factory {
                 sequence: state.last_action_sequence,
             });
         }
-        
+
         // CRITICAL FIX: Track this action hash
         state.pending_action_hashes.push(action_hash.to_bytes());
         // Note: last_action_time already updated above in rate limiting check
@@ -631,7 +647,7 @@ pub mod ptf_factory {
 
     // CRITICAL FIX: Maximum size for verifying key data to prevent DoS attacks
     pub const MAX_VERIFYING_KEY_SIZE: usize = 100 * 1024; // 100KB
-    // CRITICAL FIX: Maximum mint amount to prevent excessive minting
+                                                          // CRITICAL FIX: Maximum mint amount to prevent excessive minting
     pub const MAX_MINT_AMOUNT: u64 = 1_000_000_000_000; // 1 trillion (reasonable limit)
 
     pub fn create_verifying_key(
@@ -659,7 +675,7 @@ pub mod ptf_factory {
             ctx.remaining_accounts,
             None,
         )?;
-        
+
         // CRITICAL FIX: Validate verifier program
         require_keys_eq!(
             ctx.accounts.verifier_program.key(),
@@ -677,13 +693,13 @@ pub mod ptf_factory {
             &anchor_lang::solana_program::bpf_loader_upgradeable::ID,
             "verifier_program",
         )?;
-        
+
         // CRITICAL FIX: Validate verifying key data size
         require!(
             verifying_key_data.len() <= ptf_factory::MAX_VERIFYING_KEY_SIZE,
             FactoryError::VerifyingKeyTooLarge
         );
-        
+
         // Verify hash matches
         let mut hasher = Keccak256::new();
         hasher.update(&verifying_key_data);
@@ -692,7 +708,7 @@ pub mod ptf_factory {
             computed_hash == hash,
             FactoryError::VerifyingKeyHashMismatch
         );
-        
+
         // CPI to verifier program - factory program signs as authority
         let cpi_program = ctx.accounts.verifier_program.to_account_info();
         let cpi_accounts = ptf_verifier_groth16::cpi::accounts::InitializeVerifyingKey {
@@ -702,15 +718,12 @@ pub mod ptf_factory {
             payer: ctx.accounts.payer.to_account_info(),
             system_program: ctx.accounts.system_program.to_account_info(),
         };
-        
+
         // Sign with factory_state PDA - the verifier will verify authority is factory program ID
-        let factory_seeds: &[&[&[u8]]] = &[&[
-            seeds::FACTORY,
-            ptf_factory::ID.as_ref(),
-            &[state.bump],
-        ]];
+        let factory_seeds: &[&[&[u8]]] =
+            &[&[seeds::FACTORY, ptf_factory::ID.as_ref(), &[state.bump]]];
         let cpi_ctx = CpiContext::new_with_signer(cpi_program, cpi_accounts, factory_seeds);
-        
+
         ptf_verifier_groth16::cpi::initialize_verifying_key(
             cpi_ctx,
             circuit_tag,
@@ -719,7 +732,7 @@ pub mod ptf_factory {
             version,
             verifying_key_data,
         )?;
-        
+
         emit!(VerifyingKeyCreated {
             circuit_tag,
             verifying_key_id,
@@ -727,7 +740,7 @@ pub mod ptf_factory {
             version,
             created_by: ctx.accounts.authority.key(),
         });
-        
+
         Ok(())
     }
 
@@ -741,7 +754,7 @@ pub mod ptf_factory {
             clock.unix_timestamp >= entry.execute_after,
             FactoryError::TimelockNotReady
         );
-        
+
         // CRITICAL FIX: Check if action has expired
         require!(
             clock.unix_timestamp < entry.expires_at,
@@ -751,7 +764,8 @@ pub mod ptf_factory {
         // CRITICAL FIX: Recompute and verify action hash before execution
         // This ensures the action hasn't been tampered with after queuing
         // MUST include salt and sequence to match queue hash: hash(factory || salt || action || execute_after || sequence)
-        let action_bytes = entry.action
+        let action_bytes = entry
+            .action
             .try_to_vec()
             .map_err(|_| error!(FactoryError::SerializationError))?;
         let expected_hash = hashv(&[
@@ -761,7 +775,7 @@ pub mod ptf_factory {
             &entry.execute_after.to_le_bytes(),
             &entry.sequence.to_le_bytes(), // CRITICAL FIX: Include sequence to match queue hash
         ]);
-        
+
         require!(
             expected_hash.to_bytes() == entry.action_hash,
             FactoryError::TimelockHashMismatch
@@ -890,13 +904,15 @@ pub mod ptf_factory {
                     .mint_mapping
                     .as_mut()
                     .ok_or(FactoryError::TimelockMissingMapping)?;
-                
+
                 // Initialize or update mapping
                 if mapping.origin_mint == Pubkey::default() {
                     mapping.origin_mint = *origin_mint;
                     mapping.status = MintStatus::Active as u8;
                     mapping.decimals = *decimals;
-                    mapping.features = FeatureFlags::from(feature_flags.unwrap_or_else(|| state.default_features.bits()));
+                    mapping.features = FeatureFlags::from(
+                        feature_flags.unwrap_or_else(|| state.default_features.bits()),
+                    );
                     mapping.has_fee_override = fee_bps_override.is_some();
                     mapping.fee_bps_override = fee_bps_override.unwrap_or_default();
                     // Bump is already set when account is initialized via init_if_needed
@@ -911,7 +927,9 @@ pub mod ptf_factory {
                     );
                     mapping.status = MintStatus::Active as u8;
                     mapping.decimals = *decimals;
-                    mapping.features = FeatureFlags::from(feature_flags.unwrap_or_else(|| state.default_features.bits()));
+                    mapping.features = FeatureFlags::from(
+                        feature_flags.unwrap_or_else(|| state.default_features.bits()),
+                    );
                     mapping.has_fee_override = fee_bps_override.is_some();
                     mapping.fee_bps_override = fee_bps_override.unwrap_or_default();
                 }
@@ -940,8 +958,13 @@ pub mod ptf_factory {
                     fee_bps: effective_fee_bps,
                 });
             }
-            TimelockAction::UpdatePoolProgramId { new_pool_program_id } => {
-                let config = &mut ctx.accounts.factory_config.as_mut()
+            TimelockAction::UpdatePoolProgramId {
+                new_pool_program_id,
+            } => {
+                let config = &mut ctx
+                    .accounts
+                    .factory_config
+                    .as_mut()
                     .ok_or(FactoryError::ConfigNotInitialized)?;
                 require_keys_eq!(
                     config.factory,
@@ -960,12 +983,16 @@ pub mod ptf_factory {
 
         state.last_updated_slot = clock.slot;
         entry.executed = true;
-        
+
         // CRITICAL FIX: Remove from pending hashes
         // CRITICAL FIX: Optimize removal - use position + swap_remove for better performance
         // swap_remove is O(1) if removing last element, O(n) for finding position
         // This is more efficient than retain() which is always O(n) and creates new vector
-        if let Some(pos) = state.pending_action_hashes.iter().position(|&h| h == entry.action_hash) {
+        if let Some(pos) = state
+            .pending_action_hashes
+            .iter()
+            .position(|&h| h == entry.action_hash)
+        {
             state.pending_action_hashes.swap_remove(pos);
         }
 
@@ -981,20 +1008,24 @@ pub mod ptf_factory {
     pub fn cancel_timelock_action(ctx: Context<CancelTimelockAction>) -> Result<()> {
         let entry = &mut ctx.accounts.timelock_entry;
         require!(!entry.executed, FactoryError::TimelockConsumed);
-        
+
         let state = &mut ctx.accounts.factory_state;
-        
+
         entry.executed = true;
         entry.canceled = true;
-        
+
         // CRITICAL FIX: Remove from pending hashes
         // CRITICAL FIX: Optimize removal - use position + swap_remove for better performance
         // swap_remove is O(1) if removing last element, O(n) for finding position
         // This is more efficient than retain() which is always O(n) and creates new vector
-        if let Some(pos) = state.pending_action_hashes.iter().position(|&h| h == entry.action_hash) {
+        if let Some(pos) = state
+            .pending_action_hashes
+            .iter()
+            .position(|&h| h == entry.action_hash)
+        {
             state.pending_action_hashes.swap_remove(pos);
         }
-        
+
         let clock = Clock::get()?;
 
         emit!(TimelockCanceled {
@@ -1009,20 +1040,20 @@ pub mod ptf_factory {
     pub fn cleanup_timelock_action(ctx: Context<CleanupTimelockAction>) -> Result<()> {
         let state = &ctx.accounts.factory_state;
         let entry = &mut ctx.accounts.timelock_entry;
-        
+
         // CRITICAL FIX: Require authorization for cleanup
         require_keys_eq!(
             ctx.accounts.cleaner.key(),
             state.authority,
             FactoryError::Unauthorized
         );
-        
+
         // CRITICAL FIX: Verify entry hasn't been executed or canceled
         require!(!entry.executed, FactoryError::TimelockConsumed);
         require!(!entry.canceled, FactoryError::ChangeCanceled);
 
         let clock = Clock::get()?;
-        
+
         // CRITICAL FIX: Only allow cleanup of entries that are:
         // 1. Past execute_after + grace period (30 days)
         // 2. Not executed
@@ -1032,7 +1063,7 @@ pub mod ptf_factory {
             .execute_after
             .checked_add(TIMELOCK_STALE_GRACE_SECONDS)
             .ok_or(FactoryError::TimelockOverflow)?;
-        
+
         require!(
             clock.unix_timestamp >= cleanup_threshold,
             FactoryError::TimelockNotExpired
@@ -1046,7 +1077,11 @@ pub mod ptf_factory {
         // CRITICAL FIX: Optimize removal - use position + swap_remove for better performance
         // swap_remove is O(1) if removing last element, O(n) for finding position
         // This is more efficient than retain() which is always O(n) and creates new vector
-        if let Some(pos) = state.pending_action_hashes.iter().position(|&h| h == entry.action_hash) {
+        if let Some(pos) = state
+            .pending_action_hashes
+            .iter()
+            .position(|&h| h == entry.action_hash)
+        {
             state.pending_action_hashes.swap_remove(pos);
         }
 
@@ -1066,20 +1101,20 @@ pub mod ptf_factory {
             amount <= ptf_factory::MAX_MINT_AMOUNT,
             FactoryError::AmountTooLarge
         );
-        
+
         let factory_state = &ctx.accounts.factory_state;
         require!(!factory_state.paused, FactoryError::Paused);
 
         let mapping = &ctx.accounts.mint_mapping;
         require!(mapping.has_ptkn, FactoryError::PtknMintDisabled);
-        
+
         // CRITICAL FIX: Check mint status to prevent frozen mints from minting PTKN
         // Governance can freeze a mint, and this should prevent all operations including PTKN minting
         require!(
             mapping.status == MintStatus::Active as u8,
             FactoryError::MintFrozen
         );
-        
+
         // CRITICAL FIX: Validate destination account is not default/uninitialized
         require!(
             ctx.accounts.destination_token_account.owner != Pubkey::default(),
@@ -1159,26 +1194,35 @@ pub mod ptf_factory {
     ) -> Result<()> {
         let state = &ctx.accounts.factory_state;
         require!(!state.paused, FactoryError::Paused);
-        
+
         // Validate inputs
         require!(decimals <= 12, FactoryError::InvalidDecimals);
-        require!(!name.is_empty() && name.len() <= TokenMetadata::MAX_NAME_LEN, FactoryError::MetadataTooLong);
-        require!(!symbol.is_empty() && symbol.len() <= TokenMetadata::MAX_SYMBOL_LEN, FactoryError::MetadataTooLong);
-        require!(!uri.is_empty() && uri.len() <= TokenMetadata::MAX_URI_LEN, FactoryError::MetadataTooLong);
+        require!(
+            !name.is_empty() && name.len() <= TokenMetadata::MAX_NAME_LEN,
+            FactoryError::MetadataTooLong
+        );
+        require!(
+            !symbol.is_empty() && symbol.len() <= TokenMetadata::MAX_SYMBOL_LEN,
+            FactoryError::MetadataTooLong
+        );
+        require!(
+            !uri.is_empty() && uri.len() <= TokenMetadata::MAX_URI_LEN,
+            FactoryError::MetadataTooLong
+        );
         require!(initial_supply > 0, FactoryError::InvalidAmount);
-        
+
         // Validate URI format (should start with "ipfs://" or be a valid CID)
-        let is_valid_uri = uri.starts_with("ipfs://") || 
-                          (uri.len() >= 46 && uri.chars().all(|c| c.is_alphanumeric() || c == '-'));
+        let is_valid_uri = uri.starts_with("ipfs://")
+            || (uri.len() >= 46 && uri.chars().all(|c| c.is_alphanumeric() || c == '-'));
         require!(is_valid_uri, FactoryError::InvalidMetadataURI);
-        
+
         // Validate fee override if provided
         const MAX_FEE_BPS_OVERRIDE: u16 = 1000;
         if let Some(fee) = fee_bps_override {
             require!(fee <= MAX_BPS, FactoryError::InvalidFeeBps);
             require!(fee <= MAX_FEE_BPS_OVERRIDE, FactoryError::InvalidFeeBps);
         }
-        
+
         // Check if mint_mapping already exists (prevent duplicate) - do this before any mutable borrows
         {
             let mapping_info = ctx.accounts.mint_mapping.to_account_info();
@@ -1196,7 +1240,7 @@ pub mod ptf_factory {
                 }
             }
         }
-        
+
         // Create traditional SPL mint with 0 supply, factory as mint authority
         let origin_mint_key = create_origin_mint(
             state,
@@ -1206,7 +1250,7 @@ pub mod ptf_factory {
             &ctx.accounts.payer,
             decimals,
         )?;
-        
+
         // Create metadata account
         let metadata = &mut ctx.accounts.metadata;
         metadata.name = name;
@@ -1215,14 +1259,15 @@ pub mod ptf_factory {
         metadata.mint = origin_mint_key;
         metadata.update_authority = state.key();
         metadata.bump = ctx.bumps.metadata;
-        
+
         // Register mint in factory with is_native_ztoken = true
         {
             let mapping = &mut ctx.accounts.mint_mapping;
             mapping.origin_mint = origin_mint_key;
             mapping.status = MintStatus::Active as u8;
             mapping.decimals = decimals;
-            mapping.features = FeatureFlags::from(feature_flags.unwrap_or_else(|| state.default_features.bits()));
+            mapping.features =
+                FeatureFlags::from(feature_flags.unwrap_or_else(|| state.default_features.bits()));
             mapping.has_fee_override = fee_bps_override.is_some();
             mapping.fee_bps_override = fee_bps_override.unwrap_or_default();
             mapping.bump = ctx.bumps.mint_mapping;
@@ -1240,7 +1285,9 @@ pub mod ptf_factory {
             body[64] = 0; // has_ptkn
             body[65] = MintStatus::Active as u8;
             body[66] = decimals;
-            body[67] = FeatureFlags::from(feature_flags.unwrap_or_else(|| state.default_features.bits())).bits();
+            body[67] =
+                FeatureFlags::from(feature_flags.unwrap_or_else(|| state.default_features.bits()))
+                    .bits();
             body[68..70].copy_from_slice(&fee_bps_override.unwrap_or_default().to_le_bytes());
             body[70] = fee_bps_override.is_some() as u8;
             body[71] = ctx.bumps.mint_mapping;
@@ -1250,7 +1297,7 @@ pub mod ptf_factory {
             ctx.accounts.mint_mapping.origin_mint,
             true
         );
-        
+
         // Validate pool and vault program IDs
         let pool_program_id = if let Some(config) = ctx.accounts.factory_config.as_ref() {
             require_keys_eq!(
@@ -1267,46 +1314,46 @@ pub mod ptf_factory {
             pool_program_id,
             FactoryError::InvalidVerifierProgram
         );
-        
+
         // Validate vault program ID (use hardcoded for now, could add to config later)
         require_keys_eq!(
             ctx.accounts.vault_program.key(),
             PTF_VAULT_PROGRAM_ID,
             FactoryError::InvalidVerifierProgram
         );
-        
+
         let fee_bps = fee_bps_override.unwrap_or(state.default_fee_bps);
         let features = feature_flags.unwrap_or_else(|| state.default_features.bits());
         let factory_bump = state.bump;
         let signer_seeds: [&[u8]; 3] = [seeds::FACTORY, crate::ID.as_ref(), &[factory_bump]];
-        
+
         // Initialize vault first so pool program can validate its state
         let (pool_authority, _) = Pubkey::find_program_address(
             &[seeds::POOL, origin_mint_key.as_ref()],
             &pool_program_id,
         );
-        
+
         // Compute vault instruction discriminator: sha256("global:initialize_vault")[0..8]
         let vault_discriminator = hashv(&[b"global:initialize_vault"]).to_bytes()[0..8].to_vec();
-        
+
         // Serialize args: pool_authority (Pubkey = 32 bytes)
         let mut vault_data = vault_discriminator;
         vault_data.extend_from_slice(pool_authority.as_ref());
-        
+
         let vault_accounts = vec![
             AccountMeta::new(ctx.accounts.vault_state.key(), false), // vault_state
             AccountMeta::new_readonly(ctx.accounts.origin_mint.key(), false), // origin_mint
-            AccountMeta::new(ctx.accounts.payer.key(), true), // payer (signer)
+            AccountMeta::new(ctx.accounts.payer.key(), true),        // payer (signer)
             AccountMeta::new_readonly(ctx.accounts.token_program.key(), false), // token_program
             AccountMeta::new_readonly(ctx.accounts.system_program.key(), false), // system_program
         ];
-        
+
         let vault_ix = Instruction {
             program_id: PTF_VAULT_PROGRAM_ID,
             accounts: vault_accounts,
             data: vault_data,
         };
-        
+
         let vault_account_infos = vec![
             ctx.accounts.vault_state.to_account_info(),
             ctx.accounts.origin_mint.to_account_info(),
@@ -1314,45 +1361,45 @@ pub mod ptf_factory {
             ctx.accounts.token_program.to_account_info(),
             ctx.accounts.system_program.to_account_info(),
         ];
-        
+
         invoke_signed(&vault_ix, &vault_account_infos, &[&signer_seeds])?;
 
         // Initialize pool via invoke_signed (avoiding circular dependency)
         // Compute instruction discriminator: sha256("global:initialize_pool")[0..8]
         let pool_discriminator = hashv(&[b"global:initialize_pool"]).to_bytes()[0..8].to_vec();
-        
+
         // Serialize args: fee_bps (u16) + features (u8)
         let mut pool_data = pool_discriminator;
         pool_data.extend_from_slice(&fee_bps.to_le_bytes());
         pool_data.push(features);
-        
+
         // Build account metas for pool initialization
         let mut pool_accounts = vec![
             AccountMeta::new(ctx.accounts.factory_state.key(), true), // authority (factory PDA, signer)
-            AccountMeta::new(ctx.accounts.pool_state.key(), false), // pool_state
+            AccountMeta::new(ctx.accounts.pool_state.key(), false),   // pool_state
             AccountMeta::new(ctx.accounts.nullifier_set.key(), false), // nullifier_set
-            AccountMeta::new(ctx.accounts.note_ledger.key(), false), // note_ledger
+            AccountMeta::new(ctx.accounts.note_ledger.key(), false),  // note_ledger
             AccountMeta::new(ctx.accounts.commitment_tree.key(), false), // commitment_tree
-            AccountMeta::new(ctx.accounts.hook_config.key(), false), // hook_config
+            AccountMeta::new(ctx.accounts.hook_config.key(), false),  // hook_config
             AccountMeta::new(ctx.accounts.hook_whitelist.key(), false), // hook_whitelist
-            AccountMeta::new(ctx.accounts.vault_state.key(), false), // vault_state
+            AccountMeta::new(ctx.accounts.vault_state.key(), false),  // vault_state
             AccountMeta::new_readonly(ctx.accounts.origin_mint.key(), false), // origin_mint
             AccountMeta::new_readonly(ctx.accounts.mint_mapping.key(), false), // mint_mapping
             AccountMeta::new_readonly(ctx.accounts.factory_state.key(), false), // factory_state
-            AccountMeta::new_readonly(pool_program_id, false), // twin_mint None sentinel
+            AccountMeta::new_readonly(pool_program_id, false),        // twin_mint None sentinel
             AccountMeta::new_readonly(ctx.accounts.verifier_program.key(), false), // verifier_program
-            AccountMeta::new_readonly(ctx.accounts.verifying_key.key(), false), // verifying_key
-            AccountMeta::new(ctx.accounts.payer.key(), true), // payer (signer)
-            AccountMeta::new_readonly(ctx.accounts.system_program.key(), false), // system_program
-            AccountMeta::new_readonly(ctx.accounts.token_program.key(), false), // token_program
+            AccountMeta::new_readonly(ctx.accounts.verifying_key.key(), false),    // verifying_key
+            AccountMeta::new(ctx.accounts.payer.key(), true),                      // payer (signer)
+            AccountMeta::new_readonly(ctx.accounts.system_program.key(), false),   // system_program
+            AccountMeta::new_readonly(ctx.accounts.token_program.key(), false),    // token_program
         ];
-        
+
         let pool_ix = Instruction {
             program_id: pool_program_id,
             accounts: pool_accounts,
             data: pool_data,
         };
-        
+
         let account_infos = vec![
             ctx.accounts.factory_state.to_account_info(),
             ctx.accounts.pool_state.to_account_info(),
@@ -1372,9 +1419,9 @@ pub mod ptf_factory {
             ctx.accounts.system_program.to_account_info(),
             ctx.accounts.token_program.to_account_info(),
         ];
-        
+
         invoke_signed(&pool_ix, &account_infos, &[&signer_seeds])?;
-        
+
         // Ensure the user's token account (ATA) exists for the newly created mint
         let expected_user_ata = get_associated_token_address_with_program_id(
             &ctx.accounts.payer.key(),
@@ -1422,8 +1469,10 @@ pub mod ptf_factory {
             &signer_seeds_for_cpi,
         );
         token_interface::mint_to(mint_cpi_ctx, initial_supply)?;
-        
-        let features_bits = FeatureFlags::from(feature_flags.unwrap_or_else(|| state.default_features.bits())).bits();
+
+        let features_bits =
+            FeatureFlags::from(feature_flags.unwrap_or_else(|| state.default_features.bits()))
+                .bits();
         emit!(MintRegistered {
             origin_mint: origin_mint_key,
             ptkn_mint: Pubkey::default(),
@@ -1431,7 +1480,7 @@ pub mod ptf_factory {
             features: features_bits,
             fee_bps: fee_bps,
         });
-        
+
         Ok(())
     }
 }
@@ -1445,7 +1494,7 @@ fn create_origin_mint<'info>(
     decimals: u8,
 ) -> Result<Pubkey> {
     let mint_info = mint_account.to_account_info();
-    
+
     // Create mint account if it doesn't exist
     if mint_info.owner == &system_program::ID && mint_info.data_is_empty() {
         let mint_space = <Token2022Mint as Token2022Pack>::LEN;
@@ -1458,7 +1507,7 @@ fn create_origin_mint<'info>(
             token_program.key,
         );
         invoke(&create_ix, &[payer.to_account_info(), mint_info.clone()])?;
-        
+
         // Initialize mint with factory as mint authority, no freeze authority
         let init_accounts = token_interface::InitializeMint2 {
             mint: mint_info.clone(),
@@ -1468,7 +1517,7 @@ fn create_origin_mint<'info>(
     } else {
         return err!(FactoryError::InvalidMintFormat);
     }
-    
+
     Ok(*mint_info.key)
 }
 
@@ -1814,9 +1863,27 @@ impl FactoryState {
     pub const MAX_MULTISIG_SIGNERS: usize = 10;
     pub const MAX_EMERGENCY_SIGNERS: usize = 10;
     // SPACE = discriminator[8] + authority[32] + default_fee_bps[2] + default_features[1] + paused[1] + timelock_seconds[8] + bump[1] + last_updated_slot[8] + pending_action_hashes[4 + (32 * MAX_PENDING_ACTIONS)] + last_action_sequence[8] + last_action_time[8] + multi_sig_signers[4 + (32 * MAX_MULTISIG_SIGNERS)] + multi_sig_threshold[1] + emergency_pause_signers[4 + (32 * MAX_EMERGENCY_SIGNERS)] + emergency_pause_threshold[1]
-    pub const SPACE: usize = 8 + 32 + 2 + 1 + 1 + 8 + 1 + 8 + 4 + (32 * Self::MAX_PENDING_ACTIONS) + 8 + 8 + 8 + 4 + (32 * Self::MAX_MULTISIG_SIGNERS) + 1 + 4 + (32 * Self::MAX_EMERGENCY_SIGNERS) + 1;
+    pub const SPACE: usize = 8
+        + 32
+        + 2
+        + 1
+        + 1
+        + 8
+        + 1
+        + 8
+        + 4
+        + (32 * Self::MAX_PENDING_ACTIONS)
+        + 8
+        + 8
+        + 8
+        + 4
+        + (32 * Self::MAX_MULTISIG_SIGNERS)
+        + 1
+        + 4
+        + (32 * Self::MAX_EMERGENCY_SIGNERS)
+        + 1;
     pub const SEQUENCE_WARNING_THRESHOLD: u64 = u64::MAX - 1_000_000;
-    
+
     // CRITICAL FIX: Check if authority or multi-sig is satisfied
     pub fn require_authority_or_multisig(
         &self,
@@ -1827,14 +1894,19 @@ impl FactoryState {
         if authority_key == &self.authority {
             return Ok(());
         }
-        
+
         // Check multi-sig if configured
         if !self.multi_sig_signers.is_empty() && self.multi_sig_threshold > 0 {
             let mut signatures = 0u8;
             for signer_pubkey in &self.multi_sig_signers {
                 // Check if this signer is in remaining_accounts and is a signer
-                if remaining_accounts.iter().any(|acc| acc.key() == *signer_pubkey && acc.is_signer) {
-                    signatures = signatures.checked_add(1).ok_or(FactoryError::InsufficientSignatures)?;
+                if remaining_accounts
+                    .iter()
+                    .any(|acc| acc.key() == *signer_pubkey && acc.is_signer)
+                {
+                    signatures = signatures
+                        .checked_add(1)
+                        .ok_or(FactoryError::InsufficientSignatures)?;
                 }
             }
             require!(
@@ -1843,10 +1915,10 @@ impl FactoryState {
             );
             return Ok(());
         }
-        
+
         err!(FactoryError::Unauthorized)
     }
-    
+
     // CRITICAL FIX: Check emergency pause signers
     pub fn require_emergency_pause_signers(
         &self,
@@ -1856,7 +1928,7 @@ impl FactoryState {
             !self.emergency_pause_signers.is_empty(),
             FactoryError::EmergencyPauseNotConfigured
         );
-        
+
         // CRITICAL FIX: Add duplicate signer tracking to prevent single signer from being counted multiple times
         let mut signatures = 0u8;
         let mut seen_signers = std::collections::HashSet::new();
@@ -1864,7 +1936,9 @@ impl FactoryState {
             if remaining_accounts.iter().any(|acc| {
                 acc.key() == *signer_pubkey && acc.is_signer && seen_signers.insert(*signer_pubkey)
             }) {
-                signatures = signatures.checked_add(1).ok_or(FactoryError::InsufficientEmergencySignatures)?;
+                signatures = signatures
+                    .checked_add(1)
+                    .ok_or(FactoryError::InsufficientEmergencySignatures)?;
             }
         }
         require!(
@@ -1927,7 +2001,8 @@ impl TokenMetadata {
     pub const MAX_NAME_LEN: usize = 32;
     pub const MAX_SYMBOL_LEN: usize = 10;
     pub const MAX_URI_LEN: usize = 200;
-    pub const SPACE: usize = 8 + 4 + Self::MAX_NAME_LEN + 4 + Self::MAX_SYMBOL_LEN + 4 + Self::MAX_URI_LEN + 32 + 32 + 1;
+    pub const SPACE: usize =
+        8 + 4 + Self::MAX_NAME_LEN + 4 + Self::MAX_SYMBOL_LEN + 4 + Self::MAX_URI_LEN + 32 + 32 + 1;
 }
 
 #[account]
@@ -2084,7 +2159,7 @@ fn prepare_ptkn_mint<'info>(
             }
             COption::None => return err!(FactoryError::PtknAuthorityMissing),
         }
-        
+
         // CRITICAL FIX: Also set freeze authority to None or factory PDA
         // This prevents attackers from freezing accounts after registration
         // Check if freeze authority exists and is not already None
@@ -2110,25 +2185,21 @@ fn load_mint_state(account_info: &AccountInfo<'_>) -> Result<Mint> {
         .try_borrow_data()
         .map_err(|_| error!(FactoryError::AccountDataReadFailed))?;
     // Minimum mint account size is 82 bytes
-    require!(
-        data.len() >= 82,
-        FactoryError::AccountDataTooShort
-    );
+    require!(data.len() >= 82, FactoryError::AccountDataTooShort);
     let mut slice: &[u8] = &data;
-    Mint::try_deserialize(&mut slice)
-        .map_err(|_| error!(FactoryError::InvalidMintFormat))
+    Mint::try_deserialize(&mut slice).map_err(|_| error!(FactoryError::InvalidMintFormat))
 }
 
 fn load_mint_decimals(account_info: &AccountInfo<'_>) -> Result<u8> {
     Ok(load_mint_state(account_info)?.decimals)
 }
 
-fn validate_mint_account(mint: &InterfaceAccount<Mint>, expected_decimals: Option<u8>) -> Result<()> {
+fn validate_mint_account(
+    mint: &InterfaceAccount<Mint>,
+    expected_decimals: Option<u8>,
+) -> Result<()> {
     if let Some(expected) = expected_decimals {
-        require!(
-            mint.decimals == expected,
-            FactoryError::DecimalsMismatch
-        );
+        require!(mint.decimals == expected, FactoryError::DecimalsMismatch);
     }
     // Additional validation can be added here
     Ok(())
