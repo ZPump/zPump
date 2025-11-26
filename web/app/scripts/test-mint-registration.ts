@@ -6,6 +6,8 @@
 
 import { Connection, Keypair, PublicKey } from '@solana/web3.js';
 import { TOKEN_PROGRAM_ID } from '@solana/spl-token';
+import { fetchMintMappingAccount } from '../lib/sdk';
+import { deriveMintMapping } from '../lib/onchain/pdas';
 
 const RPC_URL = process.env.RPC_URL || 'http://127.0.0.1:8899';
 const MINTS_API_URL = process.env.MINTS_API_URL || 'http://localhost:3000/api/mints';
@@ -81,6 +83,25 @@ async function main() {
   }
 
   console.log(`[test] Test 2 PASSED: All ${symbols.length} registrations succeeded`);
+
+  // Test 2.5: Verify MintMapping can be read and lookup_table field exists (will be null initially)
+  console.log('\n[test] Test 2.5: Verify MintMapping structure includes lookup_table field');
+  try {
+    const lastRegisteredSymbol = symbols[symbols.length - 1];
+    const lastResponse = await fetch(`${MINTS_API_URL}?symbol=${lastRegisteredSymbol}`);
+    if (lastResponse.ok) {
+      const lastResult = await lastResponse.json();
+      const originMint = new PublicKey(lastResult.mint?.originMint);
+      const { decoded: mintMapping } = await fetchMintMappingAccount(connection, originMint);
+      console.log(`[test] ✓ MintMapping read successfully for ${lastRegisteredSymbol}`);
+      console.log(`[test]   - lookup_table: ${mintMapping.lookupTable ? mintMapping.lookupTable.toBase58() : 'null (expected - will be set on first shield)'}`);
+      if (mintMapping.lookupTable !== null && mintMapping.lookupTable !== undefined) {
+        console.warn(`[test]   WARNING: lookup_table is set before first shield (unexpected)`);
+      }
+    }
+  } catch (error) {
+    console.warn(`[test] Could not verify MintMapping lookup_table field:`, error instanceof Error ? error.message : String(error));
+  }
 
   // Test 3: Rapid sequential registrations (stress test)
   console.log('\n[test] Test 3: Rapid sequential registrations (stress test)');

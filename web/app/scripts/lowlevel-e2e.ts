@@ -52,6 +52,7 @@ import {
   deriveHookWhitelist,
   deriveTokenMetadata
 } from '../lib/onchain/pdas';
+import { fetchMintMappingAccount, setLookupTableForMint } from '../lib/sdk';
 import { ensureFetchPolyfill } from './utils/fetch-polyfill';
 
 ensureFetchPolyfill();
@@ -365,6 +366,7 @@ async function createLookupTableForAddresses(
   
   // Retry logic for lookup table creation due to slot staleness
   let tableAddress: PublicKey | null = null;
+  let creationSlot: number | null = null;
   let retries = 10; // Increase retries significantly for devnet
   
   while (retries > 0 && !tableAddress) {
@@ -375,6 +377,7 @@ async function createLookupTableForAddresses(
       }
       // Get the current slot directly - this is the most recent slot available
       const currentSlot = await connection.getSlot('processed');
+      creationSlot = currentSlot; // Store for activation check
       const [createIx, address] = AddressLookupTableProgram.createLookupTable({
         authority: payer.publicKey,
         payer: payer.publicKey,
@@ -428,44 +431,167 @@ async function createLookupTableForAddresses(
       lookupTable: tableAddress,
       addresses: chunk
     });
-    await sendAndConfirmInstructions(connection, payer, [extendIx]);
+    await sendAndConfirmInstructions(connection, payer, [extendIx], undefined);
   }
   
-  // Wait a bit for lookup table to be fully activated and available
-  await sleep(1000);
+  if (!creationSlot) {
+    throw new Error('Failed to capture creation slot');
+  }
   
-  // Verify lookup table is accessible
+  // Wait for lookup table to be fully activated and available
+  let activated = false;
+  let attempts = 0;
+  const maxAttempts = 60; // 30 seconds max
+  const U64_MAX = BigInt('18446744073709551615'); // u64::MAX
+  
+  while (!activated && attempts < maxAttempts) {
+    await sleep(500);
+    attempts++;
+    const currentSlot = await connection.getSlot('confirmed');
+    const tableResponse = await connection.getAddressLookupTable(tableAddress);
+    if (tableResponse.value && tableResponse.value.state) {
+      const deactivationSlot = tableResponse.value.state.deactivationSlot;
+      // Lookup table is active when deactivationSlot is null OR u64::MAX (18446744073709551615)
+      const isActive = deactivationSlot === null || 
+                       (typeof deactivationSlot === 'bigint' && deactivationSlot === U64_MAX) ||
+                       (typeof deactivationSlot === 'number' && deactivationSlot === Number(U64_MAX)) ||
+                       (typeof deactivationSlot === 'string' && BigInt(deactivationSlot) === U64_MAX);
+      
+      if (currentSlot >= creationSlot + 1 && isActive) {
+        activated = true;
+        console.info(`[createLookupTableForAddresses] Lookup table activated at slot ${currentSlot}`);
+      } else if (attempts % 10 === 0) {
+        console.info(`[createLookupTableForAddresses] Waiting for activation... current slot: ${currentSlot}, need: ${creationSlot + 1}, deactivationSlot: ${deactivationSlot}, isActive: ${isActive}`);
+      }
+    } else if (attempts % 10 === 0) {
+      console.info(`[createLookupTableForAddresses] Waiting for lookup table to be available (attempt ${attempts}/${maxAttempts})...`);
+    }
+  }
+  
+  if (!activated) {
+    throw new Error(`Lookup table not activated within ${maxAttempts * 0.5} seconds`);
+  }
+  
+  // Additional wait to ensure account data has propagated to all nodes
+  // This is important because the Rust program reads account data directly
+  // We need to wait for enough slots to pass so the lookup table is fully activated
+  const currentSlotAfterActivation = await connection.getSlot('confirmed');
+  const slotsNeeded = Math.max(0, (creationSlot + 1) - currentSlotAfterActivation);
+  if (slotsNeeded > 0) {
+    console.info(`[createLookupTableForAddresses] Waiting for ${slotsNeeded} more slots to pass...`);
+    // Wait for slots to advance (each slot is ~400ms, so wait a bit longer)
+    await sleep(Math.max(2000, slotsNeeded * 500));
+  } else {
+    console.info(`[createLookupTableForAddresses] Waiting additional 3 seconds for account data propagation...`);
+    await sleep(3000);
+  }
+  
+  // Verify lookup table is accessible and still active
   const tableResponse = await connection.getAddressLookupTable(tableAddress);
   if (!tableResponse.value) {
     throw new Error('Lookup table not found after creation');
   }
   
+  // Double-check activation state after wait
+  if (tableResponse.value.state) {
+    const deactivationSlot = tableResponse.value.state.deactivationSlot;
+    const U64_MAX = BigInt('18446744073709551615');
+    const isActive = deactivationSlot === null || 
+                     (typeof deactivationSlot === 'bigint' && deactivationSlot === U64_MAX) ||
+                     (typeof deactivationSlot === 'number' && deactivationSlot === Number(U64_MAX)) ||
+                     (typeof deactivationSlot === 'string' && BigInt(deactivationSlot) === U64_MAX);
+    if (!isActive) {
+      throw new Error(`Lookup table is not active after wait period. deactivationSlot: ${deactivationSlot}`);
+    }
+    console.info(`[createLookupTableForAddresses] Lookup table verified active before returning`);
+  }
+  
+  // Note: We rely on the API-based activation check above (lines 441-507)
+  // The Rust program will validate the lookup table is active when set_lookup_table is called
+  // For devnet, lookup tables may have deactivation_slot values that aren't exactly u64::MAX
+  // but are still considered active by the Rust program (threshold check)
+  
   return tableAddress;
+}
+
+/**
+ * Gets lookup table from MintMapping account, or returns undefined if not set
+ */
+async function getLookupTableFromMintMapping(
+  connection: Connection,
+  originMint: PublicKey
+): Promise<string | undefined> {
+  try {
+    const { decoded: mintMapping } = await fetchMintMappingAccount(connection, originMint);
+    console.info(`[getLookupTableFromMintMapping] MintMapping for ${originMint.toBase58()}: lookupTable=${mintMapping.lookupTable?.toBase58() || 'null'}`);
+    if (mintMapping.lookupTable) {
+      // Verify lookup table is active
+      const tableResponse = await connection.getAddressLookupTable(mintMapping.lookupTable);
+      if (tableResponse.value && tableResponse.value.state) {
+        const deactivationSlot = tableResponse.value.state.deactivationSlot;
+        const U64_MAX = BigInt('18446744073709551615');
+        // Lookup table is active when deactivationSlot is null OR u64::MAX
+        const isActive = deactivationSlot === null || 
+                         (typeof deactivationSlot === 'bigint' && deactivationSlot === U64_MAX) ||
+                         (typeof deactivationSlot === 'number' && deactivationSlot === Number(U64_MAX)) ||
+                         (typeof deactivationSlot === 'string' && BigInt(deactivationSlot) === U64_MAX);
+        console.info(`[getLookupTableFromMintMapping] Lookup table ${mintMapping.lookupTable.toBase58()} isActive=${isActive}, deactivationSlot=${deactivationSlot}`);
+        if (isActive) {
+          return mintMapping.lookupTable.toBase58();
+        }
+      } else {
+        console.warn(`[getLookupTableFromMintMapping] Lookup table ${mintMapping.lookupTable.toBase58()} not found or inactive`);
+      }
+    } else {
+      console.info(`[getLookupTableFromMintMapping] No lookup table in MintMapping for ${originMint.toBase58()}`);
+    }
+  } catch (error) {
+    console.warn('[getLookupTableFromMintMapping] Failed to get lookup table from MintMapping:', error);
+  }
+  return undefined;
 }
 
 async function sendAndConfirmInstructions(
   connection: Connection,
   payer: Keypair,
   instructions: TransactionInstruction[],
-  lookupTable?: string
+  originMintOrLookupTable?: PublicKey | string
 ): Promise<string> {
   const latestBlockhash = await connection.getLatestBlockhash('confirmed');
   const lookupTables: AddressLookupTableAccount[] = [];
+  let lookupTableAddress: string | undefined;
 
-  if (lookupTable) {
+  // Handle both PublicKey (originMint) and string (legacy lookup table ID)
+  if (originMintOrLookupTable) {
+    if (typeof originMintOrLookupTable === 'string') {
+      // Legacy: lookup table ID passed as string
+      lookupTableAddress = originMintOrLookupTable;
+    } else {
+      // New: get lookup table from MintMapping
+      lookupTableAddress = await getLookupTableFromMintMapping(connection, originMintOrLookupTable);
+    }
+  }
+
+  if (lookupTableAddress) {
     try {
-      const tableKey = new PublicKey(lookupTable);
+      const tableKey = new PublicKey(lookupTableAddress);
       const response = await connection.getAddressLookupTable(tableKey);
       if (response.value) {
         lookupTables.push(response.value);
+        console.info(`[sendAndConfirmInstructions] Using lookup table: ${lookupTableAddress} with ${response.value.state.addresses.length} addresses`);
+      } else {
+        console.warn(`[sendAndConfirmInstructions] Lookup table ${lookupTableAddress} not found`);
       }
     } catch (error) {
-      console.warn('[lowlevel-e2e] failed to load lookup table', error);
+      console.warn('[sendAndConfirmInstructions] failed to load lookup table', error);
     }
+  } else {
+    console.warn(`[sendAndConfirmInstructions] No lookup table provided for originMint: ${originMintOrLookupTable?.toString()}`);
   }
 
   let signature: string;
   if (lookupTables.length > 0) {
+    console.info(`[sendAndConfirmInstructions] Compiling versioned transaction with lookup table`);
     const message = new TransactionMessage({
       payerKey: payer.publicKey,
       recentBlockhash: latestBlockhash.blockhash,
@@ -473,13 +599,18 @@ async function sendAndConfirmInstructions(
     }).compileToV0Message(lookupTables);
     const tx = new VersionedTransaction(message);
     tx.sign([payer]);
+    const txSize = tx.serialize().length;
+    console.info(`[sendAndConfirmInstructions] Versioned transaction size: ${txSize} bytes`);
     signature = await connection.sendRawTransaction(tx.serialize(), { skipPreflight: false });
   } else {
+    console.warn(`[sendAndConfirmInstructions] No lookup table available, using legacy transaction (may be too large)`);
     const tx = new Transaction();
     tx.feePayer = payer.publicKey;
     tx.recentBlockhash = latestBlockhash.blockhash;
     tx.add(...instructions);
     tx.sign(payer);
+    const txSize = tx.serialize().length;
+    console.info(`[sendAndConfirmInstructions] Legacy transaction size: ${txSize} bytes`);
     signature = await connection.sendRawTransaction(tx.serialize(), { skipPreflight: false });
   }
 
@@ -658,7 +789,7 @@ async function main() {
         ],
         data: poolCoder.instruction.encode('shield_finalize_tree', {})
       });
-      await sendAndConfirmInstructions(connection, adminAuthority, [finalizeTreeIx], mintConfig.lookupTable);
+      await sendAndConfirmInstructions(connection, adminAuthority, [finalizeTreeIx], originMintKey);
     } catch (e) {
       console.warn('[setup] Could not finalize tree, trying ledger...', (e as Error).message);
     }
@@ -674,7 +805,7 @@ async function main() {
         ],
         data: poolCoder.instruction.encode('shield_finalize_ledger', {})
       });
-      await sendAndConfirmInstructions(connection, adminAuthority, [finalizeLedgerIx], mintConfig.lookupTable);
+      await sendAndConfirmInstructions(connection, adminAuthority, [finalizeLedgerIx], originMintKey);
     } catch (e) {
       console.warn('[setup] Could not finalize ledger...', (e as Error).message);
     }
@@ -690,7 +821,7 @@ async function main() {
         ],
         data: poolCoder.instruction.encode('shield_check_invariant', {})
       });
-      await sendAndConfirmInstructions(connection, adminAuthority, [checkInvariantIx], mintConfig.lookupTable);
+      await sendAndConfirmInstructions(connection, adminAuthority, [checkInvariantIx], originMintKey);
       await waitForShieldClaimCleared(connection, shieldClaimKey);
     } catch (e) {
       console.warn('[setup] Could not check invariant...', (e as Error).message);
@@ -698,6 +829,15 @@ async function main() {
   }
 
   console.info('[test-01] Testing shield instruction (low-level)');
+  
+  // Ensure lookup table exists before first shield (to avoid "Transaction too large" error)
+  console.info('[test-01] Ensuring lookup table exists for shield transaction...');
+  let existingLookupTable = await getLookupTableFromMintMapping(connection, originMintKey);
+  if (!existingLookupTable) {
+    console.info('[test-01] No lookup table in MintMapping, creating one...');
+    // We'll create it after we have all the addresses we need
+  }
+
   const depositorTokenAccount = await getAssociatedTokenAddress(
     originMintKey,
     owner.publicKey,
@@ -775,6 +915,121 @@ async function main() {
     TOKEN_PROGRAM_ID,
     ASSOCIATED_TOKEN_PROGRAM_ID
   );
+  
+  // Create lookup table if it doesn't exist (now that we have all addresses)
+  if (!existingLookupTable) {
+    console.info('[test-01] Creating lookup table with all shield addresses...');
+    // Collect all addresses that will be used in shield transaction
+    const allShieldAddresses = [
+      poolStateKey,
+      hookConfigKey,
+      hookWhitelistKey,
+      nullifierSetKey,
+      commitmentTreeKey,
+      noteLedgerKey,
+      vaultStateKey,
+      vaultTokenAccount,
+      depositorTokenAccount,
+      VERIFIER_PROGRAM_ID,
+      verifyingKey,
+      shieldClaimKey,
+      owner.publicKey,
+      originMintKey,
+      mintMappingKey,
+      VAULT_PROGRAM_ID,
+      TOKEN_PROGRAM_ID,
+      SystemProgram.programId,
+      SYSVAR_RENT_PUBKEY
+    ];
+    if (mintConfig.zTokenMint) {
+      allShieldAddresses.push(new PublicKey(mintConfig.zTokenMint));
+    }
+    
+    // Create lookup table using existing helper (uses owner as authority to avoid PDA signing issues)
+    // Note: For production, we'd transfer authority to factory state, but for testing this works
+    console.info('[test-01] Creating lookup table with owner as authority...');
+    const lookupTableAddress = await createLookupTableForAddresses(connection, owner, allShieldAddresses);
+    
+    // Store lookup table in MintMapping (requires factory authority)
+    // Note: The Rust program validates authority matches factory state, but for testing we'll allow owner authority
+    // In production, we'd need to transfer authority to factory state first
+    const factoryState = deriveFactoryState();
+    const mintMapping = deriveMintMapping(originMintKey);
+    const setLookupTableData = factoryCoder.instruction.encode('set_lookup_table', {});
+    const setLookupTableIx = new TransactionInstruction({
+      programId: FACTORY_PROGRAM_ID,
+      keys: [
+        { pubkey: factoryState, isSigner: false, isWritable: true },
+        { pubkey: adminAuthority.publicKey, isSigner: true, isWritable: false },
+        { pubkey: mintMapping, isSigner: false, isWritable: true },
+        { pubkey: lookupTableAddress, isSigner: false, isWritable: false }
+      ],
+      data: setLookupTableData
+    });
+    
+    const setBlockhash = await connection.getLatestBlockhash('confirmed');
+    const setTx = new Transaction().add(setLookupTableIx);
+    setTx.feePayer = adminAuthority.publicKey;
+    setTx.recentBlockhash = setBlockhash.blockhash;
+    setTx.sign(adminAuthority);
+    
+    // Try with skipPreflight to bypass simulation which might use stale account data
+    console.info(`[test-01] Storing lookup table in MintMapping (skipPreflight: true to avoid stale simulation data)...`);
+    const setSignature = await connection.sendRawTransaction(setTx.serialize(), { skipPreflight: true });
+    const confirmation = await connection.confirmTransaction(
+      { signature: setSignature, blockhash: setBlockhash.blockhash, lastValidBlockHeight: setBlockhash.lastValidBlockHeight },
+      'confirmed'
+    );
+    console.info(`[test-01] Lookup table stored in MintMapping: ${setSignature}, confirmation:`, confirmation);
+    
+    // Check transaction status to ensure it actually succeeded
+    const txStatus = await connection.getSignatureStatus(setSignature, { searchTransactionHistory: true });
+    console.info(`[test-01] Transaction status:`, txStatus.value);
+    if (txStatus.value?.err) {
+      // Try to get transaction logs for debugging
+      try {
+        const tx = await connection.getTransaction(setSignature, { commitment: 'confirmed', maxSupportedTransactionVersion: 0 });
+        if (tx?.meta?.logMessages) {
+          console.error(`[test-01] Transaction logs:`, tx.meta.logMessages);
+        }
+      } catch (e) {
+        console.error(`[test-01] Failed to get transaction logs:`, e);
+      }
+      throw new Error(`set_lookup_table transaction failed: ${JSON.stringify(txStatus.value.err)}`);
+    }
+    
+    // Wait for transaction to be confirmed and account to be updated
+    await sleep(2000);
+    
+    // Verify lookup table was actually stored in MintMapping
+    let verified = false;
+    let verifyAttempts = 0;
+    const maxVerifyAttempts = 20; // Increase attempts
+    while (!verified && verifyAttempts < maxVerifyAttempts) {
+      const { decoded: mintMapping } = await fetchMintMappingAccount(connection, originMintKey);
+      console.info(`[test-01] Verification attempt ${verifyAttempts + 1}: lookupTable=${mintMapping.lookupTable?.toBase58() || 'null'}`);
+      if (mintMapping.lookupTable && mintMapping.lookupTable.equals(lookupTableAddress)) {
+        verified = true;
+        console.info(`[test-01] Verified lookup table stored in MintMapping: ${mintMapping.lookupTable.toBase58()}`);
+      } else {
+        verifyAttempts++;
+        if (verifyAttempts < maxVerifyAttempts) {
+          await sleep(1000); // Increase wait time
+        }
+      }
+    }
+    
+    if (!verified) {
+      // Final check with detailed logging
+      const { decoded: finalMintMapping } = await fetchMintMappingAccount(connection, originMintKey);
+      throw new Error(`Failed to verify lookup table was stored in MintMapping after ${maxVerifyAttempts} attempts. Final lookupTable: ${finalMintMapping.lookupTable?.toBase58() || 'null'}, expected: ${lookupTableAddress.toBase58()}`);
+    }
+    
+    console.info(`[test-01] Lookup table created and stored in MintMapping: ${lookupTableAddress.toBase58()}`);
+    existingLookupTable = lookupTableAddress.toBase58();
+  } else {
+    console.info(`[test-01] Using existing lookup table from MintMapping: ${existingLookupTable}`);
+  }
 
   let shieldArgs = {
     amount_commit: Array.from(amountCommitmentBytes),
@@ -911,7 +1166,7 @@ async function main() {
     shieldIx,
     finalizeLedgerIx
   ];
-  const shieldSig = await sendAndConfirmInstructions(connection, owner, instructions, mintConfig.lookupTable);
+  const shieldSig = await sendAndConfirmInstructions(connection, owner, instructions, originMintKey);
   console.info('[test-01] shield + finalize_ledger instruction successful', shieldSig);
   const shieldClaimAfterShield = await readShieldClaimState(connection, shieldClaimKey);
   if (shieldClaimAfterShield) {
@@ -935,7 +1190,7 @@ async function main() {
     ],
     data: finalizeTreeData
   });
-  const finalizeTreeSig = await sendAndConfirmInstructions(connection, owner, [finalizeTreeIx], mintConfig.lookupTable);
+  const finalizeTreeSig = await sendAndConfirmInstructions(connection, owner, [finalizeTreeIx], originMintKey);
   console.info('[test-02] shield_finalize_tree instruction successful', finalizeTreeSig);
   
   // Check root after finalize_tree
@@ -977,7 +1232,7 @@ async function main() {
     connection,
     owner,
     [checkInvariantIx],
-    mintConfig.lookupTable
+    originMintKey
   );
   console.info('[test-03b] shield_check_invariant instruction successful', checkInvariantSig);
 
@@ -1087,7 +1342,7 @@ async function main() {
     connection,
     owner,
     [ComputeBudgetProgram.setComputeUnitLimit({ units: 1_200_000 }), shieldIx2, finalizeLedgerIx2],
-    mintConfig.lookupTable
+    originMintKey
   );
 
   const finalizeTreeIx2 = new TransactionInstruction({
@@ -1099,7 +1354,7 @@ async function main() {
     ],
     data: poolCoder.instruction.encode('shield_finalize_tree', {})
   });
-  await sendAndConfirmInstructions(connection, owner, [finalizeTreeIx2], mintConfig.lookupTable);
+  await sendAndConfirmInstructions(connection, owner, [finalizeTreeIx2], originMintKey);
   const checkInvariantIx2 = new TransactionInstruction({
     programId: POOL_PROGRAM_ID,
     keys: [
@@ -1111,7 +1366,7 @@ async function main() {
     ],
     data: poolCoder.instruction.encode('shield_check_invariant', {})
   });
-  await sendAndConfirmInstructions(connection, owner, [checkInvariantIx2], mintConfig.lookupTable);
+  await sendAndConfirmInstructions(connection, owner, [checkInvariantIx2], originMintKey);
   await waitForShieldClaimCleared(connection, shieldClaimKey);
 
   const updatedRoot2 = await fetchPoolStateRoot(connection, mintConfig.poolId);
@@ -1216,7 +1471,7 @@ async function main() {
     connection,
     owner,
     [ComputeBudgetProgram.setComputeUnitLimit({ units: 1_200_000 }), transferIx],
-    mintConfig.lookupTable
+    originMintKey
   );
   console.info('[test-04] private_transfer instruction successful', transferSig);
 
@@ -1241,7 +1496,7 @@ async function main() {
     ],
     data: approveData
   });
-  const approveSig = await sendAndConfirmInstructions(connection, owner, [approveIx], mintConfig.lookupTable);
+  const approveSig = await sendAndConfirmInstructions(connection, owner, [approveIx], originMintKey);
   console.info('[test-05] approve_allowance instruction successful', approveSig);
 
   console.info('[test-06] Testing transfer_from instruction (low-level)');
@@ -1328,7 +1583,7 @@ async function main() {
     connection,
     owner,
     [ComputeBudgetProgram.setComputeUnitLimit({ units: 1_200_000 }), shieldIx3, finalizeLedgerIx3],
-    mintConfig.lookupTable
+    originMintKey
   );
 
   const finalizeTreeIx3 = new TransactionInstruction({
@@ -1340,7 +1595,7 @@ async function main() {
     ],
     data: poolCoder.instruction.encode('shield_finalize_tree', {})
   });
-  await sendAndConfirmInstructions(connection, owner, [finalizeTreeIx3], mintConfig.lookupTable);
+  await sendAndConfirmInstructions(connection, owner, [finalizeTreeIx3], originMintKey);
   const checkInvariantIx3 = new TransactionInstruction({
     programId: POOL_PROGRAM_ID,
     keys: [
@@ -1352,7 +1607,7 @@ async function main() {
     ],
     data: poolCoder.instruction.encode('shield_check_invariant', {})
   });
-  await sendAndConfirmInstructions(connection, owner, [checkInvariantIx3], mintConfig.lookupTable);
+  await sendAndConfirmInstructions(connection, owner, [checkInvariantIx3], originMintKey);
   await waitForShieldClaimCleared(connection, shieldClaimKey);
 
   const updatedRoot4 = await fetchPoolStateRoot(connection, mintConfig.poolId);
@@ -1456,7 +1711,7 @@ async function main() {
     connection,
     delegate,
     [ComputeBudgetProgram.setComputeUnitLimit({ units: 1_200_000 }), transferFromIx],
-    mintConfig.lookupTable
+    originMintKey
   );
   console.info('[test-06] transfer_from instruction successful', transferFromSig);
 
@@ -1567,7 +1822,7 @@ async function main() {
     connection,
     receiver,
     [ComputeBudgetProgram.setComputeUnitLimit({ units: 1_200_000 }), shieldIx4, finalizeLedgerIx4],
-    mintConfig.lookupTable
+    originMintKey
   );
 
   const finalizeTreeIx4 = new TransactionInstruction({
@@ -1579,7 +1834,7 @@ async function main() {
     ],
     data: poolCoder.instruction.encode('shield_finalize_tree', {})
   });
-  await sendAndConfirmInstructions(connection, receiver, [finalizeTreeIx4], mintConfig.lookupTable);
+  await sendAndConfirmInstructions(connection, receiver, [finalizeTreeIx4], originMintKey);
   const checkInvariantIx4 = new TransactionInstruction({
     programId: POOL_PROGRAM_ID,
     keys: [
@@ -1591,7 +1846,7 @@ async function main() {
     ],
     data: poolCoder.instruction.encode('shield_check_invariant', {})
   });
-  await sendAndConfirmInstructions(connection, receiver, [checkInvariantIx4], mintConfig.lookupTable);
+  await sendAndConfirmInstructions(connection, receiver, [checkInvariantIx4], originMintKey);
   await waitForShieldClaimCleared(connection, shieldClaimKey);
 
   const updatedRoot6 = await fetchPoolStateRoot(connection, mintConfig.poolId);
@@ -1725,7 +1980,7 @@ async function main() {
     connection,
     receiver,
     [ComputeBudgetProgram.setComputeUnitLimit({ units: 1_400_000 }), unshieldIx],
-    mintConfig.lookupTable
+    originMintKey
   );
   console.info('[test-07] unshield_to_origin instruction successful', unshieldSig);
 
@@ -1750,7 +2005,7 @@ async function main() {
     ],
     data: revokeData
   });
-  const revokeSig = await sendAndConfirmInstructions(connection, owner, [revokeIx], mintConfig.lookupTable);
+  const revokeSig = await sendAndConfirmInstructions(connection, owner, [revokeIx], originMintKey);
   console.info('[test-10] revoke_allowance instruction successful', revokeSig);
 
   console.info('[test-11] Testing insufficient allowance rejection (edge case)');
@@ -1854,7 +2109,7 @@ async function main() {
     connection,
     owner,
     [ComputeBudgetProgram.setComputeUnitLimit({ units: 1_200_000 }), shieldIx5, finalizeLedgerIx5Shield],
-    mintConfig.lookupTable
+    originMintKey
   );
 
   const finalizeTreeIx5 = new TransactionInstruction({
@@ -1866,7 +2121,7 @@ async function main() {
     ],
     data: poolCoder.instruction.encode('shield_finalize_tree', {})
   });
-  await sendAndConfirmInstructions(connection, owner, [finalizeTreeIx5], mintConfig.lookupTable);
+  await sendAndConfirmInstructions(connection, owner, [finalizeTreeIx5], originMintKey);
   
   // shield_finalize_ledger was already called in the same transaction as shield
   // Now call shield_check_invariant to clear the claim
@@ -1881,7 +2136,7 @@ async function main() {
     ],
     data: poolCoder.instruction.encode('shield_check_invariant', {})
   });
-  await sendAndConfirmInstructions(connection, owner, [checkInvariantIx5], mintConfig.lookupTable);
+  await sendAndConfirmInstructions(connection, owner, [checkInvariantIx5], originMintKey);
   await waitForShieldClaimCleared(connection, shieldClaimKey);
 
   const updatedRoot7 = await fetchPoolStateRoot(connection, mintConfig.poolId);
@@ -1969,7 +2224,7 @@ async function main() {
       connection,
       delegate,
       [ComputeBudgetProgram.setComputeUnitLimit({ units: 800_000 }), insufficientTransferFromIx],
-      mintConfig.lookupTable
+      originMintKey
     );
     throw new Error('Expected insufficient allowance error');
   } catch (error: any) {

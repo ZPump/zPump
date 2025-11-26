@@ -72,3 +72,16 @@ export function deriveVerifyingKey(): PublicKey {
   )[0];
 }
 
+/**
+ * Derives the lookup table registry PDA for a pool.
+ * This registry stores the lookup table address for a pool, enabling O(1) lookup.
+ * 
+ * One registry per pool, shared by all users. First user creates the lookup table
+ * and initializes the registry. Subsequent users read the registry to get the
+ * lookup table address.
+ * 
+ * This approach is:
+ * - Scalable: O(1) lookup regardless of number of tokens
+ * - Decentralized: On-chain storage, no central authority
+ * - Efficient: One lookup table per pool, shared by all users
+ */

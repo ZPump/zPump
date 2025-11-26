@@ -142,9 +142,17 @@ reset_wallet_activity
 log "Ensuring Proof RPC circuits symlink exists"
 ln -snf ../circuits "${PROJECT_ROOT}/services/circuits"
 
+# For systemd validators, ensure programs are built before starting
+# (programs are loaded via --bpf-program flags, so they must exist)
 if [[ "${using_systemd_validator}" == true ]]; then
+  log "Building programs before starting systemd validator (required for --bpf-program loading)"
+  if ! (cd "${PROJECT_ROOT}" && anchor build --no-idl 2>&1 | tail -5); then
+    log "warning: Program build failed, but continuing (validator may use old programs)"
+  else
+    log "Programs built successfully"
+  fi
   log "Starting validator via systemd (${VALIDATOR_SYSTEMD_SERVICE})"
-  systemctl --user start "${VALIDATOR_SYSTEMD_SERVICE}"
+  systemctl --user restart "${VALIDATOR_SYSTEMD_SERVICE}" || systemctl --user start "${VALIDATOR_SYSTEMD_SERVICE}"
 else
   log "Starting validator under PM2 (${VALIDATOR_APP})"
   start_pm2_app "${VALIDATOR_APP}" "./scripts/start-private-devnet.sh"

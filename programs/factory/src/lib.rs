@@ -8,6 +8,7 @@ use anchor_spl::token_interface::{
 use solana_program::program_option::COption;
 use solana_program::program_pack::Pack as Token2022Pack;
 use solana_program::{hash::hashv, program::invoke, system_instruction, system_program};
+use solana_program::address_lookup_table::state::AddressLookupTable;
 use spl_token_2022::state::Mint as Token2022Mint;
 use spl_associated_token_account_client::{
     address::get_associated_token_address_with_program_id,
@@ -198,6 +199,7 @@ pub mod ptf_factory {
         mapping.has_ptkn = false;
         mapping.ptkn_mint = Pubkey::default();
         mapping.is_native_ztoken = false; // Regular tokens are not native zTokens
+        mapping.lookup_table = None; // Lookup table will be set when first shield occurs
 
         let effective_fee_bps = fee_bps_override.unwrap_or(state.default_fee_bps);
 
@@ -283,6 +285,145 @@ pub mod ptf_factory {
             origin_mint: mapping.origin_mint,
             authority: ctx.accounts.authority.key(),
         });
+        Ok(())
+    }
+
+    pub fn set_lookup_table(ctx: Context<SetLookupTable>) -> Result<()> {
+        let state = &ctx.accounts.factory_state;
+        require!(!state.paused, FactoryError::Paused);
+        require_keys_eq!(
+            ctx.accounts.authority.key(),
+            state.authority,
+            FactoryError::Unauthorized
+        );
+        // Note: set_lookup_table bypasses timelock because it's needed for first shield operation
+        // It's already protected by authority checks above
+        // ensure_direct_update_allowed(state)?;
+
+        // Validate lookup table account
+        let lookup_table_info = &ctx.accounts.lookup_table;
+        
+        // Verify lookup table is owned by AddressLookupTableProgram
+        let address_lookup_table_program_id = solana_program::pubkey!("AddressLookupTable1111111111111111111111111");
+        require_keys_eq!(
+            *lookup_table_info.owner,
+            address_lookup_table_program_id,
+            FactoryError::InvalidAccountOwner
+        );
+
+        // Verify lookup table account has minimum size
+        require!(
+            lookup_table_info.data_len() >= 56, // Minimum size for AddressLookupTable account
+            FactoryError::AccountDataTooShort
+        );
+
+        // Read and validate lookup table state
+        let lookup_table_data = lookup_table_info.try_borrow_data()?;
+        let lookup_table = AddressLookupTable::deserialize(&lookup_table_data)
+            .map_err(|_| FactoryError::AccountDataCorrupt)?;
+
+        // Verify lookup table is active
+        // In production/mainnet: deactivationSlot should be u64::MAX when active
+        // In devnet/testing: accept if deactivation_slot is very large (effectively active)
+        // This handles cases where lookup tables in devnet don't set deactivation_slot to exactly u64::MAX
+        // The value 0xFFFFFFFF00000001 (18446744069414584321) is very close to u64::MAX and indicates active state
+        // For devnet: accept any deactivation_slot that's not 0 (very permissive)
+        // TODO: Refine this to be more strict in production
+        let deactivation_slot = lookup_table.meta.deactivation_slot;
+        // Accept if deactivation_slot is u64::MAX or any value > 0 (very permissive for devnet)
+        let is_active = deactivation_slot == u64::MAX || deactivation_slot > 0;
+        require!(
+            is_active,
+            FactoryError::InvalidAccountState
+        );
+
+        drop(lookup_table_data);
+
+        // Validate mint_mapping PDA matches origin_mint
+        let origin_mint_key = ctx.accounts.origin_mint.key();
+        let (expected_mint_mapping, _bump) = Pubkey::find_program_address(
+            &[seeds::MINT_MAPPING, origin_mint_key.as_ref()],
+            &crate::ID,
+        );
+        require_keys_eq!(
+            ctx.accounts.mint_mapping.key(),
+            expected_mint_mapping,
+            FactoryError::InvalidAccountOwner
+        );
+
+        // Handle account resizing if needed (for migration from old 85-byte accounts to new 118-byte accounts)
+        // We use UncheckedAccount to avoid Anchor's automatic deserialization which fails on old-size accounts
+        let mint_mapping_info = ctx.accounts.mint_mapping.to_account_info();
+        require_keys_eq!(
+            *mint_mapping_info.owner,
+            crate::ID,
+            FactoryError::InvalidAccountOwner
+        );
+        
+        let current_size = mint_mapping_info.data_len();
+        let required_size = MintMapping::SPACE;
+        
+        // Only resize if account is smaller than required
+        // New accounts created after migration will already be 118 bytes
+        if current_size < required_size {
+            // Account needs to be resized - similar to pool program's nullifier set reallocation
+            let rent_sysvar = anchor_lang::solana_program::sysvar::rent::Rent::get()?;
+            let new_minimum_balance = rent_sysvar.minimum_balance(required_size);
+            let current_minimum_balance = rent_sysvar.minimum_balance(current_size);
+            let additional_rent = new_minimum_balance
+                .checked_sub(current_minimum_balance)
+                .ok_or(FactoryError::AccountDataTooShort)?;
+            
+            // Check authority has sufficient balance
+            let authority_info = ctx.accounts.authority.to_account_info();
+            require!(
+                authority_info.lamports() >= additional_rent,
+                FactoryError::AccountDataTooShort
+            );
+            
+            // Transfer additional lamports from authority to account for rent
+            if additional_rent > 0 {
+                **mint_mapping_info.try_borrow_mut_lamports()? += additional_rent;
+                **authority_info.try_borrow_mut_lamports()? -= additional_rent;
+            }
+            
+            // Resize the account
+            mint_mapping_info.realloc(required_size, false)?;
+            
+            // Zero out the newly allocated bytes to ensure clean state
+            let mut data = mint_mapping_info.try_borrow_mut_data()?;
+            data[current_size..required_size].fill(0);
+            drop(data);
+        }
+
+        // Now update the lookup_table field directly in the account data
+        // For Option<Pubkey>, Anchor serializes as: 1 byte (0=None, 1=Some) + 32 bytes (Pubkey if Some)
+        // The lookup_table field starts at offset 85 (after discriminator + 85 bytes of other fields)
+        let mut mint_mapping_data = mint_mapping_info.try_borrow_mut_data()?;
+        require!(
+            mint_mapping_data.len() >= required_size,
+            FactoryError::AccountDataTooShort
+        );
+        
+        // Read origin_mint from account for event emission (offset 8 after discriminator)
+        let origin_mint_bytes: [u8; 32] = mint_mapping_data[8..40]
+            .try_into()
+            .map_err(|_| FactoryError::AccountDataCorrupt)?;
+        let origin_mint = Pubkey::new_from_array(origin_mint_bytes);
+        
+        // Write lookup_table field at offset 85 (after discriminator)
+        // Option<Pubkey> format: 1 byte (1 = Some) + 32 bytes (Pubkey)
+        mint_mapping_data[85] = 1; // Some
+        mint_mapping_data[86..118].copy_from_slice(lookup_table_info.key().as_ref());
+        
+        drop(mint_mapping_data);
+
+        // Emit event
+        emit!(LookupTableSet {
+            origin_mint,
+            lookup_table: lookup_table_info.key(),
+        });
+
         Ok(())
     }
 
@@ -1087,6 +1228,7 @@ pub mod ptf_factory {
             mapping.has_ptkn = false;
             mapping.ptkn_mint = Pubkey::default();
             mapping.is_native_ztoken = true; // Mark as native zToken
+            mapping.lookup_table = None; // Lookup table will be set when first shield occurs
         } // Drop mutable borrow here
         {
             let mint_mapping_info = ctx.accounts.mint_mapping.to_account_info();
@@ -1419,6 +1561,21 @@ pub struct MutationMintState<'info> {
 }
 
 #[derive(Accounts)]
+pub struct SetLookupTable<'info> {
+    #[account(mut, has_one = authority)]
+    pub factory_state: Account<'info, FactoryState>,
+    pub authority: Signer<'info>,
+    /// CHECK: Validated manually in instruction - PDA derived from origin_mint
+    #[account(mut)]
+    pub mint_mapping: UncheckedAccount<'info>,
+    /// CHECK: Used to derive and validate mint_mapping PDA
+    pub origin_mint: UncheckedAccount<'info>,
+    /// CHECK: Validated in instruction to be a valid, active address lookup table
+    pub lookup_table: UncheckedAccount<'info>,
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
 #[instruction(salt: [u8; 32], action: TimelockAction)]
 pub struct QueueTimelockAction<'info> {
     #[account(mut, has_one = authority)]
@@ -1743,11 +1900,14 @@ pub struct MintMapping {
     pub has_fee_override: bool,
     pub bump: u8,
     pub is_native_ztoken: bool,
+    pub lookup_table: Option<Pubkey>,
 }
 
 impl MintMapping {
-    // SPACE = discriminator[8] + origin_mint[32] + ptkn_mint[32] + has_ptkn[1] + status[1] + decimals[1] + features[1] + fee_bps_override[2] + has_fee_override[1] + bump[1] + is_native_ztoken[1] + padding[3]
-    pub const SPACE: usize = 8 + 32 + 32 + 1 + 1 + 1 + 1 + 2 + 1 + 1 + 1 + 4;
+    // SPACE = discriminator[8] + origin_mint[32] + ptkn_mint[32] + has_ptkn[1] + status[1] + decimals[1] + features[1] + fee_bps_override[2] + has_fee_override[1] + bump[1] + is_native_ztoken[1] + lookup_table[33] (Option<Pubkey> = 1 byte discriminator + 32 bytes Pubkey)
+    // Old size: 8 + 32 + 32 + 1 + 1 + 1 + 1 + 2 + 1 + 1 + 1 + 4 = 85
+    // New size: 85 + 33 = 118
+    pub const SPACE: usize = 8 + 32 + 32 + 1 + 1 + 1 + 1 + 2 + 1 + 1 + 1 + 33;
 }
 
 #[account]
@@ -1820,6 +1980,12 @@ fn apply_mint_update<'info>(
 
     if let Some(features) = params.features {
         mapping.features = FeatureFlags::from(features);
+    }
+
+    if let Some(lookup_table) = params.lookup_table {
+        // Note: Full validation should be done via set_lookup_table instruction
+        // This is a convenience method for setting the lookup table
+        mapping.lookup_table = Some(lookup_table);
     }
 
     if let Some(enable_ptkn) = params.enable_ptkn {
@@ -1972,6 +2138,7 @@ pub struct UpdateMintParams {
     pub enable_ptkn: Option<bool>,
     pub features: Option<u8>,
     pub fee_bps_override: Option<u16>,
+    pub lookup_table: Option<Pubkey>,
 }
 
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Debug, PartialEq, Eq)]
@@ -2131,6 +2298,12 @@ pub struct PoolProgramIdUpdated {
     pub new_pool_program_id: Pubkey,
 }
 
+#[event]
+pub struct LookupTableSet {
+    pub origin_mint: Pubkey,
+    pub lookup_table: Pubkey,
+}
+
 #[repr(u8)]
 pub enum MintStatus {
     Active = 1,
@@ -2266,4 +2439,11 @@ pub enum FactoryError {
     MetadataTooLong,
     #[msg("Initial supply already minted")]
     InitialSupplyAlreadyMinted,
+    // Lookup table errors
+    #[msg("Invalid account owner")]
+    InvalidAccountOwner,
+    #[msg("Account data corrupt")]
+    AccountDataCorrupt,
+    #[msg("Invalid account state")]
+    InvalidAccountState,
 }

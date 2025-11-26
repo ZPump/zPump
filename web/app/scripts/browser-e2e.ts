@@ -943,7 +943,6 @@ async function main() {
       commitmentHint: proof.publicInputs?.[2] ?? null,
       recipient: owner.publicKey.toBase58(),
       twinMint: mintConfig.zTokenMint ?? undefined,
-      lookupTable: mintConfig.lookupTable
     });
     console.info(`[wrap:${label}] signature`, signature);
     ownerPrivateBalance += noteAmount;
@@ -1019,7 +1018,6 @@ async function main() {
       nullifiers: parts.nullifiers,
       outputCommitments: parts.outputCommitments,
       outputAmountCommitments: amountCommitments,
-      lookupTable: mintConfig.lookupTable
     });
     console.info('[transfer] signature', signature);
     await syncRoot('transfer');
@@ -1081,7 +1079,6 @@ async function main() {
       allowanceOwner: owner.publicKey.toBase58(),
       allowanceAmount,
       spendAmount, // Spend amount is the amount going to receiver (not change)
-      lookupTable: mintConfig.lookupTable
     });
     console.info('[transfer_from] signature', signature);
     await syncRoot('transfer_from');
@@ -1136,7 +1133,6 @@ async function main() {
       destination: destination.toBase58(),
       mode: 'origin',
       proof,
-      lookupTable: mintConfig.lookupTable,
       twinMint: mintConfig.zTokenMint ?? undefined
     });
     console.info('[unwrap] signature', signature);

@@ -1097,6 +1097,43 @@
       ]
     },
     {
+      "name": "set_lookup_table",
+      "discriminator": [
+        235,
+        249,
+        109,
+        59,
+        171,
+        208,
+        117,
+        65
+      ],
+      "accounts": [
+        {
+          "name": "factory_state",
+          "writable": true
+        },
+        {
+          "name": "authority",
+          "signer": true,
+          "relations": [
+            "factory_state"
+          ]
+        },
+        {
+          "name": "mint_mapping",
+          "writable": true
+        },
+        {
+          "name": "origin_mint"
+        },
+        {
+          "name": "lookup_table"
+        }
+      ],
+      "args": []
+    },
+    {
       "name": "thaw_mapping",
       "discriminator": [
         104,
@@ -1399,6 +1436,19 @@
         149,
         151,
         169
+      ]
+    },
+    {
+      "name": "LookupTableSet",
+      "discriminator": [
+        37,
+        0,
+        74,
+        11,
+        76,
+        159,
+        230,
+        206
       ]
     },
     {
@@ -1815,6 +1865,21 @@
       "code": 6053,
       "name": "InitialSupplyAlreadyMinted",
       "msg": "Initial supply already minted"
+    },
+    {
+      "code": 6054,
+      "name": "InvalidAccountOwner",
+      "msg": "Invalid account owner"
+    },
+    {
+      "code": 6055,
+      "name": "AccountDataCorrupt",
+      "msg": "Account data corrupt"
+    },
+    {
+      "code": 6056,
+      "name": "InvalidAccountState",
+      "msg": "Invalid account state"
     }
   ],
   "types": [
@@ -2054,6 +2119,22 @@
       }
     },
     {
+      "name": "LookupTableSet",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "origin_mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "lookup_table",
+            "type": "pubkey"
+          }
+        ]
+      }
+    },
+    {
       "name": "MintFrozen",
       "type": {
         "kind": "struct",
@@ -2117,6 +2198,12 @@
           {
             "name": "is_native_ztoken",
             "type": "bool"
+          },
+          {
+            "name": "lookup_table",
+            "type": {
+              "option": "pubkey"
+            }
           }
         ]
       }
@@ -2567,6 +2654,12 @@
             "name": "fee_bps_override",
             "type": {
               "option": "u16"
+            }
+          },
+          {
+            "name": "lookup_table",
+            "type": {
+              "option": "pubkey"
             }
           }
         ]
