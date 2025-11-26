@@ -467,8 +467,10 @@ async function ensureLookupTableForMint(
   createTx.recentBlockhash = createBlockhash.blockhash;
   createTx.add(createIx);
 
+  // Use skipPreflight: true to avoid simulation issues with slot staleness
+  // Similar to how lowlevel-e2e handles lookup table creation
   const createSignature = await wallet.sendTransaction(createTx, connection, {
-    skipPreflight: false
+    skipPreflight: true
   });
   await waitForSignatureConfirmation(
     connection,
@@ -497,8 +499,9 @@ async function ensureLookupTableForMint(
     extendTx.recentBlockhash = extendBlockhash.blockhash;
     extendTx.add(extendIx);
     
+    // Use skipPreflight: true to avoid simulation issues
     const extendSignature = await wallet.sendTransaction(extendTx, connection, {
-      skipPreflight: false
+      skipPreflight: true
     });
     await waitForSignatureConfirmation(
       connection,
@@ -511,7 +514,7 @@ async function ensureLookupTableForMint(
   // Wait for lookup table to be activated
   let activated = false;
   let attempts = 0;
-  const maxAttempts = 60; // 30 seconds max
+  const maxAttempts = 120; // 60 seconds max (increase for devnet)
 
   console.info(`[ensureLookupTableForMint] Created lookup table at slot ${creationSlot}, waiting for activation...`);
   
@@ -524,11 +527,19 @@ async function ensureLookupTableForMint(
       const tableResponse = await connection.getAddressLookupTable(lookupTableAddress);
       
       if (tableResponse.value && tableResponse.value.state) {
-        if (currentSlot >= creationSlot + 1 && tableResponse.value.state.deactivationSlot === null) {
+        const deactivationSlot = tableResponse.value.state.deactivationSlot;
+        const U64_MAX = BigInt('18446744073709551615'); // u64::MAX
+        // Lookup table is active when deactivationSlot is null OR u64::MAX (18446744073709551615)
+        const isActive = deactivationSlot === null || 
+                         (typeof deactivationSlot === 'bigint' && deactivationSlot === U64_MAX) ||
+                         (typeof deactivationSlot === 'number' && deactivationSlot === Number(U64_MAX)) ||
+                         (typeof deactivationSlot === 'string' && BigInt(deactivationSlot) === U64_MAX);
+        
+        if (currentSlot >= creationSlot + 1 && isActive) {
           activated = true;
           console.info(`[ensureLookupTableForMint] Lookup table activated at slot ${currentSlot}`);
         } else if (attempts % 10 === 0) {
-          console.info(`[ensureLookupTableForMint] Waiting for activation... current slot: ${currentSlot}, need: ${creationSlot + 1}`);
+          console.info(`[ensureLookupTableForMint] Waiting for activation... current slot: ${currentSlot}, need: ${creationSlot + 1}, deactivationSlot: ${deactivationSlot}, isActive: ${isActive}`);
         }
       }
     } catch (error) {
@@ -540,6 +551,38 @@ async function ensureLookupTableForMint(
 
   if (!activated) {
     throw new Error(`Lookup table not activated within ${maxAttempts * 0.5} seconds`);
+  }
+  
+  // Additional wait to ensure account data has propagated (similar to lowlevel-e2e)
+  const currentSlotAfterActivation = await connection.getSlot('confirmed');
+  const slotsNeeded = Math.max(0, (creationSlot + 1) - currentSlotAfterActivation);
+  if (slotsNeeded > 0) {
+    console.info(`[ensureLookupTableForMint] Waiting for ${slotsNeeded} more slots to pass...`);
+    await sleep(Math.max(2000, slotsNeeded * 500));
+  } else {
+    console.info(`[ensureLookupTableForMint] Waiting additional 5 seconds for account data propagation...`);
+    await sleep(5000); // Increase wait time
+  }
+  
+  // Verify lookup table is accessible and has proper data before storing
+  let verifyAttempts = 0;
+  const maxVerifyAttempts = 20;
+  while (verifyAttempts < maxVerifyAttempts) {
+    const verifyResponse = await connection.getAddressLookupTable(lookupTableAddress);
+    if (verifyResponse.value && verifyResponse.value.state) {
+      // Check that account data is large enough (at least LOOKUP_TABLE_META_SIZE = 56 bytes)
+      const accountInfo = await connection.getAccountInfo(lookupTableAddress);
+      if (accountInfo && accountInfo.data.length >= 56) {
+        console.info(`[ensureLookupTableForMint] Lookup table verified accessible with ${accountInfo.data.length} bytes before storing in MintMapping`);
+        break;
+      }
+    }
+    verifyAttempts++;
+    if (verifyAttempts < maxVerifyAttempts) {
+      await sleep(500);
+    } else {
+      throw new Error('Lookup table account data not accessible after activation wait');
+    }
   }
 
   // Store lookup table in MintMapping
@@ -561,11 +604,18 @@ export async function setLookupTableForMint(
   const mintMapping = deriveMintMapping(originMint);
 
   const setLookupTableData = factoryCoder.instruction.encode('set_lookup_table', {});
+  // Account order must match Rust program's SetLookupTable struct:
+  // 1. factory_state (mut)
+  // 2. authority (signer)
+  // 3. mint_mapping (mut)
+  // 4. origin_mint
+  // 5. lookup_table
+  // 6. system_program
   const setLookupTableInstruction = new TransactionInstruction({
     programId: FACTORY_PROGRAM_ID,
     keys: [
       { pubkey: factoryState, isSigner: false, isWritable: true },
-      { pubkey: wallet.publicKey!, isSigner: true, isWritable: true },
+      { pubkey: wallet.publicKey!, isSigner: true, isWritable: false }, // authority doesn't need to be writable
       { pubkey: mintMapping, isSigner: false, isWritable: true },
       { pubkey: originMint, isSigner: false, isWritable: false },
       { pubkey: lookupTable, isSigner: false, isWritable: false },
@@ -579,8 +629,10 @@ export async function setLookupTableForMint(
   transaction.feePayer = wallet.publicKey!;
   transaction.recentBlockhash = blockhash.blockhash;
 
+  // Use skipPreflight: true for set_lookup_table to avoid simulation issues
+  // Similar to how lowlevel-e2e handles this
   const signature = await wallet.sendTransaction(transaction, connection, {
-    skipPreflight: false
+    skipPreflight: true
   });
 
   await waitForSignatureConfirmation(
