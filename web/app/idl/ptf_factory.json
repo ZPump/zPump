@@ -1129,6 +1129,9 @@
         },
         {
           "name": "lookup_table"
+        },
+        {
+          "name": "system_program"
         }
       ],
       "args": []
