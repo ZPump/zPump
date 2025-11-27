@@ -28,7 +28,7 @@ Fields inside `MintMapping`:
 - `ptkn_mint`: Optional twin mint (Token-2022) for privacy transfers.
 - `has_ptkn: bool` – Whether `ptkn_mint` is valid.
 - `features.bits` – Bit flags for future extension (currently used to expose zToken support).
-- `is_native_ztoken: bool` – Whether this is a native zToken (minted as zToken, not converted from traditional token).
+- `is_native_ztoken: bool` – Currently set to `false` for all tokens (reserved for future use).
 
 Fields inside `TokenMetadata`:
 - `name: String` – Token name (max 32 bytes).
@@ -59,11 +59,11 @@ Entry point used during `ptf_pool::unshield_to_ptkn`.
 
 ### `mint_native_ztoken`
 
-Creates a new native zToken (zToken that doesn't start from a traditional Solana token).
+Creates a new token mint with full metadata support. Despite the name, this creates regular Solana tokens (not special "native zTokens").
 - Accounts: factory state, authority, payer, origin_mint (uninitialized), metadata (PDA), mint_mapping (PDA), pool_state (PDA), vault_state (PDA), commitment_tree (PDA), nullifier_set (PDA), note_ledger (PDA), hook_config (PDA), hook_whitelist (PDA), verifier_program, verifying_key, user_token_account, token_program, system_program, rent.
 - Creates traditional SPL Token-2022 mint with factory PDA as mint authority.
 - Creates metadata account with name, symbol, and IPFS URI.
-- Registers mint in factory with `is_native_ztoken: true`.
+- Registers mint in factory with `is_native_ztoken: false` (regular token).
 - Initializes pool and vault via CPI.
 - Mints initial supply to user's token account.
 - User can then shield these tokens using existing shield flow.

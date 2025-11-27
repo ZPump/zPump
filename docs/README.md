@@ -5,12 +5,18 @@ Welcome to the zPump developer documentation. The repository has grown beyond wh
 ## Table of Contents
 
 - [Overview](overview/overview.md)
-- [System Architecture](architecture/system-architecture.md)
+- [System Architecture](architecture/)
+  - [System Architecture Overview](architecture/system-architecture.md)
+  - [Program-Level Address Derivation](architecture/program-level-address-derivation.md) ⭐ **Current Architecture**
+  - [Scalability Analysis](architecture/scalability-analysis.md)
+  - [Lookup Table Alternatives](architecture/lookup-table-alternatives.md) (Historical)
+  - [Lookup Table Scalability Proposal](architecture/lookup-table-scalability-proposal.md) (Archived)
 - [On-chain Programs](smart-contracts/)
   - [`ptf_pool`](smart-contracts/ptf-pool.md)
   - [`ptf_factory`](smart-contracts/ptf-factory.md)
   - [`ptf_vault`](smart-contracts/ptf-vault.md)
   - [`ptf_verifier_groth16`](smart-contracts/verifier-groth16.md)
+  - [Native zToken Minting](smart-contracts/native-ztoken-minting.md)
 - [Frontend (Next.js)](frontend/overview.md)
 - [Backend Services](services/)
   - [Proof RPC](services/proof-rpc.md)
@@ -23,7 +29,8 @@ Welcome to the zPump developer documentation. The repository has grown beyond wh
   - [Compute Budget Strategy](operations/compute-budget.md)
   - [Troubleshooting Root Drift](operations/root-drift.md)
   - [Common Errors & Fixes](operations/common-errors.md)
-- [Glossary](reference/glossary.md)
+- [Reference](reference/)
+  - [Glossary](reference/glossary.md)
 
 ## Security
 
