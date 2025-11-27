@@ -497,9 +497,9 @@ export async function wrap(params: WrapParams): Promise<string> {
           throw new Error('pending_shield is stuck active with no shield claim - cannot proceed. This indicates a program bug or incomplete previous operation.');
         }
       }
-    
-    // If shield claim exists and is in a state that allows finalize_tree, try to finalize it
-    if (claimState && claimState.status !== 0) {
+      
+      // If shield claim exists and is in a state that allows finalize_tree, try to finalize it
+      if (claimState && claimState.status !== 0) {
       try {
         const finalizeTreeData = poolCoder.instruction.encode('shield_finalize_tree', {});
         const finalizeTreeInstruction = new TransactionInstruction({
