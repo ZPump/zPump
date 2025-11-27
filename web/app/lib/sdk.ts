@@ -5,6 +5,8 @@ if (typeof globalThis.Buffer === 'undefined') {
   (globalThis as typeof globalThis & { Buffer: typeof Buffer }).Buffer = Buffer;
 }
 import {
+  AddressLookupTableProgram,
+  AddressLookupTableAccount,
   ComputeBudgetProgram,
   Connection,
   Keypair,
@@ -14,7 +16,8 @@ import {
   SystemProgram,
   Transaction,
   TransactionInstruction,
-  TransactionMessage
+  TransactionMessage,
+  VersionedTransaction
 } from '@solana/web3.js';
 import { WalletContextState } from '@solana/wallet-adapter-react';
 import { BorshCoder, BN, Idl } from '@coral-xyz/anchor';
@@ -867,13 +870,100 @@ export async function wrap(params: WrapParams): Promise<string> {
   while (shieldAttempts < maxShieldAttempts) {
     shieldAttempts++;
     try {
-      // Use regular Transaction - addresses are derived programmatically
-      const shieldTransaction = new Transaction().add(...shieldInstructionSet);
-      shieldTransaction.feePayer = wallet.publicKey;
-      shieldTransaction.recentBlockhash = latestBlockhash.blockhash;
-      shieldSignature = await wallet.sendTransaction(shieldTransaction, connection, {
-        skipPreflight: false
-      });
+      // LAZY INITIALIZATION: Use Address Lookup Table for first shield to fit all accounts
+      // Subsequent shields use regular Transaction (smaller, no ALT needed)
+      if (isLazyInit) {
+        // Collect all unique accounts for ALT
+        const allAccounts = new Map<string, { pubkey: PublicKey; isSigner: boolean; isWritable: boolean }>();
+        shieldInstructionSet.forEach(ix => {
+          ix.keys.forEach(key => {
+            const keyStr = key.pubkey.toBase58();
+            // Keep the most permissive flags (signer or writable)
+            const existing = allAccounts.get(keyStr);
+            if (!existing) {
+              allAccounts.set(keyStr, { pubkey: key.pubkey, isSigner: key.isSigner, isWritable: key.isWritable });
+            } else {
+              existing.isSigner = existing.isSigner || key.isSigner;
+              existing.isWritable = existing.isWritable || key.isWritable;
+            }
+          });
+        });
+        
+        const uniqueAccounts = Array.from(allAccounts.values()).map(acc => acc.pubkey);
+        
+        // Create or extend lookup table
+        const recentSlot = await connection.getSlot('confirmed');
+        const [createIx, lookupTableAddress] = AddressLookupTableProgram.createLookupTable({
+          authority: wallet.publicKey,
+          payer: wallet.publicKey,
+          recentSlot
+        });
+        
+        // Create lookup table first
+        const createTx = new Transaction().add(createIx);
+        createTx.feePayer = wallet.publicKey;
+        createTx.recentBlockhash = latestBlockhash.blockhash;
+        const createSig = await wallet.sendTransaction(createTx, connection, { skipPreflight: false });
+        await waitForSignatureConfirmation(connection, createSig, latestBlockhash.blockhash, latestBlockhash.lastValidBlockHeight);
+        
+        // Extend lookup table with all accounts
+        const extendIx = AddressLookupTableProgram.extendLookupTable({
+          authority: wallet.publicKey,
+          payer: wallet.publicKey,
+          lookupTable: lookupTableAddress,
+          addresses: uniqueAccounts
+        });
+        
+        const extendBlockhash = await connection.getLatestBlockhash('confirmed');
+        const extendTx = new Transaction().add(extendIx);
+        extendTx.feePayer = wallet.publicKey;
+        extendTx.recentBlockhash = extendBlockhash.blockhash;
+        const extendSig = await wallet.sendTransaction(extendTx, connection, { skipPreflight: false });
+        await waitForSignatureConfirmation(connection, extendSig, extendBlockhash.blockhash, extendBlockhash.lastValidBlockHeight);
+        
+        // Wait for lookup table to activate
+        let activated = false;
+        for (let i = 0; i < 30; i++) {
+          await sleep(1000);
+          const lookup = await connection.getAddressLookupTable(lookupTableAddress);
+          if (lookup.value) {
+            activated = true;
+            break;
+          }
+        }
+        
+        if (!activated) {
+          throw new Error('Lookup table not activated within 30 seconds');
+        }
+        
+        // Build versioned transaction with lookup table
+        const lookupTableAccount = await connection.getAddressLookupTable(lookupTableAddress);
+        if (!lookupTableAccount.value) {
+          throw new Error('Lookup table not found after activation');
+        }
+        
+        // TransactionMessage.compileToV0Message automatically converts accounts to ALT indices
+        const messageV0 = new TransactionMessage({
+          payerKey: wallet.publicKey,
+          recentBlockhash: latestBlockhash.blockhash,
+          instructions: shieldInstructionSet
+        }).compileToV0Message([lookupTableAccount.value]);
+        
+        const versionedTx = new VersionedTransaction(messageV0);
+        versionedTx.sign([wallet as any]);
+        
+        shieldSignature = await connection.sendTransaction(versionedTx, {
+          skipPreflight: false
+        });
+      } else {
+        // Use regular Transaction - addresses are derived programmatically
+        const shieldTransaction = new Transaction().add(...shieldInstructionSet);
+        shieldTransaction.feePayer = wallet.publicKey;
+        shieldTransaction.recentBlockhash = latestBlockhash.blockhash;
+        shieldSignature = await wallet.sendTransaction(shieldTransaction, connection, {
+          skipPreflight: false
+        });
+      }
       break; // Success, exit retry loop
     } catch (error: any) {
       // Check if error is PendingShieldInFlight using standardized error handler
