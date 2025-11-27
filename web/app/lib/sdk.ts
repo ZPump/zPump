@@ -305,8 +305,9 @@ export async function fetchMintMappingAccount(
     throw new Error('Mint mapping account missing on chain');
   }
   
-  // Handle backward compatibility: old accounts are 85 bytes, new are 118 bytes
-  // If account is old size, lookup_table will be undefined
+  // Decode MintMapping account
+  // Note: Old accounts were 85 bytes (with lookup_table Option<Pubkey>), new are 81 bytes (without lookup_table)
+  // The decoder will handle this automatically based on the IDL
   const decoded = factoryCoder.accounts.decode('MintMapping', account.data) as any;
   
   // Normalize field names (Anchor uses snake_case, we use camelCase)

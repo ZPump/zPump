@@ -18,7 +18,7 @@ import { FACTORY_PROGRAM_ID } from '../../lib/onchain/programIds';
 const PROJECT_ROOT = getRepoRoot();
 const PLACEHOLDER_ORIGIN = 'Mint111111111111111111111111111111111111111';
 const PLACEHOLDER_POOL = 'Pool111111111111111111111111111111111111111';
-const MINT_MAPPING_DATA_SIZE = 85;
+const MINT_MAPPING_DATA_SIZE = 81; // Updated from 85 to 81 after removing lookup_table field
 const IS_NATIVE_OFFSET = 80;
 const TRUE_BYTE = bs58.encode(Buffer.from([1]));
 const coder = new BorshCoder(factoryIdl as Idl);
