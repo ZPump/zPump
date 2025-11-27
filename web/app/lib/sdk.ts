@@ -453,6 +453,7 @@ export async function wrap(params: WrapParams): Promise<string> {
   const vaultState = deriveVaultState(originMintKey);
   const verifyingKey = deriveVerifyingKey();
   const shieldClaim = deriveShieldClaim(poolState);
+  const factoryState = deriveFactoryState(); // Needed for lazy initialization
   const twinMintKey = params.twinMint ? new PublicKey(params.twinMint) : null;
   const { key: mintMappingKey, decoded: mintMapping } = await fetchMintMappingAccount(
     connection,
@@ -712,6 +713,7 @@ export async function wrap(params: WrapParams): Promise<string> {
     { pubkey: wallet.publicKey, isSigner: true, isWritable: true },
     { pubkey: originMintKey, isSigner: false, isWritable: false },
     { pubkey: mintMappingKey, isSigner: false, isWritable: false },
+    { pubkey: factoryState, isSigner: false, isWritable: false }, // Needed for lazy initialization
     { pubkey: VAULT_PROGRAM_ID, isSigner: false, isWritable: false },
     { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
     { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
