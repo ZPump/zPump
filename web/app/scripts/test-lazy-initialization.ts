@@ -147,8 +147,8 @@ async function testLazyInitialization(): Promise<void> {
       }
     } as any,
     connection,
-    originMint: mintResult.originMint.toBase58(),
-    poolId: mintResult.poolId.toBase58(),
+    originMint: mintResult.originMint,
+    poolId: mintResult.poolId,
     amount: WRAP_AMOUNT.toString(),
     recipient: payer.publicKey.toBase58(),
     depositId: Date.now().toString(),
@@ -214,8 +214,8 @@ async function testLazyInitialization(): Promise<void> {
       }
     } as any,
     connection,
-    originMint: mintResult.originMint.toBase58(),
-    poolId: mintResult.poolId.toBase58(),
+    originMint: mintResult.originMint,
+    poolId: mintResult.poolId,
     amount: WRAP_AMOUNT.toString(),
     recipient: payer.publicKey.toBase58(),
     depositId: Date.now().toString(),
