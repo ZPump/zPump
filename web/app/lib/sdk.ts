@@ -552,6 +552,9 @@ export async function wrap(params: WrapParams): Promise<string> {
 
   // LAZY INITIALIZATION: Check if commitment tree exists, if not use default empty root
   const commitmentTreeAccount = await connection.getAccountInfo(commitmentTreeKey);
+  const poolAccountInfo = await connection.getAccountInfo(poolState, 'confirmed');
+  const isLazyInit = !poolAccountInfo || !commitmentTreeAccount;
+  
   let treeState: { currentRoot: Uint8Array };
   
   if (!commitmentTreeAccount) {
@@ -784,8 +787,13 @@ export async function wrap(params: WrapParams): Promise<string> {
   // Lookup tables removed - addresses are now derived programmatically by the program
 
   let latestBlockhash = await connection.getLatestBlockhash('confirmed');
-  // Include shield and finalize_ledger in the same transaction (required for security)
-  const shieldInstructionSet = [...instructions, shieldInstruction, finalizeLedgerInstruction];
+  
+  // LAZY INITIALIZATION: For first shield, split into separate transactions to avoid size limit
+  // Transaction size limit is 1232 bytes, and lazy init includes many accounts
+  // After initialization, we can combine shield + finalize_ledger in one transaction
+  const shieldInstructionSet = isLazyInit 
+    ? [...instructions, shieldInstruction] // First shield: just shield instruction (initializes pool)
+    : [...instructions, shieldInstruction, finalizeLedgerInstruction]; // Subsequent shields: combined
 
   let shieldSignature: string | undefined;
   let shieldAttempts = 0;
