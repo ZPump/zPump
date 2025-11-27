@@ -891,13 +891,16 @@ export async function wrap(params: WrapParams): Promise<string> {
         
         const uniqueAccounts = Array.from(allAccounts.values()).map(acc => acc.pubkey);
         
-        // Create or extend lookup table
+        // Try to find existing lookup table for this mint (could be created by bootstrap or previous user)
+        // For now, create a new one - in production, we could store/retrieve from on-chain registry
+        let lookupTableAddress: PublicKey;
         const recentSlot = await connection.getSlot('confirmed');
-        const [createIx, lookupTableAddress] = AddressLookupTableProgram.createLookupTable({
+        const [createIx, newLookupTableAddress] = AddressLookupTableProgram.createLookupTable({
           authority: wallet.publicKey,
           payer: wallet.publicKey,
           recentSlot
         });
+        lookupTableAddress = newLookupTableAddress;
         
         // Create lookup table first
         const createTx = new Transaction().add(createIx);
@@ -921,7 +924,7 @@ export async function wrap(params: WrapParams): Promise<string> {
         const extendSig = await wallet.sendTransaction(extendTx, connection, { skipPreflight: false });
         await waitForSignatureConfirmation(connection, extendSig, extendBlockhash.blockhash, extendBlockhash.lastValidBlockHeight);
         
-        // Wait for lookup table to activate
+        // Wait for lookup table to activate (required before use)
         let activated = false;
         for (let i = 0; i < 30; i++) {
           await sleep(1000);
@@ -935,6 +938,9 @@ export async function wrap(params: WrapParams): Promise<string> {
         if (!activated) {
           throw new Error('Lookup table not activated within 30 seconds');
         }
+        
+        // Refresh blockhash after ALT creation
+        latestBlockhash = await connection.getLatestBlockhash('confirmed');
         
         // Build versioned transaction with lookup table
         const lookupTableAccount = await connection.getAddressLookupTable(lookupTableAddress);
