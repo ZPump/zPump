@@ -1157,6 +1157,7 @@ pub mod ptf_factory {
             body[68..70].copy_from_slice(&fee_bps_override.unwrap_or_default().to_le_bytes());
             body[70] = fee_bps_override.is_some() as u8;
             body[71] = ctx.bumps.mint_mapping;
+            body[72] = 1; // is_native_ztoken (true = 1)
         }
         msg!(
             "factory register mint mapping origin={} native={}",
