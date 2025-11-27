@@ -85,13 +85,14 @@ async function testLazyInitialization(): Promise<void> {
     feeBpsOverride: undefined
   });
   
-  console.info(`[test] Token minted: ${mintResult.originMint.toBase58()}`);
-  console.info(`[test] Pool ID: ${mintResult.poolId.toBase58()}`);
+  console.info(`[test] Token minted: ${mintResult.originMint}`);
+  console.info(`[test] Pool ID: ${mintResult.poolId}`);
   
   // Step 3: Verify pool/vault are NOT initialized
   console.info('[test] Step 3: Verifying pool/vault are NOT initialized...');
-  const poolState = derivePoolState(mintResult.originMint);
-  const vaultState = deriveVaultState(mintResult.originMint);
+  const originMintKey = new PublicKey(mintResult.originMint);
+  const poolState = derivePoolState(originMintKey);
+  const vaultState = deriveVaultState(originMintKey);
   
   const poolAccount = await connection.getAccountInfo(poolState, 'confirmed');
   const vaultAccount = await connection.getAccountInfo(vaultState, 'confirmed');
@@ -119,8 +120,8 @@ async function testLazyInitialization(): Promise<void> {
         recipient: payer.publicKey.toBase58(),
         depositId: Date.now().toString(),
         blinding: Math.floor(Math.random() * 10 ** 18).toString(),
-        originMint: mintResult.originMint.toBase58(),
-        poolId: mintResult.poolId.toBase58()
+        originMint: mintResult.originMint,
+        poolId: mintResult.poolId
       }
     })
   });
@@ -186,8 +187,8 @@ async function testLazyInitialization(): Promise<void> {
         recipient: payer.publicKey.toBase58(),
         depositId: Date.now().toString(),
         blinding: Math.floor(Math.random() * 10 ** 18).toString(),
-        originMint: mintResult.originMint.toBase58(),
-        poolId: mintResult.poolId.toBase58()
+        originMint: mintResult.originMint,
+        poolId: mintResult.poolId
       }
     })
   });
