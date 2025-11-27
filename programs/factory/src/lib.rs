@@ -1189,129 +1189,12 @@ pub mod ptf_factory {
             false
         );
 
-        // Validate pool and vault program IDs
-        let pool_program_id = if let Some(config) = ctx.accounts.factory_config.as_ref() {
-            require_keys_eq!(
-                config.factory,
-                state.key(),
-                FactoryError::ConfigFactoryMismatch
-            );
-            config.pool_program_id
-        } else {
-            PTF_POOL_PROGRAM_ID
-        };
-        require_keys_eq!(
-            ctx.accounts.pool_program.key(),
-            pool_program_id,
-            FactoryError::InvalidVerifierProgram
-        );
+        // LAZY INITIALIZATION: Pool and vault will be initialized on first shield
+        // This reduces minting cost to just the standard Solana token creation
 
-        // Validate vault program ID (use hardcoded for now, could add to config later)
-        require_keys_eq!(
-            ctx.accounts.vault_program.key(),
-            PTF_VAULT_PROGRAM_ID,
-            FactoryError::InvalidVerifierProgram
-        );
-
-        let fee_bps = fee_bps_override.unwrap_or(state.default_fee_bps);
-        let features = feature_flags.unwrap_or_else(|| state.default_features.bits());
+        // Prepare signer seeds for minting
         let factory_bump = state.bump;
         let signer_seeds: [&[u8]; 3] = [seeds::FACTORY, crate::ID.as_ref(), &[factory_bump]];
-
-        // Initialize vault first so pool program can validate its state
-        let (pool_authority, _) = Pubkey::find_program_address(
-            &[seeds::POOL, origin_mint_key.as_ref()],
-            &pool_program_id,
-        );
-
-        // Compute vault instruction discriminator: sha256("global:initialize_vault")[0..8]
-        let vault_discriminator = hashv(&[b"global:initialize_vault"]).to_bytes()[0..8].to_vec();
-
-        // Serialize args: pool_authority (Pubkey = 32 bytes)
-        let mut vault_data = vault_discriminator;
-        vault_data.extend_from_slice(pool_authority.as_ref());
-
-        let vault_accounts = vec![
-            AccountMeta::new(ctx.accounts.vault_state.key(), false), // vault_state
-            AccountMeta::new_readonly(ctx.accounts.origin_mint.key(), false), // origin_mint
-            AccountMeta::new(ctx.accounts.payer.key(), true),        // payer (signer)
-            AccountMeta::new_readonly(ctx.accounts.token_program.key(), false), // token_program
-            AccountMeta::new_readonly(ctx.accounts.system_program.key(), false), // system_program
-        ];
-
-        let vault_ix = Instruction {
-            program_id: PTF_VAULT_PROGRAM_ID,
-            accounts: vault_accounts,
-            data: vault_data,
-        };
-
-        let vault_account_infos = vec![
-            ctx.accounts.vault_state.to_account_info(),
-            ctx.accounts.origin_mint.to_account_info(),
-            ctx.accounts.payer.to_account_info(),
-            ctx.accounts.token_program.to_account_info(),
-            ctx.accounts.system_program.to_account_info(),
-        ];
-
-        invoke_signed(&vault_ix, &vault_account_infos, &[&signer_seeds])?;
-
-        // Initialize pool via invoke_signed (avoiding circular dependency)
-        // Compute instruction discriminator: sha256("global:initialize_pool")[0..8]
-        let pool_discriminator = hashv(&[b"global:initialize_pool"]).to_bytes()[0..8].to_vec();
-
-        // Serialize args: fee_bps (u16) + features (u8)
-        let mut pool_data = pool_discriminator;
-        pool_data.extend_from_slice(&fee_bps.to_le_bytes());
-        pool_data.push(features);
-
-        // Build account metas for pool initialization
-        let mut pool_accounts = vec![
-            AccountMeta::new(ctx.accounts.factory_state.key(), true), // authority (factory PDA, signer)
-            AccountMeta::new(ctx.accounts.pool_state.key(), false),   // pool_state
-            AccountMeta::new(ctx.accounts.nullifier_set.key(), false), // nullifier_set
-            AccountMeta::new(ctx.accounts.note_ledger.key(), false),  // note_ledger
-            AccountMeta::new(ctx.accounts.commitment_tree.key(), false), // commitment_tree
-            AccountMeta::new(ctx.accounts.hook_config.key(), false),  // hook_config
-            AccountMeta::new(ctx.accounts.hook_whitelist.key(), false), // hook_whitelist
-            AccountMeta::new(ctx.accounts.vault_state.key(), false),  // vault_state
-            AccountMeta::new_readonly(ctx.accounts.origin_mint.key(), false), // origin_mint
-            AccountMeta::new_readonly(ctx.accounts.mint_mapping.key(), false), // mint_mapping
-            AccountMeta::new_readonly(ctx.accounts.factory_state.key(), false), // factory_state
-            AccountMeta::new_readonly(pool_program_id, false),        // twin_mint None sentinel
-            AccountMeta::new_readonly(ctx.accounts.verifier_program.key(), false), // verifier_program
-            AccountMeta::new_readonly(ctx.accounts.verifying_key.key(), false),    // verifying_key
-            AccountMeta::new(ctx.accounts.payer.key(), true),                      // payer (signer)
-            AccountMeta::new_readonly(ctx.accounts.system_program.key(), false),   // system_program
-            AccountMeta::new_readonly(ctx.accounts.token_program.key(), false),    // token_program
-        ];
-
-        let pool_ix = Instruction {
-            program_id: pool_program_id,
-            accounts: pool_accounts,
-            data: pool_data,
-        };
-
-        let account_infos = vec![
-            ctx.accounts.factory_state.to_account_info(),
-            ctx.accounts.pool_state.to_account_info(),
-            ctx.accounts.nullifier_set.to_account_info(),
-            ctx.accounts.note_ledger.to_account_info(),
-            ctx.accounts.commitment_tree.to_account_info(),
-            ctx.accounts.hook_config.to_account_info(),
-            ctx.accounts.hook_whitelist.to_account_info(),
-            ctx.accounts.vault_state.to_account_info(),
-            ctx.accounts.origin_mint.to_account_info(),
-            ctx.accounts.mint_mapping.to_account_info(),
-            ctx.accounts.factory_state.to_account_info(),
-            ctx.accounts.pool_program.to_account_info(),
-            ctx.accounts.verifier_program.to_account_info(),
-            ctx.accounts.verifying_key.to_account_info(),
-            ctx.accounts.payer.to_account_info(),
-            ctx.accounts.system_program.to_account_info(),
-            ctx.accounts.token_program.to_account_info(),
-        ];
-
-        invoke_signed(&pool_ix, &account_infos, &[&signer_seeds])?;
 
         // Ensure the user's token account (ATA) exists for the newly created mint
         let expected_user_ata = get_associated_token_address_with_program_id(
@@ -1364,12 +1247,13 @@ pub mod ptf_factory {
         let features_bits =
             FeatureFlags::from(feature_flags.unwrap_or_else(|| state.default_features.bits()))
                 .bits();
+        let effective_fee_bps = fee_bps_override.unwrap_or(state.default_fee_bps);
         emit!(MintRegistered {
             origin_mint: origin_mint_key,
             ptkn_mint: Pubkey::default(),
             decimals,
             features: features_bits,
-            fee_bps: fee_bps,
+            fee_bps: effective_fee_bps,
         });
 
         Ok(())
@@ -1616,35 +1500,6 @@ pub struct MintNativeZToken<'info> {
     /// Optional factory config account
     /// CHECK: Validated in instruction if provided
     pub factory_config: Option<Account<'info, FactoryConfig>>,
-    /// CHECK: Pool program account - validated in instruction
-    pub pool_program: AccountInfo<'info>,
-    /// CHECK: Vault program account - validated in instruction
-    pub vault_program: AccountInfo<'info>,
-    /// CHECK: Pool state PDA - will be initialized by pool program
-    #[account(mut)]
-    pub pool_state: UncheckedAccount<'info>,
-    /// CHECK: Vault state PDA - will be initialized by vault program
-    #[account(mut)]
-    pub vault_state: UncheckedAccount<'info>,
-    /// CHECK: Commitment tree PDA - will be initialized by pool program
-    #[account(mut)]
-    pub commitment_tree: UncheckedAccount<'info>,
-    /// CHECK: Nullifier set PDA - will be initialized by pool program
-    #[account(mut)]
-    pub nullifier_set: UncheckedAccount<'info>,
-    /// CHECK: Note ledger PDA - will be initialized by pool program
-    #[account(mut)]
-    pub note_ledger: UncheckedAccount<'info>,
-    /// CHECK: Hook config PDA - will be initialized by pool program
-    #[account(mut)]
-    pub hook_config: UncheckedAccount<'info>,
-    /// CHECK: Hook whitelist PDA - will be initialized by pool program
-    #[account(mut)]
-    pub hook_whitelist: UncheckedAccount<'info>,
-    /// CHECK: Verifier program account
-    pub verifier_program: UncheckedAccount<'info>,
-    /// CHECK: Verifying key account
-    pub verifying_key: UncheckedAccount<'info>,
     /// CHECK: User's token account - will receive minted tokens
     #[account(mut)]
     pub user_token_account: UncheckedAccount<'info>,

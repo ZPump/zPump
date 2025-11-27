@@ -625,46 +625,6 @@
           "optional": true
         },
         {
-          "name": "pool_program"
-        },
-        {
-          "name": "vault_program"
-        },
-        {
-          "name": "pool_state",
-          "writable": true
-        },
-        {
-          "name": "vault_state",
-          "writable": true
-        },
-        {
-          "name": "commitment_tree",
-          "writable": true
-        },
-        {
-          "name": "nullifier_set",
-          "writable": true
-        },
-        {
-          "name": "note_ledger",
-          "writable": true
-        },
-        {
-          "name": "hook_config",
-          "writable": true
-        },
-        {
-          "name": "hook_whitelist",
-          "writable": true
-        },
-        {
-          "name": "verifier_program"
-        },
-        {
-          "name": "verifying_key"
-        },
-        {
           "name": "user_token_account",
           "writable": true
         },
