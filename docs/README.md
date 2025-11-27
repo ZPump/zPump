@@ -27,6 +27,7 @@ Welcome to the zPump developer documentation. The repository has grown beyond wh
   - [Continuous Integration & Testing](development/ci-testing.md)
 - [Operational Playbooks](operations/)
   - [Compute Budget Strategy](operations/compute-budget.md)
+  - [Token Minting Costs](operations/token-minting-costs.md)
   - [Troubleshooting Root Drift](operations/root-drift.md)
   - [Common Errors & Fixes](operations/common-errors.md)
 - [Reference](reference/)
