@@ -500,7 +500,7 @@ export async function wrap(params: WrapParams): Promise<string> {
       
       // If shield claim exists and is in a state that allows finalize_tree, try to finalize it
       if (claimState && claimState.status !== 0) {
-      try {
+        try {
         const finalizeTreeData = poolCoder.instruction.encode('shield_finalize_tree', {});
         const finalizeTreeInstruction = new TransactionInstruction({
           programId: POOL_PROGRAM_ID,
@@ -535,16 +535,17 @@ export async function wrap(params: WrapParams): Promise<string> {
           // Retry waiting with longer timeout
           await waitForPendingShieldInactive(connection, poolState, 30000);
         }
-      } catch (instructionError) {
-        console.warn('[wrap] Failed to create clear instruction, will retry waiting:', instructionError);
-        // Retry waiting with longer timeout
+        } catch (instructionError) {
+          console.warn('[wrap] Failed to create clear instruction, will retry waiting:', instructionError);
+          // Retry waiting with longer timeout
+          await waitForPendingShieldInactive(connection, poolState, 30000);
+        }
+      } else {
+        // Shield claim is inactive but pending_shield is active - this is a stuck state
+        // Retry waiting with longer timeout, hoping it clears somehow
+        console.warn('[wrap] Shield claim is inactive but pending_shield is active - stuck state');
         await waitForPendingShieldInactive(connection, poolState, 30000);
       }
-    } else {
-      // Shield claim is inactive but pending_shield is active - this is a stuck state
-      // Retry waiting with longer timeout, hoping it clears somehow
-      console.warn('[wrap] Shield claim is inactive but pending_shield is active - stuck state');
-      await waitForPendingShieldInactive(connection, poolState, 30000);
     }
   }
 
