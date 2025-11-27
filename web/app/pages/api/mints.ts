@@ -37,11 +37,11 @@ function getRpcUrl(): string {
 async function fetchNativeMintEntries(): Promise<GeneratedMint[]> {
   try {
     const connection = new Connection(getRpcUrl(), 'confirmed');
+    // Fetch ALL mint mappings (not just isNativeZtoken=true) since we now create regular tokens
     const accounts = await connection.getProgramAccounts(FACTORY_PROGRAM_ID, {
       commitment: 'confirmed',
       filters: [
-        { dataSize: MINT_MAPPING_DATA_SIZE },
-        { memcmp: { offset: IS_NATIVE_OFFSET, bytes: TRUE_BYTE } }
+        { dataSize: MINT_MAPPING_DATA_SIZE }
       ]
     });
 
@@ -55,7 +55,8 @@ async function fetchNativeMintEntries(): Promise<GeneratedMint[]> {
         continue;
       }
 
-      if (!decoded?.isNativeZtoken) {
+      // Skip if origin_mint is default (uninitialized)
+      if (!decoded?.originMint || decoded.originMint === PublicKey.default.toBase58()) {
         continue;
       }
 
@@ -86,14 +87,14 @@ async function fetchNativeMintEntries(): Promise<GeneratedMint[]> {
         originMint,
         poolId,
         decimals: Number(decoded.decimals ?? 0),
-        zTokenMint: originMint,
+        zTokenMint: null, // Regular tokens don't have zTokenMint initially
         features: {
           zTokenEnabled: true,
           wrappedTransfers: false
         },
         lookupTable: null,
         metadataUri,
-        isNativeZToken: true
+        isNativeZToken: false // All tokens are now regular tokens
       });
     }
     return entries;

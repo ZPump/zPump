@@ -769,7 +769,7 @@ export function ConvertForm() {
 
   useEffect(() => {
     void refreshTokenOptions();
-  }, [refreshTokenOptions]);
+  }, [refreshTokenOptions, mints.length]); // Also refresh when mint catalog changes
 
   useEffect(() => {
     let cancelled = false;
@@ -1124,14 +1124,24 @@ export function ConvertForm() {
         })();
         return fallback;
       } catch {
+        // LAZY INITIALIZATION: If pool doesn't exist yet, use default empty root
+        // The pool will be initialized on first shield
+        const defaultEmptyRoot = '0x0000000000000000000000000000000000000000000000000000000000000000';
         if (mountedRef.current) {
-          setRoots(null);
-          setRootsError(
-            (caught as Error).message ??
-              'Commitment tree account not found. Run bootstrap-private-devnet or select a registered mint.'
-          );
+          setRoots({
+            current: defaultEmptyRoot,
+            recent: [],
+            source: 'default'
+          });
+          setCachedRoots({
+            mint: originMint,
+            current: defaultEmptyRoot,
+            recent: [],
+            source: 'default'
+          });
+          setRootsError(null); // Clear error - we have a valid default root
         }
-        return null;
+        return { current: defaultEmptyRoot, recent: [], source: 'default' };
       }
     } finally {
       if (mountedRef.current) {
@@ -1410,8 +1420,10 @@ export function ConvertForm() {
         rootValue = latestRoots.current;
       }
 
+      // LAZY INITIALIZATION: Use default empty root if pool not initialized yet
+      // The pool will be initialized on first shield
       if (!rootValue) {
-        throw new Error('Unable to resolve the current commitment tree root. Refresh and try again.');
+        rootValue = '0x0000000000000000000000000000000000000000000000000000000000000000';
       }
 
       // Get decimals from mintConfig, selectedTokenOption, or customMints
