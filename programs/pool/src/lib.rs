@@ -17,6 +17,7 @@ use ptf_common::hooks::{HookInstruction, PostShieldHook, PostUnshieldHook};
 use ptf_common::{
     seeds, FeatureFlags, FEATURE_HOOKS_ENABLED, FEATURE_PRIVATE_TRANSFER_ENABLED, MAX_BPS,
 };
+use ptf_common::addresses::AddressDeriver;
 use ptf_common::security::{
     AccountValidator, InputValidator, InputSanitizer, StateMachine,
     MAX_PROOF_SIZE, MAX_PUBLIC_INPUTS_SIZE,
@@ -137,23 +138,24 @@ pub mod ptf_pool {
         );
         
         // CRITICAL FIX: Manually decode mint mapping with comprehensive validation
-        // MintMapping::SPACE = 8 + 32 + 32 + 1 + 1 + 1 + 1 + 2 + 1 + 1 + 4 = 84 bytes
+        // MintMapping::SPACE = 8 + 32 + 32 + 1 + 1 + 1 + 1 + 2 + 1 + 1 + 1 = 81 bytes
+        // (lookup_table field removed - addresses are now derived programmatically)
         msg!("init_pool mapping_data_len={}", ctx.accounts.mint_mapping.data_len());
         let mapping_data = ctx.accounts.mint_mapping.try_borrow_data()?;
         msg!("init_pool mapping_data_borrowed len={}", mapping_data.len());
         // CRITICAL FIX: Validate account data length
         require!(
-            mapping_data.len() >= 84,
+            mapping_data.len() >= 81,
             PoolError::AccountDataTooShort
         );
         // CRITICAL FIX: Validate discriminator (first 8 bytes)
         // Note: We validate ownership and structure instead of discriminator
         // Manually read fields from MintMapping (C struct layout, not Borsh)
-        // Layout: origin_mint[32] + ptkn_mint[32] + has_ptkn[1] + status[1] + decimals[1] + features[1] + fee_bps_override[2] + has_fee_override[1] + bump[1] + padding[4]
+        // Layout: origin_mint[32] + ptkn_mint[32] + has_ptkn[1] + status[1] + decimals[1] + features[1] + fee_bps_override[2] + has_fee_override[1] + bump[1] + is_native_ztoken[1]
         let body = &mapping_data[8..];
         // CRITICAL FIX: Validate body length before reading
         require!(
-            body.len() >= 76, // 32 + 32 + 1 + 1 + 1 + 1 + 2 + 1 + 1 + 4
+            body.len() >= 73, // 32 + 32 + 1 + 1 + 1 + 1 + 2 + 1 + 1 + 1
             PoolError::AccountDataTooShort
         );
         let raw_origin_bytes: [u8; 32] = body[0..32]
@@ -1035,11 +1037,48 @@ pub mod ptf_pool {
         args: ShieldArgs,
     ) -> Result<()> {
         msg!("shield: entry");
+        
+        // PROGRAM-LEVEL ADDRESS DERIVATION: Derive all PDAs from origin_mint at the start
+        let origin_mint_key = ctx.accounts.origin_mint.key();
+        msg!("shield: deriving addresses from origin_mint={}", origin_mint_key);
+        
+        // Derive all pool-related addresses
+        let pool_addresses = ptf_common::addresses::PoolAddresses::derive_all(
+            &origin_mint_key,
+            ctx.program_id,
+        );
+        
+        // Derive mint_mapping PDA
+        let (expected_mint_mapping, _mint_mapping_bump) = AddressDeriver::derive_mint_mapping(
+            &origin_mint_key,
+            &ptf_factory::ID,
+        );
+        
+        // Derive vault_state PDA
+        let (expected_vault_state, _vault_bump) = AddressDeriver::derive_vault_state(
+            &origin_mint_key,
+            &ptf_vault::ID,
+        );
+        
+        msg!("shield: derived pool_state={}, commitment_tree={}, vault_state={}", 
+             pool_addresses.pool_state, pool_addresses.commitment_tree, expected_vault_state);
+        
+        // Validate provided accounts match derived addresses
+        // Note: We still load pool_state using Anchor constraints below, but we validate here first
+        // TODO: In future refactoring, convert pool_state to UncheckedAccount and load manually
+        
         // Check mint status first - must be active
         // CRITICAL FIX: Handle uninitialized accounts (owned by BPF loader)
         // If account is owned by BPF loader, it's uninitialized - this is a bootstrap issue
         // We check this before ensure_mint_active to provide a better error message
         let mint_mapping_info = ctx.accounts.mint_mapping.to_account_info();
+        
+        // Validate mint_mapping matches derived address
+        require_keys_eq!(
+            mint_mapping_info.key(),
+            expected_mint_mapping,
+            PoolError::OriginMintMismatch,
+        );
         if mint_mapping_info.owner != &ptf_factory::ID {
             msg!("shield: mint_mapping owner mismatch - owner={}, expected={}", 
                  mint_mapping_info.owner, ptf_factory::ID);
@@ -1053,8 +1092,23 @@ pub mod ptf_pool {
         
         let pool_loader = &ctx.accounts.pool_state;
         msg!("shield: got pool_loader");
+        
+        // Validate pool_state matches derived address
+        require_keys_eq!(
+            pool_loader.key(),
+            pool_addresses.pool_state,
+            PoolError::OriginMintMismatch,
+        );
+        
         let mut pool_state = pool_loader.load_mut()?;
         msg!("shield: loaded pool_state");
+        
+        // Validate pool_state.origin_mint matches the origin_mint we derived from
+        require_keys_eq!(
+            pool_state.origin_mint,
+            origin_mint_key,
+            PoolError::OriginMintMismatch,
+        );
         
         // CRITICAL FIX: Initialize hook_whitelist if needed (init_if_needed constraint)
         // This ensures the account exists before process_shield_finalize_ledger tries to use it
@@ -1066,15 +1120,13 @@ pub mod ptf_pool {
         }
         
         // CRITICAL SECURITY FIX: Initialize nullifier_set manually (converted to UncheckedAccount to reduce stack usage)
-        let (expected_nullifier_set, nullifier_set_bump) = Pubkey::find_program_address(
-            &[seeds::NULLIFIERS, pool_state.origin_mint.as_ref()],
-            ctx.program_id,
-        );
+        // Validate nullifier_set matches derived address
         require_keys_eq!(
             ctx.accounts.nullifier_set.key(),
-            expected_nullifier_set,
+            pool_addresses.nullifier_set,
             PoolError::NullifierSetMismatch,
         );
+        let nullifier_set_bump = pool_addresses.nullifier_set_bump;
         
         // Initialize nullifier_set if needed
         let nullifier_set_data = ctx.accounts.nullifier_set.try_borrow_data()?;
@@ -1155,18 +1207,15 @@ pub mod ptf_pool {
         }
         
         // CRITICAL FIX: Validate note_ledger PDA and bump seed
-        let (expected_note_ledger, expected_note_ledger_bump) = Pubkey::find_program_address(
-            &[seeds::NOTES, pool_state.origin_mint.as_ref()],
-            ctx.program_id,
-        );
+        // Validate note_ledger matches derived address
         require_keys_eq!(
             ctx.accounts.note_ledger.key(),
-            expected_note_ledger,
+            pool_addresses.note_ledger,
             PoolError::NoteLedgerMismatch,
         );
         // CRITICAL FIX: Validate stored bump matches derived bump
         require!(
-            pool_state.note_ledger_bump == expected_note_ledger_bump,
+            pool_state.note_ledger_bump == pool_addresses.note_ledger_bump,
             PoolError::InvalidBump
         );
         
@@ -1186,6 +1235,19 @@ pub mod ptf_pool {
             return err!(PoolError::NoteLedgerMismatch);
         }
         
+        // Derive shield_claim PDA from pool_state
+        let (expected_shield_claim, shield_claim_bump) = AddressDeriver::derive_shield_claim(
+            &pool_addresses.pool_state,
+            ctx.program_id,
+        );
+        
+        // Validate shield_claim matches derived address
+        require_keys_eq!(
+            ctx.accounts.shield_claim.key(),
+            expected_shield_claim,
+            PoolError::OriginMintMismatch,
+        );
+        
         let expected_pool = pool_loader.key();
         let claim_bump = {
             let shield_claim = &mut ctx.accounts.shield_claim;
@@ -1193,15 +1255,17 @@ pub mod ptf_pool {
             if shield_claim.pool == Pubkey::default() || shield_claim.pool != expected_pool {
                 // Account is new or stale - initialize/reset it
                 shield_claim.pool = expected_pool;
-                // Bump is set automatically by Anchor's init_if_needed constraint
-                // CRITICAL: We must set the bump field explicitly from ctx.bumps
-                // Anchor doesn't automatically populate the bump field in the account struct
-                shield_claim.bump = ctx.bumps.shield_claim;
+                // Use derived bump
+                shield_claim.bump = shield_claim_bump;
                 // Reset status to inactive for new/stale accounts
                 shield_claim.status = ShieldClaim::STATUS_INACTIVE;
                 shield_claim.bump
             } else {
                 // Account exists and pool matches - use existing bump
+                require!(
+                    shield_claim.bump == shield_claim_bump,
+                    PoolError::InvalidBump
+                );
                 shield_claim.bump
             }
         };
@@ -1306,14 +1370,10 @@ pub mod ptf_pool {
             PoolError::VerifyingKeyHashMismatch,
         );
         
-        // Validate vault_state PDA
-        let (expected_vault, _) = Pubkey::find_program_address(
-            &[seeds::VAULT, pool_state.origin_mint.as_ref()],
-            &ptf_vault::ID,
-        );
+        // Validate vault_state PDA matches derived address
         require_keys_eq!(
             ctx.accounts.vault_state.key(),
-            expected_vault,
+            expected_vault_state,
             PoolError::VaultTokenAccountMismatch,
         );
         require_keys_eq!(
@@ -1363,9 +1423,15 @@ pub mod ptf_pool {
             pool_state.origin_mint,
             PoolError::OriginMintMismatch,
         );
+        // Validate commitment_tree matches derived address
         require_keys_eq!(
             ctx.accounts.commitment_tree.key(),
+            pool_addresses.commitment_tree,
+            PoolError::CommitmentTreeMismatch,
+        );
+        require_keys_eq!(
             pool_state.commitment_tree,
+            pool_addresses.commitment_tree,
             PoolError::CommitmentTreeMismatch,
         );
 
@@ -1373,6 +1439,17 @@ pub mod ptf_pool {
         // Only validate if hooks are actually enabled, not just if config is present
         let hooks_feature_enabled = pool_state.features.contains(FeatureFlags::from(FEATURE_HOOKS_ENABLED));
         if hooks_feature_enabled && pool_state.hook_config_present {
+            // Validate hook_config matches derived address
+            require_keys_eq!(
+                ctx.accounts.hook_config.key(),
+                pool_addresses.hook_config,
+                PoolError::HookConfigInvalid,
+            );
+            require!(
+                pool_state.hook_config_bump == pool_addresses.hook_config_bump,
+                PoolError::InvalidBump
+            );
+            
             let hook_config_data = ctx.accounts.hook_config.try_borrow_data()?;
             if hook_config_data.len() >= 8 + 32 {
                 let hook_config_pool_bytes: [u8; 32] = hook_config_data[8..40].try_into().map_err(|_| PoolError::HookConfigInvalid)?;
@@ -1385,6 +1462,13 @@ pub mod ptf_pool {
                 );
             }
         }
+        
+        // Validate hook_whitelist matches derived address
+        require_keys_eq!(
+            ctx.accounts.hook_whitelist.key(),
+            pool_addresses.hook_whitelist,
+            PoolError::HookConfigInvalid,
+        );
 
         // Load commitment_tree data and extract needed values before any mutable operations
         let (commitment_tree_next_index, commitment_tree_current_root) = {
@@ -1677,6 +1761,56 @@ pub mod ptf_pool {
     // timelock, multi-sig, and governance approval.
 
     pub fn private_transfer(ctx: Context<PrivateTransfer>, args: TransferArgs) -> Result<()> {
+        // PROGRAM-LEVEL ADDRESS DERIVATION: Derive all PDAs from origin_mint at the start
+        // Load pool_state first to get origin_mint (since mint_mapping is UncheckedAccount)
+        let pool_state = ctx.accounts.pool_state.load()?;
+        let origin_mint_key = pool_state.origin_mint;
+        drop(pool_state);
+        msg!("private_transfer: deriving addresses from origin_mint={}", origin_mint_key);
+        
+        // Derive all pool-related addresses
+        let pool_addresses = ptf_common::addresses::PoolAddresses::derive_all(
+            &origin_mint_key,
+            ctx.program_id,
+        );
+        
+        // Derive mint_mapping PDA
+        let (expected_mint_mapping, _mint_mapping_bump) = AddressDeriver::derive_mint_mapping(
+            &origin_mint_key,
+            &ptf_factory::ID,
+        );
+        
+        // Validate provided accounts match derived addresses
+        require_keys_eq!(
+            ctx.accounts.mint_mapping.key(),
+            expected_mint_mapping,
+            PoolError::OriginMintMismatch,
+        );
+        
+        // Validate pool_state matches derived address
+        require_keys_eq!(
+            ctx.accounts.pool_state.key(),
+            pool_addresses.pool_state,
+            PoolError::OriginMintMismatch,
+        );
+        
+        // Validate other PDAs
+        require_keys_eq!(
+            ctx.accounts.nullifier_set.key(),
+            pool_addresses.nullifier_set,
+            PoolError::NullifierSetMismatch,
+        );
+        require_keys_eq!(
+            ctx.accounts.commitment_tree.key(),
+            pool_addresses.commitment_tree,
+            PoolError::CommitmentTreeMismatch,
+        );
+        require_keys_eq!(
+            ctx.accounts.note_ledger.key(),
+            pool_addresses.note_ledger,
+            PoolError::NoteLedgerMismatch,
+        );
+        
         ensure_mint_active(&ctx.accounts.mint_mapping.to_account_info())?;
         let payer_account_info = ctx.accounts.payer.to_account_info();
         let system_program_account_info = ctx.accounts.system_program.to_account_info();
@@ -1736,6 +1870,72 @@ pub mod ptf_pool {
     }
 
     pub fn transfer_from(ctx: Context<TransferFrom>, args: TransferFromArgs) -> Result<()> {
+        // PROGRAM-LEVEL ADDRESS DERIVATION: Derive all PDAs from origin_mint at the start
+        // Load pool_state first to get origin_mint (since mint_mapping is UncheckedAccount)
+        let pool_state = ctx.accounts.pool_state.load()?;
+        let origin_mint_key = pool_state.origin_mint;
+        drop(pool_state);
+        msg!("transfer_from: deriving addresses from origin_mint={}", origin_mint_key);
+        
+        // Derive all pool-related addresses
+        let pool_addresses = ptf_common::addresses::PoolAddresses::derive_all(
+            &origin_mint_key,
+            ctx.program_id,
+        );
+        
+        // Derive mint_mapping PDA
+        let (expected_mint_mapping, _mint_mapping_bump) = AddressDeriver::derive_mint_mapping(
+            &origin_mint_key,
+            &ptf_factory::ID,
+        );
+        
+        // Derive allowance account PDA
+        let pool_state_key = pool_addresses.pool_state;
+        let (expected_allowance, _allowance_bump) = AddressDeriver::derive_allowance_account(
+            &pool_state_key,
+            &ctx.accounts.allowance_owner.key(),
+            &ctx.accounts.spender.key(),
+            ctx.program_id,
+        );
+        
+        // Validate provided accounts match derived addresses
+        require_keys_eq!(
+            ctx.accounts.mint_mapping.key(),
+            expected_mint_mapping,
+            PoolError::OriginMintMismatch,
+        );
+        
+        // Validate pool_state matches derived address
+        require_keys_eq!(
+            ctx.accounts.pool_state.key(),
+            pool_addresses.pool_state,
+            PoolError::OriginMintMismatch,
+        );
+        
+        // Validate allowance account matches derived address
+        require_keys_eq!(
+            ctx.accounts.allowance.key(),
+            expected_allowance,
+            PoolError::AllowancePoolMismatch,
+        );
+        
+        // Validate other PDAs
+        require_keys_eq!(
+            ctx.accounts.nullifier_set.key(),
+            pool_addresses.nullifier_set,
+            PoolError::NullifierSetMismatch,
+        );
+        require_keys_eq!(
+            ctx.accounts.commitment_tree.key(),
+            pool_addresses.commitment_tree,
+            PoolError::CommitmentTreeMismatch,
+        );
+        require_keys_eq!(
+            ctx.accounts.note_ledger.key(),
+            pool_addresses.note_ledger,
+            PoolError::NoteLedgerMismatch,
+        );
+        
         require!(args.allowance_amount > 0, PoolError::AllowanceAmountInvalid);
         require!(args.spend_amount > 0, PoolError::AllowanceAmountInvalid);
         
@@ -2016,6 +2216,43 @@ fn process_unshield<'info>(
     args: UnshieldArgs,
     mode: UnshieldMode,
 ) -> Result<()> {
+    // PROGRAM-LEVEL ADDRESS DERIVATION: Derive all PDAs from origin_mint at the start
+    let origin_mint_key = ctx.accounts.mint_mapping.origin_mint;
+    msg!("process_unshield: deriving addresses from origin_mint={}", origin_mint_key);
+    
+    // Derive all pool-related addresses
+    let pool_addresses = ptf_common::addresses::PoolAddresses::derive_all(
+        &origin_mint_key,
+        ctx.program_id,
+    );
+    
+    // Derive mint_mapping PDA
+    let (expected_mint_mapping, _mint_mapping_bump) = AddressDeriver::derive_mint_mapping(
+        &origin_mint_key,
+        &ptf_factory::ID,
+    );
+    
+    // Derive vault_state PDA
+    let (expected_vault_state, _vault_bump) = AddressDeriver::derive_vault_state(
+        &origin_mint_key,
+        &ptf_vault::ID,
+    );
+    
+    // Derive factory_state PDA
+    let (expected_factory_state, _factory_bump) = AddressDeriver::derive_factory_state(
+        &ptf_factory::ID,
+    );
+    
+    msg!("process_unshield: derived pool_state={}, vault_state={}", 
+         pool_addresses.pool_state, expected_vault_state);
+    
+    // Validate provided accounts match derived addresses
+    require_keys_eq!(
+        ctx.accounts.mint_mapping.key(),
+        expected_mint_mapping,
+        PoolError::OriginMintMismatch,
+    );
+    
     // Check mint status first - must be active
     ensure_mint_active(&ctx.accounts.mint_mapping.to_account_info())?;
     
@@ -2066,7 +2303,23 @@ fn process_unshield<'info>(
     let factory_program_account_info = ctx.accounts.factory_program.to_account_info();
     
     let pool_loader = &ctx.accounts.pool_state;
+    
+    // Validate pool_state matches derived address
+    require_keys_eq!(
+        pool_loader.key(),
+        pool_addresses.pool_state,
+        PoolError::OriginMintMismatch,
+    );
+    
     let mut pool_state = pool_loader.load_mut()?;
+    
+    // Validate pool_state.origin_mint matches the origin_mint we derived from
+    require_keys_eq!(
+        pool_state.origin_mint,
+        origin_mint_key,
+        PoolError::OriginMintMismatch,
+    );
+    
     #[cfg(all(feature = "invariant_checks", not(feature = "lightweight")))]
     let mut should_enforce_invariant = false;
     #[cfg(not(feature = "lightweight"))]
@@ -2093,6 +2346,12 @@ fn process_unshield<'info>(
         verifying_key_hash == pool_state.verifying_key_hash,
         PoolError::VerifyingKeyHashMismatch,
     );
+    // Validate vault_state matches derived address
+    require_keys_eq!(
+        vault_state_key,
+        expected_vault_state,
+        PoolError::MismatchedVaultAuthority,
+    );
     require_keys_eq!(
         vault_state_key,
         pool_state.vault,
@@ -2108,6 +2367,44 @@ fn process_unshield<'info>(
         origin_mint,
         PoolError::OriginMintMismatch,
     );
+    
+    // Validate commitment_tree matches derived address
+    require_keys_eq!(
+        commitment_tree_key,
+        pool_addresses.commitment_tree,
+        PoolError::CommitmentTreeMismatch,
+    );
+    require_keys_eq!(
+        pool_state.commitment_tree,
+        pool_addresses.commitment_tree,
+        PoolError::CommitmentTreeMismatch,
+    );
+    
+    // Validate note_ledger matches derived address
+    require_keys_eq!(
+        ctx.accounts.note_ledger.key(),
+        pool_addresses.note_ledger,
+        PoolError::NoteLedgerMismatch,
+    );
+    require_keys_eq!(
+        pool_state.note_ledger,
+        pool_addresses.note_ledger,
+        PoolError::NoteLedgerMismatch,
+    );
+    
+    // Validate nullifier_set matches derived address
+    require_keys_eq!(
+        ctx.accounts.nullifier_set.key(),
+        pool_addresses.nullifier_set,
+        PoolError::NullifierSetMismatch,
+    );
+    
+    // Validate factory_state matches derived address
+    require_keys_eq!(
+        factory_state_key,
+        expected_factory_state,
+        PoolError::OriginMintMismatch,
+    );
     require_keys_eq!(
         vault_token_account_owner,
         pool_state.vault,
@@ -2118,10 +2415,20 @@ fn process_unshield<'info>(
         origin_mint,
         PoolError::OriginMintMismatch,
     );
+    
+    // Validate hook_config and hook_whitelist if hooks are enabled
+    let hooks_feature_enabled = pool_state.features.contains(FeatureFlags::from(FEATURE_HOOKS_ENABLED));
+    if hooks_feature_enabled && pool_state.hook_config_present {
+        require_keys_eq!(
+            ctx.accounts.hook_config.key(),
+            pool_addresses.hook_config,
+            PoolError::HookConfigInvalid,
+        );
+    }
     require_keys_eq!(
-        commitment_tree_key,
-        pool_state.commitment_tree,
-        PoolError::CommitmentTreeMismatch,
+        ctx.accounts.hook_whitelist.key(),
+        pool_addresses.hook_whitelist,
+        PoolError::HookConfigInvalid,
     );
 
     // Cache twin_mint check before accessing ctx.accounts while holding mutable borrow
@@ -6159,8 +6466,9 @@ fn ensure_mint_active(mapping: &AccountInfo) -> Result<()> {
     // CRITICAL FIX: Manually read status from account data with comprehensive validation
     let mapping_data = mapping.try_borrow_data()?;
     // CRITICAL FIX: Validate account data length
+    // MintMapping::SPACE = 81 bytes (lookup_table field removed)
     require!(
-        mapping_data.len() >= 84,
+        mapping_data.len() >= 81,
         PoolError::AccountDataTooShort
     );
     // CRITICAL FIX: Validate discriminator (first 8 bytes)
@@ -6168,7 +6476,7 @@ fn ensure_mint_active(mapping: &AccountInfo) -> Result<()> {
     let body = &mapping_data[8..];
     // CRITICAL FIX: Validate body length before reading
     require!(
-        body.len() >= 76, // Need at least 76 bytes for status field at offset 65
+        body.len() >= 73, // Need at least 73 bytes for status field at offset 65
         PoolError::AccountDataTooShort
     );
     let raw_status = body[65];

@@ -94,13 +94,10 @@ async function main() {
       const originMint = new PublicKey(lastResult.mint?.originMint);
       const { decoded: mintMapping } = await fetchMintMappingAccount(connection, originMint);
       console.log(`[test] ✓ MintMapping read successfully for ${lastRegisteredSymbol}`);
-      console.log(`[test]   - lookup_table: ${mintMapping.lookupTable ? mintMapping.lookupTable.toBase58() : 'null (expected - will be set on first shield)'}`);
-      if (mintMapping.lookupTable !== null && mintMapping.lookupTable !== undefined) {
-        console.warn(`[test]   WARNING: lookup_table is set before first shield (unexpected)`);
-      }
+      // lookup_table field removed - addresses are now derived programmatically
     }
   } catch (error) {
-    console.warn(`[test] Could not verify MintMapping lookup_table field:`, error instanceof Error ? error.message : String(error));
+    // lookup_table field removed - addresses are now derived programmatically
   }
 
   // Test 3: Rapid sequential registrations (stress test)

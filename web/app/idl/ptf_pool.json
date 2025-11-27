@@ -1695,7 +1695,7 @@
         },
         {
           "name": "vault_program",
-          "address": "9g6ZodQwxK8MN6MX3dbvFC3E7vGVqFtKZEHY7PByRAuh"
+          "address": "ABUQvsF8kdY9HCFrVEomafg9ABbq4zVQuxLfevpwGnvb"
         },
         {
           "name": "token_program"
@@ -2470,7 +2470,7 @@
         },
         {
           "name": "vault_program",
-          "address": "9g6ZodQwxK8MN6MX3dbvFC3E7vGVqFtKZEHY7PByRAuh"
+          "address": "ABUQvsF8kdY9HCFrVEomafg9ABbq4zVQuxLfevpwGnvb"
         },
         {
           "name": "factory_state",
@@ -2829,7 +2829,7 @@
         },
         {
           "name": "vault_program",
-          "address": "9g6ZodQwxK8MN6MX3dbvFC3E7vGVqFtKZEHY7PByRAuh"
+          "address": "ABUQvsF8kdY9HCFrVEomafg9ABbq4zVQuxLfevpwGnvb"
         },
         {
           "name": "factory_state",
@@ -3015,7 +3015,7 @@
         },
         {
           "name": "vault_program",
-          "address": "9g6ZodQwxK8MN6MX3dbvFC3E7vGVqFtKZEHY7PByRAuh"
+          "address": "ABUQvsF8kdY9HCFrVEomafg9ABbq4zVQuxLfevpwGnvb"
         },
         {
           "name": "token_program"
@@ -5138,6 +5138,66 @@
       }
     },
     {
+      "name": "PendingShield",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "active",
+            "type": "u8"
+          },
+          {
+            "name": "old_root",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "new_root",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "commitment",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "amount_commit",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "amount",
+            "type": "u64"
+          },
+          {
+            "name": "depositor",
+            "type": "pubkey"
+          },
+          {
+            "name": "next_index",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
       "name": "PoolState",
       "serialization": "bytemuckunsafe",
       "repr": {
@@ -5782,66 +5842,6 @@
             "type": {
               "option": "i64"
             }
-          }
-        ]
-      }
-    },
-    {
-      "name": "PendingShield",
-      "type": {
-        "kind": "struct",
-        "fields": [
-          {
-            "name": "active",
-            "type": "u8"
-          },
-          {
-            "name": "old_root",
-            "type": {
-              "array": [
-                "u8",
-                32
-              ]
-            }
-          },
-          {
-            "name": "new_root",
-            "type": {
-              "array": [
-                "u8",
-                32
-              ]
-            }
-          },
-          {
-            "name": "commitment",
-            "type": {
-              "array": [
-                "u8",
-                32
-              ]
-            }
-          },
-          {
-            "name": "amount_commit",
-            "type": {
-              "array": [
-                "u8",
-                32
-              ]
-            }
-          },
-          {
-            "name": "amount",
-            "type": "u64"
-          },
-          {
-            "name": "depositor",
-            "type": "pubkey"
-          },
-          {
-            "name": "next_index",
-            "type": "u64"
           }
         ]
       }

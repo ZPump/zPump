@@ -5,6 +5,8 @@ use thiserror::Error;
 
 /// Security module providing centralized validation, access control, and security utilities.
 pub mod security;
+/// Address derivation utilities for program-derived addresses (PDAs).
+pub mod addresses;
 
 /// Depth of the Merkle tree used by shielded pools.
 pub const MERKLE_DEPTH: u8 = 32;

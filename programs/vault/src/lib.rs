@@ -5,6 +5,7 @@ use anchor_spl::token_interface::{
 use solana_program::pubkey;
 
 use ptf_common::seeds;
+use ptf_common::addresses::AddressDeriver;
 use ptf_common::security::{
     AccountIntegrity, IntegrityChecker, RateLimitConfig, RateLimiterState,
 };
@@ -52,9 +53,13 @@ pub mod ptf_vault {
             VaultError::InvalidMint
         );
         
-        // CRITICAL FIX: Validate pool_authority is a valid pool PDA
-        let (expected_pool_authority, _expected_bump) = Pubkey::find_program_address(
-            &[seeds::POOL, ctx.accounts.origin_mint.key().as_ref()],
+        // PROGRAM-LEVEL ADDRESS DERIVATION: Derive all PDAs from origin_mint
+        let origin_mint_key = ctx.accounts.origin_mint.key();
+        msg!("initialize_vault: deriving addresses from origin_mint={}", origin_mint_key);
+        
+        // Derive pool_authority PDA
+        let (expected_pool_authority, _expected_bump) = AddressDeriver::derive_pool_state(
+            &origin_mint_key,
             &PTF_POOL_PROGRAM_ID,
         );
         require_keys_eq!(
@@ -64,8 +69,8 @@ pub mod ptf_vault {
         );
         
         // CRITICAL FIX: Validate bump matches actual PDA derivation
-        let (expected_vault_pda, expected_vault_bump) = Pubkey::find_program_address(
-            &[seeds::VAULT, ctx.accounts.origin_mint.key().as_ref()],
+        let (expected_vault_pda, expected_vault_bump) = AddressDeriver::derive_vault_state(
+            &origin_mint_key,
             &crate::ID,
         );
         require_keys_eq!(
@@ -123,8 +128,8 @@ pub mod ptf_vault {
             validate_then_execute(
                 || {
                     // CRITICAL FIX: Validate vault token account owner is vault PDA
-                    let (expected_vault_pda, _) = Pubkey::find_program_address(
-                        &[seeds::VAULT, vault_state.origin_mint.as_ref()],
+                    let (expected_vault_pda, _) = AddressDeriver::derive_vault_state(
+                        &vault_state.origin_mint,
                         &crate::ID,
                     );
                     require_keys_eq!(
@@ -203,9 +208,9 @@ pub mod ptf_vault {
         let pool_authority = ctx.accounts.vault_state.pool_authority;
         let stored_bump = ctx.accounts.vault_state.bump;
         
-        // CRITICAL FIX: Validate bump matches actual PDA derivation
-        let (expected_vault_pda, expected_bump) = Pubkey::find_program_address(
-            &[seeds::VAULT, origin_mint.as_ref()],
+        // PROGRAM-LEVEL ADDRESS DERIVATION: Derive vault_state PDA from origin_mint
+        let (expected_vault_pda, expected_bump) = AddressDeriver::derive_vault_state(
+            &origin_mint,
             &crate::ID,
         );
         require_keys_eq!(
@@ -239,8 +244,8 @@ pub mod ptf_vault {
                     validate_pool_authority(&ctx.accounts.pool_authority, &pool_authority)?;
                     
                     // CRITICAL FIX: Validate vault token account owner is vault PDA
-                    let (expected_vault_pda, _) = Pubkey::find_program_address(
-                        &[seeds::VAULT, origin_mint.as_ref()],
+                    let (expected_vault_pda, _) = AddressDeriver::derive_vault_state(
+                        &origin_mint,
                         &crate::ID,
                     );
                     require_keys_eq!(
@@ -350,9 +355,9 @@ pub mod ptf_vault {
             VaultError::InvalidAuthorityChange
         );
         
-        // CRITICAL FIX: Validate new authority is valid pool PDA for this mint
-        let (expected_pool_authority, _) = Pubkey::find_program_address(
-            &[seeds::POOL, state.origin_mint.as_ref()],
+        // PROGRAM-LEVEL ADDRESS DERIVATION: Derive pool_authority PDA from origin_mint
+        let (expected_pool_authority, _) = AddressDeriver::derive_pool_state(
+            &state.origin_mint,
             &PTF_POOL_PROGRAM_ID,
         );
         require_keys_eq!(
@@ -480,8 +485,8 @@ pub mod ptf_vault {
         );
         
         // CRITICAL FIX: Validate new authority is still valid
-        let (expected_pool_authority, _) = Pubkey::find_program_address(
-            &[seeds::POOL, state.origin_mint.as_ref()],
+        let (expected_pool_authority, _) = AddressDeriver::derive_pool_state(
+            &state.origin_mint,
             &PTF_POOL_PROGRAM_ID,
         );
         require_keys_eq!(

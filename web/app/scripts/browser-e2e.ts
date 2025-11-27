@@ -9,8 +9,7 @@ import {
   SystemProgram,
   SYSVAR_RENT_PUBKEY,
   Transaction,
-  TransactionInstruction,
-  VersionedTransaction
+  TransactionInstruction
 } from '@solana/web3.js';
 import {
   ASSOCIATED_TOKEN_PROGRAM_ID,
@@ -642,11 +641,8 @@ function createWalletAdapter(payer: Keypair, connection: Connection): WalletLike
     visible: false,
     setVisible: () => {},
     supportedTransactionVersions: null,
-    async sendTransaction(transaction: Transaction | VersionedTransaction, connection: Connection, options?: { skipPreflight?: boolean }): Promise<string> {
-      if (transaction instanceof VersionedTransaction) {
-        transaction.sign([payer]);
-        return connection.sendRawTransaction(transaction.serialize(), { skipPreflight: options?.skipPreflight ?? false });
-      }
+    async sendTransaction(transaction: Transaction, connection: Connection, options?: { skipPreflight?: boolean }): Promise<string> {
+      // VersionedTransaction removed - addresses are now derived programmatically
       // Fully sign the transaction (not partialSign) to ensure it's valid
       transaction.sign(payer);
       return connection.sendRawTransaction(transaction.serialize(), { skipPreflight: options?.skipPreflight ?? false });
@@ -655,13 +651,10 @@ function createWalletAdapter(payer: Keypair, connection: Connection): WalletLike
       transaction.sign(payer);
       return transaction;
     },
-    async signAllTransactions(transactions: (Transaction | VersionedTransaction)[]) {
+    async signAllTransactions(transactions: Transaction[]) {
+      // VersionedTransaction removed - addresses are now derived programmatically
       transactions.forEach((tx) => {
-        if (tx instanceof VersionedTransaction) {
-          tx.sign([payer]);
-        } else {
-          tx.sign(payer);
-        }
+        tx.sign(payer);
       });
       return transactions;
     }
@@ -935,7 +928,7 @@ async function main() {
     const signature = await wrap({
       connection,
       wallet: ownerAdapter,
-      lookupTableAuthority: createWalletAdapter(adminAuthority, connection),
+      // lookupTableAuthority removed - addresses are now derived programmatically
       originMint: mintConfig.originMint,
       amount: noteAmount,
       poolId,
