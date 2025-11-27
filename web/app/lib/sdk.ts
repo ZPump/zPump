@@ -1798,13 +1798,23 @@ export async function mintNativeZToken(params: MintNativeZTokenParams): Promise<
   }
 
   // Check payer balance before sending transaction
-  // Estimate: ~0.1 SOL for account creation (mint, metadata, mint_mapping, pool state, vault state, etc.) + fees
+  // Estimate: 
+  // - Mint account: ~0.00144 SOL (rent exemption)
+  // - Metadata account: ~0.00323 SOL (rent exemption)
+  // - MintMapping account: ~0.00000081 SOL (rent exemption)
+  // - Pool state + vault state + commitment tree + nullifier set + note ledger + hook config + hook whitelist: ~0.01 SOL
+  // - Transaction fees: ~0.000005 SOL
+  // - Safety margin: 0.05 SOL
+  // Total: ~0.065 SOL minimum, but use 0.1 SOL for safety
   const MIN_BALANCE_REQUIRED = 100_000_000; // 0.1 SOL
   const payerBalance = await connection.getBalance(wallet.publicKey, 'confirmed');
   if (payerBalance < MIN_BALANCE_REQUIRED) {
+    const requiredSol = (MIN_BALANCE_REQUIRED / 1e9).toFixed(2);
+    const currentSol = (payerBalance / 1e9).toFixed(4);
     throw new Error(
-      `Insufficient SOL balance. Required: ${MIN_BALANCE_REQUIRED / 1e9} SOL, ` +
-      `Current: ${payerBalance / 1e9} SOL. Please fund your wallet.`
+      `Insufficient SOL balance for token minting. ` +
+      `Required: ${requiredSol} SOL, Current: ${currentSol} SOL. ` +
+      `Please fund your wallet using the faucet or transfer SOL to your account.`
     );
   }
 
