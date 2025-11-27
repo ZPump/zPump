@@ -552,101 +552,23 @@ export async function wrap(params: WrapParams): Promise<string> {
     }
   }
 
-  // LAZY INITIALIZATION: Check if pool is initialized, if not initialize it first
+  // LAZY INITIALIZATION: Check if pool is initialized
   const poolAccountInfo = await connection.getAccountInfo(poolState, 'confirmed');
   const commitmentTreeAccount = await connection.getAccountInfo(commitmentTreeKey);
   const isLazyInit = !poolAccountInfo || !commitmentTreeAccount;
   
-  if (isLazyInit) {
-    if (process.env.NEXT_PUBLIC_DEBUG_WRAP === 'true') {
-      console.info('[wrap] Pool not initialized, initializing pool first...');
-    }
-    
-    // Initialize vault first if needed
-    const vaultAccount = await connection.getAccountInfo(vaultState, 'confirmed');
-    if (!vaultAccount) {
-      const poolAuthority = deriveFactoryState(); // Pool authority is factory state
-      const vaultInitData = vaultCoder.instruction.encode('initialize_vault', {
-        pool_authority: poolAuthority
-      });
-      const vaultInitIx = new TransactionInstruction({
-        programId: VAULT_PROGRAM_ID,
-        keys: [
-          { pubkey: vaultState, isSigner: false, isWritable: true },
-          { pubkey: originMintKey, isSigner: false, isWritable: false },
-          { pubkey: wallet.publicKey, isSigner: true, isWritable: true },
-          { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
-          { pubkey: SystemProgram.programId, isSigner: false, isWritable: false }
-        ],
-        data: vaultInitData
-      });
-      
-      const vaultBlockhash = await connection.getLatestBlockhash('confirmed');
-      const vaultTx = new Transaction().add(vaultInitIx);
-      vaultTx.feePayer = wallet.publicKey;
-      vaultTx.recentBlockhash = vaultBlockhash.blockhash;
-      
-      const vaultSig = await wallet.sendTransaction(vaultTx, connection, { skipPreflight: false });
-      await waitForSignatureConfirmation(connection, vaultSig, vaultBlockhash.blockhash, vaultBlockhash.lastValidBlockHeight);
-      if (process.env.NEXT_PUBLIC_DEBUG_WRAP === 'true') {
-        console.info('[wrap] Vault initialized');
-      }
-    }
-    
-    // Initialize pool using initialize_pool instruction
-    const FEATURE_PRIVATE_TRANSFER_ENABLED = 1;
-    const FEATURE_ALLOWANCES_ENABLED = 2;
-    const features = FEATURE_PRIVATE_TRANSFER_ENABLED | FEATURE_ALLOWANCES_ENABLED;
-    const feeBps = 0; // Default fee
-    
-    const initPoolData = poolCoder.instruction.encode('initialize_pool', {
-      fee_bps: feeBps,
-      features: features
-    });
-    
-    const initPoolKeys = [
-      { pubkey: wallet.publicKey, isSigner: true, isWritable: true }, // authority
-      { pubkey: poolState, isSigner: false, isWritable: true },
-      { pubkey: nullifierSet, isSigner: false, isWritable: true },
-      { pubkey: noteLedger, isSigner: false, isWritable: true },
-      { pubkey: commitmentTreeKey, isSigner: false, isWritable: true },
-      { pubkey: hookConfig, isSigner: false, isWritable: false },
-      { pubkey: hookWhitelist, isSigner: false, isWritable: true },
-      { pubkey: vaultState, isSigner: false, isWritable: false },
-      { pubkey: originMintKey, isSigner: false, isWritable: false },
-      { pubkey: mintMappingKey, isSigner: false, isWritable: false },
-      { pubkey: factoryState, isSigner: false, isWritable: false },
-      { pubkey: VERIFIER_PROGRAM_ID, isSigner: false, isWritable: false },
-      { pubkey: verifyingKey, isSigner: false, isWritable: false },
-      { pubkey: wallet.publicKey, isSigner: true, isWritable: true }, // payer
-      { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
-      { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false }
-    ];
-    
-    const initPoolIx = new TransactionInstruction({
-      programId: POOL_PROGRAM_ID,
-      keys: initPoolKeys,
-      data: initPoolData
-    });
-    
-    const initBlockhash = await connection.getLatestBlockhash('confirmed');
-    const initTx = new Transaction().add(...instructions, initPoolIx);
-    initTx.feePayer = wallet.publicKey;
-    initTx.recentBlockhash = initBlockhash.blockhash;
-    
-    const initSig = await wallet.sendTransaction(initTx, connection, { skipPreflight: false });
-    await waitForSignatureConfirmation(connection, initSig, initBlockhash.blockhash, initBlockhash.lastValidBlockHeight);
-    if (process.env.NEXT_PUBLIC_DEBUG_WRAP === 'true') {
-      console.info('[wrap] Pool initialized');
-    }
-  }
+  let treeState: { currentRoot: Uint8Array };
   
-  // Now fetch the commitment tree state (pool should be initialized now)
-  const finalCommitmentTreeAccount = await connection.getAccountInfo(commitmentTreeKey);
-  if (!finalCommitmentTreeAccount) {
-    throw new Error('Commitment tree account missing after pool initialization');
+  if (isLazyInit) {
+    // Use default empty root for first shield (pool will be initialized in same transaction)
+    const defaultEmptyRoot = new Uint8Array(32); // All zeros
+    treeState = { currentRoot: defaultEmptyRoot };
+    if (process.env.NEXT_PUBLIC_DEBUG_WRAP === 'true') {
+      console.info('[wrap] Pool not initialized, will initialize in same transaction');
+    }
+  } else {
+    treeState = decodeCommitmentTree(new Uint8Array(commitmentTreeAccount.data));
   }
-  const treeState = decodeCommitmentTree(new Uint8Array(finalCommitmentTreeAccount.data));
   const recipientKey = params.recipient ? new PublicKey(params.recipient) : wallet.publicKey;
   const depositId = BigInt(params.depositId);
   const blinding = BigInt(params.blinding);
@@ -866,8 +788,75 @@ export async function wrap(params: WrapParams): Promise<string> {
   // Lookup tables removed - addresses are now derived programmatically by the program
 
   let latestBlockhash = await connection.getLatestBlockhash('confirmed');
+  
+  // LAZY INITIALIZATION: If pool not initialized, add initialize_pool instruction first
+  // Solana automatically deduplicates accounts, so shared accounts only count once
+  const instructionSet: TransactionInstruction[] = [...instructions];
+  
+  if (isLazyInit) {
+    // Initialize vault first if needed (must be done before initialize_pool)
+    const vaultAccount = await connection.getAccountInfo(vaultState, 'confirmed');
+    if (!vaultAccount) {
+      const poolAuthority = deriveFactoryState(); // Pool authority is factory state
+      const vaultInitData = vaultCoder.instruction.encode('initialize_vault', {
+        pool_authority: poolAuthority
+      });
+      const vaultInitIx = new TransactionInstruction({
+        programId: VAULT_PROGRAM_ID,
+        keys: [
+          { pubkey: vaultState, isSigner: false, isWritable: true },
+          { pubkey: originMintKey, isSigner: false, isWritable: false },
+          { pubkey: wallet.publicKey, isSigner: true, isWritable: true },
+          { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
+          { pubkey: SystemProgram.programId, isSigner: false, isWritable: false }
+        ],
+        data: vaultInitData
+      });
+      instructionSet.push(vaultInitIx);
+    }
+    
+    // Add initialize_pool instruction
+    const FEATURE_PRIVATE_TRANSFER_ENABLED = 1;
+    const FEATURE_ALLOWANCES_ENABLED = 2;
+    const features = FEATURE_PRIVATE_TRANSFER_ENABLED | FEATURE_ALLOWANCES_ENABLED;
+    const feeBps = 0; // Default fee
+    
+    const initPoolData = poolCoder.instruction.encode('initialize_pool', {
+      fee_bps: feeBps,
+      features: features
+    });
+    
+    const initPoolKeys = [
+      { pubkey: wallet.publicKey, isSigner: true, isWritable: true }, // authority
+      { pubkey: poolState, isSigner: false, isWritable: true },
+      { pubkey: nullifierSet, isSigner: false, isWritable: true },
+      { pubkey: noteLedger, isSigner: false, isWritable: true },
+      { pubkey: commitmentTreeKey, isSigner: false, isWritable: true },
+      { pubkey: hookConfig, isSigner: false, isWritable: false },
+      { pubkey: hookWhitelist, isSigner: false, isWritable: true },
+      { pubkey: vaultState, isSigner: false, isWritable: false },
+      { pubkey: originMintKey, isSigner: false, isWritable: false },
+      { pubkey: mintMappingKey, isSigner: false, isWritable: false },
+      { pubkey: factoryState, isSigner: false, isWritable: false },
+      { pubkey: VERIFIER_PROGRAM_ID, isSigner: false, isWritable: false },
+      { pubkey: verifyingKey, isSigner: false, isWritable: false },
+      { pubkey: wallet.publicKey, isSigner: true, isWritable: true }, // payer
+      { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+      { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false }
+    ];
+    
+    const initPoolIx = new TransactionInstruction({
+      programId: POOL_PROGRAM_ID,
+      keys: initPoolKeys,
+      data: initPoolData
+    });
+    instructionSet.push(initPoolIx);
+  }
+  
   // Include shield and finalize_ledger in the same transaction (required for security)
-  const shieldInstructionSet = [...instructions, shieldInstruction, finalizeLedgerInstruction];
+  instructionSet.push(shieldInstruction, finalizeLedgerInstruction);
+  
+  const shieldInstructionSet = instructionSet;
 
   let shieldSignature: string | undefined;
   let shieldAttempts = 0;
