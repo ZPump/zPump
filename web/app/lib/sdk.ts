@@ -928,6 +928,33 @@ export async function wrap(params: WrapParams): Promise<string> {
     console.info('[wrap] shield signature confirmed', shieldSignature);
   }
 
+  // LAZY INITIALIZATION: If this was the first shield, send finalize_ledger in separate transaction
+  // This avoids exceeding Solana's 1232 byte transaction size limit
+  if (isLazyInit) {
+    if (process.env.NEXT_PUBLIC_DEBUG_WRAP === 'true') {
+      console.info('[wrap] First shield completed, sending finalize_ledger in separate transaction');
+    }
+    const ledgerBlockhash = await connection.getLatestBlockhash('confirmed');
+    const finalizeLedgerTransaction = new Transaction().add(...instructions, finalizeLedgerInstruction);
+    finalizeLedgerTransaction.feePayer = wallet.publicKey;
+    finalizeLedgerTransaction.recentBlockhash = ledgerBlockhash.blockhash;
+    
+    const finalizeLedgerSignature = await wallet.sendTransaction(finalizeLedgerTransaction, connection, {
+      skipPreflight: false
+    });
+    
+    await waitForSignatureConfirmation(
+      connection,
+      finalizeLedgerSignature,
+      ledgerBlockhash.blockhash,
+      ledgerBlockhash.lastValidBlockHeight
+    );
+    
+    if (process.env.NEXT_PUBLIC_DEBUG_WRAP === 'true') {
+      console.info('[wrap] finalize_ledger signature confirmed', finalizeLedgerSignature);
+    }
+  }
+
   const finalizeTreeInstructions: TransactionInstruction[] = [];
   if (resolvedComputeLimit > 0) {
     finalizeTreeInstructions.push(ComputeBudgetProgram.setComputeUnitLimit({ units: resolvedComputeLimit }));
