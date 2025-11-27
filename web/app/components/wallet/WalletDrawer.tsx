@@ -803,8 +803,7 @@ function WalletDrawerContent({ disclosure }: { disclosure: ReturnType<typeof use
         proof,
         nullifiers: parts.nullifiers,
         outputCommitments: parts.outputCommitments,
-        outputAmountCommitments: amountCommitments,
-        lookupTable: mintConfig.lookupTable
+        outputAmountCommitments: amountCommitments
       });
       const spentNoteIds = new Set(selection.map((note) => note.id));
       const remainingNotes = readStoredNotes().filter((note) => !spentNoteIds.has(note.id));

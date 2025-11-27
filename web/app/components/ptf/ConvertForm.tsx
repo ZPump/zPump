@@ -235,8 +235,7 @@ export function ConvertForm() {
   const [pastedMint, setPastedMint] = useState<string>('');
   const [pastedMintLoading, setPastedMintLoading] = useState(false);
   const [pastedMintError, setPastedMintError] = useState<string | null>(null);
-  const [customMints, setCustomMints] = useState<Map<string, { symbol: string; decimals: number; name?: string; image?: string; lookupTable?: string }>>(new Map());
-  const [lookupTableCache, setLookupTableCache] = useState<Map<string, string>>(new Map());
+  const [customMints, setCustomMints] = useState<Map<string, { symbol: string; decimals: number; name?: string; image?: string }>>(new Map());
   const [tokenMetadataMap, setTokenMetadataMap] = useState<Record<string, { name: string; symbol: string; image?: string }>>({});
   const [selectedTokenDisplayText, setSelectedTokenDisplayText] = useState<string>('');
   const originMint = tokenSelection.originMint;
@@ -1463,8 +1462,7 @@ export function ConvertForm() {
           proof: wrapAdvanced.useProofRpc ? proofResponse : null,
           commitmentHint: proofResponse?.publicInputs?.[2] ?? null,
           recipient: wallet.publicKey.toBase58(),
-          twinMint: mintConfig?.zTokenMint ?? null,
-          lookupTable: mintConfig?.lookupTable ?? lookupTableCache.get(originMint) ?? undefined
+          twinMint: mintConfig?.zTokenMint ?? null
         });
 
         try {
@@ -1642,7 +1640,6 @@ export function ConvertForm() {
           destination: destinationKey.toBase58(),
           mode: 'origin',
           proof: proofResponse,
-          lookupTable: mintConfig?.lookupTable,
           twinMint: mintConfig?.zTokenMint
         } as {
           connection: typeof connection;
@@ -1653,7 +1650,6 @@ export function ConvertForm() {
           destination: string;
           mode: 'origin';
           proof: ProofResponse;
-          lookupTable?: string;
           twinMint?: string;
         };
 

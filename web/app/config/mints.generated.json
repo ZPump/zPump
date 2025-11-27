@@ -2,121 +2,13 @@
   {
     "symbol": "TEST",
     "decimals": 6,
-    "originMint": "FkXTVLBGQzD85cKKsvBSaiiLjwMqCBY2h8LNdsCYksNh",
-    "poolId": "8U38mcG6n5bjbxYRUieGf4hbyy831zUkc48Ai9mAy4CB",
-    "zTokenMint": "H5ZQSF7gB9i4nF3wDKDd6k6xnMHoYSZi6ZtEpWSXRter",
+    "originMint": "Mint111111111111111111111111111111111111111",
+    "poolId": "Pool111111111111111111111111111111111111111",
+    "zTokenMint": null,
     "features": {
       "zTokenEnabled": true,
       "wrappedTransfers": false
     },
-    "lookupTable": "3VG5rcQEDeanRyvUDpNHhvJ3F2v3ifkFUymbwTZuDCgb"
-  },
-  {
-    "symbol": "FBBZ",
-    "decimals": 6,
-    "originMint": "9Vjp6kEWzy8AAL1ioYjg45Hkf5zWJLbA6asdxydDBmHc",
-    "poolId": "Fm44MDBtexv6yu1WsrydRAnsYb3c5F7s5FCNTQ7gEFwW",
-    "zTokenMint": "HkUSqT1HFgQY34ASnE8GsfNDYpEhRRUBphK8UahHVkqZ",
-    "features": {
-      "zTokenEnabled": true,
-      "wrappedTransfers": false
-    },
-    "lookupTable": "HvHEgR7yphiUbCtCV3EFGx2XRYqcGJaMdb4XYp8xqbSN"
-  },
-  {
-    "symbol": "RGRB1P",
-    "decimals": 6,
-    "originMint": "FZ2qdP1KdtoUkH3Rnh9QTLBUeMmvcYxJ9BecmgZXJyZE",
-    "poolId": "A3h4NxpVwCoA2bFpCcUnMehij8ohhbewLYMFnT7Bumpe",
-    "zTokenMint": "7duLodJJ9QSsdqLLbuce7p37ZYp1GKMbhXUuUCkHHuDZ",
-    "features": {
-      "zTokenEnabled": true,
-      "wrappedTransfers": false
-    },
-    "lookupTable": "38i1tefUjzWrmo8kzPZZTBaBowyNd8tV2a3DiME43wYB"
-  },
-  {
-    "symbol": "RGRI4Q",
-    "decimals": 6,
-    "originMint": "HbdPLSHVnoskXAXVrp4z4Kx9HBfBLXbgytSfDK2W4FbJ",
-    "poolId": "AtyZWsZNuohMwsa87HTAm5h1sCFno5yeXaLUYx8Ffevo",
-    "zTokenMint": "BSHLMxWuyyK9u1DRz6xD7TS5LayLHuQvfLb1XhgNaKFf",
-    "features": {
-      "zTokenEnabled": true,
-      "wrappedTransfers": false
-    },
-    "lookupTable": "HrWkdq2jGE5xNPG3PP8xSBqnuWTsNEV8NRBoPGfG92Yn"
-  },
-  {
-    "symbol": "RGRI4R",
-    "decimals": 6,
-    "originMint": "CQkhuHXgHuFQhZmcqdiFiEvnxP8QHyuYcx32ECrodkju",
-    "poolId": "3fxaELXAcZbGwJLB92yiD5BAmQwxd9QYrttuWQsHnohs",
-    "zTokenMint": "87ovzhMw844DCJYJqwKxRXzz2QbCFKwmm1awLRX5RiGm",
-    "features": {
-      "zTokenEnabled": true,
-      "wrappedTransfers": false
-    },
-    "lookupTable": "DajSC3HrAfPRJvM3TTbEUa2pgrkPsGZiaQjbu4fxhcWa"
-  },
-  {
-    "symbol": "RGRI4S",
-    "decimals": 6,
-    "originMint": "8ayYNJejtwDU29QPMwGXgLQKVcPyPpV1JBWrnCxpwzus",
-    "poolId": "82ZRe6NwrQ3Q3cjMPAHXgGBs2DMcDd5Z6AcED8fkjJYn",
-    "zTokenMint": "53u4JdiWozrmsd85RDV1apELBX1w9a8cnt3K73fy9iHX",
-    "features": {
-      "zTokenEnabled": true,
-      "wrappedTransfers": false
-    },
-    "lookupTable": "BfRuhGHMpkCYP1fuef1gyXS6DfN5iMHMGJ47vKob8EwW"
-  },
-  {
-    "symbol": "RGRI4T",
-    "decimals": 6,
-    "originMint": "fC9eCX8PX6WZN1u9ZkFhV5DnLZCFiSU7MAUeew8AWkS",
-    "poolId": "83H6RpUYBbw1Ysz1ej5Q4bmiDN5paPFQrUwtGTcU9oRh",
-    "zTokenMint": "GktPiCxPqqETmDMVzUcUhLj8rN1huhvGo2A4BuzavpMP",
-    "features": {
-      "zTokenEnabled": true,
-      "wrappedTransfers": false
-    },
-    "lookupTable": "4ej44tftWNJpCC6uUWVbpZ6vb34p3PTf2J6gUF2mn31c"
-  },
-  {
-    "symbol": "RGSDMF",
-    "decimals": 6,
-    "originMint": "7g2LNa7mQx9x4Q5UaSwquNaiSPJFkVXBeeEB8ycBeyoU",
-    "poolId": "2P5cv85PdQoZzNhEGYqpP4ymiUrVR5xS5cDT4GtBdEwH",
-    "zTokenMint": "8F7Q2mXYk6ADviTXYSrJCfASaSf4CuN7BqiE3WiiVHNZ",
-    "features": {
-      "zTokenEnabled": true,
-      "wrappedTransfers": false
-    },
-    "lookupTable": "AiWVgUbs4m5Cdb4ZS5q3VGeGDoji8yGe9DWshAeKYbd3"
-  },
-  {
-    "symbol": "RGSDMG",
-    "decimals": 6,
-    "originMint": "G5MSN13Uc7eps7ntoN9HLmAY6uiKb24b5odUi8pax9hM",
-    "poolId": "DtNS81CDfvAS4JmV2LWWMGdtupz22Dnb2ufQre5dL35y",
-    "zTokenMint": "8atyZR2n7zZTthsWxmkpxcUCy7NSKUtuHw9wvd6LJWJp",
-    "features": {
-      "zTokenEnabled": true,
-      "wrappedTransfers": false
-    },
-    "lookupTable": "FK5rd57zkz3XDESxGo9XUR2FwwoPfNP42kTQdanpxHE4"
-  },
-  {
-    "symbol": "RGSDMH",
-    "decimals": 6,
-    "originMint": "45aGsktuyNRfBttFZc9qfS13CZruHRGz7FBvrFmRCBuW",
-    "poolId": "7tFCvw31T8vtDEeJXdWLgeHcBdgaPZZdE6stEMF5C446",
-    "zTokenMint": "EaZq6YKc9aRYSeeiaGS74Mn7WqUtkjKMmmkpbitj8mp4",
-    "features": {
-      "zTokenEnabled": true,
-      "wrappedTransfers": false
-    },
-    "lookupTable": "2J4aEbavLFqfzUAUH7JNjtTwFpqLFH2TMg2Xpqn5r8FH"
+    "lookupTable": null
   }
 ]

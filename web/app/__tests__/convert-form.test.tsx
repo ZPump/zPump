@@ -14,7 +14,7 @@ const TEST_MINTS: MintConfig[] = [
       zTokenEnabled: true,
       wrappedTransfers: false
     },
-    lookupTable: undefined
+    // lookupTable removed - addresses are now derived programmatically
   }
 ];
 

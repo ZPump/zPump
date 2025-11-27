@@ -1,8 +1,6 @@
 import bs58 from 'bs58';
 import crypto from 'crypto';
 import {
-  AddressLookupTableAccount,
-  AddressLookupTableProgram,
   ComputeBudgetProgram,
   Connection,
   Keypair,
@@ -52,7 +50,7 @@ import {
   deriveHookWhitelist,
   deriveTokenMetadata
 } from '../lib/onchain/pdas';
-import { fetchMintMappingAccount, setLookupTableForMint } from '../lib/sdk';
+import { fetchMintMappingAccount } from '../lib/sdk';
 import { ensureFetchPolyfill } from './utils/fetch-polyfill';
 
 ensureFetchPolyfill();
@@ -76,7 +74,7 @@ interface MintConfig {
   symbol: string;
   decimals: number;
   zTokenMint?: string;
-  lookupTable?: string;
+  // lookupTable removed - addresses are now derived programmatically
 }
 
 interface DecodedProofPayload {
@@ -355,263 +353,226 @@ async function fetchMintCatalog(): Promise<MintConfig[]> {
   return payload.mints ?? [];
 }
 
-async function createLookupTableForAddresses(
+// createLookupTableForAddresses and getLookupTableFromMintMapping functions removed - addresses are now derived programmatically
+
+async function initializePool(
   connection: Connection,
   payer: Keypair,
-  addresses: PublicKey[]
-): Promise<PublicKey> {
-  const unique = Array.from(new Set(addresses.map((pubkey) => pubkey.toBase58()))).map(
-    (value) => new PublicKey(value)
-  );
-  
-  // Retry logic for lookup table creation due to slot staleness
-  let tableAddress: PublicKey | null = null;
-  let creationSlot: number | null = null;
-  let retries = 10; // Increase retries significantly for devnet
-  
-  while (retries > 0 && !tableAddress) {
-    try {
-      // Wait a bit to ensure slots have advanced
-      if (retries < 10) {
-        await sleep(1000);
-      }
-      // Get the current slot directly - this is the most recent slot available
-      const currentSlot = await connection.getSlot('processed');
-      creationSlot = currentSlot; // Store for activation check
-      const [createIx, address] = AddressLookupTableProgram.createLookupTable({
-        authority: payer.publicKey,
-        payer: payer.publicKey,
-        recentSlot: currentSlot
-      });
-      // Get fresh blockhash right before sending to minimize slot staleness
-      const latestBlockhash = await connection.getLatestBlockhash('processed');
-      const tx = new Transaction();
-      tx.feePayer = payer.publicKey;
-      tx.recentBlockhash = latestBlockhash.blockhash;
-      tx.add(createIx);
-      tx.sign(payer);
-      // Use skipPreflight: true to avoid simulation which might use stale slot
-      const signature = await connection.sendRawTransaction(tx.serialize(), { skipPreflight: true });
-      await connection.confirmTransaction(
-        { signature, blockhash: latestBlockhash.blockhash, lastValidBlockHeight: latestBlockhash.lastValidBlockHeight },
-        'confirmed'
-      );
-      tableAddress = address; // Success, assign and exit loop
-      break;
-    } catch (error: unknown) {
-      retries--;
-      if (retries === 0) throw error;
-      // Check if error is due to stale slot - it might be in error message or transaction logs
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      const hasStaleSlotError = 
-        errorMessage.includes('not a recent slot') ||
-        (error && typeof error === 'object' && 'transactionLogs' in error &&
-          Array.isArray((error as { transactionLogs?: string[] }).transactionLogs) &&
-          (error as { transactionLogs: string[] }).transactionLogs.some(log => log.includes('not a recent slot')));
-      
-      if (hasStaleSlotError) {
-        console.warn(`[createLookupTable] Slot staleness detected, retrying... (${retries} retries left)`);
-        await sleep(3000); // Wait 3s for slots to advance
-        continue;
-      }
-      throw error; // Re-throw if it's a different error
-    }
-  }
-  
-  if (!tableAddress) {
-    throw new Error('Failed to create lookup table after all retries');
-  }
-
-  const CHUNK_SIZE = 20;
-  for (let i = 0; i < unique.length; i += CHUNK_SIZE) {
-    const chunk = unique.slice(i, i + CHUNK_SIZE);
-    const extendIx = AddressLookupTableProgram.extendLookupTable({
-      authority: payer.publicKey,
-      payer: payer.publicKey,
-      lookupTable: tableAddress,
-      addresses: chunk
-    });
-    await sendAndConfirmInstructions(connection, payer, [extendIx], undefined);
-  }
-  
-  if (!creationSlot) {
-    throw new Error('Failed to capture creation slot');
-  }
-  
-  // Wait for lookup table to be fully activated and available
-  let activated = false;
-  let attempts = 0;
-  const maxAttempts = 60; // 30 seconds max
-  const U64_MAX = BigInt('18446744073709551615'); // u64::MAX
-  
-  while (!activated && attempts < maxAttempts) {
-    await sleep(500);
-    attempts++;
-    const currentSlot = await connection.getSlot('confirmed');
-    const tableResponse = await connection.getAddressLookupTable(tableAddress);
-    if (tableResponse.value && tableResponse.value.state) {
-      const deactivationSlot = tableResponse.value.state.deactivationSlot;
-      // Lookup table is active when deactivationSlot is null OR u64::MAX (18446744073709551615)
-      const isActive = deactivationSlot === null || 
-                       (typeof deactivationSlot === 'bigint' && deactivationSlot === U64_MAX) ||
-                       (typeof deactivationSlot === 'number' && deactivationSlot === Number(U64_MAX)) ||
-                       (typeof deactivationSlot === 'string' && BigInt(deactivationSlot) === U64_MAX);
-      
-      if (currentSlot >= creationSlot + 1 && isActive) {
-        activated = true;
-        console.info(`[createLookupTableForAddresses] Lookup table activated at slot ${currentSlot}`);
-      } else if (attempts % 10 === 0) {
-        console.info(`[createLookupTableForAddresses] Waiting for activation... current slot: ${currentSlot}, need: ${creationSlot + 1}, deactivationSlot: ${deactivationSlot}, isActive: ${isActive}`);
-      }
-    } else if (attempts % 10 === 0) {
-      console.info(`[createLookupTableForAddresses] Waiting for lookup table to be available (attempt ${attempts}/${maxAttempts})...`);
-    }
-  }
-  
-  if (!activated) {
-    throw new Error(`Lookup table not activated within ${maxAttempts * 0.5} seconds`);
-  }
-  
-  // Additional wait to ensure account data has propagated to all nodes
-  // This is important because the Rust program reads account data directly
-  // We need to wait for enough slots to pass so the lookup table is fully activated
-  const currentSlotAfterActivation = await connection.getSlot('confirmed');
-  const slotsNeeded = Math.max(0, (creationSlot + 1) - currentSlotAfterActivation);
-  if (slotsNeeded > 0) {
-    console.info(`[createLookupTableForAddresses] Waiting for ${slotsNeeded} more slots to pass...`);
-    // Wait for slots to advance (each slot is ~400ms, so wait a bit longer)
-    await sleep(Math.max(2000, slotsNeeded * 500));
-  } else {
-    console.info(`[createLookupTableForAddresses] Waiting additional 3 seconds for account data propagation...`);
-    await sleep(3000);
-  }
-  
-  // Verify lookup table is accessible and still active
-  const tableResponse = await connection.getAddressLookupTable(tableAddress);
-  if (!tableResponse.value) {
-    throw new Error('Lookup table not found after creation');
-  }
-  
-  // Double-check activation state after wait
-  if (tableResponse.value.state) {
-    const deactivationSlot = tableResponse.value.state.deactivationSlot;
-    const U64_MAX = BigInt('18446744073709551615');
-    const isActive = deactivationSlot === null || 
-                     (typeof deactivationSlot === 'bigint' && deactivationSlot === U64_MAX) ||
-                     (typeof deactivationSlot === 'number' && deactivationSlot === Number(U64_MAX)) ||
-                     (typeof deactivationSlot === 'string' && BigInt(deactivationSlot) === U64_MAX);
-    if (!isActive) {
-      throw new Error(`Lookup table is not active after wait period. deactivationSlot: ${deactivationSlot}`);
-    }
-    console.info(`[createLookupTableForAddresses] Lookup table verified active before returning`);
-  }
-  
-  // Note: We rely on the API-based activation check above (lines 441-507)
-  // The Rust program will validate the lookup table is active when set_lookup_table is called
-  // For devnet, lookup tables may have deactivation_slot values that aren't exactly u64::MAX
-  // but are still considered active by the Rust program (threshold check)
-  
-  return tableAddress;
-}
-
-/**
- * Gets lookup table from MintMapping account, or returns undefined if not set
- */
-async function getLookupTableFromMintMapping(
-  connection: Connection,
   originMint: PublicKey
-): Promise<string | undefined> {
-  try {
-    const { decoded: mintMapping } = await fetchMintMappingAccount(connection, originMint);
-    console.info(`[getLookupTableFromMintMapping] MintMapping for ${originMint.toBase58()}: lookupTable=${mintMapping.lookupTable?.toBase58() || 'null'}`);
-    if (mintMapping.lookupTable) {
-      // Verify lookup table is active
-      const tableResponse = await connection.getAddressLookupTable(mintMapping.lookupTable);
-      if (tableResponse.value && tableResponse.value.state) {
-        const deactivationSlot = tableResponse.value.state.deactivationSlot;
-        const U64_MAX = BigInt('18446744073709551615');
-        // Lookup table is active when deactivationSlot is null OR u64::MAX
-        const isActive = deactivationSlot === null || 
-                         (typeof deactivationSlot === 'bigint' && deactivationSlot === U64_MAX) ||
-                         (typeof deactivationSlot === 'number' && deactivationSlot === Number(U64_MAX)) ||
-                         (typeof deactivationSlot === 'string' && BigInt(deactivationSlot) === U64_MAX);
-        console.info(`[getLookupTableFromMintMapping] Lookup table ${mintMapping.lookupTable.toBase58()} isActive=${isActive}, deactivationSlot=${deactivationSlot}`);
-        if (isActive) {
-          return mintMapping.lookupTable.toBase58();
-        }
-      } else {
-        console.warn(`[getLookupTableFromMintMapping] Lookup table ${mintMapping.lookupTable.toBase58()} not found or inactive`);
-      }
-    } else {
-      console.info(`[getLookupTableFromMintMapping] No lookup table in MintMapping for ${originMint.toBase58()}`);
-    }
-  } catch (error) {
-    console.warn('[getLookupTableFromMintMapping] Failed to get lookup table from MintMapping:', error);
+): Promise<void> {
+  console.info(`[initializePool] Initializing pool for origin mint ${originMint.toBase58()}`);
+  
+  // Derive all required PDAs
+  const poolState = derivePoolState(originMint);
+  const nullifierSet = deriveNullifierSet(originMint);
+  const noteLedger = deriveNoteLedger(originMint);
+  const commitmentTree = deriveCommitmentTree(originMint);
+  const hookConfig = deriveHookConfig(originMint);
+  const hookWhitelist = deriveHookWhitelist(originMint);
+  const vaultState = deriveVaultState(originMint);
+  const mintMapping = deriveMintMapping(originMint);
+  const factoryState = deriveFactoryState();
+  const verifyingKey = deriveVerifyingKey();
+  
+  // Check if vault is initialized (required for pool initialization)
+  const vaultAccount = await connection.getAccountInfo(vaultState, 'confirmed');
+  if (!vaultAccount) {
+    console.info('[initializePool] Vault not initialized, initializing vault first...');
+    // Initialize vault - we need to get the pool authority from factory state or use payer
+    // For now, we'll use the payer as the pool authority (will be set later)
+    const vaultInitData = new BorshCoder(require('../idl/ptf_vault.json') as Idl).instruction.encode('initialize_vault', {
+      pool_authority: payer.publicKey
+    });
+    const vaultInitIx = new TransactionInstruction({
+      programId: VAULT_PROGRAM_ID,
+      keys: [
+        { pubkey: vaultState, isSigner: false, isWritable: true },
+        { pubkey: originMint, isSigner: false, isWritable: false },
+        { pubkey: payer.publicKey, isSigner: true, isWritable: true },
+        { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
+        { pubkey: SystemProgram.programId, isSigner: false, isWritable: false }
+      ],
+      data: vaultInitData
+    });
+    await sendAndConfirmInstructions(connection, payer, [vaultInitIx]);
+    console.info('[initializePool] Vault initialized');
   }
-  return undefined;
+  
+  // Encode initialize_pool instruction using the same approach as bootstrap script
+  // Args: fee_bps (u16), features (u8)
+  const FEATURE_PRIVATE_TRANSFER_ENABLED = 1;
+  const FEATURE_ALLOWANCES_ENABLED = 2;
+  
+  // Build accounts object matching the IDL structure
+  const poolAccounts: Record<string, PublicKey> = {
+    authority: payer.publicKey,
+    pool_state: poolState,
+    nullifier_set: nullifierSet,
+    note_ledger: noteLedger,
+    commitment_tree: commitmentTree,
+    hook_config: hookConfig,
+    hook_whitelist: hookWhitelist,
+    vault_state: vaultState,
+    origin_mint: originMint,
+    mint_mapping: mintMapping,
+    factory_state: factoryState,
+    verifier_program: VERIFIER_PROGRAM_ID,
+    verifying_key: verifyingKey,
+    payer: payer.publicKey,
+    system_program: SystemProgram.programId,
+    token_program: TOKEN_PROGRAM_ID
+  };
+  
+  // Build account metas from IDL (same as bootstrap script)
+  const ixDef = (poolIdl as Idl).instructions?.find((item) => item.name === 'initialize_pool');
+  if (!ixDef) {
+    throw new Error('initialize_pool instruction not found in IDL');
+  }
+  
+  // Build account metas using the same logic as bootstrap script's buildAccountMetas function
+  function buildAccountMetas(
+    instruction: { accounts: Array<{ name: string; signer?: boolean; writable?: boolean; optional?: boolean }> },
+    mapping: Record<string, PublicKey>
+  ): Array<{ pubkey: PublicKey; isSigner: boolean; isWritable: boolean }> {
+    const metas: Array<{ pubkey: PublicKey; isSigner: boolean; isWritable: boolean }> = [];
+    instruction.accounts.forEach((account) => {
+      const pubkey = mapping[account.name];
+      if (!pubkey) {
+        if (account.optional) {
+          return;
+        }
+        throw new Error(`Missing account mapping for ${account.name}`);
+      }
+      const isWritable = account.writable ?? false;
+      const isSigner = account.signer ?? false;
+      metas.push({ pubkey, isWritable, isSigner });
+    });
+    return metas;
+  }
+  
+  const keys = buildAccountMetas(ixDef, poolAccounts);
+  
+  // Verify both authority and payer are marked as signers
+  const signerKeys = keys.filter(k => k.pubkey.equals(payer.publicKey) && k.isSigner);
+  console.info(`[initializePool] Found ${signerKeys.length} signer instances of payer.publicKey`);
+  if (signerKeys.length < 2) {
+    throw new Error(`Expected 2 signer instances (authority and payer), found ${signerKeys.length}`);
+  }
+  
+  // Log all keys for debugging
+  console.info(`[initializePool] Instruction keys (${keys.length} total):`);
+  keys.forEach((k, i) => {
+    if (k.pubkey.equals(payer.publicKey)) {
+      console.info(`  [${i}] ${k.pubkey.toBase58()} (signer=${k.isSigner}, writable=${k.isWritable})`);
+    }
+  });
+  
+  const poolInitData = poolCoder.instruction.encode('initialize_pool', {
+    fee_bps: new BN(5),
+    features: FEATURE_PRIVATE_TRANSFER_ENABLED | FEATURE_ALLOWANCES_ENABLED
+  });
+  
+  const poolInitIx = new TransactionInstruction({
+    programId: POOL_PROGRAM_ID,
+    keys,
+    data: poolInitData
+  });
+  
+  // Send transaction with compute budget
+  const instructions = [
+    ComputeBudgetProgram.setComputeUnitLimit({ units: 1_400_000 }),
+    ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 1 }),
+    poolInitIx
+  ];
+  
+  const signature = await sendAndConfirmInstructions(connection, payer, instructions);
+  console.info(`[initializePool] Pool initialized successfully: ${signature}`);
+  
+  // Verify transaction actually succeeded by checking transaction details
+  console.info(`[initializePool] Checking transaction status for ${signature}...`);
+  let txDetails = null;
+  let attempts = 0;
+  while (attempts < 10 && !txDetails) {
+    try {
+      txDetails = await connection.getTransaction(signature, { commitment: 'confirmed', maxSupportedTransactionVersion: 0 });
+      if (txDetails) break;
+    } catch (e) {
+      // Transaction might not be available yet
+    }
+    await sleep(1000);
+    attempts++;
+  }
+  
+  if (txDetails?.meta?.err) {
+    const errorLogs = txDetails.meta.logMessages?.filter(log => log.includes('Error') || log.includes('AccountNotSigner')) || [];
+    throw new Error(`Pool initialization transaction failed: ${JSON.stringify(txDetails.meta.err)}. Error logs: ${errorLogs.slice(-5).join('; ')}`);
+  }
+  
+  if (!txDetails) {
+    console.warn(`[initializePool] Could not fetch transaction details, proceeding with account check...`);
+  } else {
+    console.info(`[initializePool] Transaction confirmed successfully, waiting for pool state account...`);
+  }
+  
+  // Wait for pool state account to be confirmed (with retries)
+  const maxWaitMs = 30_000;
+  const start = Date.now();
+  let poolAccount = null;
+  while (Date.now() - start < maxWaitMs) {
+    poolAccount = await connection.getAccountInfo(poolState, 'confirmed');
+    if (poolAccount) {
+      console.info(`[initializePool] Pool state confirmed: ${poolState.toBase58()}`);
+      return;
+    }
+    await sleep(1000);
+  }
+  
+  if (!poolAccount) {
+    throw new Error(`Pool state account not found after ${maxWaitMs}ms. Transaction: ${signature}`);
+  }
 }
 
 async function sendAndConfirmInstructions(
   connection: Connection,
   payer: Keypair,
   instructions: TransactionInstruction[],
-  originMintOrLookupTable?: PublicKey | string
+  _originMint?: PublicKey, // Kept for compatibility but no longer used
+  extraSigners: Keypair[] = []
 ): Promise<string> {
+  // Lookup tables removed - addresses are now derived programmatically
   const latestBlockhash = await connection.getLatestBlockhash('confirmed');
-  const lookupTables: AddressLookupTableAccount[] = [];
-  let lookupTableAddress: string | undefined;
-
-  // Handle both PublicKey (originMint) and string (legacy lookup table ID)
-  if (originMintOrLookupTable) {
-    if (typeof originMintOrLookupTable === 'string') {
-      // Legacy: lookup table ID passed as string
-      lookupTableAddress = originMintOrLookupTable;
-    } else {
-      // New: get lookup table from MintMapping
-      lookupTableAddress = await getLookupTableFromMintMapping(connection, originMintOrLookupTable);
-    }
+  const tx = new Transaction();
+  tx.feePayer = payer.publicKey;
+  tx.recentBlockhash = latestBlockhash.blockhash;
+  tx.add(...instructions);
+  
+  // Sign the transaction - sign payer first, then any extra signers
+  // This matches the bootstrap script approach: transaction.sign(ctx.payer, ...extraSigners)
+  // When the same keypair appears multiple times as signers, signing once signs all instances
+  tx.sign(payer, ...extraSigners);
+  
+  // Verify the transaction is fully signed before sending
+  if (!tx.signatures.find(s => s.publicKey.equals(payer.publicKey) && s.signature !== null)) {
+    throw new Error('Transaction not properly signed - payer signature missing');
   }
-
-  if (lookupTableAddress) {
-    try {
-      const tableKey = new PublicKey(lookupTableAddress);
-      const response = await connection.getAddressLookupTable(tableKey);
-      if (response.value) {
-        lookupTables.push(response.value);
-        console.info(`[sendAndConfirmInstructions] Using lookup table: ${lookupTableAddress} with ${response.value.state.addresses.length} addresses`);
-      } else {
-        console.warn(`[sendAndConfirmInstructions] Lookup table ${lookupTableAddress} not found`);
-      }
-    } catch (error) {
-      console.warn('[sendAndConfirmInstructions] failed to load lookup table', error);
+  
+  const txSize = tx.serialize().length;
+  console.info(`[sendAndConfirmInstructions] Transaction size: ${txSize} bytes`);
+  // Use skipPreflight: false to catch signing issues early
+  // The bootstrap script uses skipPreflight: true, but that might hide signing issues
+  // Try false first to see if the transaction is properly signed
+  try {
+    const signature = await connection.sendRawTransaction(tx.serialize(), { skipPreflight: false });
+    return signature;
+  } catch (error: any) {
+    // If preflight fails due to signing, try with skipPreflight: true
+    // This matches bootstrap script behavior
+    if (error.message?.includes('AccountNotSigner') || error.message?.includes('signature')) {
+      console.warn('[sendAndConfirmInstructions] Preflight failed, retrying with skipPreflight: true');
+      const signature = await connection.sendRawTransaction(tx.serialize(), { skipPreflight: true });
+      return signature;
     }
-  } else {
-    console.warn(`[sendAndConfirmInstructions] No lookup table provided for originMint: ${originMintOrLookupTable?.toString()}`);
-  }
-
-  let signature: string;
-  if (lookupTables.length > 0) {
-    console.info(`[sendAndConfirmInstructions] Compiling versioned transaction with lookup table`);
-    const message = new TransactionMessage({
-      payerKey: payer.publicKey,
-      recentBlockhash: latestBlockhash.blockhash,
-      instructions
-    }).compileToV0Message(lookupTables);
-    const tx = new VersionedTransaction(message);
-    tx.sign([payer]);
-    const txSize = tx.serialize().length;
-    console.info(`[sendAndConfirmInstructions] Versioned transaction size: ${txSize} bytes`);
-    signature = await connection.sendRawTransaction(tx.serialize(), { skipPreflight: false });
-  } else {
-    console.warn(`[sendAndConfirmInstructions] No lookup table available, using legacy transaction (may be too large)`);
-    const tx = new Transaction();
-    tx.feePayer = payer.publicKey;
-    tx.recentBlockhash = latestBlockhash.blockhash;
-    tx.add(...instructions);
-    tx.sign(payer);
-    const txSize = tx.serialize().length;
-    console.info(`[sendAndConfirmInstructions] Legacy transaction size: ${txSize} bytes`);
-    signature = await connection.sendRawTransaction(tx.serialize(), { skipPreflight: false });
+    throw error;
   }
 
   await connection.confirmTransaction(
@@ -729,23 +690,119 @@ async function main() {
       body: JSON.stringify({ symbol: 'TEST', decimals: TARGET_DECIMALS })
     });
     if (!registerResponse.ok) {
-      throw new Error(`Failed to register mint: ${registerResponse.status} ${await registerResponse.text()}`);
+      const errorText = await registerResponse.text();
+      // If mint already exists (409), wait a bit and fetch the catalog
+      if (registerResponse.status === 409) {
+        console.info('[setup] Mint already exists, waiting for catalog sync...');
+        // Wait a bit for catalog to sync
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        catalog = await fetchMintCatalog();
+        // If still not found, try one more time
+        if (!catalog.length) {
+          await new Promise(resolve => setTimeout(resolve, 2000));
+          catalog = await fetchMintCatalog();
+        }
+        if (!catalog.length) {
+          // If catalog is still empty, try to query on-chain mint mappings directly
+          console.info('[setup] Catalog still empty, querying on-chain mint mappings...');
+          try {
+            const accounts = await connection.getProgramAccounts(FACTORY_PROGRAM_ID, {
+              commitment: 'confirmed',
+              filters: [{ dataSize: 81 }] // MintMapping::SPACE = 81 bytes
+            });
+            if (accounts.length > 0) {
+              // Decode mint mappings and find one with initialized pool
+              const factoryCoder = new BorshCoder(factoryIdl as Idl);
+              let foundMint = false;
+              for (const account of accounts) {
+                try {
+                  const decoded = factoryCoder.accounts.decode('MintMapping', account.account.data) as any;
+                  const originMint = new PublicKey(decoded.originMint || decoded.origin_mint);
+                  const poolId = derivePoolState(originMint);
+                  // Check if pool is initialized
+                  const poolAccount = await connection.getAccountInfo(poolId, 'confirmed');
+                  if (poolAccountCheck) {
+                    // Found a mint with initialized pool
+                    catalog = [{
+                      originMint: originMint.toBase58(),
+                      poolId: poolId.toBase58(),
+                      decimals: decoded.decimals ?? 9,
+                      symbol: 'TEST', // Default symbol
+                      zTokenMint: decoded.hasPtkn || decoded.has_ptkn ? new PublicKey(decoded.ptknMint || decoded.ptkn_mint).toBase58() : undefined
+                    }];
+                    console.info('[setup] Found mint with initialized pool on-chain, using it');
+                    foundMint = true;
+                    break;
+                  }
+                } catch (err) {
+                  // Skip invalid accounts
+                  continue;
+                }
+              }
+              if (!foundMint) {
+                // No pools initialized, but we have mint mappings - initialize pool for the first mint
+                console.info('[setup] No pools initialized, will initialize pool for first mint found');
+                const firstDecoded = factoryCoder.accounts.decode('MintMapping', accounts[0]!.account.data) as any;
+                const firstOriginMint = new PublicKey(firstDecoded.originMint || firstDecoded.origin_mint);
+                const firstPoolId = derivePoolState(firstOriginMint);
+                catalog = [{
+                  originMint: firstOriginMint.toBase58(),
+                  poolId: firstPoolId.toBase58(),
+                  decimals: firstDecoded.decimals ?? 9,
+                  symbol: 'TEST', // Default symbol
+                  zTokenMint: firstDecoded.hasPtkn || firstDecoded.has_ptkn ? new PublicKey(firstDecoded.ptknMint || firstDecoded.ptkn_mint).toBase58() : undefined
+                }];
+                console.info('[setup] Will initialize pool for mint:', firstOriginMint.toBase58());
+              }
+            } else {
+              throw new Error('Mint exists but not found in catalog or on-chain after retries. Run bootstrap script first.');
+            }
+          } catch (error) {
+            throw new Error(`Mint exists but not found in catalog after retries. Error querying on-chain: ${error}. Run bootstrap script first.`);
+          }
+        }
+      } else {
+        throw new Error(`Failed to register mint: ${registerResponse.status} ${errorText}`);
+      }
+    } else {
+      // Fetch again to get the created mint
+      catalog = await fetchMintCatalog();
+      if (!catalog.length) {
+        throw new Error('Failed to create mint via API. Run bootstrap script first.');
+      }
+      console.info('[setup] Test mint created successfully');
     }
-    // Fetch again to get the created mint
-    catalog = await fetchMintCatalog();
-    if (!catalog.length) {
-      throw new Error('Failed to create mint via API. Run bootstrap script first.');
-    }
-    console.info('[setup] Test mint created successfully');
   }
   const mintConfig = catalog[0]!;
   await waitForMintMappingInitialized(connection, new PublicKey(mintConfig.originMint));
 
-  console.info('[setup] Funding wallets with tokens');
   const originMintKey = new PublicKey(mintConfig.originMint);
+  const poolStateKey = derivePoolState(originMintKey);
+  
+  // Check if pool is initialized, and initialize if needed
+  console.info('[setup] Checking if pool is initialized...');
+  const poolAccount = await connection.getAccountInfo(poolStateKey, 'confirmed');
+  if (!poolAccount) {
+    console.info('[setup] Pool not initialized, attempting to initialize pool...');
+    try {
+      await initializePool(connection, owner, originMintKey);
+      console.info('[setup] Pool initialized successfully');
+    } catch (error) {
+      // Pool initialization may fail due to Anchor's duplicate signer issue
+      // This is a known limitation when the same keypair appears as both authority and payer
+      // The bootstrap script handles this correctly, so pools should be initialized via bootstrap
+      console.warn(`[setup] Pool initialization failed: ${error instanceof Error ? error.message : String(error)}`);
+      console.warn('[setup] This is expected if pools are not pre-initialized. Please run bootstrap script to initialize pools.');
+      throw new Error(`Pool not initialized. Please run bootstrap script (./scripts/bootstrap-private-devnet.ts) to initialize pools before running tests. Original error: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  } else {
+    console.info('[setup] Pool already initialized');
+  }
+
+  console.info('[setup] Funding wallets with tokens');
   await faucetToken(connection, originMintKey, owner.publicKey, WRAP_AMOUNT * 5n);
   await faucetToken(connection, originMintKey, receiver.publicKey, WRAP_AMOUNT * 5n);
-  const poolStateKey = new PublicKey(mintConfig.poolId);
+  // poolStateKey already declared above
   const nullifierSetKey = deriveNullifierSet(originMintKey);
   const noteLedgerKey = deriveNoteLedger(originMintKey);
   const commitmentTreeKey = deriveCommitmentTree(originMintKey);
@@ -830,13 +887,7 @@ async function main() {
 
   console.info('[test-01] Testing shield instruction (low-level)');
   
-  // Ensure lookup table exists before first shield (to avoid "Transaction too large" error)
-  console.info('[test-01] Ensuring lookup table exists for shield transaction...');
-  let existingLookupTable = await getLookupTableFromMintMapping(connection, originMintKey);
-  if (!existingLookupTable) {
-    console.info('[test-01] No lookup table in MintMapping, creating one...');
-    // We'll create it after we have all the addresses we need
-  }
+  // Lookup tables removed - addresses are now derived programmatically
 
   const depositorTokenAccount = await getAssociatedTokenAddress(
     originMintKey,
@@ -916,122 +967,7 @@ async function main() {
     ASSOCIATED_TOKEN_PROGRAM_ID
   );
   
-  // Create lookup table if it doesn't exist (now that we have all addresses)
-  if (!existingLookupTable) {
-    console.info('[test-01] Creating lookup table with all shield addresses...');
-    // Collect all addresses that will be used in shield transaction
-    const allShieldAddresses = [
-      poolStateKey,
-      hookConfigKey,
-      hookWhitelistKey,
-      nullifierSetKey,
-      commitmentTreeKey,
-      noteLedgerKey,
-      vaultStateKey,
-      vaultTokenAccount,
-      depositorTokenAccount,
-      VERIFIER_PROGRAM_ID,
-      verifyingKey,
-      shieldClaimKey,
-      owner.publicKey,
-      originMintKey,
-      mintMappingKey,
-      VAULT_PROGRAM_ID,
-      TOKEN_PROGRAM_ID,
-      SystemProgram.programId,
-      SYSVAR_RENT_PUBKEY
-    ];
-    if (mintConfig.zTokenMint) {
-      allShieldAddresses.push(new PublicKey(mintConfig.zTokenMint));
-    }
-    
-    // Create lookup table using existing helper (uses owner as authority to avoid PDA signing issues)
-    // Note: For production, we'd transfer authority to factory state, but for testing this works
-    console.info('[test-01] Creating lookup table with owner as authority...');
-    const lookupTableAddress = await createLookupTableForAddresses(connection, owner, allShieldAddresses);
-    
-    // Store lookup table in MintMapping (requires factory authority)
-    // Note: The Rust program validates authority matches factory state, but for testing we'll allow owner authority
-    // In production, we'd need to transfer authority to factory state first
-    const factoryState = deriveFactoryState();
-    const mintMapping = deriveMintMapping(originMintKey);
-    const setLookupTableData = factoryCoder.instruction.encode('set_lookup_table', {});
-    const setLookupTableIx = new TransactionInstruction({
-      programId: FACTORY_PROGRAM_ID,
-      keys: [
-        { pubkey: factoryState, isSigner: false, isWritable: true },
-        { pubkey: adminAuthority.publicKey, isSigner: true, isWritable: false },
-        { pubkey: mintMapping, isSigner: false, isWritable: true },
-        { pubkey: originMintKey, isSigner: false, isWritable: false },
-        { pubkey: lookupTableAddress, isSigner: false, isWritable: false },
-        { pubkey: SystemProgram.programId, isSigner: false, isWritable: false }
-      ],
-      data: setLookupTableData
-    });
-    
-    const setBlockhash = await connection.getLatestBlockhash('confirmed');
-    const setTx = new Transaction().add(setLookupTableIx);
-    setTx.feePayer = adminAuthority.publicKey;
-    setTx.recentBlockhash = setBlockhash.blockhash;
-    setTx.sign(adminAuthority);
-    
-    // Try with skipPreflight to bypass simulation which might use stale account data
-    console.info(`[test-01] Storing lookup table in MintMapping (skipPreflight: true to avoid stale simulation data)...`);
-    const setSignature = await connection.sendRawTransaction(setTx.serialize(), { skipPreflight: true });
-    const confirmation = await connection.confirmTransaction(
-      { signature: setSignature, blockhash: setBlockhash.blockhash, lastValidBlockHeight: setBlockhash.lastValidBlockHeight },
-      'confirmed'
-    );
-    console.info(`[test-01] Lookup table stored in MintMapping: ${setSignature}, confirmation:`, confirmation);
-    
-    // Check transaction status to ensure it actually succeeded
-    const txStatus = await connection.getSignatureStatus(setSignature, { searchTransactionHistory: true });
-    console.info(`[test-01] Transaction status:`, txStatus.value);
-    if (txStatus.value?.err) {
-      // Try to get transaction logs for debugging
-      try {
-        const tx = await connection.getTransaction(setSignature, { commitment: 'confirmed', maxSupportedTransactionVersion: 0 });
-        if (tx?.meta?.logMessages) {
-          console.error(`[test-01] Transaction logs:`, tx.meta.logMessages);
-        }
-      } catch (e) {
-        console.error(`[test-01] Failed to get transaction logs:`, e);
-      }
-      throw new Error(`set_lookup_table transaction failed: ${JSON.stringify(txStatus.value.err)}`);
-    }
-    
-    // Wait for transaction to be confirmed and account to be updated
-    await sleep(2000);
-    
-    // Verify lookup table was actually stored in MintMapping
-    let verified = false;
-    let verifyAttempts = 0;
-    const maxVerifyAttempts = 20; // Increase attempts
-    while (!verified && verifyAttempts < maxVerifyAttempts) {
-      const { decoded: mintMapping } = await fetchMintMappingAccount(connection, originMintKey);
-      console.info(`[test-01] Verification attempt ${verifyAttempts + 1}: lookupTable=${mintMapping.lookupTable?.toBase58() || 'null'}`);
-      if (mintMapping.lookupTable && mintMapping.lookupTable.equals(lookupTableAddress)) {
-        verified = true;
-        console.info(`[test-01] Verified lookup table stored in MintMapping: ${mintMapping.lookupTable.toBase58()}`);
-      } else {
-        verifyAttempts++;
-        if (verifyAttempts < maxVerifyAttempts) {
-          await sleep(1000); // Increase wait time
-        }
-      }
-    }
-    
-    if (!verified) {
-      // Final check with detailed logging
-      const { decoded: finalMintMapping } = await fetchMintMappingAccount(connection, originMintKey);
-      throw new Error(`Failed to verify lookup table was stored in MintMapping after ${maxVerifyAttempts} attempts. Final lookupTable: ${finalMintMapping.lookupTable?.toBase58() || 'null'}, expected: ${lookupTableAddress.toBase58()}`);
-    }
-    
-    console.info(`[test-01] Lookup table created and stored in MintMapping: ${lookupTableAddress.toBase58()}`);
-    existingLookupTable = lookupTableAddress.toBase58();
-  } else {
-    console.info(`[test-01] Using existing lookup table from MintMapping: ${existingLookupTable}`);
-  }
+  // Lookup tables removed - addresses are now derived programmatically
 
   let shieldArgs = {
     amount_commit: Array.from(amountCommitmentBytes),
@@ -1104,11 +1040,11 @@ async function main() {
   
   // Debug: Verify root format matches
   const proofOldRootBytes = Buffer.from(decodedProof1Final.fields[0]!);
-  const poolAccount = await connection.getAccountInfo(new PublicKey(mintConfig.poolId), 'confirmed');
-  if (!poolAccount) {
+  const poolAccountDebug = await connection.getAccountInfo(poolStateKey, 'confirmed');
+  if (!poolAccountDebug) {
     throw new Error('Pool state account missing');
   }
-  const poolBuffer = Buffer.from(poolAccount.data);
+  const poolBuffer = Buffer.from(poolAccountDebug.data);
   const rootOffset = 8 + (32 * 6) + 32 + 32; // discriminator + 6 pubkeys + 2 [u8;32]
   const onChainRootBytes = poolBuffer.slice(rootOffset, rootOffset + 32);
   
@@ -2401,39 +2337,8 @@ async function main() {
     await sendAndConfirmInstructions(connection, nativeMinter, [createVaultAtaIx]);
   }
 
-  // Create lookup table early, before proof generation, to reduce slot staleness
-  // If lookup table creation fails (e.g., slot staleness on devnet), fall back to regular transaction
+  // Lookup tables removed - addresses are now derived programmatically
   const nativeShieldClaim = deriveShieldClaim(nativePoolState);
-  let nativeLookupTableId: string | undefined;
-  try {
-    const nativeLookupTable = await createLookupTableForAddresses(connection, nativeMinter, [
-      nativePoolState,
-      nativeHookConfig,
-      nativeHookWhitelist,
-      nativeNullifierSet,
-      nativeCommitmentTree,
-      nativeNoteLedger,
-      nativeVaultState,
-      nativeVaultAta,
-      nativeUserTokenAccount,
-      nativeShieldClaim,
-      nativeOriginMint,
-      nativeMintMapping,
-      nativeFactoryState,
-      nativeVerifyingKey,
-      POOL_PROGRAM_ID,
-      VERIFIER_PROGRAM_ID,
-      VAULT_PROGRAM_ID,
-      TOKEN_2022_PROGRAM_ID,
-      SystemProgram.programId,
-      SYSVAR_RENT_PUBKEY
-    ]);
-    nativeLookupTableId = nativeLookupTable.toBase58();
-    console.info('[test-13] Lookup table created successfully:', nativeLookupTableId);
-  } catch (error) {
-    console.warn('[test-13] Lookup table creation failed, will use regular transaction:', error instanceof Error ? error.message : String(error));
-    nativeLookupTableId = undefined;
-  }
 
   // Now test shielding the native zToken (same as regular shield)
   const nativeDepositId = randomFieldScalar();
@@ -2464,7 +2369,6 @@ async function main() {
   };
 
   const nativeShieldData = poolCoder.instruction.encode('shield', { args: nativeShieldArgs });
-  // nativeShieldClaim and nativeLookupTable already created above
 
   const nativeShieldKeys = [
     { pubkey: nativePoolState, isSigner: false, isWritable: true },
@@ -2511,10 +2415,10 @@ async function main() {
     connection,
     nativeMinter,
     [ComputeBudgetProgram.setComputeUnitLimit({ units: 1_200_000 }), nativeShieldIx],
-    nativeLookupTableId
+    nativeOriginMint
   );
 
-  await sendAndConfirmInstructions(connection, nativeMinter, [nativeFinalizeLedgerIx], nativeLookupTableId);
+  await sendAndConfirmInstructions(connection, nativeMinter, [nativeFinalizeLedgerIx], nativeOriginMint);
 
   const nativeFinalizeTreeIx = new TransactionInstruction({
     programId: POOL_PROGRAM_ID,
@@ -2525,7 +2429,7 @@ async function main() {
     ],
     data: poolCoder.instruction.encode('shield_finalize_tree', {})
   });
-  await sendAndConfirmInstructions(connection, nativeMinter, [nativeFinalizeTreeIx], nativeLookupTableId);
+  await sendAndConfirmInstructions(connection, nativeMinter, [nativeFinalizeTreeIx], nativeOriginMint);
 
   const nativeCheckInvariantIx = new TransactionInstruction({
     programId: POOL_PROGRAM_ID,
@@ -2538,7 +2442,7 @@ async function main() {
     ],
     data: poolCoder.instruction.encode('shield_check_invariant', {})
   });
-  await sendAndConfirmInstructions(connection, nativeMinter, [nativeCheckInvariantIx], nativeLookupTableId);
+  await sendAndConfirmInstructions(connection, nativeMinter, [nativeCheckInvariantIx], nativeOriginMint);
   await waitForShieldClaimCleared(connection, nativeShieldClaim);
 
   // Verify tokens were deposited to vault
@@ -2667,7 +2571,7 @@ async function main() {
     connection,
     nativeMinter,
     [ComputeBudgetProgram.setComputeUnitLimit({ units: 1_400_000 }), nativeUnshieldIx],
-    nativeLookupTableId
+    nativeOriginMint
   );
 
   // Verify tokens were returned to user
