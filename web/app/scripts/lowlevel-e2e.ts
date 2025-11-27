@@ -561,18 +561,18 @@ async function sendAndConfirmInstructions(
   // Use skipPreflight: false to catch signing issues early
   // The bootstrap script uses skipPreflight: true, but that might hide signing issues
   // Try false first to see if the transaction is properly signed
+  let signature: string;
   try {
-    const signature = await connection.sendRawTransaction(tx.serialize(), { skipPreflight: false });
-    return signature;
+    signature = await connection.sendRawTransaction(tx.serialize(), { skipPreflight: false });
   } catch (error: any) {
     // If preflight fails due to signing, try with skipPreflight: true
     // This matches bootstrap script behavior
     if (error.message?.includes('AccountNotSigner') || error.message?.includes('signature')) {
       console.warn('[sendAndConfirmInstructions] Preflight failed, retrying with skipPreflight: true');
-      const signature = await connection.sendRawTransaction(tx.serialize(), { skipPreflight: true });
-      return signature;
+      signature = await connection.sendRawTransaction(tx.serialize(), { skipPreflight: true });
+    } else {
+      throw error;
     }
-    throw error;
   }
 
   await connection.confirmTransaction(
@@ -720,7 +720,7 @@ async function main() {
                   const originMint = new PublicKey(decoded.originMint || decoded.origin_mint);
                   const poolId = derivePoolState(originMint);
                   // Check if pool is initialized
-                  const poolAccount = await connection.getAccountInfo(poolId, 'confirmed');
+                  const poolAccountCheck = await connection.getAccountInfo(poolId, 'confirmed');
                   if (poolAccountCheck) {
                     // Found a mint with initialized pool
                     catalog = [{
