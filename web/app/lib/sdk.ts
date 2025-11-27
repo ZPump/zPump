@@ -902,14 +902,7 @@ export async function wrap(params: WrapParams): Promise<string> {
         });
         lookupTableAddress = newLookupTableAddress;
         
-        // Create lookup table first
-        const createTx = new Transaction().add(createIx);
-        createTx.feePayer = wallet.publicKey;
-        createTx.recentBlockhash = latestBlockhash.blockhash;
-        const createSig = await wallet.sendTransaction(createTx, connection, { skipPreflight: false });
-        await waitForSignatureConfirmation(connection, createSig, latestBlockhash.blockhash, latestBlockhash.lastValidBlockHeight);
-        
-        // Extend lookup table with all accounts
+        // Combine create + extend in one transaction to reduce to 2 transactions total
         const extendIx = AddressLookupTableProgram.extendLookupTable({
           authority: wallet.publicKey,
           payer: wallet.publicKey,
@@ -917,12 +910,11 @@ export async function wrap(params: WrapParams): Promise<string> {
           addresses: uniqueAccounts
         });
         
-        const extendBlockhash = await connection.getLatestBlockhash('confirmed');
-        const extendTx = new Transaction().add(extendIx);
-        extendTx.feePayer = wallet.publicKey;
-        extendTx.recentBlockhash = extendBlockhash.blockhash;
-        const extendSig = await wallet.sendTransaction(extendTx, connection, { skipPreflight: false });
-        await waitForSignatureConfirmation(connection, extendSig, extendBlockhash.blockhash, extendBlockhash.lastValidBlockHeight);
+        const createExtendTx = new Transaction().add(createIx, extendIx);
+        createExtendTx.feePayer = wallet.publicKey;
+        createExtendTx.recentBlockhash = latestBlockhash.blockhash;
+        const createExtendSig = await wallet.sendTransaction(createExtendTx, connection, { skipPreflight: false });
+        await waitForSignatureConfirmation(connection, createExtendSig, latestBlockhash.blockhash, latestBlockhash.lastValidBlockHeight);
         
         // Wait for lookup table to activate (required before use)
         let activated = false;
