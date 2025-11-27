@@ -576,18 +576,27 @@ export async function wrap(params: WrapParams): Promise<string> {
 
   const amountCommitmentBytes = await poseidonHashMany([amount, blinding]);
 
+  // Determine which token program the mint uses
+  const mintAccount = await connection.getAccountInfo(originMintKey, 'confirmed');
+  if (!mintAccount) {
+    throw new Error('Mint account not found');
+  }
+  const tokenProgramId = mintAccount.owner.equals(TOKEN_2022_PROGRAM_ID) 
+    ? TOKEN_2022_PROGRAM_ID 
+    : TOKEN_PROGRAM_ID;
+
   const vaultTokenAccount = await getAssociatedTokenAddress(
     originMintKey,
     vaultState,
     true,
-    TOKEN_PROGRAM_ID,
+    tokenProgramId,
     ASSOCIATED_TOKEN_PROGRAM_ID
   );
   const depositorTokenAccount = await getAssociatedTokenAddress(
     originMintKey,
     wallet.publicKey,
     false,
-    TOKEN_PROGRAM_ID,
+    tokenProgramId,
     ASSOCIATED_TOKEN_PROGRAM_ID
   );
 
@@ -625,7 +634,7 @@ export async function wrap(params: WrapParams): Promise<string> {
         depositorTokenAccount,
         wallet.publicKey,
         originMintKey,
-        TOKEN_PROGRAM_ID,
+        tokenProgramId,
         ASSOCIATED_TOKEN_PROGRAM_ID
       )
     );
@@ -728,7 +737,7 @@ export async function wrap(params: WrapParams): Promise<string> {
     { pubkey: mintMappingKey, isSigner: false, isWritable: false },
     { pubkey: factoryState, isSigner: false, isWritable: false }, // Needed for lazy initialization
     { pubkey: VAULT_PROGRAM_ID, isSigner: false, isWritable: false },
-    { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
+    { pubkey: tokenProgramId, isSigner: false, isWritable: false },
     { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
     { pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false }
   );
@@ -859,7 +868,7 @@ export async function wrap(params: WrapParams): Promise<string> {
       { pubkey: verifyingKey, isSigner: false, isWritable: false },
       { pubkey: wallet.publicKey, isSigner: true, isWritable: true }, // payer
       { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
-      { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false }
+      { pubkey: tokenProgramId, isSigner: false, isWritable: false }
     ];
     
     const initPoolIx = new TransactionInstruction({
