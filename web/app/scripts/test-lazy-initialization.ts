@@ -81,8 +81,8 @@ async function testLazyInitialization(): Promise<void> {
     uri: 'https://test.com',
     decimals: 6,
     initialSupply: BigInt('1000000000'), // 1000 tokens
-    featureFlags: null,
-    feeBpsOverride: null
+    featureFlags: undefined,
+    feeBpsOverride: undefined
   });
   
   console.info(`[test] Token minted: ${mintResult.originMint.toBase58()}`);
