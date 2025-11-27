@@ -550,12 +550,21 @@ export async function wrap(params: WrapParams): Promise<string> {
     }
   }
 
+  // LAZY INITIALIZATION: Check if commitment tree exists, if not use default empty root
   const commitmentTreeAccount = await connection.getAccountInfo(commitmentTreeKey);
+  let treeState: { currentRoot: Uint8Array };
+  
   if (!commitmentTreeAccount) {
-    throw new Error('Commitment tree account missing on devnet');
+    // Pool not initialized yet - use default empty root (all zeros)
+    // The pool will be initialized on first shield with this root
+    const defaultEmptyRoot = new Uint8Array(32); // All zeros
+    treeState = { currentRoot: defaultEmptyRoot };
+    if (process.env.NEXT_PUBLIC_DEBUG_WRAP === 'true') {
+      console.info('[wrap] Commitment tree not initialized yet, using default empty root for lazy initialization');
+    }
+  } else {
+    treeState = decodeCommitmentTree(new Uint8Array(commitmentTreeAccount.data));
   }
-
-  const treeState = decodeCommitmentTree(new Uint8Array(commitmentTreeAccount.data));
   const recipientKey = params.recipient ? new PublicKey(params.recipient) : wallet.publicKey;
   const depositId = BigInt(params.depositId);
   const blinding = BigInt(params.blinding);
