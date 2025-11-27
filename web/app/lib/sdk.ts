@@ -1797,6 +1797,17 @@ export async function mintNativeZToken(params: MintNativeZTokenParams): Promise<
     }
   }
 
+  // Check payer balance before sending transaction
+  // Estimate: ~0.1 SOL for account creation (mint, metadata, mint_mapping, pool state, vault state, etc.) + fees
+  const MIN_BALANCE_REQUIRED = 100_000_000; // 0.1 SOL
+  const payerBalance = await connection.getBalance(wallet.publicKey, 'confirmed');
+  if (payerBalance < MIN_BALANCE_REQUIRED) {
+    throw new Error(
+      `Insufficient SOL balance. Required: ${MIN_BALANCE_REQUIRED / 1e9} SOL, ` +
+      `Current: ${payerBalance / 1e9} SOL. Please fund your wallet.`
+    );
+  }
+
   // Send transaction
   const latestBlockhash = await connection.getLatestBlockhash('confirmed');
   const transaction = new Transaction().add(...instructions);
