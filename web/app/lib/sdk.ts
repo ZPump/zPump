@@ -789,12 +789,16 @@ export async function wrap(params: WrapParams): Promise<string> {
 
   let latestBlockhash = await connection.getLatestBlockhash('confirmed');
   
-  // LAZY INITIALIZATION: If pool not initialized, initialize vault first (separate tx), then combine initialize_pool + shield
+  // LAZY INITIALIZATION: Combine vault init + initialize_pool + shield in ONE transaction
+  // Solana automatically deduplicates accounts, so shared accounts only count once
+  const instructionSet: TransactionInstruction[] = [...instructions];
+  
   if (isLazyInit) {
-    // Initialize vault first if needed (separate transaction to reduce size)
+    // Initialize vault first if needed (in same transaction)
     const vaultAccount = await connection.getAccountInfo(vaultState, 'confirmed');
     if (!vaultAccount) {
-      const poolAuthority = deriveFactoryState(); // Pool authority is factory state
+      // Pool authority is the pool_state PDA itself (derived from origin_mint)
+      const poolAuthority = poolState; // poolState is already the pool_state PDA
       const vaultInitData = vaultCoder.instruction.encode('initialize_vault', {
         pool_authority: poolAuthority
       });
@@ -809,25 +813,9 @@ export async function wrap(params: WrapParams): Promise<string> {
         ],
         data: vaultInitData
       });
-      
-      const vaultBlockhash = await connection.getLatestBlockhash('confirmed');
-      const vaultTx = new Transaction().add(vaultInitIx);
-      vaultTx.feePayer = wallet.publicKey;
-      vaultTx.recentBlockhash = vaultBlockhash.blockhash;
-      
-      const vaultSig = await wallet.sendTransaction(vaultTx, connection, { skipPreflight: false });
-      await waitForSignatureConfirmation(connection, vaultSig, vaultBlockhash.blockhash, vaultBlockhash.lastValidBlockHeight);
-      if (process.env.NEXT_PUBLIC_DEBUG_WRAP === 'true') {
-        console.info('[wrap] Vault initialized');
-      }
+      instructionSet.push(vaultInitIx);
     }
-  }
-  
-  // LAZY INITIALIZATION: If pool not initialized, add initialize_pool instruction before shield
-  // Solana automatically deduplicates accounts, so shared accounts only count once
-  const instructionSet: TransactionInstruction[] = [...instructions];
-  
-  if (isLazyInit) {
+    
     // Add initialize_pool instruction
     const FEATURE_PRIVATE_TRANSFER_ENABLED = 1;
     const FEATURE_ALLOWANCES_ENABLED = 2;
