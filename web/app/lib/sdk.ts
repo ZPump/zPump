@@ -870,7 +870,8 @@ export async function wrap(params: WrapParams): Promise<string> {
     });
     
     const initBlockhash = await connection.getLatestBlockhash('confirmed');
-    const initTx = new Transaction().add(...instructions, initPoolIx);
+    // Create a separate transaction for pool initialization to avoid account deduplication issues
+    const initTx = new Transaction().add(initPoolIx);
     initTx.feePayer = wallet.publicKey;
     initTx.recentBlockhash = initBlockhash.blockhash;
     const initSig = await wallet.sendTransaction(initTx, connection, { skipPreflight: false });
