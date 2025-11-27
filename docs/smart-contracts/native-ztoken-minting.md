@@ -48,9 +48,9 @@ pub struct TokenMetadata {
 #### MintMapping Updates
 
 Added `is_native_ztoken: bool` field to `MintMapping`:
-- Set to `true` for native zTokens
-- Set to `false` for all existing mints (backward compatible)
-- Informational only (for frontend/metadata purposes)
+- Set to `false` for all tokens (both native zTokens and regular tokens)
+- Currently informational only (for future use)
+- Backward compatible with existing mints
 
 #### mint_native_ztoken Instruction
 
@@ -110,7 +110,7 @@ pub fn mint_native_ztoken(
    - Decimals as specified
 4. Create metadata account (PDA) with name, symbol, URI, mint, update_authority (factory)
 5. Register mint in factory:
-   - Set `is_native_ztoken: true` in MintMapping
+   - Set `is_native_ztoken: false` in MintMapping (regular token)
    - Set other fields as normal
 6. Initialize pool via `invoke_signed`:
    - Call pool's `initialize_pool` with fee_bps and features

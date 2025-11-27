@@ -348,37 +348,37 @@ Based on current transaction structure:
 
 ## Conclusion
 
-### Best Option: **Keep Lookup Tables** (For Now)
+### ✅ **IMPLEMENTED: Option 5 - Program-Level Address Derivation**
 
-**Reasons:**
-1. ✅ Solves the problem elegantly
-2. ✅ No program changes needed
-3. ✅ Proven to work at scale
-4. ✅ Minimal complexity
+**Status**: This approach has been fully implemented and is now the production architecture.
 
-### Future Option: **Program-Level Derivation**
+**Implementation Details:**
+- Created centralized `AddressDeriver` module in `ptf_common`
+- Updated all programs (`ptf_pool`, `ptf_factory`, `ptf_vault`) to derive addresses internally
+- Removed all lookup table creation, extension, and storage logic
+- Transactions now use standard `Transaction` format (no `VersionedTransaction`)
+- All PDAs are derived deterministically from `originMint`
 
-**When to consider:**
-- Transaction sizes become an issue
-- Want to eliminate all lookup table complexity
-- Have resources for major refactor
-- Programs need significant updates anyway
+**Benefits Realized:**
+1. ✅ **Maximum scalability** - No lookup table capacity limits
+2. ✅ **Simplified architecture** - No lookup table management
+3. ✅ **Zero storage overhead** - No lookup tables to create or maintain
+4. ✅ **Small transaction size** - Only `originMint` + instruction data needed
+5. ✅ **Program-enforced validation** - All addresses validated on-chain
 
-### "Pi-Based" Indexing
-
-While interesting, a mathematical constant like π wouldn't help here because:
-- Addresses are already deterministic (via PDAs)
-- We need compression, not indexing
-- Solana's lookup tables already provide optimal compression (1-byte indexes)
-
-**The real question isn't "how to index" but "how to compress 32-byte addresses to 1 byte"** - and lookup tables already solve that perfectly!
+**See**: [`program-level-address-derivation.md`](./program-level-address-derivation.md) for complete documentation.
 
 ---
 
-## Next Steps
+## Historical Context
 
-1. ✅ **Keep current lookup table approach** - it's working well
-2. 💡 **Test full PDA derivation** - see if we can eliminate tables entirely
-3. 📊 **Monitor transaction sizes** - track if we're approaching limits
-4. 🔮 **Consider program-level derivation** - for future major refactor
+This document was created during the evaluation phase when lookup tables were still in use. The decision was made to implement Option 5 (Program-Level Address Derivation) as it provides the best long-term scalability and eliminates all lookup table complexity.
+
+The other options (1-4) were considered but not implemented:
+- **Option 1**: Full PDA derivation without lookup tables - Transaction size concerns
+- **Option 2**: Hybrid approach with compression - Too complex
+- **Option 3**: Index-based derivation - Requires program changes (similar to Option 5)
+- **Option 4**: Smart compression algorithms - Too risky and complex
+
+**Current Architecture**: All programs now use program-level derivation as described in Option 5.
 
