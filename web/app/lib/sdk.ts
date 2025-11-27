@@ -54,6 +54,7 @@ import { poseidonHashMany } from './onchain/poseidon';
 import { ProofResponse, ProofClient } from './proofClient';
 import poolIdl from '../idl/ptf_pool.json';
 import factoryIdl from '../idl/ptf_factory.json';
+import vaultIdl from '../idl/ptf_vault.json';
 import {
   getAssociatedTokenAddress,
   createAssociatedTokenAccountInstruction,
@@ -66,7 +67,6 @@ const SIGNATURE_POLL_INTERVAL_MS = 500;
 
 const poolCoder = new BorshCoder(poolIdl as Idl);
 const factoryCoder = new BorshCoder(factoryIdl as Idl);
-const vaultIdl = require('./idl/ptf_vault.json');
 const vaultCoder = new BorshCoder(vaultIdl as Idl);
 
 export const MINT_STATUS = {
