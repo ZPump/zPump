@@ -1140,7 +1140,7 @@ pub mod ptf_factory {
             mapping.bump = ctx.bumps.mint_mapping;
             mapping.has_ptkn = false;
             mapping.ptkn_mint = Pubkey::default();
-            mapping.is_native_ztoken = true; // Mark as native zToken
+            mapping.is_native_ztoken = false; // Regular token, not native zToken
         } // Drop mutable borrow here
         {
             let mint_mapping_info = ctx.accounts.mint_mapping.to_account_info();
@@ -1157,12 +1157,12 @@ pub mod ptf_factory {
             body[68..70].copy_from_slice(&fee_bps_override.unwrap_or_default().to_le_bytes());
             body[70] = fee_bps_override.is_some() as u8;
             body[71] = ctx.bumps.mint_mapping;
-            body[72] = 1; // is_native_ztoken (true = 1)
+            body[72] = 0; // is_native_ztoken (false = 0) - regular token
         }
         msg!(
             "factory register mint mapping origin={} native={}",
             ctx.accounts.mint_mapping.origin_mint,
-            true
+            false
         );
 
         // Validate pool and vault program IDs
