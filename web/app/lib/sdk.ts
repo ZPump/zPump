@@ -834,6 +834,7 @@ export async function wrap(params: WrapParams): Promise<string> {
     }
     
     // Initialize pool (separate transaction - scalable, no lookup tables)
+    // Use IDL to build account metas correctly (same approach as test scripts)
     const FEATURE_PRIVATE_TRANSFER_ENABLED = 1;
     const FEATURE_ALLOWANCES_ENABLED = 2;
     const features = FEATURE_PRIVATE_TRANSFER_ENABLED | FEATURE_ALLOWANCES_ENABLED;
@@ -844,24 +845,50 @@ export async function wrap(params: WrapParams): Promise<string> {
       features: features
     });
     
-    const initPoolKeys = [
-      { pubkey: wallet.publicKey, isSigner: true, isWritable: true }, // authority
-      { pubkey: poolState, isSigner: false, isWritable: true },
-      { pubkey: nullifierSet, isSigner: false, isWritable: true },
-      { pubkey: noteLedger, isSigner: false, isWritable: true },
-      { pubkey: commitmentTreeKey, isSigner: false, isWritable: true },
-      { pubkey: hookConfig, isSigner: false, isWritable: false },
-      { pubkey: hookWhitelist, isSigner: false, isWritable: true },
-      { pubkey: vaultState, isSigner: false, isWritable: false },
-      { pubkey: originMintKey, isSigner: false, isWritable: false },
-      { pubkey: mintMappingKey, isSigner: false, isWritable: false },
-      { pubkey: factoryState, isSigner: false, isWritable: false },
-      { pubkey: VERIFIER_PROGRAM_ID, isSigner: false, isWritable: false },
-      { pubkey: verifyingKey, isSigner: false, isWritable: false },
-      { pubkey: wallet.publicKey, isSigner: true, isWritable: true }, // payer
-      { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
-      { pubkey: tokenProgramId, isSigner: false, isWritable: false }
-    ];
+    // Build account mapping from IDL structure
+    const poolAccounts: Record<string, PublicKey> = {
+      authority: wallet.publicKey,
+      pool_state: poolState,
+      nullifier_set: nullifierSet,
+      note_ledger: noteLedger,
+      commitment_tree: commitmentTreeKey,
+      hook_config: hookConfig,
+      hook_whitelist: hookWhitelist,
+      vault_state: vaultState,
+      origin_mint: originMintKey,
+      mint_mapping: mintMappingKey,
+      factory_state: factoryState,
+      twin_mint: POOL_PROGRAM_ID, // Optional, use program ID as placeholder
+      verifier_program: VERIFIER_PROGRAM_ID,
+      verifying_key: verifyingKey,
+      payer: wallet.publicKey,
+      system_program: SystemProgram.programId,
+      token_program: tokenProgramId
+    };
+    
+    // Build account metas from IDL (same as lowlevel-e2e.ts)
+    const ixDef = (poolIdl as Idl).instructions?.find((item) => item.name === 'initialize_pool');
+    if (!ixDef) {
+      throw new Error('initialize_pool instruction not found in IDL');
+    }
+    
+    // Use type assertion to access IDL properties (IDL JSON has these fields even if types don't)
+    type IdlAccountWithProps = { name: string; signer?: boolean; writable?: boolean; optional?: boolean };
+    const accounts = ixDef.accounts as IdlAccountWithProps[];
+    
+    const initPoolKeys = accounts.map((account) => {
+      const pubkey = poolAccounts[account.name];
+      if (!pubkey) {
+        if (account.optional) {
+          // For optional accounts, use program ID as placeholder
+          return { pubkey: POOL_PROGRAM_ID, isSigner: false, isWritable: false };
+        }
+        throw new Error(`Missing account mapping for ${account.name}`);
+      }
+      const isWritable = account.writable ?? false;
+      const isSigner = account.signer ?? false;
+      return { pubkey, isSigner, isWritable };
+    });
     
     const initPoolIx = new TransactionInstruction({
       programId: POOL_PROGRAM_ID,
