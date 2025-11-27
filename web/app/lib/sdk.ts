@@ -66,6 +66,8 @@ const SIGNATURE_POLL_INTERVAL_MS = 500;
 
 const poolCoder = new BorshCoder(poolIdl as Idl);
 const factoryCoder = new BorshCoder(factoryIdl as Idl);
+const vaultIdl = require('./idl/ptf_vault.json');
+const vaultCoder = new BorshCoder(vaultIdl as Idl);
 
 export const MINT_STATUS = {
   UNKNOWN: 0,
@@ -550,24 +552,101 @@ export async function wrap(params: WrapParams): Promise<string> {
     }
   }
 
-  // LAZY INITIALIZATION: Check if commitment tree exists, if not use default empty root
-  const commitmentTreeAccount = await connection.getAccountInfo(commitmentTreeKey);
+  // LAZY INITIALIZATION: Check if pool is initialized, if not initialize it first
   const poolAccountInfo = await connection.getAccountInfo(poolState, 'confirmed');
+  const commitmentTreeAccount = await connection.getAccountInfo(commitmentTreeKey);
   const isLazyInit = !poolAccountInfo || !commitmentTreeAccount;
   
-  let treeState: { currentRoot: Uint8Array };
-  
-  if (!commitmentTreeAccount) {
-    // Pool not initialized yet - use default empty root (all zeros)
-    // The pool will be initialized on first shield with this root
-    const defaultEmptyRoot = new Uint8Array(32); // All zeros
-    treeState = { currentRoot: defaultEmptyRoot };
+  if (isLazyInit) {
     if (process.env.NEXT_PUBLIC_DEBUG_WRAP === 'true') {
-      console.info('[wrap] Commitment tree not initialized yet, using default empty root for lazy initialization');
+      console.info('[wrap] Pool not initialized, initializing pool first...');
     }
-  } else {
-    treeState = decodeCommitmentTree(new Uint8Array(commitmentTreeAccount.data));
+    
+    // Initialize vault first if needed
+    const vaultAccount = await connection.getAccountInfo(vaultState, 'confirmed');
+    if (!vaultAccount) {
+      const poolAuthority = deriveFactoryState(); // Pool authority is factory state
+      const vaultInitData = vaultCoder.instruction.encode('initialize_vault', {
+        pool_authority: poolAuthority
+      });
+      const vaultInitIx = new TransactionInstruction({
+        programId: VAULT_PROGRAM_ID,
+        keys: [
+          { pubkey: vaultState, isSigner: false, isWritable: true },
+          { pubkey: originMintKey, isSigner: false, isWritable: false },
+          { pubkey: wallet.publicKey, isSigner: true, isWritable: true },
+          { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
+          { pubkey: SystemProgram.programId, isSigner: false, isWritable: false }
+        ],
+        data: vaultInitData
+      });
+      
+      const vaultBlockhash = await connection.getLatestBlockhash('confirmed');
+      const vaultTx = new Transaction().add(vaultInitIx);
+      vaultTx.feePayer = wallet.publicKey;
+      vaultTx.recentBlockhash = vaultBlockhash.blockhash;
+      
+      const vaultSig = await wallet.sendTransaction(vaultTx, connection, { skipPreflight: false });
+      await waitForSignatureConfirmation(connection, vaultSig, vaultBlockhash.blockhash, vaultBlockhash.lastValidBlockHeight);
+      if (process.env.NEXT_PUBLIC_DEBUG_WRAP === 'true') {
+        console.info('[wrap] Vault initialized');
+      }
+    }
+    
+    // Initialize pool using initialize_pool instruction
+    const FEATURE_PRIVATE_TRANSFER_ENABLED = 1;
+    const FEATURE_ALLOWANCES_ENABLED = 2;
+    const features = FEATURE_PRIVATE_TRANSFER_ENABLED | FEATURE_ALLOWANCES_ENABLED;
+    const feeBps = 0; // Default fee
+    
+    const initPoolData = poolCoder.instruction.encode('initialize_pool', {
+      fee_bps: feeBps,
+      features: features
+    });
+    
+    const initPoolKeys = [
+      { pubkey: wallet.publicKey, isSigner: true, isWritable: true }, // authority
+      { pubkey: poolState, isSigner: false, isWritable: true },
+      { pubkey: nullifierSet, isSigner: false, isWritable: true },
+      { pubkey: noteLedger, isSigner: false, isWritable: true },
+      { pubkey: commitmentTreeKey, isSigner: false, isWritable: true },
+      { pubkey: hookConfig, isSigner: false, isWritable: false },
+      { pubkey: hookWhitelist, isSigner: false, isWritable: true },
+      { pubkey: vaultState, isSigner: false, isWritable: false },
+      { pubkey: originMintKey, isSigner: false, isWritable: false },
+      { pubkey: mintMappingKey, isSigner: false, isWritable: false },
+      { pubkey: factoryState, isSigner: false, isWritable: false },
+      { pubkey: VERIFIER_PROGRAM_ID, isSigner: false, isWritable: false },
+      { pubkey: verifyingKey, isSigner: false, isWritable: false },
+      { pubkey: wallet.publicKey, isSigner: true, isWritable: true }, // payer
+      { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+      { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false }
+    ];
+    
+    const initPoolIx = new TransactionInstruction({
+      programId: POOL_PROGRAM_ID,
+      keys: initPoolKeys,
+      data: initPoolData
+    });
+    
+    const initBlockhash = await connection.getLatestBlockhash('confirmed');
+    const initTx = new Transaction().add(...instructions, initPoolIx);
+    initTx.feePayer = wallet.publicKey;
+    initTx.recentBlockhash = initBlockhash.blockhash;
+    
+    const initSig = await wallet.sendTransaction(initTx, connection, { skipPreflight: false });
+    await waitForSignatureConfirmation(connection, initSig, initBlockhash.blockhash, initBlockhash.lastValidBlockHeight);
+    if (process.env.NEXT_PUBLIC_DEBUG_WRAP === 'true') {
+      console.info('[wrap] Pool initialized');
+    }
   }
+  
+  // Now fetch the commitment tree state (pool should be initialized now)
+  const finalCommitmentTreeAccount = await connection.getAccountInfo(commitmentTreeKey);
+  if (!finalCommitmentTreeAccount) {
+    throw new Error('Commitment tree account missing after pool initialization');
+  }
+  const treeState = decodeCommitmentTree(new Uint8Array(finalCommitmentTreeAccount.data));
   const recipientKey = params.recipient ? new PublicKey(params.recipient) : wallet.publicKey;
   const depositId = BigInt(params.depositId);
   const blinding = BigInt(params.blinding);
@@ -787,13 +866,8 @@ export async function wrap(params: WrapParams): Promise<string> {
   // Lookup tables removed - addresses are now derived programmatically by the program
 
   let latestBlockhash = await connection.getLatestBlockhash('confirmed');
-  
-  // LAZY INITIALIZATION: For first shield, split into separate transactions to avoid size limit
-  // Transaction size limit is 1232 bytes, and lazy init includes many accounts
-  // After initialization, we can combine shield + finalize_ledger in one transaction
-  const shieldInstructionSet = isLazyInit 
-    ? [...instructions, shieldInstruction] // First shield: just shield instruction (initializes pool)
-    : [...instructions, shieldInstruction, finalizeLedgerInstruction]; // Subsequent shields: combined
+  // Include shield and finalize_ledger in the same transaction (required for security)
+  const shieldInstructionSet = [...instructions, shieldInstruction, finalizeLedgerInstruction];
 
   let shieldSignature: string | undefined;
   let shieldAttempts = 0;
@@ -926,33 +1000,6 @@ export async function wrap(params: WrapParams): Promise<string> {
   if (process.env.NEXT_PUBLIC_DEBUG_WRAP === 'true') {
     // eslint-disable-next-line no-console
     console.info('[wrap] shield signature confirmed', shieldSignature);
-  }
-
-  // LAZY INITIALIZATION: If this was the first shield, send finalize_ledger in separate transaction
-  // This avoids exceeding Solana's 1232 byte transaction size limit
-  if (isLazyInit) {
-    if (process.env.NEXT_PUBLIC_DEBUG_WRAP === 'true') {
-      console.info('[wrap] First shield completed, sending finalize_ledger in separate transaction');
-    }
-    const ledgerBlockhash = await connection.getLatestBlockhash('confirmed');
-    const finalizeLedgerTransaction = new Transaction().add(...instructions, finalizeLedgerInstruction);
-    finalizeLedgerTransaction.feePayer = wallet.publicKey;
-    finalizeLedgerTransaction.recentBlockhash = ledgerBlockhash.blockhash;
-    
-    const finalizeLedgerSignature = await wallet.sendTransaction(finalizeLedgerTransaction, connection, {
-      skipPreflight: false
-    });
-    
-    await waitForSignatureConfirmation(
-      connection,
-      finalizeLedgerSignature,
-      ledgerBlockhash.blockhash,
-      ledgerBlockhash.lastValidBlockHeight
-    );
-    
-    if (process.env.NEXT_PUBLIC_DEBUG_WRAP === 'true') {
-      console.info('[wrap] finalize_ledger signature confirmed', finalizeLedgerSignature);
-    }
   }
 
   const finalizeTreeInstructions: TransactionInstruction[] = [];
