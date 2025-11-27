@@ -390,8 +390,12 @@ async function waitForPendingShieldInactive(
   while (Date.now() - start < timeoutMs) {
     attempts++;
     const accountInfo = await connection.getAccountInfo(poolStateKey, 'confirmed');
+    // LAZY INITIALIZATION: If pool doesn't exist yet, pending_shield can't be active
     if (!accountInfo) {
-      throw new Error('Pool state account missing');
+      if (process.env.NEXT_PUBLIC_DEBUG_WRAP === 'true') {
+        console.info('[wrap] Pool state account missing - pool not initialized yet, pending_shield cannot be active');
+      }
+      return; // Pool doesn't exist, so pending_shield can't be active
     }
     
     try {
@@ -458,34 +462,41 @@ export async function wrap(params: WrapParams): Promise<string> {
   
   // Wait for pending_shield to be inactive before starting a new shield
   // This prevents PendingShieldInFlight errors from previous incomplete operations
-  // If pending_shield is stuck active, try to clear it by calling shield_finalize_tree
-  // Note: We skip the check if decoding fails, as the program will reject with PendingShieldInFlight anyway
+  // LAZY INITIALIZATION: If pool doesn't exist yet, pending_shield can't be active
   try {
     await waitForPendingShieldInactive(connection, poolState, 3000); // Short timeout first
   } catch (error) {
-    // If we can't determine pending_shield status or it's still active, try to proceed anyway
-    // The program will reject with PendingShieldInFlight if it's active, which we'll handle below
-    if (process.env.NEXT_PUBLIC_DEBUG_WRAP === 'true') {
-      console.warn('[wrap] Could not verify pending_shield status, proceeding (program will reject if active)');
-    }
-    // If pending_shield is still active, try to clear it by calling shield_finalize_tree
-    // This handles the case where a previous shield operation didn't complete
-    console.warn('[wrap] pending_shield is still active, attempting to clear it...');
-    
-    let claimState: ShieldClaimAccount | null = null;
-    try {
-      claimState = await fetchShieldClaimState(connection, shieldClaim);
-    } catch (error) {
-      // Shield claim doesn't exist - this is a stuck state where pending_shield is active
-      // but there's no shield claim to finalize. We can't clear it from the SDK.
-      console.warn('[wrap] Shield claim does not exist but pending_shield is active - stuck state');
-      // Wait a bit longer hoping it clears
-      try {
-        await waitForPendingShieldInactive(connection, poolState, 30000);
-      } catch (waitError) {
-        throw new Error('pending_shield is stuck active with no shield claim - cannot proceed. This indicates a program bug or incomplete previous operation.');
+    // Check if pool exists - if not, pending_shield can't be active (lazy initialization)
+    const poolAccountInfo = await connection.getAccountInfo(poolState, 'confirmed');
+    if (!poolAccountInfo) {
+      // Pool doesn't exist yet - pending_shield can't be active, proceed with shield
+      if (process.env.NEXT_PUBLIC_DEBUG_WRAP === 'true') {
+        console.info('[wrap] Pool not initialized yet - pending_shield cannot be active, proceeding with shield');
       }
-    }
+      // Continue to shield instruction which will initialize the pool
+    } else {
+      // Pool exists - check for stuck pending_shield state
+      if (process.env.NEXT_PUBLIC_DEBUG_WRAP === 'true') {
+        console.warn('[wrap] Could not verify pending_shield status, proceeding (program will reject if active)');
+      }
+      // If pending_shield is still active, try to clear it by calling shield_finalize_tree
+      // This handles the case where a previous shield operation didn't complete
+      console.warn('[wrap] pending_shield is still active, attempting to clear it...');
+      
+      let claimState: ShieldClaimAccount | null = null;
+      try {
+        claimState = await fetchShieldClaimState(connection, shieldClaim);
+      } catch (error) {
+        // Shield claim doesn't exist - this is a stuck state where pending_shield is active
+        // but there's no shield claim to finalize. We can't clear it from the SDK.
+        console.warn('[wrap] Shield claim does not exist but pending_shield is active - stuck state');
+        // Wait a bit longer hoping it clears
+        try {
+          await waitForPendingShieldInactive(connection, poolState, 30000);
+        } catch (waitError) {
+          throw new Error('pending_shield is stuck active with no shield claim - cannot proceed. This indicates a program bug or incomplete previous operation.');
+        }
+      }
     
     // If shield claim exists and is in a state that allows finalize_tree, try to finalize it
     if (claimState && claimState.status !== 0) {
