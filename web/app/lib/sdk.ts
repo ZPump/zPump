@@ -795,6 +795,15 @@ export async function wrap(params: WrapParams): Promise<string> {
     // Initialize vault first if needed
     const vaultAccount = await connection.getAccountInfo(vaultState, 'confirmed');
     if (!vaultAccount) {
+      // Determine which token program the mint uses
+      const mintAccount = await connection.getAccountInfo(originMintKey, 'confirmed');
+      if (!mintAccount) {
+        throw new Error('Mint account not found');
+      }
+      const tokenProgramId = mintAccount.owner.equals(TOKEN_2022_PROGRAM_ID) 
+        ? TOKEN_2022_PROGRAM_ID 
+        : TOKEN_PROGRAM_ID;
+      
       // Pool authority is the pool_state PDA itself (derived from origin_mint)
       const poolAuthority = poolState; // poolState is already the pool_state PDA
       const vaultInitData = vaultCoder.instruction.encode('initialize_vault', {
@@ -806,7 +815,7 @@ export async function wrap(params: WrapParams): Promise<string> {
           { pubkey: vaultState, isSigner: false, isWritable: true },
           { pubkey: originMintKey, isSigner: false, isWritable: false },
           { pubkey: wallet.publicKey, isSigner: true, isWritable: true },
-          { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
+          { pubkey: tokenProgramId, isSigner: false, isWritable: false },
           { pubkey: SystemProgram.programId, isSigner: false, isWritable: false }
         ],
         data: vaultInitData
