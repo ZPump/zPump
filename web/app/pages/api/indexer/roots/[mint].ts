@@ -95,7 +95,10 @@ async function fetchRootFromChain(mint: string) {
     const poolKey = derivePoolState(mintKey);
     const accountInfo = await connection.getAccountInfo(poolKey);
     if (!accountInfo) {
-      return null;
+      // LAZY INITIALIZATION: Pool not initialized yet - return default empty root
+      // This allows the frontend to proceed with shielding, which will initialize the pool
+      const defaultEmptyRoot = '0x0000000000000000000000000000000000000000000000000000000000000000';
+      return { current: defaultEmptyRoot, recent: [] };
     }
     const data = new Uint8Array(accountInfo.data);
     const base = 8;
@@ -114,7 +117,9 @@ async function fetchRootFromChain(mint: string) {
     }
     return { current, recent };
   } catch {
-    return null;
+    // On error, return default empty root to allow lazy initialization
+    const defaultEmptyRoot = '0x0000000000000000000000000000000000000000000000000000000000000000';
+    return { current: defaultEmptyRoot, recent: [] };
   }
 }
 
