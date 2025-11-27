@@ -1,7 +1,7 @@
 use anchor_lang::prelude::*;
 use anchor_lang::InstructionData;
 use anchor_lang::solana_program::instruction::{AccountMeta, Instruction};
-use anchor_lang::solana_program::program::invoke_signed;
+use anchor_lang::solana_program::program::{invoke, invoke_signed};
 use anchor_lang::solana_program::program_option::COption;
 use borsh::BorshDeserialize;
 use anchor_spl::token_interface::{Mint, TokenAccount, TokenInterface};
@@ -1100,8 +1100,110 @@ pub mod ptf_pool {
             PoolError::OriginMintMismatch,
         );
         
+        // LAZY INITIALIZATION: Check if pool is initialized, if not initialize it
         let mut pool_state = pool_loader.load_mut()?;
         msg!("shield: loaded pool_state");
+        
+        // If pool_state.origin_mint is default, it's uninitialized - initialize it lazily
+        if pool_state.origin_mint == Pubkey::default() {
+            msg!("shield: pool_state uninitialized, initializing lazily...");
+            
+            // Initialize vault first (required by pool)
+            let (pool_authority, _) = AddressDeriver::derive_pool_state(
+                &origin_mint_key,
+                ctx.program_id,
+            );
+            
+            // Check if vault_state is initialized
+            let vault_state_info = ctx.accounts.vault_state.to_account_info();
+            let is_vault_initialized = vault_state_info.owner == &ptf_vault::ID 
+                && vault_state_info.data_len() >= 8 + 64; // discriminator + origin_mint + pool_authority
+            
+            if !is_vault_initialized {
+                msg!("shield: vault_state not initialized, initializing...");
+                
+                // Call vault initialize_vault instruction
+                let vault_discriminator = hashv(&[b"global:initialize_vault"]).to_bytes()[0..8].to_vec();
+                let mut vault_data = vault_discriminator;
+                vault_data.extend_from_slice(pool_authority.as_ref());
+                
+                let vault_accounts = vec![
+                    AccountMeta::new(ctx.accounts.vault_state.key(), false),
+                    AccountMeta::new_readonly(ctx.accounts.origin_mint.key(), false),
+                    AccountMeta::new(ctx.accounts.payer.key(), true),
+                    AccountMeta::new_readonly(ctx.accounts.token_program.key(), false),
+                    AccountMeta::new_readonly(ctx.accounts.system_program.key(), false),
+                ];
+                
+                let vault_ix = Instruction {
+                    program_id: ptf_vault::ID,
+                    accounts: vault_accounts,
+                    data: vault_data,
+                };
+                
+                let vault_account_infos = vec![
+                    ctx.accounts.vault_state.to_account_info(),
+                    ctx.accounts.origin_mint.to_account_info(),
+                    ctx.accounts.payer.to_account_info(),
+                    ctx.accounts.token_program.to_account_info(),
+                    ctx.accounts.system_program.to_account_info(),
+                ];
+                
+                invoke(&vault_ix, &vault_account_infos)?;
+                msg!("shield: vault_state initialized");
+            }
+            
+            // Get fee_bps and features from mint_mapping
+            // Account<'info, MintMapping> is already loaded, access fields directly
+            let fee_bps = if ctx.accounts.mint_mapping.has_fee_override {
+                ctx.accounts.mint_mapping.fee_bps_override
+            } else {
+                // Try to read from factory_state if available
+                // For now, use 0 as default (will be properly set from factory_state in full implementation)
+                0
+            };
+            let features = ctx.accounts.mint_mapping.features.bits();
+            
+            // Get factory_state PDA
+            let (factory_state_pda, _) = AddressDeriver::derive_factory_state(&ptf_factory::ID);
+            
+            // Validate factory_state account if provided
+            if ctx.accounts.factory_state.key() != factory_state_pda {
+                return err!(PoolError::OriginMintMismatch);
+            }
+            
+            // Initialize pool_state fields (matching initialize_pool logic)
+            pool_state.origin_mint = origin_mint_key;
+            pool_state.vault = ctx.accounts.vault_state.key();
+            pool_state.verifier_program = ctx.accounts.verifier_program.key();
+            pool_state.verifying_key = ctx.accounts.verifying_key.key();
+            // Note: verifying_key_id and verifying_key_hash would need to be read from verifying_key account
+            // For now, set to defaults - these will be validated later
+            pool_state.verifying_key_id = [0u8; 32];
+            pool_state.verifying_key_hash = [0u8; 32];
+            pool_state.authority = factory_state_pda;
+            pool_state.fee_bps = fee_bps;
+            pool_state.features = FeatureFlags::from(features);
+            pool_state.bump = ctx.bumps.pool_state;
+            pool_state.commitment_tree = pool_addresses.commitment_tree;
+            pool_state.roots_len = 0;
+            pool_state.current_root = [0u8; 32];
+            pool_state.shield_sequence = 0;
+            pool_state.authority_change_sequence = 0;
+            pool_state.last_authority_change_time = None;
+            pool_state.reject_expired_roots = false;
+            pool_state.note_ledger = pool_addresses.note_ledger;
+            pool_state.note_ledger_bump = pool_addresses.note_ledger_bump;
+            pool_state.protocol_fees = 0;
+            pool_state.hook_config = pool_addresses.hook_config;
+            pool_state.hook_config_present = false;
+            pool_state.hook_config_bump = pool_addresses.hook_config_bump;
+            // Initialize pending_shield to inactive state
+            pool_state.pending_shield = PendingShield::inactive();
+            
+            msg!("shield: pool_state initialized with origin_mint={}, fee_bps={}, features={}", 
+                 origin_mint_key, fee_bps, features);
+        }
         
         // Validate pool_state.origin_mint matches the origin_mint we derived from
         require_keys_eq!(
@@ -3397,22 +3499,25 @@ pub struct CancelAuthorityChange<'info> {
 
 #[derive(Accounts)]
 pub struct Shield<'info> {
+    /// LAZY INITIALIZATION: Pool will be initialized on first shield if it doesn't exist
     #[account(
-        mut,
-        seeds = [seeds::POOL, pool_state.load()?.origin_mint.as_ref()],
-        bump
+        init_if_needed,
+        payer = payer,
+        seeds = [seeds::POOL, origin_mint.key().as_ref()],
+        bump,
+        space = PoolState::SPACE,
     )]
     pub pool_state: AccountLoader<'info, PoolState>,
-    /// CHECK: Validated manually in instruction to reduce stack usage
+    /// CHECK: Validated manually in instruction - use origin_mint since pool might be uninitialized
     #[account(
-        seeds = [seeds::HOOKS, pool_state.load()?.origin_mint.as_ref()],
-        bump = pool_state.load()?.hook_config_bump,
+        seeds = [seeds::HOOKS, origin_mint.key().as_ref()],
+        bump,
     )]
     pub hook_config: UncheckedAccount<'info>,
     #[account(
         init_if_needed,
         payer = payer,
-        seeds = [b"hook-whitelist", pool_state.load()?.origin_mint.as_ref()],
+        seeds = [b"hook-whitelist", origin_mint.key().as_ref()],
         bump,
         space = HookWhitelist::SPACE,
     )]
@@ -3421,7 +3526,7 @@ pub struct Shield<'info> {
     /// Anchor handles initialization atomically, preventing concurrent initialization attempts
     /// CHECK: Initialized manually to allow existing accounts with varying sizes
     #[account(
-        seeds = [seeds::NULLIFIERS, pool_state.load()?.origin_mint.as_ref()],
+        seeds = [seeds::NULLIFIERS, origin_mint.key().as_ref()],
         bump,
     )]
     pub nullifier_set: UncheckedAccount<'info>,
@@ -3430,14 +3535,14 @@ pub struct Shield<'info> {
     #[account(
         init_if_needed,
         payer = payer,
-        seeds = [seeds::TREE, pool_state.load()?.origin_mint.as_ref()],
+        seeds = [seeds::TREE, origin_mint.key().as_ref()],
         bump,
         space = CommitmentTree::SPACE,
     )]
     pub commitment_tree: AccountLoader<'info, CommitmentTree>,
     /// CHECK: Validated and initialized manually to reduce stack usage
     #[account(
-        seeds = [seeds::NOTES, pool_state.load()?.origin_mint.as_ref()],
+        seeds = [seeds::NOTES, origin_mint.key().as_ref()],
         bump,
     )]
     pub note_ledger: UncheckedAccount<'info>,
@@ -3466,13 +3571,15 @@ pub struct Shield<'info> {
     #[account(mut)]
     pub payer: Signer<'info>,
     pub origin_mint: InterfaceAccount<'info, Mint>,
+    /// CHECK: Validated in instruction - can't use pool_state.load() in constraint since pool might be uninitialized
     #[account(
-        seeds = [seeds::MINT_MAPPING, pool_state.load()?.origin_mint.as_ref()],
-        bump = mint_mapping.bump,
+        seeds = [seeds::MINT_MAPPING, origin_mint.key().as_ref()],
+        bump,
         seeds::program = ptf_factory::ID,
-        constraint = mint_mapping.origin_mint == pool_state.load()?.origin_mint @ PoolError::OriginMintMismatch,
     )]
     pub mint_mapping: Account<'info, MintMapping>,
+    /// CHECK: Factory state PDA - needed for lazy pool initialization
+    pub factory_state: UncheckedAccount<'info>,
     pub vault_program: Program<'info, PtfVault>,
     pub token_program: Interface<'info, TokenInterface>,
     pub system_program: Program<'info, System>,

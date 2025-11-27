@@ -1699,19 +1699,13 @@ export async function mintNativeZToken(params: MintNativeZTokenParams): Promise<
   const originMint = mintKeypair.publicKey;
   const tokenProgramId = TOKEN_2022_PROGRAM_ID;
 
-  // Derive all PDAs
+  // Derive PDAs (only what's needed for minting - pool/vault will be initialized lazily on first shield)
   const factoryState = deriveFactoryState();
   const factoryConfig = deriveFactoryConfig();
   const mintMapping = deriveMintMapping(originMint);
   const metadata = deriveTokenMetadata(originMint);
+  // Derive poolState for return value (not passed to instruction - will be initialized on first shield)
   const poolState = derivePoolState(originMint);
-  const vaultState = deriveVaultState(originMint);
-  const commitmentTree = deriveCommitmentTree(originMint);
-  const nullifierSet = deriveNullifierSet(originMint);
-  const noteLedger = deriveNoteLedger(originMint);
-  const hookConfig = deriveHookConfig(originMint);
-  const hookWhitelist = deriveHookWhitelist(originMint);
-  const verifyingKey = deriveVerifyingKey();
 
   // Factory config currently holds legacy program IDs on devnet. Skip passing it so the
   // on-chain program falls back to its baked-in configuration.
@@ -1732,7 +1726,6 @@ export async function mintNativeZToken(params: MintNativeZTokenParams): Promise<
     console.info('[mintNativeZToken]', {
       originMint: originMint.toBase58(),
       mintMapping: mintMapping.toBase58(),
-      poolState: poolState.toBase58(),
     });
   }
   const instructions: TransactionInstruction[] = [];
@@ -1748,6 +1741,8 @@ export async function mintNativeZToken(params: MintNativeZTokenParams): Promise<
     fee_bps_override: params.feeBpsOverride ? { some: params.feeBpsOverride } : null,
   });
 
+  // LAZY INITIALIZATION: Only include accounts needed for minting
+  // Pool/vault infrastructure will be initialized on first shield
   const mintKeys = [
     { pubkey: factoryState, isSigner: false, isWritable: true },
     { pubkey: wallet.publicKey, isSigner: true, isWritable: true }, // payer
@@ -1755,17 +1750,6 @@ export async function mintNativeZToken(params: MintNativeZTokenParams): Promise<
     { pubkey: metadata, isSigner: false, isWritable: true },
     { pubkey: mintMapping, isSigner: false, isWritable: true },
     factoryConfigMeta,
-    { pubkey: POOL_PROGRAM_ID, isSigner: false, isWritable: false }, // pool_program
-    { pubkey: VAULT_PROGRAM_ID, isSigner: false, isWritable: false }, // vault_program
-    { pubkey: poolState, isSigner: false, isWritable: true },
-    { pubkey: vaultState, isSigner: false, isWritable: true },
-    { pubkey: commitmentTree, isSigner: false, isWritable: true },
-    { pubkey: nullifierSet, isSigner: false, isWritable: true },
-    { pubkey: noteLedger, isSigner: false, isWritable: true },
-    { pubkey: hookConfig, isSigner: false, isWritable: true },
-    { pubkey: hookWhitelist, isSigner: false, isWritable: true },
-    { pubkey: VERIFIER_PROGRAM_ID, isSigner: false, isWritable: false },
-    { pubkey: verifyingKey, isSigner: false, isWritable: false },
     { pubkey: userTokenAccount, isSigner: false, isWritable: true },
     { pubkey: tokenProgramId, isSigner: false, isWritable: false },
     { pubkey: ASSOCIATED_TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
@@ -1781,10 +1765,10 @@ export async function mintNativeZToken(params: MintNativeZTokenParams): Promise<
     })
   );
 
-  // Add compute budget
+  // Add compute budget (reduced since we're not initializing pool/vault)
   instructions.unshift(
     ComputeBudgetProgram.setComputeUnitLimit({
-      units: 1_400_000, // High limit for minting + pool/vault initialization
+      units: 200_000, // Lower limit for minting only (pool/vault initialized lazily on first shield)
     })
   );
 
