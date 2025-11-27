@@ -1127,7 +1127,7 @@ pub mod ptf_factory {
         metadata.update_authority = state.key();
         metadata.bump = ctx.bumps.metadata;
 
-        // Register mint in factory with is_native_ztoken = true
+        // Register mint in factory with is_native_ztoken = false (regular token)
         {
             let mapping = &mut ctx.accounts.mint_mapping;
             mapping.origin_mint = origin_mint_key;
@@ -1142,10 +1142,28 @@ pub mod ptf_factory {
             mapping.ptkn_mint = Pubkey::default();
             mapping.is_native_ztoken = false; // Regular token, not native zToken
         } // Drop mutable borrow here
+        
+        // CRITICAL: Manually ensure all bytes are written, including is_native_ztoken at byte 72
+        // This ensures the account is exactly 81 bytes (8 discriminator + 73 body bytes)
         {
             let mint_mapping_info = ctx.accounts.mint_mapping.to_account_info();
             let mut data_ref = mint_mapping_info.try_borrow_mut_data()?;
+            
+            // Ensure account is exactly MintMapping::SPACE bytes
+            let data_len = data_ref.len();
+            require!(
+                data_len >= MintMapping::SPACE,
+                FactoryError::AccountDataTooShort
+            );
+            
             let body = &mut data_ref[8..];
+            // Ensure body is at least 73 bytes (MintMapping::SPACE - 8)
+            let body_len = body.len();
+            require!(
+                body_len >= 73,
+                FactoryError::AccountDataTooShort
+            );
+            
             body[0..32].copy_from_slice(origin_mint_key.as_ref());
             body[32..64].fill(0); // ptkn mint
             body[64] = 0; // has_ptkn
@@ -1158,6 +1176,12 @@ pub mod ptf_factory {
             body[70] = fee_bps_override.is_some() as u8;
             body[71] = ctx.bumps.mint_mapping;
             body[72] = 0; // is_native_ztoken (false = 0) - regular token
+            
+            // Verify we wrote all required bytes (drop mutable borrow first)
+            let is_native_ztoken_value = body[72];
+            drop(data_ref);
+            msg!("factory mint_mapping written: data_len={}, body_len={}, is_native_ztoken={}", 
+                 data_len, body_len, is_native_ztoken_value);
         }
         msg!(
             "factory register mint mapping origin={} native={}",
