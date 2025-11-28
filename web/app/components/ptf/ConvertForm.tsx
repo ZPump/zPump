@@ -6,7 +6,6 @@ import {
   AlertIcon,
   Box,
   Button,
-  Collapse,
   FormControl,
   FormHelperText,
   FormLabel,
@@ -22,7 +21,6 @@ import {
   NumberInputField,
   Select,
   Stack,
-  Switch,
   Text,
   Tooltip,
   useBoolean,
@@ -190,8 +188,6 @@ export function ConvertForm() {
   const [selectionInitialized, setSelectionInitialized] = useState(false);
   const [amount, setAmount] = useState<string>('1');
   const [isSubmitting, setSubmitting] = useBoolean(false);
-  const [showAdvanced, setShowAdvanced] = useBoolean(false);
-
   const [wrapAdvanced, setWrapAdvanced] = useState<WrapAdvancedState>({
     depositId: createRandomSeed(),
     blinding: createRandomSeed(),
@@ -1382,23 +1378,26 @@ export function ConvertForm() {
   
   // Prioritize tokenMetadataMap since it has the actual symbol from chain metadata
   const selectedTokenSymbol = useMemo(() => {
-    // tokenMetadataMap has the most accurate symbol (from chain metadata)
+    if (!originMint) {
+      return '';
+    }
     if (tokenMetadataMap[originMint]?.symbol) {
       return tokenMetadataMap[originMint].symbol;
     }
-    // Then try tokenDisplayInfo (which may have fallbacks)
     if (tokenDisplayInfo?.symbol) {
       return tokenDisplayInfo.symbol;
     }
-    // Then selectedTokenOption, mintConfig, or default
-    return selectedTokenOption?.symbol || mintConfig?.symbol || 'TOKEN';
+    return selectedTokenOption?.symbol || mintConfig?.symbol || '';
   }, [originMint, tokenMetadataMap, tokenDisplayInfo?.symbol, selectedTokenOption?.symbol, mintConfig?.symbol]);
   
-  const zTokenSymbol = useMemo(() => `z${selectedTokenSymbol}`, [selectedTokenSymbol]);
-  const redeemDisplaySymbol = useMemo(
-    () => (mode === 'to-private' ? zTokenSymbol : selectedTokenSymbol),
-    [mode, zTokenSymbol, selectedTokenSymbol]
-  );
+  const zTokenSymbol = useMemo(() => (selectedTokenSymbol ? `z${selectedTokenSymbol}` : ''), [selectedTokenSymbol]);
+  const redeemDisplaySymbol = useMemo(() => {
+    if (!originMint) {
+      return '—';
+    }
+    const symbol = mode === 'to-private' ? zTokenSymbol || selectedTokenSymbol : selectedTokenSymbol;
+    return symbol || '—';
+  }, [mode, zTokenSymbol, selectedTokenSymbol, originMint]);
   
   const selectedMintStatus = mintStatuses[originMint];
   const mintIsFrozen = selectedMintStatus === MINT_STATUS.FROZEN;
@@ -1988,7 +1987,7 @@ export function ConvertForm() {
         await refreshTokenOptions();
       } else {
         if (tokenVariant !== 'private') {
-          throw new Error('Select a private token to redeem.');
+          throw new Error('Select a private token to unshield.');
         }
         if (!mintConfig?.zTokenMint) {
           throw new Error('This token does not support private redemptions.');
@@ -2177,7 +2176,7 @@ export function ConvertForm() {
 
         const displayAmount = formatBaseUnitsToUi(amountValue, decimals);
         const targetSymbol = mintConfig?.symbol ?? 'TOKEN';
-        setResult(`Redeemed ${displayAmount} ${targetSymbol}. Signature: ${unwrapSignature}`);
+        setResult(`Unshielded ${displayAmount} ${targetSymbol}. Signature: ${unwrapSignature}`);
         if (wallet.publicKey) {
           void recordWalletActivity({
             wallet: wallet.publicKey.toBase58(),
@@ -2229,7 +2228,7 @@ export function ConvertForm() {
   if (mintCatalogLoading && !selectionInitialized) {
     return (
       <Stack spacing={4}>
-        <Heading size="lg">Convert between public tokens and zTokens</Heading>
+        <Heading size="lg">Shield and unshield tokens</Heading>
         <Text color="whiteAlpha.700">Loading mint catalogue…</Text>
       </Stack>
     );
@@ -2259,12 +2258,54 @@ export function ConvertForm() {
       <Stack spacing={6}>
         <Stack spacing={2}>
           <Heading size="lg" color="brand.100">
-            Convert between public tokens and zTokens
+            Shield and unshield tokens
           </Heading>
           <Text color="whiteAlpha.700">
-          Shield value into privacy-preserving zPump tokens or redeem back into the public mint.
+            Move value into a private balance or bring it back to the public mint from a single flow.
           </Text>
         </Stack>
+        <HStack spacing={0} rounded="lg" border="1px solid rgba(245,178,27,0.24)" overflow="hidden">
+          <Button
+            flex={1}
+            variant="ghost"
+            borderRadius="none"
+            py={3}
+            fontSize="md"
+            fontWeight="semibold"
+            bg={mode === 'to-private' ? 'rgba(245,178,27,0.15)' : 'transparent'}
+            color={mode === 'to-private' ? 'brand.100' : 'whiteAlpha.700'}
+            borderRight="1px solid rgba(245,178,27,0.24)"
+            _hover={{ bg: 'rgba(245,178,27,0.1)' }}
+            onClick={() => {
+              setMode('to-private');
+              setTokenSelection((prev) => ({ ...prev, variant: 'public' }));
+            }}
+          >
+            Shield
+          </Button>
+          <Button
+            flex={1}
+            variant="ghost"
+            borderRadius="none"
+            py={3}
+            fontSize="md"
+            fontWeight="semibold"
+            bg={mode === 'to-public' ? 'rgba(245,178,27,0.15)' : 'transparent'}
+            color={mode === 'to-public' ? 'brand.100' : 'whiteAlpha.700'}
+            _hover={{ bg: 'rgba(245,178,27,0.1)' }}
+            onClick={() => {
+              setMode('to-public');
+              setTokenSelection((prev) => ({ ...prev, variant: 'private' }));
+            }}
+          >
+            Unshield
+          </Button>
+        </HStack>
+        <Text color="whiteAlpha.600" fontSize="sm">
+          {mode === 'to-private'
+            ? 'Shield public tokens into a private balance.'
+            : 'Unshield private funds back to the public mint.'}
+        </Text>
 
         {mintStatusError && (
           <Alert status="warning" variant="left-accent">
@@ -2274,37 +2315,6 @@ export function ConvertForm() {
             </AlertDescription>
           </Alert>
         )}
-
-        <FormControl>
-          <FormLabel color="whiteAlpha.700">Mode</FormLabel>
-          <HStack spacing={4}>
-            <Button
-              size="md"
-              variant={mode === 'to-private' ? 'solid' : 'outline'}
-              colorScheme="brand"
-              onClick={() => {
-                setMode('to-private');
-                setTokenSelection((prev) => ({ ...prev, variant: 'public' }));
-              }}
-            >
-              Shield
-            </Button>
-            <Button
-              size="md"
-              variant={mode === 'to-public' ? 'solid' : 'outline'}
-              colorScheme="brand"
-              onClick={() => {
-                setMode('to-public');
-                setTokenSelection((prev) => ({ ...prev, variant: 'private' }));
-              }}
-            >
-              Unshield
-            </Button>
-          </HStack>
-          <FormHelperText color="whiteAlpha.500">
-            {mode === 'to-private' ? 'Convert public tokens to private zTokens' : 'Convert private zTokens to public tokens'}
-          </FormHelperText>
-        </FormControl>
 
         <FormControl isDisabled={mintCatalogLoading}>
           <FormLabel color="whiteAlpha.700">Token</FormLabel>
@@ -2591,8 +2601,12 @@ export function ConvertForm() {
           </Box>
           <FormHelperText color="whiteAlpha.500">
             {mode === 'to-private'
-              ? `Private balance will appear as ${zTokenSymbol}.`
-              : `Public balance will appear as ${mintConfig?.symbol ?? 'TOKEN'}.`}
+              ? selectedTokenSymbol
+                ? `Private balance will appear as ${zTokenSymbol || selectedTokenSymbol}.`
+                : 'Select a token to see the private balance symbol.'
+              : selectedTokenSymbol
+                ? `Public balance will appear as ${selectedTokenSymbol}.`
+                : 'Select a token to see the public symbol.'}
           </FormHelperText>
           {selectedTokenOption && (
             <FormHelperText color="whiteAlpha.500">
@@ -2603,7 +2617,7 @@ export function ConvertForm() {
           {typeof selectedMintStatus === 'number' && !mintStatusLoading && (
             <FormHelperText color={mintIsFrozen ? 'orange.300' : 'green.300'}>
               {mintIsFrozen
-                ? 'This mint is currently frozen by governance. Shielding and redeeming are paused.'
+                ? 'This mint is currently frozen by governance. Shielding and unshielding are paused.'
                 : 'Mint is active.'}
             </FormHelperText>
           )}
@@ -2614,71 +2628,9 @@ export function ConvertForm() {
             <AlertIcon />
             <AlertDescription>
               Governance has frozen this mint. You can view balances but must wait for it to be thawed before shielding or
-              redeeming.
+              unshielding.
             </AlertDescription>
           </Alert>
-        )}
-
-        <FormControl>
-          <FormLabel color="whiteAlpha.700">Commitment tree root</FormLabel>
-          <HStack spacing={3} align="center">
-            <Text fontFamily="mono" fontSize="sm" color="whiteAlpha.700">
-              {roots?.current ?? '…'}
-            </Text>
-            <Button size="xs" variant="outline" onClick={() => void refreshRoots()} isLoading={isLoadingRoots}>
-              Refresh
-            </Button>
-          </HStack>
-          {roots?.source && (
-            <FormHelperText color="whiteAlpha.500">Source: {roots.source}</FormHelperText>
-          )}
-          {roots?.recent.length ? (
-            <FormHelperText color="whiteAlpha.500">
-              Recent: {roots.recent.slice(0, 3).join(', ')}
-              {roots.recent.length > 3 ? '…' : ''}
-            </FormHelperText>
-          ) : null}
-          {rootsError && <FormHelperText color="red.300">{rootsError}</FormHelperText>}
-        </FormControl>
-
-        {mode === 'to-public' && (
-          <FormControl>
-            <FormLabel color="whiteAlpha.700">Known nullifiers</FormLabel>
-            <Stack spacing={1} fontFamily="mono" bg="rgba(18, 16, 14, 0.74)" p={3} rounded="md">
-              {nullifierList.length ? (
-                nullifierList.slice(0, 5).map((entry) => (
-                  <Text key={entry} color="whiteAlpha.700" fontSize="sm">
-                    {entry}
-                  </Text>
-                ))
-              ) : (
-                <Text color="whiteAlpha.500" fontSize="sm">
-                  No spent notes recorded for this mint yet.
-                </Text>
-              )}
-              {nullifierList.length > 5 && (
-                <Text color="whiteAlpha.500" fontSize="xs">
-                  + {nullifierList.length - 5} additional nullifiers
-                </Text>
-              )}
-            </Stack>
-            <HStack spacing={3} mt={2}>
-              <Button
-                size="xs"
-                variant="outline"
-                onClick={() => void refreshNullifiers()}
-                isLoading={isLoadingNullifiers}
-              >
-                Refresh nullifiers
-              </Button>
-              {nullifierState?.source && (
-                <Text fontSize="xs" color="whiteAlpha.500">
-                  Source: {nullifierState.source}
-                </Text>
-              )}
-            </HStack>
-            {nullifierError && <FormHelperText color="red.300">{nullifierError}</FormHelperText>}
-          </FormControl>
         )}
 
         <FormControl isRequired>
@@ -2723,295 +2675,22 @@ export function ConvertForm() {
               {redeemDisplaySymbol}
             </Text>
             <Text fontSize="sm" color="whiteAlpha.600">
-              Direction: {mode === 'to-private' ? 'Shielding (wrap)' : 'Redeeming (unwrap)'}
+              Direction: {mode === 'to-private' ? 'Shield' : 'Unshield'}
             </Text>
           </HStack>
         </Box>
-
-        <Button variant="link" color="brand.200" onClick={setShowAdvanced.toggle} alignSelf="flex-start">
-          {showAdvanced ? 'Hide advanced options' : 'Show advanced options'}
-        </Button>
-
-        <Collapse in={showAdvanced} animateOpacity>
-          <Box bg="rgba(20, 18, 14, 0.9)" rounded="xl" p={5} border="1px solid rgba(245,178,27,0.18)">
-            <Stack spacing={4}>
-              {mode === 'to-private' ? (
-                <>
-                  <Text fontWeight="semibold" color="brand.100">
-                    Shielding parameters
-                  </Text>
-                  <FormControl>
-                    <FormLabel color="whiteAlpha.700">Wrap identifier</FormLabel>
-                    <Input value={wrapAdvanced.depositId} onChange={handleWrapAdvancedChange('depositId')} />
-                    <FormHelperText color="whiteAlpha.500">
-                      Auto-generated to bind your proof to this deposit.
-                    </FormHelperText>
-                  </FormControl>
-                  <FormControl>
-                    <FormLabel color="whiteAlpha.700">Blinding</FormLabel>
-                    <Input value={wrapAdvanced.blinding} onChange={handleWrapAdvancedChange('blinding')} />
-                    <FormHelperText color="whiteAlpha.500">
-                      Randomised each time to keep the resulting note unlinkable.
-                    </FormHelperText>
-                  </FormControl>
-                  <FormControl display="flex" alignItems="center">
-                    <FormLabel htmlFor="wrapRpc" mb="0" color="whiteAlpha.700">
-                      Use Proof RPC helper
-                    </FormLabel>
-                    <Switch
-                      id="wrapRpc"
-                      colorScheme="brand"
-                      isChecked={wrapAdvanced.useProofRpc}
-                      onChange={handleWrapAdvancedChange('useProofRpc')}
-                    />
-                  </FormControl>
-                </>
-              ) : (
-                <>
-                  <Text fontWeight="semibold" color="brand.100">
-                    Redeem parameters
-                  </Text>
-                  <FormControl>
-                    <FormLabel color="whiteAlpha.700">Destination public key</FormLabel>
-                    <Input
-                      value={unwrapAdvanced.destination}
-                      onChange={handleUnwrapAdvancedChange('destination')}
-                      placeholder="Defaults to your connected wallet"
-                    />
-                  </FormControl>
-                  <FormControl>
-                    <FormLabel color="whiteAlpha.700">Exit fee</FormLabel>
-                    <Input
-                      value={unwrapAdvanced.exitFee}
-                      onChange={handleUnwrapAdvancedChange('exitFee')}
-                      inputMode="decimal"
-                      placeholder="0"
-                    />
-                  </FormControl>
-                  <FormControl>
-                    <FormLabel color="whiteAlpha.700">Note identifier</FormLabel>
-                    <HStack spacing={3} align="center">
-                    <Input value={unwrapAdvanced.noteId} onChange={handleUnwrapAdvancedChange('noteId')} />
-                      <Button size="sm" variant="outline" onClick={() => void handlePreviewNullifier()}>
-                        Derive nullifier
-                      </Button>
-                    </HStack>
-                    {nullifierPreview && (
-                      <FormHelperText color="whiteAlpha.500">Derived nullifier: {nullifierPreview}</FormHelperText>
-                    )}
-                    {nullifierPreviewError && <FormHelperText color="red.300">{nullifierPreviewError}</FormHelperText>}
-                  </FormControl>
-                  <FormControl>
-                    <FormLabel color="whiteAlpha.700">Spending key</FormLabel>
-                    <Input value={unwrapAdvanced.spendingKey} onChange={handleUnwrapAdvancedChange('spendingKey')} />
-                  </FormControl>
-                  <FormControl>
-                    <FormLabel color="whiteAlpha.700">Note amount</FormLabel>
-                    <HStack spacing={3} align="center">
-                      <Input
-                        value={unwrapAdvanced.noteAmount}
-                        onChange={handleUnwrapAdvancedChange('noteAmount')}
-                        placeholder="Defaults to amount + fee"
-                        inputMode="decimal"
-                      />
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        onClick={() =>
-                          setUnwrapAdvanced((prev) => ({
-                            ...prev,
-                            noteAmount: (() => {
-                              if (!mintConfig) {
-                                return prev.noteAmount;
-                              }
-                              try {
-                                const decimals = mintConfig.decimals;
-                                const baseAmount = parseOptionalUiAmountToBaseUnits(amount, decimals);
-                                const feeAmount = parseOptionalUiAmountToBaseUnits(prev.exitFee, decimals, 'exit fee');
-                                const total = baseAmount + feeAmount;
-                                return formatBaseUnitsToUi(total, decimals);
-                              } catch {
-                                return prev.noteAmount;
-                              }
-                            })()
-                          }))
-                        }
-                      >
-                        Use amount + fee
-                      </Button>
-                    </HStack>
-                    <FormHelperText color="whiteAlpha.500">
-                      Provide the total note value in tokens. Leave blank to assume the exact exit amount.
-                    </FormHelperText>
-                  </FormControl>
-                  <FormControl>
-                    <FormLabel color="whiteAlpha.700">Saved notes</FormLabel>
-                    <HStack spacing={3} align="start">
-                      <Select
-                        value={selectedStoredNoteId ?? ''}
-                        onChange={(event) => handleSelectStoredNote(event.target.value)}
-                        placeholder={storedNotes.length ? 'Select a saved note' : 'No notes saved yet'}
-                      >
-                        {storedNotes.map((note) => (
-                          <option key={note.id} value={note.id}>
-                            {note.label}
-                          </option>
-                        ))}
-                      </Select>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        isDisabled={!selectedStoredNoteId}
-                        onClick={() => selectedStoredNoteId && handleRemoveStoredNote(selectedStoredNoteId)}
-                      >
-                        Remove
-                      </Button>
-                    </HStack>
-                    <FormHelperText color="whiteAlpha.500">
-                      Notes are stored locally in your browser for quick selection.
-                    </FormHelperText>
-                  </FormControl>
-                  <FormControl>
-                    <FormLabel color="whiteAlpha.700">Label &amp; save current note</FormLabel>
-                    <HStack spacing={3} align="center">
-                      <Input
-                        value={noteLabelDraft}
-                        onChange={(event) => setNoteLabelDraft(event.target.value)}
-                        placeholder="Alias for this note"
-                      />
-                      <Button size="sm" variant="outline" onClick={handleSaveStoredNote}>
-                        Save note
-                      </Button>
-                    </HStack>
-                    <FormHelperText color="whiteAlpha.500">
-                      Saves the note id, spending key, amount, and optional change recipient to local storage.
-                    </FormHelperText>
-                  </FormControl>
-                  <FormControl>
-                    <FormLabel color="whiteAlpha.700">Viewing key (optional)</FormLabel>
-                    <HStack spacing={3}>
-                      <Input
-                        value={unwrapAdvanced.viewKey}
-                        onChange={handleUnwrapAdvancedChange('viewKey')}
-                        placeholder="Fetch indexed notes with your view key"
-                      />
-                      <Button size="sm" variant="outline" onClick={() => void handleFetchNotes()} isLoading={isLoadingNotes}>
-                        Scan
-                      </Button>
-                    </HStack>
-                    <FormHelperText color="whiteAlpha.500">
-                      We&apos;ll query the configured indexer for note commitments linked to this key.
-                    </FormHelperText>
-                    {notesError && <FormHelperText color="red.300">{notesError}</FormHelperText>}
-                    {notesSnapshot && (
-                      <Box mt={3} bg="rgba(20, 18, 14, 0.82)" p={3} rounded="md" border="1px solid rgba(245,178,27,0.12)">
-                        <Text fontSize="sm" color="whiteAlpha.600">
-                          Found {notesSnapshot.notes.length} notes
-                          {notesSnapshot.source ? ` (source: ${notesSnapshot.source})` : ''}
-                        </Text>
-                        <Stack spacing={2} mt={2} fontFamily="mono" fontSize="xs">
-                          {notesSnapshot.notes.length === 0 && (
-                            <Text color="whiteAlpha.500">No notes visible for this viewing key.</Text>
-                          )}
-                          {notesSnapshot.notes.slice(0, 3).map((note) => (
-                            <Box key={`${note.commitment}-${note.slot}`} p={2} bg="rgba(0,0,0,0.2)" rounded="md">
-                              <Text color="whiteAlpha.700">Commitment: {note.commitment}</Text>
-                              <Text color="whiteAlpha.500">Mint: {note.mint}</Text>
-                              <Text color="whiteAlpha.500">Slot: {note.slot}</Text>
-                            </Box>
-                          ))}
-                          {notesSnapshot.notes.length > 3 && (
-                            <Text color="whiteAlpha.500">+ {notesSnapshot.notes.length - 3} additional notes…</Text>
-                          )}
-                        </Stack>
-                      </Box>
-                    )}
-                  </FormControl>
-                  <FormControl display="flex" alignItems="center">
-                    <FormLabel htmlFor="autoChange" mb="0" color="whiteAlpha.700">
-                      Auto-compute change output
-                    </FormLabel>
-                    <Switch
-                      id="autoChange"
-                      colorScheme="teal"
-                      isChecked={unwrapAdvanced.autoChange}
-                      onChange={handleUnwrapAdvancedChange('autoChange')}
-                    />
-                  </FormControl>
-                  <FormControl isDisabled={unwrapAdvanced.autoChange}>
-                    <FormLabel color="whiteAlpha.700">Change amount</FormLabel>
-                    <Input
-                      value={unwrapAdvanced.autoChange ? changePreviewDisplay ?? '' : unwrapAdvanced.changeAmount}
-                      onChange={handleUnwrapAdvancedChange('changeAmount')}
-                      placeholder="Defaults to note amount - amount - fee"
-                      inputMode="decimal"
-                    />
-                    <FormHelperText color={computedChangeAmount !== null && computedChangeAmount < 0n ? 'red.300' : 'whiteAlpha.500'}>
-                      {computedChangeAmount === null
-                        ? 'Enter numeric values to preview change.'
-                        : `Current change preview: ${changePreviewDisplay}`}
-                    </FormHelperText>
-                  </FormControl>
-                  <FormControl>
-                    <FormLabel color="whiteAlpha.700">Change recipient (field element)</FormLabel>
-                    <Input
-                      value={unwrapAdvanced.changeRecipient}
-                      onChange={handleUnwrapAdvancedChange('changeRecipient')}
-                      placeholder="Required when change > 0"
-                    />
-                    <FormHelperText color="whiteAlpha.500">
-                      Provide the field representation of the private recipient for leftover funds.
-                    </FormHelperText>
-                  </FormControl>
-                  <FormControl>
-                    <FormLabel color="whiteAlpha.700">Change blindings</FormLabel>
-                    <HStack spacing={3} align="center">
-                      <Input
-                        value={unwrapAdvanced.changeBlinding}
-                        onChange={handleUnwrapAdvancedChange('changeBlinding')}
-                        placeholder="Commitment blinding"
-                      />
-                      <Input
-                        value={unwrapAdvanced.changeAmountBlinding}
-                        onChange={handleUnwrapAdvancedChange('changeAmountBlinding')}
-                        placeholder="Amount blinding"
-                      />
-                      <Button size="sm" variant="outline" onClick={handleGenerateBlindings}>
-                        Generate
-                      </Button>
-                    </HStack>
-                    <FormHelperText color="whiteAlpha.500">
-                      Leave blank to auto-generate secure blindings when submitting.
-                    </FormHelperText>
-                  </FormControl>
-                  <FormControl display="flex" alignItems="center">
-                    <FormLabel htmlFor="unwrapRpc" mb="0" color="whiteAlpha.700">
-                      Use Proof RPC helper
-                    </FormLabel>
-                    <Switch
-                      id="unwrapRpc"
-                      colorScheme="teal"
-                      isChecked={unwrapAdvanced.useProofRpc}
-                      onChange={handleUnwrapAdvancedChange('useProofRpc')}
-                    />
-                  </FormControl>
-                </>
-              )}
-            </Stack>
-          </Box>
-        </Collapse>
 
         <Button
           type="submit"
           size="lg"
           variant="glow"
           isLoading={isSubmitting}
-          loadingText={mode === 'to-private' ? 'Shielding' : 'Redeeming'}
+          loadingText={mode === 'to-private' ? 'Shielding' : 'Unshielding'}
           isDisabled={
             !amount || !wallet.publicKey || mintIsFrozen || mintStatusLoading || !selectedTokenOption || mintCatalogLoading
           }
         >
-          {wallet.publicKey ? 'Submit conversion' : 'Connect wallet to proceed'}
+          {wallet.publicKey ? (mode === 'to-private' ? 'Shield now' : 'Unshield now') : 'Connect wallet to proceed'}
         </Button>
 
         {result && (

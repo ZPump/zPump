@@ -37,7 +37,6 @@ export function MintZTokenForm() {
   const [imageFile, setImageFile] = useState<File | null>(null);
   const [decimals, setDecimals] = useState(6);
   const [initialSupply, setInitialSupply] = useState('');
-  const [feeBpsOverride, setFeeBpsOverride] = useState('');
   const [isSubmitting, setIsSubmitting] = useBoolean(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<{
@@ -113,12 +112,6 @@ export function MintZTokenForm() {
       // Parse initial supply
       const supplyValue = BigInt(Math.floor(Number(initialSupply) * 10 ** decimals));
 
-      // Parse fee override if provided
-      const feeOverride = feeBpsOverride ? Number(feeBpsOverride) : undefined;
-      if (feeOverride !== undefined && (feeOverride < 0 || feeOverride > 1000)) {
-        throw new Error('Fee override must be 0-1000 basis points (0-10%)');
-      }
-
       // Mint the token
       const result = await mintNativeZToken({
         connection,
@@ -127,8 +120,7 @@ export function MintZTokenForm() {
         symbol: symbol.trim().toUpperCase(),
         uri,
         decimals,
-        initialSupply: supplyValue,
-        feeBpsOverride: feeOverride,
+        initialSupply: supplyValue
       });
 
       setSuccess({
@@ -173,7 +165,6 @@ export function MintZTokenForm() {
     imageFile,
     decimals,
     initialSupply,
-    feeBpsOverride,
     setIsSubmitting,
     toast,
     refreshMintCatalog
@@ -192,9 +183,9 @@ export function MintZTokenForm() {
       mx="auto"
     >
       <Stack spacing={6}>
-        <Heading size="lg">Mint Native zToken</Heading>
+        <Heading size="lg">Mint Token</Heading>
         <Text color="gray.400">
-          Create a new zToken with metadata stored on IPFS. The initial supply will be minted to your wallet as traditional tokens, which you can then shield.
+          Create a new token with metadata stored on IPFS. The initial supply will be minted to your wallet as traditional tokens, which you can shield later.
         </Text>
 
         {error && (
@@ -292,19 +283,6 @@ export function MintZTokenForm() {
           <FormHelperText>Amount to mint (will be minted as traditional tokens to your wallet)</FormHelperText>
         </FormControl>
 
-        <FormControl>
-          <FormLabel>Fee Override (basis points)</FormLabel>
-          <NumberInput
-            value={feeBpsOverride}
-            onChange={(_, val) => setFeeBpsOverride(isNaN(val) ? '' : val.toString())}
-            min={0}
-            max={1000}
-          >
-            <NumberInputField placeholder="Optional (0-1000 = 0-10%)" />
-          </NumberInput>
-          <FormHelperText>Optional custom fee (0-1000 basis points = 0-10%)</FormHelperText>
-        </FormControl>
-
         <Button
           type="submit"
           colorScheme="yellow"
@@ -313,7 +291,7 @@ export function MintZTokenForm() {
           loadingText="Minting..."
           isDisabled={!wallet.connected}
         >
-          {wallet.connected ? 'Mint zToken' : 'Connect Wallet'}
+          {wallet.connected ? 'Mint Token' : 'Connect Wallet'}
         </Button>
       </Stack>
     </Box>
