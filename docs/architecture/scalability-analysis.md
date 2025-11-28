@@ -150,14 +150,12 @@
 **Scenario**: Transaction exceeds 1232 bytes even with lookup table.
 
 **Current Handling**:
-- Uses lookup tables to compress transaction size
-- Falls back to legacy transactions if no lookup table
-- Legacy transactions may fail if too large
+- Bootstrap (`preparePool`) initializes vault/pool/trees in a separate transaction
+- Shield transaction stays lean (shield + finalize) after bootstrap
+- CLI (`npm run prepare:pool -- <originMint>`) and UI call the bootstrap helper automatically
 
 **Risk**: **LOW**
-- Lookup tables reduce size significantly
-- Most transactions fit within limits
-- Rare edge cases may fail
+- Bootstrap only runs once per mint; afterwards shields are single-transaction flows
 
 ## Scalability Metrics
 

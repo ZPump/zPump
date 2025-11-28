@@ -11,10 +11,11 @@ import {
   SystemProgram,
   LAMPORTS_PER_SOL
 } from '@solana/web3.js';
-import { TOKEN_2022_PROGRAM_ID } from '@solana/spl-token';
-import { mintNativeZToken, wrap } from '../lib/sdk';
+import { mintNativeZToken, wrap, preparePool } from '../lib/sdk';
+import { ProofClient } from '../lib/proofClient';
 import { derivePoolState, deriveVaultState, deriveCommitmentTree } from '../lib/onchain/pdas';
 import { ensureFetchPolyfill } from './utils/fetch-polyfill';
+import { createWalletAdapter } from './utils/walletAdapter';
 
 ensureFetchPolyfill();
 
@@ -54,6 +55,8 @@ async function testLazyInitialization(): Promise<void> {
   
   const connection = new Connection(RPC_URL, 'confirmed');
   const payer = Keypair.generate();
+  const walletAdapter = createWalletAdapter(payer);
+  const proofClient = new ProofClient({ baseUrl: PROOF_URL });
   
   // Step 1: Airdrop SOL to payer
   console.info('[test] Step 1: Airdropping SOL to payer...');
@@ -62,23 +65,11 @@ async function testLazyInitialization(): Promise<void> {
   // Step 2: Mint a new token (should NOT initialize pool/vault)
   console.info('[test] Step 2: Minting new token...');
   const mintResult = await mintNativeZToken({
-    wallet: {
-      publicKey: payer.publicKey,
-      signTransaction: async (tx: any) => {
-        tx.sign(payer);
-        return tx;
-      },
-      signAllTransactions: async (txs: any[]) => {
-        return txs.map(tx => {
-          tx.sign(payer);
-          return tx;
-        });
-      }
-    } as any,
+    wallet: walletAdapter as any,
     connection,
     name: 'Test Token',
     symbol: 'TEST',
-    uri: 'https://test.com',
+    uri: 'ipfs://lazy-init-test.json',
     decimals: 6,
     initialSupply: BigInt('1000000000'), // 1000 tokens
     featureFlags: undefined,
@@ -105,61 +96,61 @@ async function testLazyInitialization(): Promise<void> {
   }
   console.info('[test] ✓ Pool and vault are not initialized (as expected)');
   
-  // Step 4: First shield (should initialize vault + pool + shield)
-  console.info('[test] Step 4: Performing first shield (lazy initialization)...');
-  
-  // Generate proof (simplified - in real flow this comes from proof service)
-  // For testing, we'll use a mock proof or call the proof API
-  const proofResponse = await fetch(`${PROOF_URL}/prove/shield`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      circuit: 'wrap',
-      payload: {
-        amount: WRAP_AMOUNT.toString(),
-        recipient: payer.publicKey.toBase58(),
-        depositId: Date.now().toString(),
-        blinding: Math.floor(Math.random() * 10 ** 18).toString(),
-        originMint: mintResult.originMint,
-        poolId: mintResult.poolId
-      }
-    })
-  });
-  
-  if (!proofResponse.ok) {
-    throw new Error(`Proof generation failed: ${proofResponse.statusText}`);
-  }
-  
-  const proof = await proofResponse.json();
-  
-  const shieldSignature = await wrap({
-    wallet: {
-      publicKey: payer.publicKey,
-      signTransaction: async (tx: any) => {
-        tx.sign(payer);
-        return tx;
-      },
-      signAllTransactions: async (txs: any[]) => {
-        return txs.map(tx => {
-          tx.sign(payer);
-          return tx;
-        });
-      }
-    } as any,
+  // Step 4: Prepare pool (bootstrap)
+  console.info('[test] Step 4: Preparing pool (bootstrap)...');
+  const prepResult = await preparePool({
     connection,
-    originMint: mintResult.originMint,
-    poolId: mintResult.poolId,
+    wallet: walletAdapter as any,
+    originMint: mintResult.originMint
+  });
+  console.info('[test] preparePool actions:', prepResult.actions.length ? prepResult.actions.join(', ') : 'none');
+  await waitForAccount(connection, poolState);
+  await waitForAccount(connection, vaultState);
+  console.info('[test] ✓ Pool preparation complete');
+  
+  // Step 5: First shield (should succeed without re-initialization)
+  console.info('[test] Step 5: Performing first shield...');
+  
+  // Fetch the actual commitment tree root after preparePool
+  const commitmentTreeKey = deriveCommitmentTree(originMintKey);
+  const commitmentTreeAccount = await connection.getAccountInfo(commitmentTreeKey, 'confirmed');
+  if (!commitmentTreeAccount) {
+    throw new Error('Commitment tree account missing after preparePool');
+  }
+  const { decodeCommitmentTree } = await import('../lib/onchain/commitmentTree');
+  const { bytesLEToCanonicalHex } = await import('../lib/onchain/utils');
+  const treeState = decodeCommitmentTree(new Uint8Array(commitmentTreeAccount.data));
+  const actualRoot = bytesLEToCanonicalHex(Buffer.from(treeState.currentRoot));
+  console.info(`[test] Using commitment tree root: ${actualRoot}`);
+  
+  const proofPayload = {
+    oldRoot: actualRoot,
     amount: WRAP_AMOUNT.toString(),
     recipient: payer.publicKey.toBase58(),
     depositId: Date.now().toString(),
+    poolId: mintResult.poolId,
     blinding: Math.floor(Math.random() * 10 ** 18).toString(),
-    proof: proof
+    mintId: mintResult.originMint
+  };
+  const proof = await proofClient.requestProof('wrap', proofPayload);
+  
+  const shieldSignature = await wrap({
+    wallet: walletAdapter as any,
+    connection,
+    originMint: mintResult.originMint,
+    poolId: mintResult.poolId,
+    amount: WRAP_AMOUNT,
+    recipient: payer.publicKey.toBase58(),
+    depositId: Date.now().toString(),
+    blinding: Math.floor(Math.random() * 10 ** 18).toString(),
+    proof: proof,
+    keypair: payer // Pass Keypair for VersionedTransaction signing
   });
   
   console.info(`[test] First shield signature: ${shieldSignature}`);
   
-  // Step 5: Verify pool/vault ARE now initialized
-  console.info('[test] Step 5: Verifying pool/vault are now initialized...');
+  // Step 6: Verify pool/vault ARE initialized
+  console.info('[test] Step 6: Verifying pool/vault are now initialized...');
   await waitForAccount(connection, poolState, 30000);
   await waitForAccount(connection, vaultState, 30000);
   
@@ -174,53 +165,31 @@ async function testLazyInitialization(): Promise<void> {
   }
   console.info('[test] ✓ Pool and vault are initialized');
   
-  // Step 6: Second shield (should NOT re-initialize, just shield)
-  console.info('[test] Step 6: Performing second shield (no initialization)...');
+  // Step 7: Second shield (should NOT re-initialize, just shield)
+  console.info('[test] Step 7: Performing second shield (no initialization)...');
   
-  const proof2Response = await fetch(`${PROOF_URL}/prove/shield`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      circuit: 'wrap',
-      payload: {
-        amount: WRAP_AMOUNT.toString(),
-        recipient: payer.publicKey.toBase58(),
-        depositId: Date.now().toString(),
-        blinding: Math.floor(Math.random() * 10 ** 18).toString(),
-        originMint: mintResult.originMint,
-        poolId: mintResult.poolId
-      }
-    })
-  });
-  
-  if (!proof2Response.ok) {
-    throw new Error(`Proof generation failed: ${proof2Response.statusText}`);
-  }
-  
-  const proof2 = await proof2Response.json();
-  
-  const shield2Signature = await wrap({
-    wallet: {
-      publicKey: payer.publicKey,
-      signTransaction: async (tx) => {
-        tx.sign(payer);
-        return tx;
-      },
-      signAllTransactions: async (txs) => {
-        return txs.map(tx => {
-          tx.sign(payer);
-          return tx;
-        });
-      }
-    } as any,
-    connection,
-    originMint: mintResult.originMint,
-    poolId: mintResult.poolId,
+  const proof2Payload = {
+    oldRoot: proofPayload.oldRoot,
     amount: WRAP_AMOUNT.toString(),
     recipient: payer.publicKey.toBase58(),
     depositId: Date.now().toString(),
+    poolId: mintResult.poolId,
     blinding: Math.floor(Math.random() * 10 ** 18).toString(),
-    proof: proof2
+    mintId: mintResult.originMint
+  };
+  const proof2 = await proofClient.requestProof('wrap', proof2Payload);
+  
+  const shield2Signature = await wrap({
+    wallet: walletAdapter as any,
+    connection,
+    originMint: mintResult.originMint,
+    poolId: mintResult.poolId,
+    amount: WRAP_AMOUNT,
+    recipient: payer.publicKey.toBase58(),
+    depositId: Date.now().toString(),
+    blinding: Math.floor(Math.random() * 10 ** 18).toString(),
+    proof: proof2,
+    keypair: payer // Pass Keypair for VersionedTransaction signing
   });
   
   console.info(`[test] Second shield signature: ${shield2Signature}`);

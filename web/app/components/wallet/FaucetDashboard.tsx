@@ -27,6 +27,7 @@ import { LAMPORTS_PER_SOL, PublicKey } from '@solana/web3.js';
 import { useConnection, useWallet } from '@solana/wallet-adapter-react';
 import type { MintConfig } from '../../config/mints';
 import { useMintCatalog } from '../providers/MintCatalogProvider';
+import { useLocalWallet } from './LocalWalletContext';
 
 const FAUCET_MODE = process.env.NEXT_PUBLIC_FAUCET_MODE ?? 'local';
 const SOL_FORMATTER = new Intl.NumberFormat(undefined, {
@@ -61,6 +62,7 @@ export function FaucetDashboard() {
 function LocalFaucetDashboard() {
   const toast = useToast();
   const wallet = useWallet();
+  const { activeAccount } = useLocalWallet();
   const { connection } = useConnection();
   const { mints, loading: mintCatalogLoading, error: mintCatalogError, refresh: refreshMintCatalog } = useMintCatalog();
   const [solAmount, setSolAmount] = useState('1');
@@ -366,10 +368,14 @@ function LocalFaucetDashboard() {
         </Text>
       </Stack>
 
-      {!wallet.publicKey && (
+      {(!wallet.publicKey || !activeAccount) && (
         <Alert status="warning" variant="left-accent">
           <AlertIcon />
-          <AlertDescription>Connect a wallet to receive funds from the local faucet.</AlertDescription>
+          <AlertDescription>
+            {!activeAccount 
+              ? 'Create or select a wallet account from the wallet drawer to receive funds from the local faucet.'
+              : 'Connect a wallet to receive funds from the local faucet.'}
+          </AlertDescription>
         </Alert>
       )}
 

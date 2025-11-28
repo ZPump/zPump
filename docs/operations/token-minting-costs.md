@@ -77,6 +77,8 @@ This is **privacy infrastructure** - it's what enables users to:
 
 6. **Recoverable**: The rent can be recovered by closing accounts, though in practice these accounts remain open for the lifetime of the token.
 
+7. **Bootstrap Before First Shield**: Run `npm run prepare:pool -- <originMint>` (or use the in-app prompt) once per mint to spin up the vault/pool/trees. After this bootstrap, every shield is a single transaction again.
+
 ## Comparison to Other Networks
 
 - **Ethereum**: Creating an ERC-20 token costs ~$50-200 in gas fees

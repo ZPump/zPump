@@ -44,6 +44,7 @@ import { ProofClient, ProofResponse } from '../../lib/proofClient';
 import {
   wrap as wrapSdk,
   unwrap as unwrapSdk,
+  preparePool,
   resolvePublicKey,
   fetchMintMappingAccount,
   getTokenMetadata,
@@ -52,7 +53,9 @@ import {
 import { IndexerClient, IndexerNote } from '../../lib/indexerClient';
 import { getCachedRoots, setCachedRoots, getCachedNullifiers, setCachedNullifiers } from '../../lib/indexerCache';
 import { poseidonHashMany } from '../../lib/onchain/poseidon';
-import { derivePoolState } from '../../lib/onchain/pdas';
+import { derivePoolState, deriveCommitmentTree } from '../../lib/onchain/pdas';
+import { decodeCommitmentTree } from '../../lib/onchain/commitmentTree';
+import { bytesLEToCanonicalHex } from '../../lib/onchain/utils';
 import type { StoredNoteRecord } from '../../lib/notes/storage';
 import { readStoredNotes, writeStoredNotes } from '../../lib/notes/storage';
 import { formatBaseUnitsToUi } from '../../lib/format';
@@ -236,7 +239,24 @@ export function ConvertForm() {
   const [pastedMintLoading, setPastedMintLoading] = useState(false);
   const [pastedMintError, setPastedMintError] = useState<string | null>(null);
   const [customMints, setCustomMints] = useState<Map<string, { symbol: string; decimals: number; name?: string; image?: string }>>(new Map());
-  const [tokenMetadataMap, setTokenMetadataMap] = useState<Record<string, { name: string; symbol: string; image?: string }>>({});
+  const [tokenMetadataMap, setTokenMetadataMap] = useState<Record<string, { name: string; symbol: string; image?: string }>>(() => {
+    // Load cached metadata from localStorage on mount
+    if (typeof window !== 'undefined') {
+      try {
+        const { loadCachedMetadata } = require('../../lib/tokenMetadata/storage');
+        const cached = loadCachedMetadata();
+        console.debug('[convert-form] Loaded cached metadata on mount', { 
+          count: Object.keys(cached).length,
+          mints: Object.keys(cached),
+          metadata: cached
+        });
+        return cached;
+      } catch (error) {
+        console.warn('[convert-form] Failed to load cached metadata:', error);
+      }
+    }
+    return {};
+  });
   const [selectedTokenDisplayText, setSelectedTokenDisplayText] = useState<string>('');
   const originMint = tokenSelection.originMint;
   const tokenVariant = tokenSelection.variant;
@@ -348,7 +368,26 @@ export function ConvertForm() {
     [wallet.publicKey, connection, requestAutoSolAirdrop]
   );
 
+  // Throttle token account fetching to max once every 10 seconds
+  const lastTokenFetchRef = useRef<number>(0);
+  const TOKEN_FETCH_THROTTLE_MS = 10_000;
+
   const refreshTokenOptions = useCallback(async () => {
+    const now = Date.now();
+    const timeSinceLastFetch = now - lastTokenFetchRef.current;
+    
+    // If called too soon, skip the actual fetch but still update options with cached data
+    // BUT: if tokenOptions is empty, always fetch (first load)
+    // Also allow fetch if wallet just connected (wallet.publicKey changed)
+    const shouldThrottle = timeSinceLastFetch < TOKEN_FETCH_THROTTLE_MS && tokenOptions.length > 0;
+    if (shouldThrottle) {
+      console.debug('[convert-form] Throttling token account fetch', { timeSinceLastFetch, throttleMs: TOKEN_FETCH_THROTTLE_MS, cachedOptionsCount: tokenOptions.length });
+      // Return cached options without fetching
+      return tokenOptions;
+    }
+    
+    lastTokenFetchRef.current = now;
+    
     const walletKey = wallet.publicKey;
 
     if (!mints.length) {
@@ -356,7 +395,15 @@ export function ConvertForm() {
       return [];
     }
 
-    const buildOptions = (publicBalances: Map<string, bigint>, privateBalances: Map<string, bigint>, mintsToUse: Map<string, { symbol: string; decimals: number; name?: string; image?: string }> = customMints) => {
+    // Get current tokenMetadataMap state to use in buildOptions
+    const currentMetadataMap = tokenMetadataMap;
+    console.debug('[convert-form] refreshTokenOptions - currentMetadataMap', {
+      count: Object.keys(currentMetadataMap).length,
+      mints: Object.keys(currentMetadataMap),
+      sample: Object.entries(currentMetadataMap).slice(0, 3).map(([mint, meta]) => ({ mint, meta }))
+    });
+    
+    const buildOptions = (publicBalances: Map<string, bigint>, privateBalances: Map<string, bigint>, mintsToUse: Map<string, { symbol: string; decimals: number; name?: string; image?: string }> = customMints, metadataMap: Record<string, { name: string; symbol: string; image?: string }> = currentMetadataMap) => {
       const walletConnected = Boolean(walletKey);
       const options: TokenOption[] = [];
       
@@ -367,16 +414,22 @@ export function ConvertForm() {
         const status = mintStatuses[mintAddress];
         const isMintFrozen = status === MINT_STATUS.FROZEN;
         const freezeSuffix = isMintFrozen ? ' — Frozen by governance' : '';
-        const metadata = tokenMetadataMap[mintAddress];
+        const metadata = metadataMap[mintAddress];
+        // Use cached metadata if available, otherwise use customMint data
+        // Prioritize metadata symbol/name over customMint (which might be truncated address)
+        // Only use metadata if it has actual values (not empty strings)
+        const symbol = (metadata?.symbol && metadata.symbol.trim()) ? metadata.symbol : customMint.symbol;
+        const name = (metadata?.name && metadata.name.trim()) ? metadata.name : (customMint.name || undefined);
+        const image = metadata?.image || customMint.image;
         options.push({
           originMint: mintAddress,
           variant: 'public',
-          label: `${customMint.name || customMint.symbol} (${customMint.symbol}) — ${publicDisplay}${freezeSuffix}`,
+          label: `${name || symbol} (${symbol}) — ${publicDisplay}${freezeSuffix}`,
           balance: publicBalance,
           displayBalance: publicDisplay,
-          symbol: customMint.symbol,
-          name: customMint.name || metadata?.name,
-          image: customMint.image || metadata?.image,
+          symbol,
+          name,
+          image,
           decimals: customMint.decimals,
           disabled: !walletConnected || isMintFrozen, // Allow selection even with 0 balance
           zTokenMint: undefined,
@@ -391,16 +444,22 @@ export function ConvertForm() {
         const freezeSuffix = isMintFrozen ? ' — Frozen by governance' : '';
         const publicBalance = publicBalances.get(mint.originMint) ?? 0n;
         const publicDisplay = formatBaseUnitsToUi(publicBalance, mint.decimals);
-        const metadata = tokenMetadataMap[mint.originMint];
+        const metadata = metadataMap[mint.originMint];
+        // Use cached metadata if available, otherwise use catalog data
+        // Prioritize metadata symbol/name over catalog (catalog might be outdated)
+        // Only use metadata if it has actual values (not empty strings)
+        const symbol = (metadata?.symbol && metadata.symbol.trim()) ? metadata.symbol : mint.symbol;
+        const name = (metadata?.name && metadata.name.trim()) ? metadata.name : undefined;
+        const image = metadata?.image;
         options.push({
           originMint: mint.originMint,
           variant: 'public',
-          label: `${metadata?.name || mint.symbol} (${mint.symbol}) — ${publicDisplay}${freezeSuffix}`,
+          label: `${name || symbol} (${symbol}) — ${publicDisplay}${freezeSuffix}`,
           balance: publicBalance,
           displayBalance: publicDisplay,
-          symbol: mint.symbol,
-          name: metadata?.name,
-          image: metadata?.image,
+          symbol,
+          name,
+          image,
           decimals: mint.decimals,
           disabled: !walletConnected || isMintFrozen, // Allow selection even with 0 balance
           zTokenMint: mint.zTokenMint,
@@ -432,7 +491,7 @@ export function ConvertForm() {
     };
 
     if (!walletKey) {
-      const options = buildOptions(new Map(), new Map());
+      const options = buildOptions(new Map(), new Map(), new Map(), currentMetadataMap);
       setTokenOptions(options);
       return options;
     }
@@ -500,14 +559,33 @@ export function ConvertForm() {
         
         if (existingCustomMint) {
           walletMintsToAdd.set(mintAddress, existingCustomMint);
-        } else {
-          // Will fetch metadata below, for now use defaults
+        } else if (existingMetadata) {
+          // Use cached metadata if available
           walletMintsToAdd.set(mintAddress, {
-            decimals: existingMetadata ? 9 : 9, // Will be updated when we fetch
-            symbol: existingMetadata?.symbol ?? mintAddress.slice(0, 8),
-            name: existingMetadata?.name,
-            image: existingMetadata?.image
+            decimals: 9, // Will be updated when we fetch
+            symbol: existingMetadata.symbol,
+            name: existingMetadata.name,
+            image: existingMetadata.image
           });
+        } else {
+          // Check if token is in catalog (should have symbol/name there)
+          const catalogMint = mints.find(m => m.originMint === mintAddress);
+          if (catalogMint) {
+            walletMintsToAdd.set(mintAddress, {
+              decimals: catalogMint.decimals,
+              symbol: catalogMint.symbol,
+              name: undefined, // Will be fetched from metadata
+              image: undefined
+            });
+          } else {
+            // Will fetch metadata below, for now use defaults
+            walletMintsToAdd.set(mintAddress, {
+              decimals: 9, // Will be updated when we fetch
+              symbol: mintAddress.slice(0, 8),
+              name: undefined,
+              image: undefined
+            });
+          }
         }
       }
       
@@ -537,46 +615,115 @@ export function ConvertForm() {
           // Fetch decimals if not already known (for wallet tokens)
           let decimals: number | undefined;
           const existingCustomMint = newCustomMints.get(mintAddress);
-          if (!existingCustomMint || existingCustomMint.decimals === 9) {
-            // Try to get decimals from mint account
+          // Always fetch decimals from chain to ensure accuracy
+          try {
+            const mintInfo = await getMint(connection, mintKey, undefined, TOKEN_PROGRAM_ID);
+            decimals = mintInfo.decimals;
+          } catch {
             try {
-              const mintInfo = await getMint(connection, mintKey, undefined, TOKEN_PROGRAM_ID);
+              const mintInfo = await getMint(connection, mintKey, undefined, TOKEN_2022_PROGRAM_ID);
               decimals = mintInfo.decimals;
             } catch {
-              try {
-                const mintInfo = await getMint(connection, mintKey, undefined, TOKEN_2022_PROGRAM_ID);
-                decimals = mintInfo.decimals;
-              } catch {
-                // Keep existing decimals
-              }
+              // Keep existing decimals if fetch fails
+              decimals = existingCustomMint?.decimals;
             }
+          }
+          
+          // Update customMints with correct decimals if we fetched them
+          if (decimals !== undefined && existingCustomMint && existingCustomMint.decimals !== decimals) {
+            newCustomMints.set(mintAddress, { ...existingCustomMint, decimals });
           }
           
           const metadata = await getTokenMetadata(connection, mintKey);
           if (metadata) {
+            // Update metadata immediately (non-blocking UI update)
+            // Preserve existing cached metadata (name/symbol/image) if it exists, only update if chain has better data
+            setTokenMetadataMap(prev => {
+              const existing = prev[mintAddress];
+              return {
+                ...prev,
+                [mintAddress]: {
+                  // Use chain metadata if it has values, otherwise keep cached
+                  name: (metadata.name && metadata.name.trim()) ? metadata.name : (existing?.name || ''),
+                  symbol: (metadata.symbol && metadata.symbol.trim()) ? metadata.symbol : (existing?.symbol || ''),
+                  image: existing?.image // Preserve existing image, will be updated below if IPFS fetch succeeds
+                }
+              };
+            });
+            
+            // Fetch IPFS image in background (non-blocking)
             let image: string | undefined;
             if (metadata.uri && metadata.uri.startsWith('ipfs://')) {
               const cid = metadata.uri.replace('ipfs://', '');
-              image = `https://ipfs.io/ipfs/${cid}`;
-              try {
-                const metadataResponse = await fetch(`https://ipfs.io/ipfs/${cid}`);
-                if (metadataResponse.ok) {
-                  const metadataJson = await metadataResponse.json();
-                  if (metadataJson.image) {
+              image = `https://ipfs.io/ipfs/${cid}`; // Use URI as placeholder
+              // Fetch actual image in background
+              fetch(`https://ipfs.io/ipfs/${cid}`)
+                .then(metadataResponse => {
+                  if (metadataResponse.ok) {
+                    return metadataResponse.json();
+                  }
+                  return null;
+                })
+                .then(metadataJson => {
+                  if (metadataJson?.image) {
+                    let imageUrl: string;
                     if (metadataJson.image.startsWith('ipfs://')) {
                       const imageCid = metadataJson.image.replace('ipfs://', '');
-                      image = `https://ipfs.io/ipfs/${imageCid}`;
+                      imageUrl = `https://ipfs.io/ipfs/${imageCid}`;
                     } else {
-                      image = metadataJson.image;
+                      imageUrl = metadataJson.image;
                     }
+                    // Update metadata map with image when ready (preserve name/symbol from state)
+                    setTokenMetadataMap(prev => {
+                      const existing = prev[mintAddress];
+                      if (!existing) return prev;
+                      const updated = { ...existing, image: imageUrl };
+                      // Cache updated metadata with image
+                      const { saveCachedMetadata } = require('../../lib/tokenMetadata/storage');
+                      saveCachedMetadata(mintAddress, updated);
+                      return {
+                        ...prev,
+                        [mintAddress]: updated
+                      };
+                    });
                   }
-                }
-              } catch {
-                // Ignore IPFS fetch errors
-              }
+                })
+                .catch(() => {
+                  // Ignore IPFS fetch errors
+                });
             } else if (metadata.uri) {
               image = metadata.uri;
+              // Update metadata map with image (preserve name/symbol from state)
+              setTokenMetadataMap(prev => {
+                const existing = prev[mintAddress];
+                if (!existing) return prev;
+                const updated = { ...existing, image };
+                // Cache updated metadata with image
+                const { saveCachedMetadata } = require('../../lib/tokenMetadata/storage');
+                saveCachedMetadata(mintAddress, updated);
+                return {
+                  ...prev,
+                  [mintAddress]: updated
+                };
+              });
             }
+            
+            // Update custom mint with metadata if it exists (only if metadata has values)
+            const existing = newCustomMints.get(mintAddress);
+            if (existing) {
+              setCustomMints(prev => {
+                const updated = new Map(prev);
+                updated.set(mintAddress, {
+                  ...existing,
+                  // Only update if metadata has actual values, preserve existing if not
+                  symbol: (metadata.symbol && metadata.symbol.trim()) ? metadata.symbol : existing.symbol,
+                  name: (metadata.name && metadata.name.trim()) ? metadata.name : existing.name,
+                  image: image || existing.image
+                });
+                return updated;
+              });
+            }
+            
             return { 
               mint: mintAddress, 
               metadata: { name: metadata.name, symbol: metadata.symbol, image },
@@ -592,55 +739,137 @@ export function ConvertForm() {
         return null;
       });
       
-      const metadataResults = await Promise.all(metadataPromises);
-      const newMetadataMap: Record<string, { name: string; symbol: string; image?: string }> = {};
+      // Fetch decimals for all custom mints BEFORE building options to ensure correct balance display
+      const decimalsPromises = Array.from(newCustomMints.keys()).map(async (mintAddress) => {
+        const existingCustomMint = newCustomMints.get(mintAddress);
+        // Only fetch if decimals might be wrong (default 9 or not set)
+        if (existingCustomMint && (existingCustomMint.decimals === 9 || !existingCustomMint.decimals)) {
+          try {
+            const mintKey = new PublicKey(mintAddress);
+            try {
+              const mintInfo = await getMint(connection, mintKey, undefined, TOKEN_PROGRAM_ID);
+              return { mint: mintAddress, decimals: mintInfo.decimals };
+            } catch {
+              try {
+                const mintInfo = await getMint(connection, mintKey, undefined, TOKEN_2022_PROGRAM_ID);
+                return { mint: mintAddress, decimals: mintInfo.decimals };
+              } catch {
+                return null;
+              }
+            }
+          } catch {
+            return null;
+          }
+        }
+        return null;
+      });
+      
+      const decimalsResults = await Promise.all(decimalsPromises);
       const finalCustomMints = new Map(newCustomMints);
       
-      metadataResults.forEach((result) => {
+      // Update custom mints with correct decimals before building options
+      decimalsResults.forEach((result) => {
         if (result) {
-          if (result.metadata) {
-            newMetadataMap[result.mint] = result.metadata;
-          }
-          // Update decimals if we fetched them
-          if (result.decimals !== undefined) {
-            const existing = finalCustomMints.get(result.mint);
-            if (existing) {
-              finalCustomMints.set(result.mint, { ...existing, decimals: result.decimals });
-            } else if (result.metadata) {
-              // New mint with metadata
-              finalCustomMints.set(result.mint, {
-                symbol: result.metadata.symbol,
-                decimals: result.decimals,
-                name: result.metadata.name,
-                image: result.metadata.image
-              });
-            } else {
-              // Just decimals, no metadata
-              finalCustomMints.set(result.mint, {
-                symbol: result.mint.slice(0, 8),
-                decimals: result.decimals
-              });
-            }
+          const existing = finalCustomMints.get(result.mint);
+          if (existing && existing.decimals !== result.decimals) {
+            finalCustomMints.set(result.mint, { ...existing, decimals: result.decimals });
           }
         }
       });
       
-      setTokenMetadataMap(newMetadataMap);
-      if (finalCustomMints.size !== customMints.size || 
-          Array.from(finalCustomMints.entries()).some(([k, v]) => {
-            const old = customMints.get(k);
-            return !old || old.decimals !== v.decimals || old.symbol !== v.symbol;
-          })) {
+      // Update state with correct decimals
+      if (decimalsResults.some(r => r !== null)) {
         setCustomMints(finalCustomMints);
       }
-
-      // Update buildOptions to use final custom mints
-      const options = buildOptions(publicBalances, privateBalances, finalCustomMints);
+      
+      // Build options with correct decimals
+      const options = buildOptions(publicBalances, privateBalances, finalCustomMints, currentMetadataMap);
       setTokenOptions(options);
+      
+      // Fetch metadata in background (non-blocking) - update UI as it arrives
+      Promise.all(metadataPromises).then((metadataResults) => {
+        const newMetadataMap: Record<string, { name: string; symbol: string; image?: string }> = {};
+        const updatedCustomMints = new Map(finalCustomMints);
+        
+        metadataResults.forEach((result) => {
+          if (result) {
+            if (result.metadata) {
+              newMetadataMap[result.mint] = result.metadata;
+            }
+            // Update decimals if we fetched them
+            if (result.decimals !== undefined) {
+              const existing = updatedCustomMints.get(result.mint);
+              if (existing) {
+                updatedCustomMints.set(result.mint, { ...existing, decimals: result.decimals });
+              } else if (result.metadata) {
+                // New mint with metadata
+                updatedCustomMints.set(result.mint, {
+                  symbol: result.metadata.symbol,
+                  decimals: result.decimals,
+                  name: result.metadata.name,
+                  image: result.metadata.image
+                });
+              } else {
+                // Just decimals, no metadata
+                updatedCustomMints.set(result.mint, {
+                  symbol: result.mint.slice(0, 8),
+                  decimals: result.decimals
+                });
+              }
+            }
+          }
+        });
+        
+        // Merge new metadata with existing (preserve existing name/symbol if new ones are empty)
+        setTokenMetadataMap(prev => {
+          const merged: Record<string, { name: string; symbol: string; image?: string }> = { ...prev };
+          const toCache: Record<string, { name: string; symbol: string; image?: string }> = {};
+          
+          Object.entries(newMetadataMap).forEach(([mint, newMeta]) => {
+            const existing = prev[mint];
+            merged[mint] = {
+              // Use new metadata if it has values, otherwise keep existing cached data
+              name: (newMeta.name && newMeta.name.trim()) ? newMeta.name : (existing?.name || ''),
+              symbol: (newMeta.symbol && newMeta.symbol.trim()) ? newMeta.symbol : (existing?.symbol || ''),
+              image: newMeta.image || existing?.image
+            };
+            toCache[mint] = merged[mint];
+          });
+          
+          // Cache merged metadata in localStorage
+          if (Object.keys(toCache).length > 0) {
+            const { saveCachedMetadataBatch } = require('../../lib/tokenMetadata/storage');
+            saveCachedMetadataBatch(toCache);
+          }
+          
+          return merged;
+        });
+        if (updatedCustomMints.size !== customMints.size || 
+            Array.from(updatedCustomMints.entries()).some(([k, v]) => {
+              const old = customMints.get(k);
+              return !old || old.decimals !== v.decimals || old.symbol !== v.symbol;
+            })) {
+          setCustomMints(updatedCustomMints);
+        }
+      }).catch(error => {
+        console.warn('[convert-form] Error processing metadata results:', error);
+      });
+
+      // Options were already built and set above with correct decimals
+      const ownedOptions = options.filter(o => o.isOwned);
+      console.debug('[convert-form] Token options refreshed', { 
+        totalOptions: options.length, 
+        ownedOptions: ownedOptions.length,
+        mode,
+        allowedVariant: mode === 'to-private' ? 'public' : 'private',
+        publicBalances: Array.from(publicBalances.entries()).map(([mint, bal]) => ({ mint, balance: bal.toString() })),
+        privateBalances: Array.from(privateBalances.entries()).map(([mint, bal]) => ({ mint, balance: bal.toString() })),
+        ownedTokens: ownedOptions.map(o => ({ originMint: o.originMint, variant: o.variant, symbol: o.symbol, balance: o.balance.toString() }))
+      });
       return options;
     } catch (error) {
       console.warn('[convert-form] failed to fetch token balances', error);
-      const options = buildOptions(new Map(), new Map());
+      const options = buildOptions(new Map(), new Map(), new Map(), currentMetadataMap);
       setTokenOptions(options);
       return options;
     }
@@ -814,22 +1043,43 @@ export function ConvertForm() {
 
   const allowedVariant: 'public' | 'private' = mode === 'to-private' ? 'public' : 'private';
   const filteredTokenOptions = useMemo(
-    () => tokenOptions.filter((option) => option.variant === allowedVariant),
-    [tokenOptions, allowedVariant]
+    () => {
+      const filtered = tokenOptions.filter((option) => option.variant === allowedVariant);
+      console.debug('[convert-form] Filtered token options', { 
+        mode, 
+        allowedVariant, 
+        totalOptions: tokenOptions.length, 
+        filteredCount: filtered.length,
+        allOptions: tokenOptions.map(o => ({ originMint: o.originMint, variant: o.variant, isOwned: o.isOwned, balance: o.balance.toString() }))
+      });
+      return filtered;
+    },
+    [tokenOptions, allowedVariant, mode]
   );
   
   // Filter options based on search query
   const searchableTokenOptions = useMemo(() => {
     if (!tokenSearchQuery.trim()) {
       // Default: show all owned tokens for the current mode, sorted by balance
-      return filteredTokenOptions
-        .filter(opt => opt.isOwned)
-        .sort((a, b) => {
+      // If no owned tokens, show all tokens (user might want to see what's available)
+      const ownedTokens = filteredTokenOptions.filter(opt => opt.isOwned);
+      console.debug('[convert-form] Searchable token options (no query)', { 
+        filteredCount: filteredTokenOptions.length,
+        ownedCount: ownedTokens.length,
+        ownedTokens: ownedTokens.map(o => ({ originMint: o.originMint, symbol: o.symbol, balance: o.balance.toString() }))
+      });
+      if (ownedTokens.length > 0) {
+        return ownedTokens.sort((a, b) => {
           // Sort by balance descending
           if (b.balance > a.balance) return 1;
           if (a.balance > b.balance) return -1;
           return 0;
         });
+      }
+      // No owned tokens - show all available tokens sorted by symbol
+      return filteredTokenOptions.sort((a, b) => {
+        return a.symbol.localeCompare(b.symbol);
+      });
     }
     
     const query = tokenSearchQuery.toLowerCase().trim();
@@ -1420,6 +1670,21 @@ export function ConvertForm() {
         rootValue = latestRoots.current;
       }
 
+      // Final fallback: fetch root directly from chain if indexer doesn't have it
+      if (!rootValue) {
+        try {
+          const commitmentTreeKey = deriveCommitmentTree(originMintKey);
+          const commitmentTreeAccount = await connection.getAccountInfo(commitmentTreeKey, 'confirmed');
+          if (commitmentTreeAccount) {
+            const treeState = decodeCommitmentTree(new Uint8Array(commitmentTreeAccount.data));
+            rootValue = bytesLEToCanonicalHex(Buffer.from(treeState.currentRoot));
+            console.info('[convert-form] Fetched root directly from chain:', rootValue);
+          }
+        } catch (chainError) {
+          console.warn('[convert-form] Failed to fetch root from chain:', chainError);
+        }
+      }
+
       // LAZY INITIALIZATION: Use default empty root if pool not initialized yet
       // The pool will be initialized on first shield
       if (!rootValue) {
@@ -1462,6 +1727,12 @@ export function ConvertForm() {
           proofResponse = await proofClient.requestProof('wrap', payload);
           setProofPreview(proofResponse);
         }
+
+        await preparePool({
+          connection,
+          wallet,
+          originMint
+        });
 
         const signature = await wrapSdk({
           connection,
@@ -1856,6 +2127,8 @@ export function ConvertForm() {
                 onClick={() => {
                   setIsTokenDropdownOpen(true);
                   setTokenSearchQuery('');
+                  // Refresh token options when opening dropdown to ensure we have latest balances
+                  void refreshTokenOptions();
                 }}
                 _hover={{ bg: 'rgba(18, 16, 14, 0.88)', borderColor: 'rgba(245,178,27,0.36)' }}
                 transition="all 0.2s"
@@ -1928,7 +2201,11 @@ export function ConvertForm() {
                       e.preventDefault();
                     }
                   }}
-                  onFocus={() => setIsTokenDropdownOpen(true)}
+                  onFocus={() => {
+                    setIsTokenDropdownOpen(true);
+                    // Refresh token options when focusing to ensure we have latest balances
+                    void refreshTokenOptions();
+                  }}
                   onBlur={(e) => {
                     const relatedTarget = e.relatedTarget as HTMLElement;
                     if (!relatedTarget || !relatedTarget.closest('[data-token-selector]')) {
@@ -1944,7 +2221,11 @@ export function ConvertForm() {
                     }
                   }}
                   bg="rgba(18, 16, 14, 0.78)"
-                  onClick={() => setIsTokenDropdownOpen(true)}
+                  onClick={() => {
+                    setIsTokenDropdownOpen(true);
+                    // Refresh token options when clicking to ensure we have latest balances
+                    void refreshTokenOptions();
+                  }}
                   onKeyDown={(e) => {
                     if (e.key === 'Enter' && searchableTokenOptions.length === 1) {
                       e.preventDefault();
@@ -1965,7 +2246,27 @@ export function ConvertForm() {
                 />
               </InputGroup>
             )}
-            {isTokenDropdownOpen && searchableTokenOptions.length > 0 && (
+            {isTokenDropdownOpen && (
+              <>
+                {searchableTokenOptions.length === 0 && (
+                  <Box
+                    position="absolute"
+                    top="100%"
+                    left={0}
+                    right={0}
+                    mt={1}
+                    bg="rgba(18, 16, 14, 0.98)"
+                    border="1px solid rgba(245,178,27,0.24)"
+                    rounded="lg"
+                    p={3}
+                    zIndex={1000}
+                  >
+                    <Text color="gray.400" fontSize="sm">
+                      No tokens found. {filteredTokenOptions.length === 0 ? 'No tokens available for this mode.' : 'Try searching by name, symbol, or mint address.'}
+                    </Text>
+                  </Box>
+                )}
+                {searchableTokenOptions.length > 0 && (
               <Box
                 position="absolute"
                 top="100%"
@@ -2072,6 +2373,8 @@ export function ConvertForm() {
                   })}
                 </VStack>
               </Box>
+                )}
+              </>
             )}
             {pastedMintError && (
               <Text fontSize="xs" color="red.300" mt={1}>
