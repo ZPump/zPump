@@ -42,6 +42,7 @@ import {
   Spinner,
   Stack,
   Text,
+  VStack,
   Textarea,
   Tooltip,
   useBoolean,
@@ -63,7 +64,8 @@ import {
   TOKEN_PROGRAM_ID,
   createAssociatedTokenAccountInstruction,
   createTransferInstruction,
-  getAssociatedTokenAddress
+  getAssociatedTokenAddress,
+  getMint
 } from '@solana/spl-token';
 import { Buffer } from 'buffer';
 import { ProofClient } from '../../lib/proofClient';
@@ -101,6 +103,31 @@ interface TransactionEntry {
   changeSol: number;
   description: string;
   status: 'success' | 'failed';
+  fee?: number; // Transaction fee in SOL
+  tokenTransfers?: Array<{
+    mint: string;
+    symbol: string;
+    amount: string;
+    decimals: number;
+    direction: 'in' | 'out';
+  }>;
+}
+
+interface UnifiedActivityEntry {
+  signature: string;
+  timestamp: number;
+  type: 'wrap' | 'unwrap' | 'transfer' | 'sol' | 'token';
+  description: string;
+  status: 'success' | 'failed';
+  solChange?: number;
+  fee?: number;
+  tokenTransfers?: Array<{
+    mint: string;
+    symbol: string;
+    amount: string;
+    decimals: number;
+    direction: 'in' | 'out';
+  }>;
 }
 
 type AssetKind = 'sol' | 'spl' | 'ztoken';
@@ -360,6 +387,8 @@ function WalletDrawerContent({ disclosure }: { disclosure: ReturnType<typeof use
     return map;
   }, [mints]);
 
+  const [mintDecimalsCache, setMintDecimalsCache] = useState<Record<string, number>>({});
+
   const indexerClient = useMemo(() => new IndexerClient(), []);
   const proofClient = useMemo(() => new ProofClient(), []);
 
@@ -416,6 +445,14 @@ function WalletDrawerContent({ disclosure }: { disclosure: ReturnType<typeof use
             const parsed = parsedTransactions[index];
             let changeLamports = 0;
             let description = info.err ? 'Failed transaction' : 'No SOL change';
+            let tokenTransfers: Array<{
+              mint: string;
+              symbol: string;
+              amount: string;
+              decimals: number;
+              direction: 'in' | 'out';
+            }> = [];
+            let fee = 0;
 
             if (parsed?.meta && parsed.transaction) {
               const accountIndex = parsed.transaction.message.accountKeys.findIndex((key) =>
@@ -431,6 +468,49 @@ function WalletDrawerContent({ disclosure }: { disclosure: ReturnType<typeof use
                   description = 'Sent SOL';
                 }
               }
+              
+              // Extract transaction fee
+              fee = parsed.meta.fee / LAMPORTS_PER_SOL;
+              
+              // Parse token transfers from inner instructions
+              parsed.meta.innerInstructions?.forEach(inner => {
+                inner.instructions.forEach(ix => {
+                  if ('parsed' in ix && ix.parsed.type === 'transfer') {
+                    const transferInfo = ix.parsed.info;
+                    const mintAddress = transferInfo.mint;
+                    const amount = Number(transferInfo.amount);
+                    const source = transferInfo.source;
+                    const destination = transferInfo.destination;
+                    
+                    // Get token metadata from mintMap or tokenMetadata
+                    const mintMetadata = mintMap.get(mintAddress);
+                    const cachedMetadata = tokenMetadata[mintAddress];
+                    const decimals = mintMetadata?.decimals ?? mintDecimalsCache[mintAddress] ?? 0;
+                    const uiAmount = amount / (10 ** decimals);
+                    
+                    // Use cached metadata symbol/name if available, otherwise use mintMap or truncated address
+                    const symbol = cachedMetadata?.symbol || mintMetadata?.symbol || mintAddress.slice(0, 8);
+                    
+                    if (source === publicKey.toBase58()) {
+                      tokenTransfers.push({ 
+                        mint: mintAddress, 
+                        symbol, 
+                        amount: uiAmount.toFixed(Math.min(6, decimals)), 
+                        decimals, 
+                        direction: 'out' 
+                      });
+                    } else if (destination === publicKey.toBase58()) {
+                      tokenTransfers.push({ 
+                        mint: mintAddress, 
+                        symbol, 
+                        amount: uiAmount.toFixed(Math.min(6, decimals)), 
+                        decimals, 
+                        direction: 'in' 
+                      });
+                    }
+                  }
+                });
+              });
             }
 
             return {
@@ -439,7 +519,9 @@ function WalletDrawerContent({ disclosure }: { disclosure: ReturnType<typeof use
               blockTime: info.blockTime ?? null,
               changeSol: changeLamports / LAMPORTS_PER_SOL,
               description,
-              status: info.err ? 'failed' : 'success'
+              status: info.err ? 'failed' : 'success',
+              fee,
+              tokenTransfers: tokenTransfers.length > 0 ? tokenTransfers : undefined
             };
           });
         }
@@ -465,14 +547,32 @@ function WalletDrawerContent({ disclosure }: { disclosure: ReturnType<typeof use
         }
       }
     },
-    [activeAccount, connection, setLoadingTransactions, toast]
+    [activeAccount, connection, setLoadingTransactions, toast, mintMap, tokenMetadata, mintDecimalsCache]
   );
+
+  // Throttle balance fetching to max once every 10 seconds
+  const lastBalanceFetchRef = useRef<number>(0);
+  const BALANCE_FETCH_THROTTLE_MS = 10_000;
 
   const refreshBalances = useCallback(
     async (showSpinner: boolean) => {
       if (refreshingRef.current) {
         return;
       }
+      
+      const now = Date.now();
+      const timeSinceLastFetch = now - lastBalanceFetchRef.current;
+      
+      // If called too soon, skip the actual fetch
+      if (timeSinceLastFetch < BALANCE_FETCH_THROTTLE_MS) {
+        console.debug('[wallet drawer] Throttling balance fetch', { timeSinceLastFetch, throttleMs: BALANCE_FETCH_THROTTLE_MS });
+        if (showSpinner) {
+          setLoadingBalances.off();
+        }
+        return;
+      }
+      
+      lastBalanceFetchRef.current = now;
       refreshingRef.current = true;
 
       if (!activeAccount) {
@@ -543,7 +643,24 @@ function WalletDrawerContent({ disclosure }: { disclosure: ReturnType<typeof use
               let image: string | undefined;
               if (metadata.uri && metadata.uri.startsWith('ipfs://')) {
                 const cid = metadata.uri.replace('ipfs://', '');
-                image = `https://ipfs.io/ipfs/${cid}`;
+                // Fetch IPFS metadata to get actual image URL
+                try {
+                  const metadataResponse = await fetch(`https://ipfs.io/ipfs/${cid}`);
+                  if (metadataResponse.ok) {
+                    const metadataJson = await metadataResponse.json();
+                    if (metadataJson.image) {
+                      if (metadataJson.image.startsWith('ipfs://')) {
+                        const imageCid = metadataJson.image.replace('ipfs://', '');
+                        image = `https://ipfs.io/ipfs/${imageCid}`;
+                      } else {
+                        image = metadataJson.image;
+                      }
+                    }
+                  }
+                } catch {
+                  // Fallback to URI if IPFS fetch fails
+                  image = `https://ipfs.io/ipfs/${cid}`;
+                }
               } else if (metadata.uri) {
                 image = metadata.uri;
               }
@@ -563,6 +680,12 @@ function WalletDrawerContent({ disclosure }: { disclosure: ReturnType<typeof use
           }
         });
         setTokenMetadata(metadataMap);
+        
+        // Cache metadata in localStorage for use in convert form
+        if (Object.keys(metadataMap).length > 0) {
+          const { saveCachedMetadataBatch } = require('../../lib/tokenMetadata/storage');
+          saveCachedMetadataBatch(metadataMap);
+        }
         
         await loadPrivateBalances(activeAccount.publicKey);
         await refreshTransactions(showSpinner);
@@ -885,6 +1008,7 @@ function WalletDrawerContent({ disclosure }: { disclosure: ReturnType<typeof use
         return;
       }
       void refreshBalances(showSpinner);
+      void refreshTransactions(false); // Refresh transactions periodically
     };
 
     runRefresh(true);
@@ -895,7 +1019,7 @@ function WalletDrawerContent({ disclosure }: { disclosure: ReturnType<typeof use
       cancelled = true;
       clearInterval(interval);
     };
-  }, [disclosure.isOpen, activeAccount, refreshBalances]);
+  }, [disclosure.isOpen, activeAccount, refreshBalances, refreshTransactions]);
 
   useEffect(() => {
     if (!activeAccount) {
@@ -938,6 +1062,52 @@ function WalletDrawerContent({ disclosure }: { disclosure: ReturnType<typeof use
     return `Unshielded ${entry.amount} ${entry.symbol}`;
   };
 
+  // Fetch decimals for mints not in catalog
+  useEffect(() => {
+    const fetchMissingDecimals = async () => {
+      const missing: string[] = [];
+      Object.keys(privateBalances).forEach((mint) => {
+        if (!mintMap.has(mint) && !mintDecimalsCache[mint]) {
+          missing.push(mint);
+        }
+      });
+      
+      if (missing.length === 0 || !connection) return;
+      
+      const decimalsPromises = missing.map(async (mintAddress) => {
+        try {
+          const mintKey = new PublicKey(mintAddress);
+          // Try TOKEN_PROGRAM_ID first
+          try {
+            const mintInfo = await getMint(connection, mintKey, undefined, TOKEN_PROGRAM_ID);
+            return { mint: mintAddress, decimals: mintInfo.decimals };
+          } catch {
+            // Try TOKEN_2022_PROGRAM_ID
+            try {
+              const mintInfo = await getMint(connection, mintKey, undefined, TOKEN_2022_PROGRAM_ID);
+              return { mint: mintAddress, decimals: mintInfo.decimals };
+            } catch {
+              return { mint: mintAddress, decimals: 0 };
+            }
+          }
+        } catch {
+          return { mint: mintAddress, decimals: 0 };
+        }
+      });
+      
+      const results = await Promise.all(decimalsPromises);
+      setMintDecimalsCache((prev) => {
+        const updated = { ...prev };
+        results.forEach(({ mint, decimals }) => {
+          updated[mint] = decimals;
+        });
+        return updated;
+      });
+    };
+    
+    void fetchMissingDecimals();
+  }, [privateBalances, mintMap, connection, mintDecimalsCache]);
+
   const privateBalanceEntries = useMemo(() => {
     return Object.entries(privateBalances)
       .map(([mint, amountString]) => {
@@ -951,7 +1121,8 @@ function WalletDrawerContent({ disclosure }: { disclosure: ReturnType<typeof use
           return null;
         }
         const metadata = mintMap.get(mint);
-        const decimals = metadata?.decimals ?? 0;
+        // Use catalog decimals if available, otherwise use cached decimals from chain, otherwise default to 0
+        const decimals = metadata?.decimals ?? mintDecimalsCache[mint] ?? 0;
         const baseSymbol = metadata?.symbol?.replace(/^z/, '') ?? mint.slice(0, 6);
         const symbol = `z${baseSymbol}`;
         const formatted = formatBaseUnitsToUi(amount, decimals);
@@ -967,7 +1138,7 @@ function WalletDrawerContent({ disclosure }: { disclosure: ReturnType<typeof use
         (entry): entry is { mint: string; symbol: string; formatted: string; decimals: number; amount: bigint } =>
           Boolean(entry)
       );
-  }, [mintMap, privateBalances]);
+  }, [mintMap, privateBalances, mintDecimalsCache]);
   const canSendShielded = Boolean(viewingId);
 
   const handleCreateAccount = () => {
@@ -993,7 +1164,7 @@ function WalletDrawerContent({ disclosure }: { disclosure: ReturnType<typeof use
 
   return (
     <>
-      <Drawer isOpen placement="right" size="sm" onClose={disclosure.onClose}>
+      <Drawer isOpen={disclosure.isOpen} placement="right" size="sm" onClose={disclosure.onClose}>
         <DrawerOverlay />
         <DrawerContent bg="rgba(18, 16, 14, 0.96)" borderLeft="1px solid rgba(245,178,27,0.24)">
           <DrawerCloseButton />
@@ -1018,173 +1189,8 @@ function WalletDrawerContent({ disclosure }: { disclosure: ReturnType<typeof use
           </Stack>
         </DrawerHeader>
 
-          <DrawerBody py={6}>
+        <DrawerBody py={6}>
           <Stack spacing={8}>
-            <Stack spacing={4}>
-            {activityLog.length > 0 && (
-              <Stack spacing={3}>
-                <Flex align="center" justify="space-between">
-                  <Text fontSize="sm" color="whiteAlpha.600" textTransform="uppercase" letterSpacing="0.08em">
-                    Conversion activity
-                  </Text>
-                  <Button
-                    size="xs"
-                    variant="ghost"
-                    colorScheme="brand"
-                    onClick={() => {
-                      void loadActivity();
-                    }}
-                  >
-                    Refresh
-                  </Button>
-                </Flex>
-                <Stack spacing={2}>
-                  {activityLog.map((entry) => (
-                    <Box
-                      key={entry.id}
-                      bg="rgba(255,255,255,0.02)"
-                      border="1px solid rgba(255,255,255,0.08)"
-                      rounded="lg"
-                      p={3}
-                    >
-                      <Flex justify="space-between" align="center">
-                        <Text fontSize="sm" fontWeight="semibold" color="whiteAlpha.900">
-                          {renderActivityLabel(entry)}
-                        </Text>
-                        <Text fontSize="xs" color="whiteAlpha.500">
-                          {new Date(entry.timestamp).toLocaleTimeString()}
-                        </Text>
-                      </Flex>
-                      <HStack spacing={2} mt={2} align="center">
-                        <Code fontSize="xs" colorScheme="yellow">
-                          {entry.signature.slice(0, 8)}…{entry.signature.slice(-6)}
-                        </Code>
-                        <Tooltip label="Copy signature">
-                          <IconButton
-                            aria-label="Copy signature"
-                            icon={<Icon as={Copy} boxSize={3} />}
-                            size="xs"
-                            variant="ghost"
-                            onClick={() => {
-                              if (typeof navigator !== 'undefined' && navigator.clipboard) {
-                                navigator.clipboard.writeText(entry.signature).catch(() => undefined);
-                              }
-                            }}
-                          />
-                        </Tooltip>
-                      </HStack>
-                    </Box>
-                  ))}
-                </Stack>
-              </Stack>
-            )}
-              <Flex align="center" justify="space-between">
-                <Text fontSize="sm" color="whiteAlpha.600" textTransform="uppercase" letterSpacing="0.08em">
-                  Accounts
-                </Text>
-                <Menu>
-                  <MenuButton as={IconButton} icon={<Icon as={Plus} />} variant="ghost" aria-label="Manage accounts" />
-                  <MenuList>
-                    <MenuItem icon={<Icon as={Plus} />} onClick={setCreateOpen.on}>
-                      Create new account
-                    </MenuItem>
-                    <MenuItem icon={<Icon as={Coins} />} onClick={setImportOpen.on}>
-                      Import secret key
-                    </MenuItem>
-                  </MenuList>
-                </Menu>
-              </Flex>
-
-              <Stack spacing={3}>
-                {accounts.map((account) => (
-                  <Flex
-                    key={account.id}
-                    px={4}
-                    py={3}
-                    rounded="xl"
-                    border="1px solid"
-                    borderColor={account.id === activeAccount?.id ? 'brand.300' : 'whiteAlpha.200'}
-                    align="center"
-                    justify="space-between"
-                    bg={account.id === activeAccount?.id ? 'whiteAlpha.100' : 'transparent'}
-                    transition="all 0.2s"
-                    _hover={{ borderColor: 'brand.200', cursor: 'pointer' }}
-                    onClick={() => selectAccount(account.id)}
-                  >
-                    <Stack spacing={1}>
-                      <Editable
-                        defaultValue={account.label}
-                        fontWeight="semibold"
-                        color="whiteAlpha.900"
-                        onSubmit={(next) => renameAccount(account.id, next || account.label)}
-                        onClick={(event) => event.stopPropagation()}
-                      >
-                        <EditablePreview />
-                        <EditableInput />
-                      </Editable>
-                      <HStack spacing={2} color="whiteAlpha.500" fontSize="xs">
-                        <Text>{formatAddress(account.publicKey)}</Text>
-                        <CopyAddressButton
-                          value={account.publicKey}
-                          ariaLabel="Copy account address"
-                          stopPropagation
-                        />
-                      </HStack>
-                    </Stack>
-                    <IconButton
-                      icon={<Icon as={Trash2} fontSize="sm" />}
-                      aria-label="Delete account"
-                      variant="ghost"
-                      size="sm"
-                      isDisabled={accounts.length === 1}
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        if (accounts.length === 1) return;
-                        deleteAccount(account.id);
-                      }}
-                    />
-                  </Flex>
-                ))}
-              </Stack>
-
-              {createOpen && (
-                <Box border="1px dashed" borderColor="brand.400" rounded="lg" p={4}>
-                  <Stack spacing={2}>
-                    <Text fontSize="sm" color="whiteAlpha.700">
-                      New account label
-                    </Text>
-                    <Input placeholder="Account label" value={newLabel} onChange={(event) => setNewLabel(event.target.value)} />
-                    <Button size="sm" onClick={handleCreateAccount}>
-                      Create account
-                    </Button>
-                  </Stack>
-                </Box>
-              )}
-
-              {importOpen && (
-                <Box border="1px dashed" borderColor="brand.400" rounded="lg" p={4}>
-                  <Stack spacing={2}>
-                    <Text fontSize="sm" color="whiteAlpha.700">
-                      Paste a base58-encoded secret key to import an existing account.
-                    </Text>
-                    <Input
-                      placeholder="Secret key"
-                      value={importSecret}
-                      onChange={(event) => setImportSecret(event.target.value)}
-                    />
-                    <Input
-                      placeholder="Label (optional)"
-                      value={importLabel}
-                      onChange={(event) => setImportLabel(event.target.value)}
-                    />
-                    <Button size="sm" onClick={handleImportAccount}>
-                      Import account
-                    </Button>
-                  </Stack>
-                </Box>
-              )}
-            </Stack>
-
             <Stack spacing={3}>
               <Text fontSize="sm" color="whiteAlpha.600" textTransform="uppercase" letterSpacing="0.08em">
                 Balances
@@ -1463,91 +1469,302 @@ function WalletDrawerContent({ disclosure }: { disclosure: ReturnType<typeof use
                   </Stack>
                 )}
               </Box>
+            </Stack>
 
+            <Stack spacing={3}>
+              <Flex align="center" justify="space-between">
+                <Text fontSize="sm" color="whiteAlpha.600" textTransform="uppercase" letterSpacing="0.08em">
+                  Accounts
+                </Text>
+                <Menu>
+                  <MenuButton as={IconButton} icon={<Icon as={Plus} />} variant="ghost" aria-label="Manage accounts" />
+                  <MenuList>
+                    <MenuItem icon={<Icon as={Plus} />} onClick={setCreateOpen.on}>
+                      Create new account
+                    </MenuItem>
+                    <MenuItem icon={<Icon as={Coins} />} onClick={setImportOpen.on}>
+                      Import secret key
+                    </MenuItem>
+                  </MenuList>
+                </Menu>
+              </Flex>
+
+              <Stack spacing={3}>
+                {accounts.map((account) => (
+                  <Flex
+                    key={account.id}
+                    px={4}
+                    py={3}
+                    rounded="xl"
+                    border="1px solid"
+                    borderColor={account.id === activeAccount?.id ? 'brand.300' : 'whiteAlpha.200'}
+                    align="center"
+                    justify="space-between"
+                    bg={account.id === activeAccount?.id ? 'whiteAlpha.100' : 'transparent'}
+                    transition="all 0.2s"
+                    _hover={{ borderColor: 'brand.200', cursor: 'pointer' }}
+                    onClick={() => selectAccount(account.id)}
+                  >
+                    <Stack spacing={1}>
+                      <Editable
+                        defaultValue={account.label}
+                        fontWeight="semibold"
+                        color="whiteAlpha.900"
+                        onSubmit={(next) => renameAccount(account.id, next || account.label)}
+                        onClick={(event) => event.stopPropagation()}
+                      >
+                        <EditablePreview />
+                        <EditableInput />
+                      </Editable>
+                      <HStack spacing={2} color="whiteAlpha.500" fontSize="xs">
+                        <Text>{formatAddress(account.publicKey)}</Text>
+                        <CopyAddressButton
+                          value={account.publicKey}
+                          ariaLabel="Copy account address"
+                          stopPropagation
+                        />
+                      </HStack>
+                    </Stack>
+                    <IconButton
+                      icon={<Icon as={Trash2} fontSize="sm" />}
+                      aria-label="Delete account"
+                      variant="ghost"
+                      size="sm"
+                      isDisabled={accounts.length === 1}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        if (accounts.length === 1) return;
+                        deleteAccount(account.id);
+                      }}
+                    />
+                  </Flex>
+                ))}
+              </Stack>
+
+              {createOpen && (
+                <Box border="1px dashed" borderColor="brand.400" rounded="lg" p={4}>
+                  <Stack spacing={2}>
+                    <Text fontSize="sm" color="whiteAlpha.700">
+                      New account label
+                    </Text>
+                    <Input placeholder="Account label" value={newLabel} onChange={(event) => setNewLabel(event.target.value)} />
+                    <Button size="sm" onClick={handleCreateAccount}>
+                      Create account
+                    </Button>
+                  </Stack>
+                </Box>
+              )}
+
+              {importOpen && (
+                <Box border="1px dashed" borderColor="brand.400" rounded="lg" p={4}>
+                  <Stack spacing={2}>
+                    <Text fontSize="sm" color="whiteAlpha.700">
+                      Paste a base58-encoded secret key to import an existing account.
+                    </Text>
+                    <Input
+                      placeholder="Secret key"
+                      value={importSecret}
+                      onChange={(event) => setImportSecret(event.target.value)}
+                    />
+                    <Input
+                      placeholder="Label (optional)"
+                      value={importLabel}
+                      onChange={(event) => setImportLabel(event.target.value)}
+                    />
+                    <Button size="sm" onClick={handleImportAccount}>
+                      Import account
+                    </Button>
+                  </Stack>
+                </Box>
+              )}
+            </Stack>
+
+            <Stack spacing={3}>
               <Text fontSize="sm" color="whiteAlpha.600" textTransform="uppercase" letterSpacing="0.08em">
                 Recent activity
               </Text>
-              <Box
-                border="1px solid rgba(245,178,27,0.2)"
-                rounded="2xl"
-                p={5}
-                bg="rgba(20, 18, 14, 0.82)"
-                boxShadow="0 0 25px rgba(245, 178, 27, 0.18)"
-              >
+                <Box
+                  border="1px solid rgba(245,178,27,0.2)"
+                  rounded="2xl"
+                  p={5}
+                  bg="rgba(20, 18, 14, 0.82)"
+                  boxShadow="0 0 25px rgba(245, 178, 27, 0.18)"
+                >
                 {loadingTransactions ? (
                   <Flex align="center" justify="center" py={8}>
                     <Spinner />
                   </Flex>
-                ) : transactions.length === 0 ? (
-                  <Text fontSize="sm" color="whiteAlpha.500">
-                    No recent transactions.
-                  </Text>
-                ) : (
-                  <Stack spacing={3}>
-                    {transactions.map((entry) => {
-                      const solChange = Math.abs(entry.changeSol) < 1e-9 ? null : `${
-                        entry.changeSol > 0 ? '+' : ''
-                      }${entry.changeSol.toFixed(6)} SOL`;
+                ) : (() => {
+                  // Merge activityLog with transactions and filter
+                  const MIN_SOL_THRESHOLD = 0.001; // Filter out tiny SOL transactions (< 0.001 SOL)
+                  
+                  // Create map of transactions by signature
+                  const txMap = new Map<string, TransactionEntry>();
+                  transactions.forEach((tx) => {
+                    txMap.set(tx.signature, tx);
+                  });
+                  
+                  // Create unified activity list starting with activityLog entries
+                  const unified: UnifiedActivityEntry[] = [];
+                  
+                  // Add conversions from activity log (even if transaction not found yet)
+                  activityLog.forEach((activity) => {
+                    const tx = txMap.get(activity.signature);
+                    unified.push({
+                      signature: activity.signature,
+                      timestamp: activity.timestamp,
+                      type: activity.type === 'wrap' ? 'wrap' : activity.type === 'unwrap' ? 'unwrap' : 'transfer',
+                      description: activity.type === 'wrap' 
+                        ? `Shielded ${activity.amount} ${activity.symbol}`
+                        : activity.type === 'unwrap'
+                        ? `Unshielded ${activity.amount} ${activity.symbol}`
+                        : `Transferred ${activity.amount} ${activity.symbol}`,
+                      status: tx?.status ?? 'success',
+                      solChange: tx?.changeSol,
+                      fee: tx?.fee,
+                      tokenTransfers: tx?.tokenTransfers
+                    });
+                  });
+                  
+                  // Add transactions that aren't already in activity log
+                  transactions.forEach((tx) => {
+                    // Skip if already added from activity log
+                    if (activityLog.some(a => a.signature === tx.signature)) {
+                      return;
+                    }
+                    
+                    // Skip tiny SOL-only transactions (likely just gas fees)
+                    const isTinySolOnly = Math.abs(tx.changeSol) < MIN_SOL_THRESHOLD && 
+                                        !tx.tokenTransfers;
+                    if (isTinySolOnly) {
+                      return; // Skip this transaction
+                    }
+                    
+                    if (tx.tokenTransfers && tx.tokenTransfers.length > 0) {
+                      // Token transfer
+                      const transfer = tx.tokenTransfers[0];
+                      unified.push({
+                        signature: tx.signature,
+                        timestamp: tx.blockTime ? tx.blockTime * 1000 : Date.now(),
+                        type: 'token',
+                        description: transfer.direction === 'in'
+                          ? `Received ${transfer.amount} ${transfer.symbol}`
+                          : `Sent ${transfer.amount} ${transfer.symbol}`,
+                        status: tx.status,
+                        solChange: tx.changeSol,
+                        fee: tx.fee,
+                        tokenTransfers: tx.tokenTransfers
+                      });
+                    } else if (Math.abs(tx.changeSol) >= MIN_SOL_THRESHOLD) {
+                      // Significant SOL transfer
+                      unified.push({
+                        signature: tx.signature,
+                        timestamp: tx.blockTime ? tx.blockTime * 1000 : Date.now(),
+                        type: 'sol',
+                        description: tx.description,
+                        status: tx.status,
+                        solChange: tx.changeSol,
+                        fee: tx.fee
+                      });
+                    }
+                  });
+                  
+                  // Sort by timestamp (newest first)
+                  unified.sort((a, b) => b.timestamp - a.timestamp);
+                  
+                  if (unified.length === 0) {
+                    return (
+                      <Text fontSize="sm" color="whiteAlpha.500">
+                        No recent transactions.
+                      </Text>
+                    );
+                  }
+                  
+                  return (
+                    <Stack spacing={3}>
+                      {unified.map((entry) => {
+                        const solChange = entry.solChange && Math.abs(entry.solChange) >= 1e-9 
+                          ? `${entry.solChange > 0 ? '+' : ''}${entry.solChange.toFixed(6)} SOL`
+                          : null;
+                        const feeDisplay = entry.fee && entry.fee > 0 
+                          ? `Gas: ${entry.fee.toFixed(6)} SOL`
+                          : null;
 
-                      return (
-                        <Box
-                          key={entry.signature}
-                          bg="rgba(24, 20, 16, 0.9)"
-                          border="1px solid rgba(245,178,27,0.2)"
-                          rounded="lg"
-                          p={3}
-                        >
-                          <Flex justify="space-between" align="center" mb={1}>
-                            <Text fontWeight="semibold" color="whiteAlpha.800">
-                              {entry.description}
+                        return (
+                          <Box
+                            key={entry.signature}
+                            bg="rgba(24, 20, 16, 0.9)"
+                            border="1px solid rgba(245,178,27,0.2)"
+                            rounded="lg"
+                            p={3}
+                          >
+                            <Flex justify="space-between" align="center" mb={1}>
+                              <Text fontWeight="semibold" color="whiteAlpha.800">
+                                {entry.description}
+                              </Text>
+                              <Text
+                                fontSize="xs"
+                                color={entry.status === 'success' ? 'green.300' : 'red.300'}
+                              >
+                                {entry.status === 'success' ? 'Success' : 'Failed'}
+                              </Text>
+                            </Flex>
+                            <VStack spacing={1} align="stretch">
+                              {entry.tokenTransfers && entry.tokenTransfers.length > 0 && (
+                                <Text fontSize="sm" color="whiteAlpha.700">
+                                  {entry.tokenTransfers.map((t, i) => (
+                                    <span key={i}>
+                                      {t.direction === 'in' ? 'Received' : 'Sent'} {t.amount} {t.symbol}
+                                      {i < entry.tokenTransfers!.length - 1 ? ', ' : ''}
+                                    </span>
+                                  ))}
+                                </Text>
+                              )}
+                              {solChange && (
+                                <Text fontSize="sm" color="whiteAlpha.700">
+                                  {solChange}
+                                </Text>
+                              )}
+                              {feeDisplay && (
+                                <Text fontSize="xs" color="whiteAlpha.500">
+                                  {feeDisplay}
+                                </Text>
+                              )}
+                            </VStack>
+                            <Text fontSize="xs" color="whiteAlpha.500" mt={2}>
+                              {new Date(entry.timestamp).toLocaleString()}
                             </Text>
-                            <Text
-                              fontSize="xs"
-                              color={entry.status === 'success' ? 'green.300' : 'red.300'}
-                            >
-                              {entry.status === 'success' ? 'Success' : 'Failed'}
-                            </Text>
-                          </Flex>
-                          {solChange && (
-                            <Text fontSize="sm" color="whiteAlpha.700">
-                              {solChange}
-                            </Text>
-                          )}
-                          <Text fontSize="xs" color="whiteAlpha.500">
-                            {entry.blockTime
-                              ? new Date(entry.blockTime * 1000).toLocaleString()
-                              : `Slot ${entry.slot}`}
-                          </Text>
-                          <HStack spacing={2} mt={1} align="center">
-                            <Code fontSize="xs" wordBreak="break-all">
-                              {entry.signature}
-                            </Code>
-                            <Tooltip label="Copy signature">
-                              <IconButton
-                                aria-label="Copy signature"
-                                icon={<Copy size={14} />}
-                                size="xs"
-                                variant="ghost"
-                                onClick={() => {
-                                  void navigator.clipboard.writeText(entry.signature);
-                                  toast({
-                                    title: 'Signature copied',
-                                    status: 'success',
-                                    duration: 1500,
-                                    isClosable: true
-                                  });
-                                }}
-                              />
-                            </Tooltip>
-                          </HStack>
-                        </Box>
-                      );
-                    })}
-                  </Stack>
-                )}
-              </Box>
+                            <HStack spacing={2} mt={1} align="center">
+                              <Code fontSize="xs" wordBreak="break-all">
+                                {entry.signature}
+                              </Code>
+                              <Tooltip label="Copy signature">
+                                <IconButton
+                                  aria-label="Copy signature"
+                                  icon={<Copy size={14} />}
+                                  size="xs"
+                                  variant="ghost"
+                                  onClick={() => {
+                                    void navigator.clipboard.writeText(entry.signature);
+                                    toast({
+                                      title: 'Signature copied',
+                                      status: 'success',
+                                      duration: 1500,
+                                      isClosable: true
+                                    });
+                                  }}
+                                />
+                              </Tooltip>
+                            </HStack>
+                          </Box>
+                        );
+                      })}
+                    </Stack>
+                  );
+                })()}
+                </Box>
+              </Stack>
             </Stack>
-          </Stack>
           </DrawerBody>
           <DrawerFooter borderTopWidth="1px" borderColor="whiteAlpha.200">
             <Text fontSize="xs" color="whiteAlpha.500">

@@ -5,16 +5,19 @@ if (typeof globalThis.Buffer === 'undefined') {
   (globalThis as typeof globalThis & { Buffer: typeof Buffer }).Buffer = Buffer;
 }
 import {
+  AddressLookupTableProgram,
   ComputeBudgetProgram,
   Connection,
   Keypair,
+  MessageV0,
   PublicKey,
   SYSVAR_INSTRUCTIONS_PUBKEY,
   SYSVAR_RENT_PUBKEY,
   SystemProgram,
   Transaction,
   TransactionInstruction,
-  TransactionMessage
+  TransactionMessage,
+  VersionedTransaction
 } from '@solana/web3.js';
 import { WalletContextState } from '@solana/wallet-adapter-react';
 import { BorshCoder, BN, Idl } from '@coral-xyz/anchor';
@@ -139,6 +142,7 @@ interface WrapParams extends BaseParams {
   commitmentHint?: string | null;
   recipient?: string;
   twinMint?: string | null;
+  keypair?: Keypair; // Optional keypair for signing VersionedTransaction in test scenarios
   // lookupTable and lookupTableAuthority removed - addresses are now derived programmatically
 }
 
@@ -148,6 +152,7 @@ interface UnwrapParams extends BaseParams {
   proof: ProofResponse;
   // lookupTable removed - addresses are now derived programmatically
   twinMint?: string;
+  keypair?: Keypair; // Added for test scenarios to sign VersionedTransaction
 }
 
 interface TransferParams {
@@ -191,6 +196,20 @@ export interface MintNativeZTokenResult {
   decimals: number;
   symbol: string;
   uri: string;
+}
+
+interface PreparePoolParams {
+  connection: Connection;
+  wallet: WalletContextState;
+  originMint: string;
+}
+
+interface PreparePoolResult {
+  vaultInitialized: boolean;
+  poolInitialized: boolean;
+  lookupTableCreated: boolean;
+  lookupTableAddress?: string;
+  actions: string[];
 }
 
 type SplTokenProgramKind = 'token' | 'token-2022';
@@ -294,7 +313,7 @@ export interface MintMappingAccount {
   hasFeeOverride: boolean;
   bump: number;
   isNativeZtoken: boolean;
-  // lookupTable field removed - addresses are now derived programmatically
+  lookupTable?: PublicKey | null; // ALT address for transaction size optimization (one per mint)
 }
 
 export async function fetchMintMappingAccount(
@@ -308,11 +327,12 @@ export async function fetchMintMappingAccount(
   }
   
   // Decode MintMapping account
-  // Note: Old accounts were 85 bytes (with lookup_table Option<Pubkey>), new are 81 bytes (without lookup_table)
+  // Note: Old accounts were 81 bytes (without lookup_table), new are 114 bytes (with lookup_table Option<Pubkey>)
   // The decoder will handle this automatically based on the IDL
   const decoded = factoryCoder.accounts.decode('MintMapping', account.data) as any;
   
   // Normalize field names (Anchor uses snake_case, we use camelCase)
+  const lookupTableValue = decoded.lookupTable ?? decoded.lookup_table ?? null;
   const normalized: MintMappingAccount = {
     originMint: new PublicKey(decoded.originMint || decoded.origin_mint),
     ptknMint: new PublicKey(decoded.ptknMint || decoded.ptkn_mint),
@@ -323,8 +343,8 @@ export async function fetchMintMappingAccount(
     feeBpsOverride: decoded.feeBpsOverride ?? decoded.fee_bps_override ?? 0,
     hasFeeOverride: decoded.hasFeeOverride ?? decoded.has_fee_override ?? false,
     bump: decoded.bump ?? 0,
-    isNativeZtoken: decoded.isNativeZtoken ?? decoded.is_native_ztoken ?? false
-    // lookupTable field removed - addresses are now derived programmatically
+    isNativeZtoken: decoded.isNativeZtoken ?? decoded.is_native_ztoken ?? false,
+    lookupTable: lookupTableValue ? new PublicKey(lookupTableValue) : null
   };
   
   return { key, decoded: normalized };
@@ -436,6 +456,455 @@ async function waitForPendingShieldInactive(
 }
 
 
+type InitializePoolAccountDef = {
+  name: string;
+  signer?: boolean;
+  writable?: boolean;
+  optional?: boolean;
+};
+
+function buildInitializePoolInstruction(args: {
+  wallet: WalletContextState;
+  poolState: PublicKey;
+  nullifierSet: PublicKey;
+  noteLedger: PublicKey;
+  commitmentTree: PublicKey;
+  hookConfig: PublicKey;
+  hookWhitelist: PublicKey;
+  vaultState: PublicKey;
+  originMint: PublicKey;
+  mintMapping: PublicKey;
+  factoryState: PublicKey;
+  verifyingKey: PublicKey;
+  tokenProgramId: PublicKey;
+}): TransactionInstruction {
+  const FEATURE_PRIVATE_TRANSFER_ENABLED = 1;
+  const FEATURE_ALLOWANCES_ENABLED = 2;
+  const features = FEATURE_PRIVATE_TRANSFER_ENABLED | FEATURE_ALLOWANCES_ENABLED;
+  const feeBps = 0;
+
+  const initPoolData = poolCoder.instruction.encode('initialize_pool', {
+    fee_bps: feeBps,
+    features
+  });
+
+  const poolAccounts: Record<string, PublicKey> = {
+    authority: args.wallet.publicKey!,
+    pool_state: args.poolState,
+    nullifier_set: args.nullifierSet,
+    note_ledger: args.noteLedger,
+    commitment_tree: args.commitmentTree,
+    hook_config: args.hookConfig,
+    hook_whitelist: args.hookWhitelist,
+    vault_state: args.vaultState,
+    origin_mint: args.originMint,
+    mint_mapping: args.mintMapping,
+    factory_state: args.factoryState,
+    twin_mint: POOL_PROGRAM_ID,
+    verifier_program: VERIFIER_PROGRAM_ID,
+    verifying_key: args.verifyingKey,
+    payer: args.wallet.publicKey!,
+    system_program: SystemProgram.programId,
+    token_program: args.tokenProgramId
+  };
+
+  const ixDef = (poolIdl as Idl).instructions?.find((item) => item.name === 'initialize_pool');
+  if (!ixDef) {
+    throw new Error('initialize_pool instruction not found in IDL');
+  }
+
+  const accounts = ixDef.accounts as InitializePoolAccountDef[];
+  const keys = accounts.map((account) => {
+    const pubkey = poolAccounts[account.name];
+    if (!pubkey) {
+      if (account.optional) {
+        return { pubkey: POOL_PROGRAM_ID, isSigner: false, isWritable: false };
+      }
+      throw new Error(`Missing account mapping for ${account.name}`);
+    }
+    return {
+      pubkey,
+      isSigner: account.signer ?? false,
+      isWritable: account.writable ?? false
+    };
+  });
+
+  return new TransactionInstruction({
+    programId: POOL_PROGRAM_ID,
+    keys,
+    data: initPoolData
+  });
+}
+
+async function waitForAccountExists(
+  connection: Connection,
+  account: PublicKey,
+  timeoutMs: number = 30_000
+): Promise<void> {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    const info = await connection.getAccountInfo(account, 'confirmed');
+    if (info) {
+      return;
+    }
+    await sleep(500);
+  }
+  throw new Error(`Timed out waiting for account ${account.toBase58()} to initialize`);
+}
+
+async function waitForLookupTableActivation(
+  connection: Connection,
+  lookupTableAddress: PublicKey,
+  timeoutMs: number = 120_000
+): Promise<void> {
+  const start = Date.now();
+  const maxWaitSlots = 5; // Wait up to 5 slots for activation
+  let initialSlot: number | null = null;
+  
+  while (Date.now() - start < timeoutMs) {
+    const lookupTable = await connection.getAddressLookupTable(lookupTableAddress);
+    if (lookupTable.value) {
+      if (initialSlot === null) {
+        initialSlot = await connection.getSlot('confirmed');
+      }
+      
+      const currentSlot = await connection.getSlot('confirmed');
+      const deactivationSlot = lookupTable.value.state.deactivationSlot;
+      
+      // Lookup table is active if deactivationSlot is null
+      // OR if it exists and has addresses (on test validator, activation can be immediate)
+      if (deactivationSlot === null) {
+        // Fully activated
+        return;
+      }
+      
+      // On test validator, lookup tables often activate quickly
+      // If we've waited several slots and the table exists with addresses, proceed
+      if (currentSlot > (initialSlot + maxWaitSlots) && lookupTable.value.state.addresses.length > 0) {
+        // Give it one more slot and check again
+        await sleep(500);
+        const finalCheck = await connection.getAddressLookupTable(lookupTableAddress);
+        if (finalCheck.value?.state.deactivationSlot === null || (finalCheck.value?.state?.addresses && finalCheck.value.state.addresses.length > 0)) {
+          // Table exists and has addresses, consider it ready
+          return;
+        }
+      }
+    }
+    await sleep(500);
+  }
+  
+  // Final check - if table exists with addresses, proceed anyway (test validator quirk)
+  const finalCheck = await connection.getAddressLookupTable(lookupTableAddress);
+  if (finalCheck.value?.state?.addresses && finalCheck.value.state.addresses.length > 0) {
+    console.warn(`[waitForLookupTableActivation] Lookup table exists with addresses but activation status unclear. Proceeding anyway.`);
+    return;
+  }
+  
+  throw new Error(`Lookup table ${lookupTableAddress.toBase58()} not activated within ${timeoutMs}ms`);
+}
+
+export async function preparePool(params: PreparePoolParams): Promise<PreparePoolResult> {
+  assertWallet(params.wallet);
+  const { connection, wallet } = params;
+  const originMintKey = new PublicKey(params.originMint);
+  const poolState = derivePoolState(originMintKey);
+  const commitmentTreeKey = deriveCommitmentTree(originMintKey);
+  const nullifierSet = deriveNullifierSet(originMintKey);
+  const noteLedger = deriveNoteLedger(originMintKey);
+  const hookConfig = deriveHookConfig(originMintKey);
+  const hookWhitelist = deriveHookWhitelist(originMintKey);
+  const vaultState = deriveVaultState(originMintKey);
+  const mintMappingKey = deriveMintMapping(originMintKey);
+  const factoryState = deriveFactoryState();
+  const verifyingKey = deriveVerifyingKey();
+
+  const [poolAccount, vaultAccount, commitmentTreeAccount, mintAccount] = await Promise.all([
+    connection.getAccountInfo(poolState, 'confirmed'),
+    connection.getAccountInfo(vaultState, 'confirmed'),
+    connection.getAccountInfo(commitmentTreeKey, 'confirmed'),
+    connection.getAccountInfo(originMintKey, 'confirmed')
+  ]);
+
+  if (!mintAccount) {
+    throw new Error('Mint account not found');
+  }
+
+  const tokenProgramId = mintAccount.owner.equals(TOKEN_2022_PROGRAM_ID)
+    ? TOKEN_2022_PROGRAM_ID
+    : TOKEN_PROGRAM_ID;
+
+  // Fetch MintMapping to check if lookup_table is already set
+  const { decoded: mintMapping } = await fetchMintMappingAccount(connection, originMintKey);
+  
+  const result: PreparePoolResult = {
+    vaultInitialized: false,
+    poolInitialized: false,
+    lookupTableCreated: false,
+    actions: []
+  };
+
+  // Create/extend ALT for shield transactions if not already set
+  // Note: We'll get the recent slot right before creating ALT to ensure it's current
+  let lookupTableAddress: PublicKey | null = null;
+  if (mintMapping.lookupTable) {
+    // ALT already exists - verify it and extend if needed
+    lookupTableAddress = mintMapping.lookupTable;
+    result.lookupTableAddress = lookupTableAddress.toBase58();
+    
+    const lookupTable = await connection.getAddressLookupTable(lookupTableAddress);
+    if (!lookupTable.value) {
+      throw new Error(`Lookup table ${lookupTableAddress.toBase58()} stored in MintMapping does not exist`);
+    }
+    
+    // Check if all required addresses are in the ALT
+    const shieldClaim = deriveShieldClaim(poolState);
+    const requiredAddresses = [
+      poolState,
+      hookConfig,
+      hookWhitelist,
+      nullifierSet,
+      commitmentTreeKey,
+      noteLedger,
+      vaultState,
+      VERIFIER_PROGRAM_ID,
+      verifyingKey,
+      shieldClaim,
+      originMintKey,
+      mintMappingKey,
+      factoryState,
+      VAULT_PROGRAM_ID,
+      tokenProgramId,
+      SystemProgram.programId,
+      SYSVAR_RENT_PUBKEY
+    ];
+    
+    const existingAddresses = lookupTable.value.state.addresses;
+    const missingAddresses = requiredAddresses.filter(
+      (addr) => !existingAddresses.some((existing) => existing.equals(addr))
+    );
+    
+    if (missingAddresses.length > 0) {
+      // Extend ALT with missing addresses
+      const recentSlot = await connection.getSlot('confirmed');
+      const extendIx = AddressLookupTableProgram.extendLookupTable({
+        authority: wallet.publicKey!,
+        payer: wallet.publicKey!,
+        lookupTable: lookupTableAddress,
+        addresses: missingAddresses
+      });
+      
+      const extendBlockhash = await connection.getLatestBlockhash('confirmed');
+      const extendTx = new Transaction().add(extendIx);
+      extendTx.feePayer = wallet.publicKey!;
+      extendTx.recentBlockhash = extendBlockhash.blockhash;
+      const extendSig = await wallet.sendTransaction(extendTx, connection, { skipPreflight: false });
+      await waitForSignatureConfirmation(
+        connection,
+        extendSig,
+        extendBlockhash.blockhash,
+        extendBlockhash.lastValidBlockHeight
+      );
+      result.actions.push('alt-extended');
+    }
+  } else {
+    // ALT doesn't exist - create it
+    const shieldClaim = deriveShieldClaim(poolState);
+    const allAddresses = [
+      poolState,
+      hookConfig,
+      hookWhitelist,
+      nullifierSet,
+      commitmentTreeKey,
+      noteLedger,
+      vaultState,
+      VERIFIER_PROGRAM_ID,
+      verifyingKey,
+      shieldClaim,
+      originMintKey,
+      mintMappingKey,
+      factoryState,
+      VAULT_PROGRAM_ID,
+      tokenProgramId,
+      SystemProgram.programId,
+      SYSVAR_RENT_PUBKEY
+    ];
+    
+    // Remove duplicates
+    const uniqueAddresses = Array.from(
+      new Map(allAddresses.map((addr) => [addr.toBase58(), addr])).values()
+    );
+    
+    // Create ALT - get recent slot right before creating to ensure it's current
+    // The slot needs to be recent when the transaction is processed
+    // Get slot and blockhash together, then create the lookup table instruction
+    const [createBlockhash, recentSlot] = await Promise.all([
+      connection.getLatestBlockhash('confirmed'),
+      connection.getSlot('confirmed')
+    ]);
+    
+    const [createIx, newLookupTableAddress] = AddressLookupTableProgram.createLookupTable({
+      authority: wallet.publicKey!,
+      payer: wallet.publicKey!,
+      recentSlot
+    });
+    
+    // Prepare extend instruction (will be sent after create confirms)
+    const extendIx = AddressLookupTableProgram.extendLookupTable({
+      authority: wallet.publicKey!,
+      payer: wallet.publicKey!,
+      lookupTable: newLookupTableAddress,
+      addresses: uniqueAddresses
+    });
+    
+    // Send create transaction
+    // Use skipPreflight: true to avoid slot recency checks during simulation
+    const createTx = new Transaction().add(createIx);
+    createTx.feePayer = wallet.publicKey!;
+    createTx.recentBlockhash = createBlockhash.blockhash;
+    const createSig = await wallet.sendTransaction(createTx, connection, { skipPreflight: true });
+    await waitForSignatureConfirmation(
+      connection,
+      createSig,
+      createBlockhash.blockhash,
+      createBlockhash.lastValidBlockHeight
+    );
+    
+    // Wait a moment for the lookup table to be created before extending
+    await sleep(500);
+    
+    // Send extend transaction
+    const extendBlockhash = await connection.getLatestBlockhash('confirmed');
+    const extendTx = new Transaction().add(extendIx);
+    extendTx.feePayer = wallet.publicKey!;
+    extendTx.recentBlockhash = extendBlockhash.blockhash;
+    const extendSig = await wallet.sendTransaction(extendTx, connection, { skipPreflight: false });
+    await waitForSignatureConfirmation(
+      connection,
+      extendSig,
+      extendBlockhash.blockhash,
+      extendBlockhash.lastValidBlockHeight
+    );
+    
+    // Wait for ALT activation
+    await waitForLookupTableActivation(connection, newLookupTableAddress);
+    
+    // Store ALT address in MintMapping via set_lookup_table instruction
+    const setLookupTableData = factoryCoder.instruction.encode('set_lookup_table', {
+      lookup_table: newLookupTableAddress
+    });
+    
+    const setLookupTableIx = new TransactionInstruction({
+      programId: FACTORY_PROGRAM_ID,
+      keys: [
+        { pubkey: factoryState, isSigner: false, isWritable: true },
+        { pubkey: mintMappingKey, isSigner: false, isWritable: true },
+        { pubkey: newLookupTableAddress, isSigner: false, isWritable: false },
+        { pubkey: wallet.publicKey!, isSigner: true, isWritable: false } // payer
+      ],
+      data: setLookupTableData
+    });
+    
+    const setBlockhash = await connection.getLatestBlockhash('confirmed');
+    const setTx = new Transaction().add(setLookupTableIx);
+    setTx.feePayer = wallet.publicKey!;
+    setTx.recentBlockhash = setBlockhash.blockhash;
+    const setSig = await wallet.sendTransaction(setTx, connection, { skipPreflight: false });
+    await waitForSignatureConfirmation(
+      connection,
+      setSig,
+      setBlockhash.blockhash,
+      setBlockhash.lastValidBlockHeight
+    );
+    
+    // Verify the lookup table was actually stored in MintMapping
+    await sleep(500); // Give it a moment to settle
+    const { decoded: updatedMintMapping } = await fetchMintMappingAccount(connection, originMintKey);
+    if (!updatedMintMapping.lookupTable || updatedMintMapping.lookupTable.toBase58() === '11111111111111111111111111111111') {
+      throw new Error(`Failed to store lookup table in MintMapping. Expected ${newLookupTableAddress.toBase58()}, got ${updatedMintMapping.lookupTable?.toBase58() ?? 'null'}`);
+    }
+    
+    lookupTableAddress = newLookupTableAddress;
+    result.lookupTableCreated = true;
+    result.lookupTableAddress = lookupTableAddress.toBase58();
+    result.actions.push('alt-created');
+  }
+
+  if (!vaultAccount) {
+    const vaultInitData = vaultCoder.instruction.encode('initialize_vault', {
+      pool_authority: poolState
+    });
+    const vaultInitIx = new TransactionInstruction({
+      programId: VAULT_PROGRAM_ID,
+      keys: [
+        { pubkey: vaultState, isSigner: false, isWritable: true },
+        { pubkey: originMintKey, isSigner: false, isWritable: false },
+        { pubkey: wallet.publicKey!, isSigner: true, isWritable: true },
+        { pubkey: tokenProgramId, isSigner: false, isWritable: false },
+        { pubkey: SystemProgram.programId, isSigner: false, isWritable: false }
+      ],
+      data: vaultInitData
+    });
+
+    const vaultBlockhash = await connection.getLatestBlockhash('confirmed');
+    const vaultTx = new Transaction().add(vaultInitIx);
+    vaultTx.feePayer = wallet.publicKey!;
+    vaultTx.recentBlockhash = vaultBlockhash.blockhash;
+    const vaultSig = await wallet.sendTransaction(vaultTx, connection, { skipPreflight: false });
+    await waitForSignatureConfirmation(
+      connection,
+      vaultSig,
+      vaultBlockhash.blockhash,
+      vaultBlockhash.lastValidBlockHeight
+    );
+    await waitForAccountExists(connection, vaultState);
+    result.vaultInitialized = true;
+    result.actions.push('vault');
+  }
+
+  if (!poolAccount) {
+    const initPoolIx = buildInitializePoolInstruction({
+      wallet,
+      poolState,
+      nullifierSet,
+      noteLedger,
+      commitmentTree: commitmentTreeKey,
+      hookConfig,
+      hookWhitelist,
+      vaultState,
+      originMint: originMintKey,
+      mintMapping: mintMappingKey,
+      factoryState,
+      verifyingKey,
+      tokenProgramId
+    });
+    const initBlockhash = await connection.getLatestBlockhash('confirmed');
+    const initTx = new Transaction().add(
+      ComputeBudgetProgram.setComputeUnitLimit({ units: 1_400_000 }),
+      ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 1 }),
+      initPoolIx
+    );
+    initTx.feePayer = wallet.publicKey!;
+    initTx.recentBlockhash = initBlockhash.blockhash;
+    const initSig = await wallet.sendTransaction(initTx, connection, { skipPreflight: false });
+    await waitForSignatureConfirmation(
+      connection,
+      initSig,
+      initBlockhash.blockhash,
+      initBlockhash.lastValidBlockHeight
+    );
+    await waitForAccountExists(connection, poolState);
+    await waitForAccountExists(connection, commitmentTreeKey);
+    result.poolInitialized = true;
+    result.actions.push('pool');
+  } else if (!commitmentTreeAccount) {
+    throw new Error(
+      'Commitment tree account missing even though pool is initialized. Run repair tooling.'
+    );
+  }
+
+  return result;
+}
+
 // ensureLookupTableForMint and setLookupTableForMint functions removed - addresses are now derived programmatically
 
 export async function wrap(params: WrapParams): Promise<string> {
@@ -462,6 +931,8 @@ export async function wrap(params: WrapParams): Promise<string> {
     originMintKey
   );
   ensureMintActive(mintMapping);
+  
+  // Store mintMapping for later use (ALT lookup)
   
   // Wait for pending_shield to be inactive before starting a new shield
   // This prevents PendingShieldInFlight errors from previous incomplete operations
@@ -552,23 +1023,19 @@ export async function wrap(params: WrapParams): Promise<string> {
     }
   }
 
-  // LAZY INITIALIZATION: Check if pool is initialized
   const poolAccountInfo = await connection.getAccountInfo(poolState, 'confirmed');
-  const commitmentTreeAccount = await connection.getAccountInfo(commitmentTreeKey);
-  const isLazyInit = !poolAccountInfo || !commitmentTreeAccount;
-  
-  let treeState: { currentRoot: Uint8Array };
-  
-  if (isLazyInit) {
-    // Use default empty root for first shield (pool will be initialized in same transaction)
-    const defaultEmptyRoot = new Uint8Array(32); // All zeros
-    treeState = { currentRoot: defaultEmptyRoot };
-    if (process.env.NEXT_PUBLIC_DEBUG_WRAP === 'true') {
-      console.info('[wrap] Pool not initialized, will initialize in same transaction');
-    }
-  } else {
-    treeState = decodeCommitmentTree(new Uint8Array(commitmentTreeAccount.data));
+  if (!poolAccountInfo) {
+    throw new Error(
+      'Pool is not initialized. Run preparePool(originMint) before submitting a shield transaction.'
+    );
   }
+  const commitmentTreeAccount = await connection.getAccountInfo(commitmentTreeKey);
+  if (!commitmentTreeAccount) {
+    throw new Error(
+      'Commitment tree account missing. Run preparePool(originMint) before submitting a shield transaction.'
+    );
+  }
+  const treeState = decodeCommitmentTree(new Uint8Array(commitmentTreeAccount.data));
   const recipientKey = params.recipient ? new PublicKey(params.recipient) : wallet.publicKey;
   const depositId = BigInt(params.depositId);
   const blinding = BigInt(params.blinding);
@@ -626,6 +1093,22 @@ export async function wrap(params: WrapParams): Promise<string> {
     }
   }
 
+  // Ensure vault token account exists (required for shield)
+  const vaultTokenAccountInfo = await connection.getAccountInfo(vaultTokenAccount, 'confirmed');
+  if (!vaultTokenAccountInfo) {
+    // Create vault token account
+    instructions.push(
+      createAssociatedTokenAccountInstruction(
+        wallet.publicKey!,
+        vaultTokenAccount,
+        vaultState,
+        originMintKey,
+        tokenProgramId,
+        ASSOCIATED_TOKEN_PROGRAM_ID
+      )
+    );
+  }
+  
   const depositorInfo = await connection.getAccountInfo(depositorTokenAccount);
   if (!depositorInfo) {
     instructions.push(
@@ -735,7 +1218,7 @@ export async function wrap(params: WrapParams): Promise<string> {
     { pubkey: wallet.publicKey, isSigner: true, isWritable: true },
     { pubkey: originMintKey, isSigner: false, isWritable: false },
     { pubkey: mintMappingKey, isSigner: false, isWritable: false },
-    { pubkey: factoryState, isSigner: false, isWritable: false }, // Needed for lazy initialization
+    { pubkey: factoryState, isSigner: false, isWritable: false }, // Needed for program validation
     { pubkey: VAULT_PROGRAM_ID, isSigner: false, isWritable: false },
     { pubkey: tokenProgramId, isSigner: false, isWritable: false },
     { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
@@ -796,127 +1279,28 @@ export async function wrap(params: WrapParams): Promise<string> {
 
   // Lookup tables removed - addresses are now derived programmatically by the program
 
+  // Use mintMapping already fetched above to check if ALT is available
+  let lookupTableAddress: PublicKey | null = null;
+  let lookupTableAccount: any = null;
+  
+  if (mintMapping.lookupTable) {
+    lookupTableAddress = mintMapping.lookupTable;
+    try {
+      const lookupTableResult = await connection.getAddressLookupTable(lookupTableAddress);
+      if (lookupTableResult.value) {
+        lookupTableAccount = lookupTableResult.value;
+      }
+    } catch (error: any) {
+      console.warn(`[wrap] Failed to fetch lookup table ${lookupTableAddress.toBase58()}:`, error.message);
+      // Continue without lookup table - will use regular Transaction
+      lookupTableAddress = null;
+      lookupTableAccount = null;
+    }
+  }
+
   let latestBlockhash = await connection.getLatestBlockhash('confirmed');
   
-  // LAZY INITIALIZATION: If pool not initialized, initialize it first (separate transaction)
-  // This keeps transactions scalable (no lookup tables) and ensures one transaction per operation
-  if (isLazyInit) {
-    // Initialize vault first if needed
-    const vaultAccount = await connection.getAccountInfo(vaultState, 'confirmed');
-    if (!vaultAccount) {
-      // Pool authority is the pool_state PDA itself (derived from origin_mint)
-      // tokenProgramId is already determined at the start of the function
-      const poolAuthority = poolState; // poolState is already the pool_state PDA
-      const vaultInitData = vaultCoder.instruction.encode('initialize_vault', {
-        pool_authority: poolAuthority
-      });
-      const vaultInitIx = new TransactionInstruction({
-        programId: VAULT_PROGRAM_ID,
-        keys: [
-          { pubkey: vaultState, isSigner: false, isWritable: true },
-          { pubkey: originMintKey, isSigner: false, isWritable: false },
-          { pubkey: wallet.publicKey, isSigner: true, isWritable: true },
-          { pubkey: tokenProgramId, isSigner: false, isWritable: false },
-          { pubkey: SystemProgram.programId, isSigner: false, isWritable: false }
-        ],
-        data: vaultInitData
-      });
-      
-      const vaultBlockhash = await connection.getLatestBlockhash('confirmed');
-      const vaultTx = new Transaction().add(vaultInitIx);
-      vaultTx.feePayer = wallet.publicKey;
-      vaultTx.recentBlockhash = vaultBlockhash.blockhash;
-      const vaultSig = await wallet.sendTransaction(vaultTx, connection, { skipPreflight: false });
-      await waitForSignatureConfirmation(connection, vaultSig, vaultBlockhash.blockhash, vaultBlockhash.lastValidBlockHeight);
-      if (process.env.NEXT_PUBLIC_DEBUG_WRAP === 'true') {
-        console.info('[wrap] Vault initialized');
-      }
-    }
-    
-    // Initialize pool (separate transaction - scalable, no lookup tables)
-    // Use IDL to build account metas correctly (same approach as test scripts)
-    const FEATURE_PRIVATE_TRANSFER_ENABLED = 1;
-    const FEATURE_ALLOWANCES_ENABLED = 2;
-    const features = FEATURE_PRIVATE_TRANSFER_ENABLED | FEATURE_ALLOWANCES_ENABLED;
-    const feeBps = 0; // Default fee
-    
-    const initPoolData = poolCoder.instruction.encode('initialize_pool', {
-      fee_bps: feeBps,
-      features: features
-    });
-    
-    // Build account mapping from IDL structure
-    const poolAccounts: Record<string, PublicKey> = {
-      authority: wallet.publicKey,
-      pool_state: poolState,
-      nullifier_set: nullifierSet,
-      note_ledger: noteLedger,
-      commitment_tree: commitmentTreeKey,
-      hook_config: hookConfig,
-      hook_whitelist: hookWhitelist,
-      vault_state: vaultState,
-      origin_mint: originMintKey,
-      mint_mapping: mintMappingKey,
-      factory_state: factoryState,
-      twin_mint: POOL_PROGRAM_ID, // Optional, use program ID as placeholder
-      verifier_program: VERIFIER_PROGRAM_ID,
-      verifying_key: verifyingKey,
-      payer: wallet.publicKey,
-      system_program: SystemProgram.programId,
-      token_program: tokenProgramId
-    };
-    
-    // Build account metas from IDL (same as lowlevel-e2e.ts)
-    const ixDef = (poolIdl as Idl).instructions?.find((item) => item.name === 'initialize_pool');
-    if (!ixDef) {
-      throw new Error('initialize_pool instruction not found in IDL');
-    }
-    
-    // Use type assertion to access IDL properties (IDL JSON has these fields even if types don't)
-    type IdlAccountWithProps = { name: string; signer?: boolean; writable?: boolean; optional?: boolean };
-    const accounts = ixDef.accounts as IdlAccountWithProps[];
-    
-    const initPoolKeys = accounts.map((account) => {
-      const pubkey = poolAccounts[account.name];
-      if (!pubkey) {
-        if (account.optional) {
-          // For optional accounts, use program ID as placeholder
-          return { pubkey: POOL_PROGRAM_ID, isSigner: false, isWritable: false };
-        }
-        throw new Error(`Missing account mapping for ${account.name}`);
-      }
-      const isWritable = account.writable ?? false;
-      const isSigner = account.signer ?? false;
-      return { pubkey, isSigner, isWritable };
-    });
-    
-    const initPoolIx = new TransactionInstruction({
-      programId: POOL_PROGRAM_ID,
-      keys: initPoolKeys,
-      data: initPoolData
-    });
-    
-    const initBlockhash = await connection.getLatestBlockhash('confirmed');
-    // Create a separate transaction for pool initialization to avoid account deduplication issues
-    const initTx = new Transaction().add(initPoolIx);
-    initTx.feePayer = wallet.publicKey;
-    initTx.recentBlockhash = initBlockhash.blockhash;
-    const initSig = await wallet.sendTransaction(initTx, connection, { skipPreflight: false });
-    await waitForSignatureConfirmation(connection, initSig, initBlockhash.blockhash, initBlockhash.lastValidBlockHeight);
-    if (process.env.NEXT_PUBLIC_DEBUG_WRAP === 'true') {
-      console.info('[wrap] Pool initialized');
-    }
-    
-    // Refresh commitment tree state after initialization
-    const finalCommitmentTreeAccount = await connection.getAccountInfo(commitmentTreeKey);
-    if (!finalCommitmentTreeAccount) {
-      throw new Error('Commitment tree account missing after pool initialization');
-    }
-    treeState = decodeCommitmentTree(new Uint8Array(finalCommitmentTreeAccount.data));
-  }
-  
-  // Include shield and finalize_ledger in the same transaction (required for security)
-  const shieldInstructionSet = [...instructions, shieldInstruction, finalizeLedgerInstruction];
+  const shieldInstructionSet = [...instructions, shieldInstruction];
 
   let shieldSignature: string | undefined;
   let shieldAttempts = 0;
@@ -926,14 +1310,118 @@ export async function wrap(params: WrapParams): Promise<string> {
   while (shieldAttempts < maxShieldAttempts) {
     shieldAttempts++;
     try {
-      // Use regular Transaction - addresses are derived programmatically (scalable, no lookup tables)
-      const shieldTransaction = new Transaction().add(...shieldInstructionSet);
-      shieldTransaction.feePayer = wallet.publicKey;
-      shieldTransaction.recentBlockhash = latestBlockhash.blockhash;
-      shieldSignature = await wallet.sendTransaction(shieldTransaction, connection, {
-        skipPreflight: false
-      });
-      break; // Success, exit retry loop
+      let shieldTransaction: Transaction | VersionedTransaction | null = null;
+      
+      if (lookupTableAccount && lookupTableAddress) {
+        // Use VersionedTransaction with ALT to reduce transaction size
+        const altAddresses = lookupTableAccount.state.addresses;
+        const altAddressMap = new Map(altAddresses.map((addr: PublicKey, idx: number) => [addr.toBase58(), idx]));
+        
+        // Build addressTableLookups - separate accounts into writable and readonly indexes
+        const writableIndexes: number[] = [];
+        const readonlyIndexes: number[] = [];
+        
+        // Process shield instruction keys to identify which accounts are in ALT
+        for (const accountMeta of shieldKeys) {
+          const altIdx = altAddressMap.get(accountMeta.pubkey.toBase58());
+          if (altIdx !== undefined && typeof altIdx === 'number' && accountMeta.pubkey.toBase58() !== wallet.publicKey.toBase58()) {
+            // Account is in ALT and is not the wallet (signer must be direct)
+            if (accountMeta.isWritable) {
+              if (!writableIndexes.includes(altIdx)) {
+                writableIndexes.push(altIdx);
+              }
+            } else {
+              if (!readonlyIndexes.includes(altIdx)) {
+                readonlyIndexes.push(altIdx);
+              }
+            }
+          }
+        }
+        
+        // Sort indexes for addressTableLookups
+        writableIndexes.sort((a, b) => a - b);
+        readonlyIndexes.sort((a, b) => a - b);
+        
+        const addressTableLookups = writableIndexes.length > 0 || readonlyIndexes.length > 0 ? [{
+          accountKey: lookupTableAddress,
+          writableIndexes,
+          readonlyIndexes
+        }] : [];
+        
+        // Build MessageV0 with addressTableLookups
+        // Use the lookup table account to build addressTableLookups
+        const addressTableLookupAccounts = [lookupTableAccount];
+        
+        const baseMessage = new TransactionMessage({
+          payerKey: wallet.publicKey,
+          recentBlockhash: latestBlockhash.blockhash,
+          instructions: shieldInstructionSet
+        });
+        
+        // Compile to V0 message with addressTableLookups
+        // The compileToV0Message method accepts AddressLookupTableAccount[] as second parameter
+        const messageV0 = baseMessage.compileToV0Message(addressTableLookupAccounts);
+        
+        shieldTransaction = new VersionedTransaction(messageV0);
+        
+        // Use wallet's signTransaction method if available (works with wallet adapters)
+        // Otherwise, try to sign manually with keypair (for test scenarios)
+        let signedTransaction: VersionedTransaction | null = null;
+        
+        if (wallet.signTransaction) {
+          // Wallet adapter supports signing VersionedTransactions
+          try {
+            signedTransaction = await wallet.signTransaction(shieldTransaction);
+            shieldSignature = await connection.sendRawTransaction(signedTransaction.serialize(), {
+              skipPreflight: false
+            });
+          } catch (signError: any) {
+            console.warn('[wrap] Failed to sign VersionedTransaction with wallet adapter:', signError);
+            // Fall through to try keypair or regular transaction
+            signedTransaction = null;
+          }
+        }
+        
+        // Fallback: try manual signing with keypair (for test scenarios)
+        if (!signedTransaction) {
+          let signerKeypair: Keypair | null = null;
+          if (params.keypair) {
+            signerKeypair = params.keypair;
+          } else if ((wallet as any).secretKey) {
+            // Wallet is already a Keypair
+            signerKeypair = wallet as any;
+          }
+          
+          if (signerKeypair) {
+            shieldTransaction.sign([signerKeypair]);
+            shieldSignature = await connection.sendRawTransaction(shieldTransaction.serialize(), {
+              skipPreflight: false
+            });
+          } else {
+            // Can't sign VersionedTransaction - fall back to regular Transaction
+            console.warn('[wrap] Cannot sign VersionedTransaction, falling back to regular Transaction (may exceed size limits)');
+            shieldTransaction = new Transaction().add(...shieldInstructionSet);
+            shieldTransaction.feePayer = wallet.publicKey;
+            shieldTransaction.recentBlockhash = latestBlockhash.blockhash;
+            shieldSignature = await wallet.sendTransaction(shieldTransaction, connection, {
+              skipPreflight: false
+            });
+          }
+        }
+      } else {
+        // Fall back to regular Transaction if ALT not available
+        shieldTransaction = new Transaction().add(...shieldInstructionSet);
+        shieldTransaction.feePayer = wallet.publicKey;
+        shieldTransaction.recentBlockhash = latestBlockhash.blockhash;
+        shieldSignature = await wallet.sendTransaction(shieldTransaction, connection, {
+          skipPreflight: false
+        });
+      }
+      
+      // Only break if we successfully sent the transaction
+      if (shieldSignature) {
+        break; // Success, exit retry loop
+      }
     } catch (error: any) {
       // Check if error is PendingShieldInFlight using standardized error handler
       const { isPendingShieldError } = require('./errorHandler');
@@ -1002,7 +1490,7 @@ export async function wrap(params: WrapParams): Promise<string> {
                 const refreshedShieldData = poolCoder.instruction.encode('shield', { args: refreshedShieldArgs });
                 // Update shield instruction with new data
                 shieldInstruction.data = refreshedShieldData;
-                shieldInstructionSet[shieldInstructionSet.length - 2] = shieldInstruction; // Update shield instruction (second to last, before finalize_ledger)
+                shieldInstructionSet[shieldInstructionSet.length - 1] = shieldInstruction;
                 console.info('[wrap] Regenerated proof with new root, retrying shield...');
               }
               await sleep(1000); // Wait for state to settle
@@ -1050,6 +1538,26 @@ export async function wrap(params: WrapParams): Promise<string> {
     // eslint-disable-next-line no-console
     console.info('[wrap] shield signature confirmed', shieldSignature);
   }
+
+  const finalizeLedgerInstructions: TransactionInstruction[] = [];
+  if (resolvedComputeLimit > 0) {
+    finalizeLedgerInstructions.push(ComputeBudgetProgram.setComputeUnitLimit({ units: resolvedComputeLimit }));
+  }
+  finalizeLedgerInstructions.push(finalizeLedgerInstruction);
+
+  const ledgerBlockhash = await connection.getLatestBlockhash('confirmed');
+  const finalizeLedgerTransaction = new Transaction().add(...finalizeLedgerInstructions);
+  finalizeLedgerTransaction.feePayer = wallet.publicKey;
+  finalizeLedgerTransaction.recentBlockhash = ledgerBlockhash.blockhash;
+  const finalizeLedgerSignature = await wallet.sendTransaction(finalizeLedgerTransaction, connection, {
+    skipPreflight: false
+  });
+  await waitForSignatureConfirmation(
+    connection,
+    finalizeLedgerSignature,
+    ledgerBlockhash.blockhash,
+    ledgerBlockhash.lastValidBlockHeight
+  );
 
   const finalizeTreeInstructions: TransactionInstruction[] = [];
   if (resolvedComputeLimit > 0) {
@@ -1180,14 +1688,28 @@ export async function unwrap(params: UnwrapParams): Promise<string> {
   const oldRootBytes = decodedProof.fields[0];
   const newRootBytes = decodedProof.fields[1];
   const nullifierBytes = decodedProof.fields.slice(2, 2 + nullifierCount);
-  const changeCommitmentBytes = decodedProof.fields[2 + nullifierCount];
-  const changeAmountCommitmentBytes = decodedProof.fields[3 + nullifierCount];
-  const amountFieldBytes = decodedProof.fields[4 + nullifierCount];
-  const feeFieldBytes = decodedProof.fields[5 + nullifierCount];
-  const destinationFieldBytes = decodedProof.fields[6 + nullifierCount];
-  const modeFieldBytes = decodedProof.fields[7 + nullifierCount];
-  const mintFieldBytes = decodedProof.fields[8 + nullifierCount];
-  const poolFieldBytes = decodedProof.fields[9 + nullifierCount];
+  
+  // Check if there's change by looking at the field count
+  // If there's change, we have: nullifiers + 2 change fields (commitment + amount_commitment) + 6 trailing fields
+  // If no change, we have: nullifiers + 6 trailing fields (no change fields)
+  const hasChange = decodedProof.fields.length >= (2 + nullifierCount + CHANGE_FIELD_COUNT + TRAILING_FIELD_COUNT);
+  
+  let changeCommitmentBytes: Uint8Array | null = null;
+  let changeAmountCommitmentBytes: Uint8Array | null = null;
+  let fieldOffset = 2 + nullifierCount;
+  
+  if (hasChange) {
+    changeCommitmentBytes = decodedProof.fields[fieldOffset];
+    changeAmountCommitmentBytes = decodedProof.fields[fieldOffset + 1];
+    fieldOffset += CHANGE_FIELD_COUNT;
+  }
+  
+  const amountFieldBytes = decodedProof.fields[fieldOffset];
+  const feeFieldBytes = decodedProof.fields[fieldOffset + 1];
+  const destinationFieldBytes = decodedProof.fields[fieldOffset + 2];
+  const modeFieldBytes = decodedProof.fields[fieldOffset + 3];
+  const mintFieldBytes = decodedProof.fields[fieldOffset + 4];
+  const poolFieldBytes = decodedProof.fields[fieldOffset + 5];
 
   const oldRootCanonical = bytesLEToCanonicalHex(oldRootBytes);
   if (process.env.NEXT_PUBLIC_DEBUG_WRAP === 'true') {
@@ -1212,11 +1734,20 @@ export async function unwrap(params: UnwrapParams): Promise<string> {
     throw new Error('Commitment tree root mismatch. Refresh notes and try again.');
   }
 
+  // Detect which token program the origin mint uses (needed for vault token account)
+  const originMintInfo = await connection.getAccountInfo(originMintKey, 'confirmed');
+  if (!originMintInfo) {
+    throw new Error('Origin mint account not found');
+  }
+  const originTokenProgram = originMintInfo.owner.equals(TOKEN_2022_PROGRAM_ID) 
+    ? TOKEN_2022_PROGRAM_ID 
+    : TOKEN_PROGRAM_ID;
+
   const vaultTokenAccount = await getAssociatedTokenAddress(
     originMintKey,
     vaultStateKey,
     true,
-    TOKEN_PROGRAM_ID,
+    originTokenProgram,
     ASSOCIATED_TOKEN_PROGRAM_ID
   );
 
@@ -1226,6 +1757,28 @@ export async function unwrap(params: UnwrapParams): Promise<string> {
     originMintKey
   );
   ensureMintActive(mintMapping);
+  
+  // Fetch lookup table if it exists (for reducing transaction size)
+  let lookupTableAddress: PublicKey | null = null;
+  let lookupTableAccount: any = null;
+  if (mintMapping.lookupTable) {
+    lookupTableAddress = mintMapping.lookupTable;
+    try {
+      const lookupTableResult = await connection.getAddressLookupTable(lookupTableAddress, { commitment: 'confirmed' });
+      if (lookupTableResult.value) {
+        lookupTableAccount = lookupTableResult;
+        console.info(`[unwrap] Using existing lookup table: ${lookupTableAddress.toBase58()}`);
+      } else {
+        console.warn(`[unwrap] Lookup table ${lookupTableAddress.toBase58()} not found, falling back to regular transaction`);
+        lookupTableAddress = null;
+        lookupTableAccount = null;
+      }
+    } catch (error: any) {
+      console.warn(`[unwrap] Failed to fetch lookup table ${lookupTableAddress?.toBase58() ?? 'unknown'}:`, error.message);
+      lookupTableAddress = null;
+      lookupTableAccount = null;
+    }
+  }
   
   // Lookup tables removed - addresses are now derived programmatically
   
@@ -1253,7 +1806,7 @@ export async function unwrap(params: UnwrapParams): Promise<string> {
   }
 
   const destinationMint = redeemToTwin ? twinMintKey! : originMintKey;
-  const destinationTokenProgram = redeemToTwin ? TOKEN_2022_PROGRAM_ID : TOKEN_PROGRAM_ID;
+  const destinationTokenProgram = redeemToTwin ? TOKEN_2022_PROGRAM_ID : originTokenProgram;
   const destinationTokenAccount = await getAssociatedTokenAddress(
     destinationMint,
     destinationKey,
@@ -1315,8 +1868,8 @@ export async function unwrap(params: UnwrapParams): Promise<string> {
     old_root: Array.from(oldRootBytes),
     new_root: Array.from(newRootBytes),
     nullifiers: nullifierBytes.map((entry) => Array.from(entry)),
-    output_commitments: [Array.from(changeCommitmentBytes)],
-    output_amount_commitments: [Array.from(changeAmountCommitmentBytes)],
+    output_commitments: hasChange && changeCommitmentBytes ? [Array.from(changeCommitmentBytes)] : [],
+    output_amount_commitments: hasChange && changeAmountCommitmentBytes ? [Array.from(changeAmountCommitmentBytes)] : [],
     amount: new BN(params.amount.toString()),
     proof: decodedProof.proof,
     public_inputs: decodedProof.publicInputs
@@ -1344,8 +1897,12 @@ export async function unwrap(params: UnwrapParams): Promise<string> {
     compare('old_root', oldRootBytes, unshieldArgs.old_root);
     compare('new_root', newRootBytes, unshieldArgs.new_root);
     nullifierBytes.forEach((value, idx) => compare(`nullifier[${idx}]`, value, unshieldArgs.nullifiers[idx]!));
-    compare('change_commitment', changeCommitmentBytes, unshieldArgs.output_commitments[0]!);
-    compare('change_amount_commitment', changeAmountCommitmentBytes, unshieldArgs.output_amount_commitments[0]!);
+    if (changeCommitmentBytes && unshieldArgs.output_commitments[0]) {
+      compare('change_commitment', changeCommitmentBytes, unshieldArgs.output_commitments[0]);
+    }
+    if (changeAmountCommitmentBytes && unshieldArgs.output_amount_commitments[0]) {
+      compare('change_amount_commitment', changeAmountCommitmentBytes, unshieldArgs.output_amount_commitments[0]);
+    }
     compare('amount_bytes', amountFieldBytes, Array.from(amountBytes));
     compare('fee_bytes', feeFieldBytes, Array.from(feeBytes));
     compare('destination_bytes', destinationFieldBytes, destinationExpected);
@@ -1396,19 +1953,24 @@ export async function unwrap(params: UnwrapParams): Promise<string> {
     { pubkey: destinationTokenAccount, isSigner: false, isWritable: true }
   ];
 
-  if (twinMintKey) {
+  // Only include twin_mint if we're redeeming to twin (ptkn mode)
+  // If not redeeming to twin, use program ID as placeholder (Anchor optional account pattern)
+  if (redeemToTwin && twinMintKey) {
     keys.push({
       pubkey: twinMintKey,
       isSigner: false,
       isWritable: true
     });
+  } else {
+    // Anchor treats an optional account as `None` when the slot equals the program id
+    keys.push({ pubkey: POOL_PROGRAM_ID, isSigner: false, isWritable: false });
   }
 
   keys.push(
     { pubkey: VAULT_PROGRAM_ID, isSigner: false, isWritable: false },
     { pubkey: factoryStateKey, isSigner: false, isWritable: false },
     { pubkey: FACTORY_PROGRAM_ID, isSigner: false, isWritable: false },
-    { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
+    { pubkey: originTokenProgram, isSigner: false, isWritable: false }, // Use originTokenProgram instead of TOKEN_PROGRAM_ID
     { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
     { pubkey: wallet.publicKey, isSigner: true, isWritable: true },
     { pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false }
@@ -1422,17 +1984,113 @@ export async function unwrap(params: UnwrapParams): Promise<string> {
     })
   );
 
-  // Lookup tables removed - addresses are now derived programmatically
-  
-  // Send transaction
+  // Use Address Lookup Table if available to reduce transaction size
   const blockhash = await connection.getLatestBlockhash('confirmed');
-  const transaction = new Transaction().add(...instructions);
-  transaction.feePayer = wallet.publicKey;
-  transaction.recentBlockhash = blockhash.blockhash;
   
-  const signature = await wallet.sendTransaction(transaction, connection, {
-    skipPreflight: false
-  });
+  let signature: string | undefined;
+  if (lookupTableAccount && lookupTableAddress) {
+    // Use VersionedTransaction with ALT to reduce transaction size
+    const altAddresses = lookupTableAccount.value.state.addresses;
+    const altAddressMap = new Map(altAddresses.map((addr: PublicKey, idx: number) => [addr.toBase58(), idx]));
+    
+    // Build addressTableLookups - separate accounts into writable and readonly indexes
+    const writableIndexes: number[] = [];
+    const readonlyIndexes: number[] = [];
+    
+    // Process unshield instruction keys to identify which accounts are in ALT
+    for (const accountMeta of keys) {
+      const altIdx = altAddressMap.get(accountMeta.pubkey.toBase58());
+      if (altIdx !== undefined && typeof altIdx === 'number' && accountMeta.pubkey.toBase58() !== wallet.publicKey.toBase58()) {
+        // Account is in ALT and is not the wallet (signer must be direct)
+        if (accountMeta.isWritable) {
+          if (!writableIndexes.includes(altIdx)) {
+            writableIndexes.push(altIdx);
+          }
+        } else {
+          if (!readonlyIndexes.includes(altIdx)) {
+            readonlyIndexes.push(altIdx);
+          }
+        }
+      }
+    }
+    
+    // Sort indexes for addressTableLookups
+    writableIndexes.sort((a, b) => a - b);
+    readonlyIndexes.sort((a, b) => a - b);
+    
+    const addressTableLookups = writableIndexes.length > 0 || readonlyIndexes.length > 0 ? [{
+      accountKey: lookupTableAddress,
+      writableIndexes,
+      readonlyIndexes
+    }] : [];
+    
+    const baseMessage = new TransactionMessage({
+      payerKey: wallet.publicKey,
+      recentBlockhash: blockhash.blockhash,
+      instructions
+    });
+    
+    const messageV0 = baseMessage.compileToV0Message([lookupTableAccount.value]);
+    
+    const versionedTransaction = new VersionedTransaction(messageV0);
+    
+    // Use wallet's signTransaction method if available (works with wallet adapters)
+    // Otherwise, try to sign manually with keypair (for test scenarios)
+    let signedTransaction: VersionedTransaction | null = null;
+    
+    if (wallet.signTransaction) {
+      // Wallet adapter supports signing VersionedTransactions
+      try {
+        signedTransaction = await wallet.signTransaction(versionedTransaction);
+        signature = await connection.sendRawTransaction(signedTransaction.serialize(), {
+          skipPreflight: false
+        });
+      } catch (signError: any) {
+        console.warn('[unwrap] Failed to sign VersionedTransaction with wallet adapter:', signError);
+        // Fall through to try keypair or regular transaction
+        signedTransaction = null;
+      }
+    }
+    
+    // Fallback: try manual signing with keypair (for test scenarios)
+    if (!signedTransaction) {
+      let signerKeypair: Keypair | null = null;
+      if (params.keypair) {
+        signerKeypair = params.keypair;
+      } else if ((wallet as any).secretKey) {
+        // Wallet is already a Keypair (e.g., from createWalletAdapter in tests)
+        signerKeypair = wallet as any;
+      }
+      
+      if (signerKeypair) {
+        versionedTransaction.sign([signerKeypair]);
+        signature = await connection.sendRawTransaction(versionedTransaction.serialize(), {
+          skipPreflight: false
+        });
+      } else {
+        // Can't sign VersionedTransaction - fall back to regular Transaction
+        console.warn('[unwrap] Cannot sign VersionedTransaction, falling back to regular Transaction (may exceed size limits)');
+        const transaction = new Transaction().add(...instructions);
+        transaction.feePayer = wallet.publicKey;
+        transaction.recentBlockhash = blockhash.blockhash;
+        signature = await wallet.sendTransaction(transaction, connection, {
+          skipPreflight: false
+        });
+      }
+    }
+  } else {
+    // Fallback to regular Transaction if no ALT is available
+    const transaction = new Transaction().add(...instructions);
+    transaction.feePayer = wallet.publicKey;
+    transaction.recentBlockhash = blockhash.blockhash;
+    signature = await wallet.sendTransaction(transaction, connection, {
+      skipPreflight: false
+    });
+  }
+  
+  if (!signature) {
+    throw new Error('Failed to send unwrap transaction');
+  }
   
   await waitForSignatureConfirmation(
     connection,

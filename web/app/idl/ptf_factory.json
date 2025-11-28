@@ -1057,6 +1057,59 @@
       ]
     },
     {
+      "name": "set_lookup_table",
+      "discriminator": [
+        235,
+        249,
+        109,
+        59,
+        171,
+        208,
+        117,
+        65
+      ],
+      "accounts": [
+        {
+          "name": "factory_state",
+          "writable": true
+        },
+        {
+          "name": "mint_mapping",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  109,
+                  97,
+                  112
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "mint_mapping.origin_mint",
+                "account": "MintMapping"
+              }
+            ]
+          }
+        },
+        {
+          "name": "lookup_table"
+        },
+        {
+          "name": "payer",
+          "signer": true
+        }
+      ],
+      "args": [
+        {
+          "name": "lookup_table",
+          "type": "pubkey"
+        }
+      ]
+    },
+    {
       "name": "thaw_mapping",
       "discriminator": [
         104,
@@ -1359,6 +1412,19 @@
         149,
         151,
         169
+      ]
+    },
+    {
+      "name": "LookupTableSet",
+      "discriminator": [
+        37,
+        0,
+        74,
+        11,
+        76,
+        159,
+        230,
+        206
       ]
     },
     {
@@ -2029,6 +2095,22 @@
       }
     },
     {
+      "name": "LookupTableSet",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "origin_mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "lookup_table",
+            "type": "pubkey"
+          }
+        ]
+      }
+    },
+    {
       "name": "MintFrozen",
       "type": {
         "kind": "struct",
@@ -2092,6 +2174,12 @@
           {
             "name": "is_native_ztoken",
             "type": "bool"
+          },
+          {
+            "name": "lookup_table",
+            "type": {
+              "option": "pubkey"
+            }
           }
         ]
       }

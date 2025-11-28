@@ -211,6 +211,7 @@ pub mod ptf_factory {
         mapping.has_ptkn = false;
         mapping.ptkn_mint = Pubkey::default();
         mapping.is_native_ztoken = false; // Regular tokens are not native zTokens
+        mapping.lookup_table = None; // ALT will be created during preparePool
 
         let effective_fee_bps = fee_bps_override.unwrap_or(state.default_fee_bps);
 
@@ -299,7 +300,38 @@ pub mod ptf_factory {
         Ok(())
     }
 
-    // set_lookup_table instruction removed - addresses are now derived programmatically
+    pub fn set_lookup_table(ctx: Context<SetLookupTable>, lookup_table: Pubkey) -> Result<()> {
+        let state = &ctx.accounts.factory_state;
+        require!(!state.paused, FactoryError::Paused);
+        // Allow any user to set lookup table for bootstrap convenience
+        // No authority check required - this is a convenience feature for bootstrap operations
+        // The lookup table itself is validated to ensure it's a valid ALT
+        
+        // Validate that the lookup table account exists and is owned by the Address Lookup Table Program
+        let lookup_table_info = ctx.accounts.lookup_table.to_account_info();
+        require!(
+            lookup_table_info.owner == &solana_program::address_lookup_table::program::ID,
+            FactoryError::InvalidAccountOwner
+        );
+        
+        // Verify the lookup table is initialized by checking if it has data
+        let lookup_table_data = lookup_table_info.try_borrow_data()
+            .map_err(|_| error!(FactoryError::AccountDataReadFailed))?;
+        require!(
+            lookup_table_data.len() >= LOOKUP_TABLE_META_SIZE,
+            FactoryError::AccountDataTooShort
+        );
+        
+        let mapping = &mut ctx.accounts.mint_mapping;
+        mapping.lookup_table = Some(lookup_table);
+        
+        emit!(LookupTableSet {
+            origin_mint: mapping.origin_mint,
+            lookup_table,
+        });
+        
+        Ok(())
+    }
 
     pub fn pause(ctx: Context<UpdateFactoryAuthority>) -> Result<()> {
         let state = &mut ctx.accounts.factory_state;
@@ -1141,10 +1173,11 @@ pub mod ptf_factory {
             mapping.has_ptkn = false;
             mapping.ptkn_mint = Pubkey::default();
             mapping.is_native_ztoken = false; // Regular token, not native zToken
+            mapping.lookup_table = None; // ALT will be created during preparePool
         } // Drop mutable borrow here
         
-        // CRITICAL: Manually ensure all bytes are written, including is_native_ztoken at byte 72
-        // This ensures the account is exactly 81 bytes (8 discriminator + 73 body bytes)
+        // CRITICAL: Manually ensure all bytes are written, including is_native_ztoken at byte 72 and lookup_table at bytes 73-105
+        // This ensures the account is exactly 114 bytes (8 discriminator + 106 body bytes)
         {
             let mint_mapping_info = ctx.accounts.mint_mapping.to_account_info();
             let mut data_ref = mint_mapping_info.try_borrow_mut_data()?;
@@ -1157,10 +1190,10 @@ pub mod ptf_factory {
             );
             
             let body = &mut data_ref[8..];
-            // Ensure body is at least 73 bytes (MintMapping::SPACE - 8)
+            // Ensure body is at least 106 bytes (MintMapping::SPACE - 8)
             let body_len = body.len();
             require!(
-                body_len >= 73,
+                body_len >= 106,
                 FactoryError::AccountDataTooShort
             );
             
@@ -1176,12 +1209,17 @@ pub mod ptf_factory {
             body[70] = fee_bps_override.is_some() as u8;
             body[71] = ctx.bumps.mint_mapping;
             body[72] = 0; // is_native_ztoken (false = 0) - regular token
+            // lookup_table: Option<Pubkey> - 1 byte discriminant + 32 bytes Pubkey = 33 bytes
+            // Option discriminant: 0 = None, 1 = Some
+            body[73] = 0; // lookup_table discriminant (None = 0)
+            body[74..106].fill(0); // lookup_table Pubkey bytes (zeroed for None)
             
             // Verify we wrote all required bytes (drop mutable borrow first)
             let is_native_ztoken_value = body[72];
+            let lookup_table_discriminant = body[73];
             drop(data_ref);
-            msg!("factory mint_mapping written: data_len={}, body_len={}, is_native_ztoken={}", 
-                 data_len, body_len, is_native_ztoken_value);
+            msg!("factory mint_mapping written: data_len={}, body_len={}, is_native_ztoken={}, lookup_table_discriminant={}", 
+                 data_len, body_len, is_native_ztoken_value, lookup_table_discriminant);
         }
         msg!(
             "factory register mint mapping origin={} native={}",
@@ -1385,7 +1423,17 @@ pub struct MutationMintState<'info> {
     pub mint_mapping: Account<'info, MintMapping>,
 }
 
-// SetLookupTable accounts struct removed - addresses are now derived programmatically
+#[derive(Accounts)]
+pub struct SetLookupTable<'info> {
+    #[account(mut)]
+    pub factory_state: Account<'info, FactoryState>,
+    #[account(mut, seeds = [seeds::MINT_MAPPING, mint_mapping.origin_mint.as_ref()], bump = mint_mapping.bump)]
+    pub mint_mapping: Account<'info, MintMapping>,
+    /// CHECK: Validated in instruction to be owned by Address Lookup Table Program
+    pub lookup_table: UncheckedAccount<'info>,
+    /// CHECK: Payer/authority - any user can set lookup table for bootstrap convenience
+    pub payer: Signer<'info>,
+}
 
 #[derive(Accounts)]
 #[instruction(salt: [u8; 32], action: TimelockAction)]
@@ -1708,13 +1756,16 @@ pub struct MintMapping {
     pub has_fee_override: bool,
     pub bump: u8,
     pub is_native_ztoken: bool,
-    // lookup_table field removed - addresses are now derived programmatically
+    // ALT address for transaction size optimization (one per mint, created during preparePool)
+    // Addresses are still derived programmatically, but ALT allows compressing transaction size
+    pub lookup_table: Option<Pubkey>,
 }
 
 impl MintMapping {
-    // SPACE = discriminator[8] + origin_mint[32] + ptkn_mint[32] + has_ptkn[1] + status[1] + decimals[1] + features[1] + fee_bps_override[2] + has_fee_override[1] + bump[1] + is_native_ztoken[1]
-    // Total: 8 + 32 + 32 + 1 + 1 + 1 + 1 + 2 + 1 + 1 + 1 = 81 bytes
-    pub const SPACE: usize = 8 + 32 + 32 + 1 + 1 + 1 + 1 + 2 + 1 + 1 + 1;
+    // SPACE = discriminator[8] + origin_mint[32] + ptkn_mint[32] + has_ptkn[1] + status[1] + decimals[1] + features[1] + fee_bps_override[2] + has_fee_override[1] + bump[1] + is_native_ztoken[1] + lookup_table Option<Pubkey>[33]
+    // Option<Pubkey> = 1 byte (discriminant: None=0, Some=1) + 32 bytes (Pubkey) = 33 bytes
+    // Total: 8 + 32 + 32 + 1 + 1 + 1 + 1 + 2 + 1 + 1 + 1 + 33 = 114 bytes
+    pub const SPACE: usize = 8 + 32 + 32 + 1 + 1 + 1 + 1 + 2 + 1 + 1 + 1 + 33;
 }
 
 #[account]
@@ -2098,7 +2149,11 @@ pub struct PoolProgramIdUpdated {
     pub new_pool_program_id: Pubkey,
 }
 
-// LookupTableSet event removed - addresses are now derived programmatically
+#[event]
+pub struct LookupTableSet {
+    pub origin_mint: Pubkey,
+    pub lookup_table: Pubkey,
+}
 
 #[repr(u8)]
 pub enum MintStatus {

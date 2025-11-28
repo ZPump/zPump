@@ -20,7 +20,7 @@ import { BN, BorshCoder, Idl } from '@coral-xyz/anchor';
 import type { MintConfig } from '../config/mints';
 import { ProofClient } from '../lib/proofClient';
 import { IndexerClient } from '../lib/indexerClient';
-import { wrap, transfer, transferFrom, unwrap } from '../lib/sdk';
+import { wrap, transfer, transferFrom, unwrap, preparePool } from '../lib/sdk';
 import { deriveViewingKey } from '../lib/wallet/viewingKey';
 import { poseidonHashMany } from '../lib/onchain/poseidon';
 import { canonicalizeHex, bytesLEToCanonicalHex } from '../lib/onchain/utils';
@@ -30,6 +30,7 @@ import { POOL_PROGRAM_ID, FACTORY_PROGRAM_ID } from '../lib/onchain/programIds';
 import { deriveAllowanceAccount, deriveFactoryState, deriveMintMapping, deriveNullifierSet } from '../lib/onchain/pdas';
 import factoryIdl from '../idl/ptf_factory.json';
 import { ensureFetchPolyfill } from './utils/fetch-polyfill';
+import { createWalletAdapter } from './utils/walletAdapter';
 
 ensureFetchPolyfill();
 
@@ -626,42 +627,6 @@ async function waitForMint(predicate: (mint: MintConfig) => boolean, timeoutMs =
   throw new Error('Timed out waiting for mint registration');
 }
 
-function createWalletAdapter(payer: Keypair, connection: Connection): WalletLike {
-  const adapter = {
-    publicKey: payer.publicKey,
-    connect: async () => {},
-    disconnect: async () => {},
-    connected: true,
-    connecting: false,
-    disconnecting: false,
-    autoConnect: false,
-    readyState: 'Installed',
-    wallets: [],
-    wallet: null,
-    visible: false,
-    setVisible: () => {},
-    supportedTransactionVersions: null,
-    async sendTransaction(transaction: Transaction, connection: Connection, options?: { skipPreflight?: boolean }): Promise<string> {
-      // VersionedTransaction removed - addresses are now derived programmatically
-      // Fully sign the transaction (not partialSign) to ensure it's valid
-      transaction.sign(payer);
-      return connection.sendRawTransaction(transaction.serialize(), { skipPreflight: options?.skipPreflight ?? false });
-    },
-    async signTransaction(transaction: Transaction) {
-      transaction.sign(payer);
-      return transaction;
-    },
-    async signAllTransactions(transactions: Transaction[]) {
-      // VersionedTransaction removed - addresses are now derived programmatically
-      transactions.forEach((tx) => {
-        tx.sign(payer);
-      });
-      return transactions;
-    }
-  };
-  return adapter as unknown as WalletLike;
-}
-
 async function publishRoot(baseUrl: string, mint: string, current: string, recent: string[]): Promise<void> {
   const normalizedBase = baseUrl.endsWith('/') ? baseUrl.slice(0, -1) : baseUrl;
   const response = await fetch(`${normalizedBase}/roots/${mint}`, {
@@ -843,8 +808,8 @@ async function main() {
   const delegate = Keypair.generate();
   const adminAuthority = await loadLocalAuthorityKeypair();
 
-  const ownerAdapter = createWalletAdapter(owner, connection);
-  const delegateAdapter = createWalletAdapter(delegate, connection);
+  const ownerAdapter = createWalletAdapter(owner) as WalletLike;
+  const delegateAdapter = createWalletAdapter(delegate) as WalletLike;
 
   console.info('[setup] airdropping SOL to wallets');
   await Promise.all([owner, receiver, delegate].map((kp) => faucetSol(connection, kp.publicKey)));
@@ -886,6 +851,11 @@ async function main() {
   const feeBps = BigInt(initialPoolInfo.feeBps);
 
   console.info('[pool] fee config', { feeBps: initialPoolInfo.feeBps });
+  await preparePool({
+    connection,
+    wallet: ownerAdapter,
+    originMint: mintConfig.originMint
+  });
 
   const wrapsPlanned = [WRAP_AMOUNT, WRAP_AMOUNT * 2n, WRAP_AMOUNT * 3n, WRAP_AMOUNT];
   const feePerWrap = wrapsPlanned.map((amount) => (amount * feeBps) / 10_000n);
