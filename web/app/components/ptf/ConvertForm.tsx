@@ -17,6 +17,7 @@ import {
   Input,
   InputGroup,
   InputLeftElement,
+  InputRightElement,
   NumberInput,
   NumberInputField,
   Select,
@@ -2160,11 +2161,21 @@ export function ConvertForm() {
                       <Text fontSize="md" color="whiteAlpha.900" fontWeight="medium" isTruncated maxW="100%">
                         {tokenDisplayInfo?.name || tokenDisplayInfo?.symbol || originMint.slice(0, 8)}
                       </Text>
-                      {tokenDisplayInfo?.name && (
-                        <Text fontSize="sm" color="whiteAlpha.600" isTruncated maxW="100%">
-                          {tokenDisplayInfo.symbol}
-                        </Text>
-                      )}
+                      <HStack spacing={1} align="center">
+                        {tokenDisplayInfo?.name && (
+                          <Text fontSize="sm" color="whiteAlpha.600" isTruncated maxW="100%">
+                            {tokenDisplayInfo.symbol}
+                          </Text>
+                        )}
+                        {tokenDisplayInfo?.displayBalance && (
+                          <>
+                            {tokenDisplayInfo?.name && <Text fontSize="sm" color="whiteAlpha.500">·</Text>}
+                            <Text fontSize="sm" color="whiteAlpha.500" isTruncated maxW="100%">
+                              {tokenDisplayInfo.displayBalance} {tokenDisplayInfo.symbol}
+                            </Text>
+                          </>
+                        )}
+                      </HStack>
                     </VStack>
                   </HStack>
                   <IconButton
@@ -2481,15 +2492,35 @@ export function ConvertForm() {
 
         <FormControl isRequired>
           <FormLabel color="whiteAlpha.700">Amount</FormLabel>
-          <NumberInput
-            min={0}
-            value={amount}
-            onChange={(valueString) => setAmount(valueString)}
-            precision={mintConfig?.decimals ?? 0}
-            clampValueOnBlur={false}
-          >
-            <NumberInputField placeholder="0" inputMode="decimal" />
-          </NumberInput>
+          <InputGroup>
+            <NumberInput
+              min={0}
+              value={amount}
+              onChange={(valueString) => setAmount(valueString)}
+              precision={mintConfig?.decimals ?? 0}
+              clampValueOnBlur={false}
+              flex={1}
+            >
+              <NumberInputField placeholder="0" inputMode="decimal" pr="4.5rem" />
+            </NumberInput>
+            {selectedTokenOption && selectedTokenOption.displayBalance && (
+              <InputRightElement width="4.5rem" pr={1}>
+                <Button
+                  h="1.75rem"
+                  size="sm"
+                  variant="ghost"
+                  colorScheme="brand"
+                  onClick={() => {
+                    if (selectedTokenOption.displayBalance) {
+                      setAmount(selectedTokenOption.displayBalance.replace(/,/g, ''));
+                    }
+                  }}
+                >
+                  Max
+                </Button>
+              </InputRightElement>
+            )}
+          </InputGroup>
         </FormControl>
 
         <Box bg="rgba(20, 18, 14, 0.9)" rounded="xl" p={4} border="1px solid rgba(245,178,27,0.18)">
