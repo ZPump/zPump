@@ -51,6 +51,10 @@ This reference lists frequently encountered errors while developing or running z
 - **Cause:** UI awaited indexer balance adjustment; if Photon call fails, spinner persisted.
 - **Fix:** `ConvertForm` now wraps `indexerClient.adjustBalance` in `try/catch`. If this recurs, check indexer logs for `404 not_enabled` (when `ENABLE_BALANCE_API=false`).
 
+### Vault dashboard only lists `TEST`
+- **Cause:** `/api/mints` could only see the bootstrap JSON catalog because the Photon `/mints` endpoint was missing or the mint catalog DB never synced.
+- **Fix:** Rebuild/redeploy the indexer (`pnpm --filter @ptf/photon-indexer build && pm2 restart ptf-indexer --update-env`) so `/mints` is served, ensure `DATABASE_URL` is set, then run `curl -X POST http://127.0.0.1:8787/mints/sync`. Finally `curl http://127.0.0.1:8787/mints | jq '.mints | length'` to confirm more than one entry before refreshing the Vaults page.
+
 ### Faucet Not Responding
 - **Symptoms:** Airdrop requests hang.
 - **Cause:** Old validator still bound to faucet port (`8899/8900`).

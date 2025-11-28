@@ -1390,7 +1390,29 @@ export function ConvertForm() {
     return selectedTokenOption?.symbol || mintConfig?.symbol || '';
   }, [originMint, tokenMetadataMap, tokenDisplayInfo?.symbol, selectedTokenOption?.symbol, mintConfig?.symbol]);
   
+  const activitySymbol = useMemo(() => {
+    if (!originMint) {
+      return '';
+    }
+    return (
+      selectedTokenSymbol ||
+      tokenDisplayInfo?.symbol ||
+      mintConfig?.symbol ||
+      (originMint ? originMint.slice(0, 6) : '')
+    );
+  }, [originMint, selectedTokenSymbol, tokenDisplayInfo?.symbol, mintConfig?.symbol]);
+  
   const zTokenSymbol = useMemo(() => (selectedTokenSymbol ? `z${selectedTokenSymbol}` : ''), [selectedTokenSymbol]);
+  const shieldActivitySymbol = useMemo(() => {
+    if (zTokenSymbol) {
+      return zTokenSymbol;
+    }
+    if (activitySymbol) {
+      return activitySymbol.startsWith('z') ? activitySymbol : `z${activitySymbol}`;
+    }
+    return 'zTOKEN';
+  }, [zTokenSymbol, activitySymbol]);
+  const unshieldActivitySymbol = useMemo(() => activitySymbol || 'TOKEN', [activitySymbol]);
   const redeemDisplaySymbol = useMemo(() => {
     if (!originMint) {
       return '—';
@@ -1949,7 +1971,7 @@ export function ConvertForm() {
           console.warn('Failed to adjust private balance', error);
         }
         const displayAmount = formatBaseUnitsToUi(baseAmount, decimals);
-        setResult(`Shielded ${displayAmount} into ${zTokenSymbol}. Signature: ${signature}`);
+        setResult(`Shielded ${displayAmount} ${shieldActivitySymbol}. Signature: ${signature}`);
         if (wallet.publicKey) {
           const autoStoredNote: StoredNoteRecord = {
             id:
@@ -1979,7 +2001,7 @@ export function ConvertForm() {
             id: signature,
             signature,
             type: 'wrap',
-            symbol: mintConfig?.symbol ?? originMint.slice(0, 6),
+            symbol: shieldActivitySymbol,
             amount: displayAmount,
             timestamp: Date.now()
           }, { viewId: viewingId ?? undefined });
@@ -2175,15 +2197,14 @@ export function ConvertForm() {
         }
 
         const displayAmount = formatBaseUnitsToUi(amountValue, decimals);
-        const targetSymbol = mintConfig?.symbol ?? 'TOKEN';
-        setResult(`Unshielded ${displayAmount} ${targetSymbol}. Signature: ${unwrapSignature}`);
+        setResult(`Unshielded ${displayAmount} ${unshieldActivitySymbol}. Signature: ${unwrapSignature}`);
         if (wallet.publicKey) {
           void recordWalletActivity({
             wallet: wallet.publicKey.toBase58(),
             id: unwrapSignature,
             signature: unwrapSignature,
             type: 'unwrap',
-            symbol: targetSymbol,
+            symbol: unshieldActivitySymbol,
             amount: displayAmount,
             timestamp: Date.now()
           }, { viewId: viewingId ?? undefined });

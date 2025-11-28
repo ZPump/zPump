@@ -47,7 +47,7 @@ What the script does:
 - Initialises `ptf_factory`, `ptf_vault`, and `ptf_pool` PDAs.
 - Seeds commitment tree, note ledger, nullifier set.
 - Creates Address Lookup Tables (ALTs) for unwrap transactions.
-- Writes `web/app/config/mints.generated.json`.
+- Writes `web/app/config/mints.generated.json` **and** pushes the same catalog into the Photon Postgres store (when `DATABASE_URL` is configured) so `/mints` immediately reflects new assets.
 - Publishes initial roots to Photon (via `/roots/:mint`).
 
 If the script errors with “account missing”, rerun—validator may need a few seconds to load programs.
@@ -73,7 +73,12 @@ pm2 start ecosystem.config.js
 
 ### Registering additional mints
 
-After the reset you can bring new test assets online directly from the faucet UI (or via `POST /api/mints`). Each request provisions a fresh origin mint, registers it with `ptf_factory`, initializes the vault/pool/commitment tree, publishes the root to the indexer, and updates `web/app/config/mints.generated.json`. Once the flow completes (typically <60s on a local devnet) the new mint shows up automatically in the faucet, convert form, vault dashboard, and wallet drawer—no rebuild required.
+After the reset you can bring new test assets online directly from the faucet UI (or via `POST /api/mints`). Each request provisions a fresh origin mint, registers it with `ptf_factory`, initializes the vault/pool/commitment tree, publishes the root to the indexer, and updates both:
+
+- `web/app/config/mints.generated.json` (fallback catalog bundled with the app)
+- The Photon mint catalog (`POST /mints/sync` runs automatically), which `/api/mints` now consumes by default
+
+Once the flow completes (typically <60s on a local devnet) the new mint shows up automatically in the faucet, convert form, vault dashboard, and wallet drawer—no rebuild required, as the frontend now merges the indexer catalog with the static file at runtime.
 
 ## 5. Frontend Access
 
@@ -124,7 +129,18 @@ Use this script after any change that touches shielding, transfers, allowances, 
 
 ## 8. Indexer Validation
 
-Check Photon root endpoint:
+Validate both the mint catalog and roots:
+
+```bash
+# Mint catalog should list all registered assets
+curl -s http://127.0.0.1:8787/mints | jq '.mints | length'
+
+# Force a resync if the catalog looks stale
+curl -X POST http://127.0.0.1:8787/mints/sync
+```
+
+Then confirm Photon has the latest root for a specific mint:
+
 ```bash
 curl -s http://127.0.0.1:8787/roots/<originMint>
 ```
