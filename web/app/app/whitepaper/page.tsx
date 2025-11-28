@@ -64,7 +64,7 @@ export default function WhitepaperPage() {
       <Stack spacing={12} py={10}>
         <Stack spacing={3}>
           <Text fontSize="sm" color="whiteAlpha.600">
-            Version 1.1 • 2025-11-14
+            Version 1.2 • 2025-01-15
           </Text>
           <Heading size="2xl">zPump on Solana</Heading>
           <Heading size="md" fontWeight="medium" color="whiteAlpha.700">
