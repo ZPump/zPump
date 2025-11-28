@@ -7,6 +7,8 @@ import path from 'path';
 import fs from 'fs/promises';
 import { fileURLToPath } from 'url';
 import { z } from 'zod';
+import { Connection } from '@solana/web3.js';
+import { MintCatalogStore } from './db/mintCatalog.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -567,6 +569,13 @@ async function bootstrap() {
   const store = new StateStore();
   await store.load();
 
+  // Initialize mint catalog store
+  const rpcUrl = process.env.RPC_URL ?? 'http://127.0.0.1:8899';
+  const connection = new Connection(rpcUrl, 'confirmed');
+  const databaseUrl = process.env.DATABASE_URL;
+  const mintCatalogStore = new MintCatalogStore(connection, databaseUrl);
+  await mintCatalogStore.initialize();
+
   const upstreamUrl = process.env.PHOTON_URL;
   const upstreamClient = upstreamUrl
     ? new PhotonClient(upstreamUrl, process.env.PHOTON_API_KEY)
@@ -941,6 +950,7 @@ async function bootstrap() {
     logger.info('Shutting down indexer');
     server.close();
     await store.persist();
+    await mintCatalogStore.close();
     process.exit(0);
   };
 

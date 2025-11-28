@@ -473,14 +473,35 @@ function WalletDrawerContent({ disclosure }: { disclosure: ReturnType<typeof use
               fee = parsed.meta.fee / LAMPORTS_PER_SOL;
               
               // Parse token transfers from inner instructions
-              parsed.meta.innerInstructions?.forEach(inner => {
-                inner.instructions.forEach(ix => {
+              const findMintForAccount = (accountBase58: string): string | null => {
+                const keyIndex = parsed.transaction.message.accountKeys.findIndex((key) =>
+                  key.pubkey.toBase58() === accountBase58
+                );
+                if (keyIndex === -1) {
+                  return null;
+                }
+                const balanceEntry =
+                  parsed.meta?.preTokenBalances?.find((entry) => entry.accountIndex === keyIndex) ??
+                  parsed.meta?.postTokenBalances?.find((entry) => entry.accountIndex === keyIndex);
+                return balanceEntry?.mint ?? null;
+              };
+
+              parsed.meta.innerInstructions?.forEach((inner) => {
+                inner.instructions.forEach((ix) => {
                   if ('parsed' in ix && ix.parsed.type === 'transfer') {
                     const transferInfo = ix.parsed.info;
-                    const mintAddress = transferInfo.mint;
+                    let mintAddress: string | undefined = transferInfo.mint;
                     const amount = Number(transferInfo.amount);
                     const source = transferInfo.source;
                     const destination = transferInfo.destination;
+
+                    if (!mintAddress) {
+                      mintAddress = findMintForAccount(source) ?? findMintForAccount(destination) ?? undefined;
+                    }
+
+                    if (!mintAddress) {
+                      return;
+                    }
                     
                     // Get token metadata from mintMap or tokenMetadata
                     const mintMetadata = mintMap.get(mintAddress);

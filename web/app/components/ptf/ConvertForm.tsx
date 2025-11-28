@@ -54,7 +54,10 @@ import {
 import { IndexerClient, IndexerNote } from '../../lib/indexerClient';
 import { getCachedRoots, setCachedRoots, getCachedNullifiers, setCachedNullifiers } from '../../lib/indexerCache';
 import { poseidonHashMany } from '../../lib/onchain/poseidon';
-import { derivePoolState, deriveCommitmentTree } from '../../lib/onchain/pdas';
+import { derivePoolState, deriveCommitmentTree, deriveTokenMetadata } from '../../lib/onchain/pdas';
+import { FACTORY_PROGRAM_ID } from '../../lib/onchain/programIds';
+import factoryIdl from '../../idl/ptf_factory.json';
+import { BorshCoder } from '@coral-xyz/anchor';
 import { decodeCommitmentTree } from '../../lib/onchain/commitmentTree';
 import { bytesLEToCanonicalHex } from '../../lib/onchain/utils';
 import type { StoredNoteRecord } from '../../lib/notes/storage';
@@ -274,10 +277,33 @@ export function ConvertForm() {
     }
   }, [originMint]);
 
-  const mintConfig = useMemo<MintConfig | undefined>(
-    () => mints.find((mint) => mint.originMint === originMint),
-    [mints, originMint]
-  );
+  const mintConfig = useMemo<MintConfig | undefined>(() => {
+    // First try to find in catalog by originMint
+    const catalogMint = mints.find((mint) => mint.originMint === originMint);
+    if (catalogMint) {
+      return catalogMint;
+    }
+    // If not found and we have a private token selected, try to find it in tokenOptions
+    if (tokenSelection.variant === 'private' && originMint) {
+      const privateOption = tokenOptions.find(
+        (opt) => opt.originMint === originMint && opt.variant === 'private' && opt.zTokenMint
+      );
+      if (privateOption?.zTokenMint) {
+        return {
+          originMint,
+          poolId: derivePoolState(new PublicKey(originMint)).toBase58(),
+          symbol: privateOption.symbol.replace(/^z/, ''),
+          decimals: privateOption.decimals,
+          zTokenMint: privateOption.zTokenMint,
+          features: {
+            zTokenEnabled: true,
+            wrappedTransfers: false
+          }
+        };
+      }
+    }
+    return undefined;
+  }, [mints, originMint, tokenSelection.variant, tokenOptions]);
 
   const decimals = mintConfig?.decimals ?? 0;
 
@@ -404,7 +430,7 @@ export function ConvertForm() {
       sample: Object.entries(currentMetadataMap).slice(0, 3).map(([mint, meta]) => ({ mint, meta }))
     });
     
-    const buildOptions = (publicBalances: Map<string, bigint>, privateBalances: Map<string, bigint>, mintsToUse: Map<string, { symbol: string; decimals: number; name?: string; image?: string }> = customMints, metadataMap: Record<string, { name: string; symbol: string; image?: string }> = currentMetadataMap) => {
+    const buildOptions = async (publicBalances: Map<string, bigint>, privateBalances: Map<string, bigint>, mintsToUse: Map<string, { symbol: string; decimals: number; name?: string; image?: string }> = customMints, metadataMap: Record<string, { name: string; symbol: string; image?: string }> = currentMetadataMap, zTokenToOriginMap: Map<string, { originMint: string; decimals: number; symbol: string }> = new Map()) => {
       const walletConnected = Boolean(walletKey);
       const options: TokenOption[] = [];
       
@@ -470,9 +496,11 @@ export function ConvertForm() {
         if (mint.zTokenMint) {
           const privateBalance = privateBalances.get(mint.zTokenMint) ?? 0n;
           const privateDisplay = formatBaseUnitsToUi(privateBalance, mint.decimals);
-          options.push({
+          // Always create private option, even if balance is 0 (user might want to see available zTokens)
+          // But mark as owned only if balance > 0
+          const option = {
             originMint: mint.originMint,
-            variant: 'private',
+            variant: 'private' as const,
             label: `z${metadata?.name || mint.symbol} (z${mint.symbol}) — ${privateDisplay}${freezeSuffix}`,
             balance: privateBalance,
             displayBalance: privateDisplay,
@@ -480,19 +508,129 @@ export function ConvertForm() {
             name: metadata?.name ? `z${metadata.name}` : undefined,
             image: metadata?.image,
             decimals: mint.decimals,
-            disabled: !walletConnected || isMintFrozen, // Allow selection even with 0 balance
+            disabled: !walletConnected || isMintFrozen,
             zTokenMint: mint.zTokenMint,
             isFrozen: isMintFrozen,
             isOwned: privateBalance > 0n
-          });
+          };
+          if (privateBalance > 0n) {
+            console.debug('[convert-form] Creating private option with balance', {
+              originMint: mint.originMint,
+              zTokenMint: mint.zTokenMint,
+              symbol: mint.symbol,
+              balance: privateBalance.toString(),
+              balanceFromMap: privateBalances.has(mint.zTokenMint)
+            });
+          }
+          options.push(option);
         }
       });
+      
+      // Add private options for zTokens in privateBalances that aren't already in options
+      // Private balances are keyed by zToken mint address
+      const existingPrivateZTokenMints = new Set(
+        options.filter(o => o.variant === 'private' && o.zTokenMint).map(o => o.zTokenMint!)
+      );
+      
+      console.debug('[convert-form] Checking private balances for missing zTokens', {
+        totalPrivateBalances: privateBalances.size,
+        existingZTokenMints: Array.from(existingPrivateZTokenMints),
+        privateBalanceEntries: Array.from(privateBalances.entries()).map(([mint, bal]) => ({ 
+          zTokenMint: mint, 
+          balance: bal.toString(),
+          inExisting: existingPrivateZTokenMints.has(mint)
+        }))
+      });
+      
+      for (const [zTokenMint, balance] of privateBalances.entries()) {
+        // Skip if already in options or if balance is zero
+        if (existingPrivateZTokenMints.has(zTokenMint)) {
+          console.debug('[convert-form] Skipping zToken already in options', { zTokenMint, balance: balance.toString() });
+          continue;
+        }
+        if (balance === 0n) continue; // Only show owned tokens
+        
+        // Find origin mint by checking if any catalog mint has this zTokenMint
+        let catalogMint = mints.find(m => m.zTokenMint === zTokenMint);
+        let originMint: string | null = null;
+        let decimals: number = 9;
+        let baseSymbol: string = zTokenMint.slice(0, 8);
+        
+        if (catalogMint) {
+          originMint = catalogMint.originMint;
+          decimals = catalogMint.decimals;
+          baseSymbol = catalogMint.symbol;
+        } else {
+          // Not in catalog - check if we have it in the zTokenToOriginMap (looked up earlier)
+          const lookup = zTokenToOriginMap.get(zTokenMint);
+          if (lookup) {
+            originMint = lookup.originMint;
+            decimals = lookup.decimals;
+            baseSymbol = lookup.symbol;
+          } else {
+            // Still don't have it - use zToken mint as originMint temporarily
+            // This allows the user to see and select the token, even if we don't have full info
+            console.debug('[convert-form] zToken not in catalog or lookup map, using zToken mint as originMint', { zTokenMint, balance: balance.toString() });
+            originMint = zTokenMint; // Use zToken mint as originMint for now
+            // Try to get decimals from chain
+            try {
+              const mintKey = new PublicKey(zTokenMint);
+              try {
+                const mintInfo = await getMint(connection, mintKey, undefined, TOKEN_PROGRAM_ID);
+                decimals = mintInfo.decimals;
+              } catch {
+                try {
+                  const mintInfo = await getMint(connection, mintKey, undefined, TOKEN_2022_PROGRAM_ID);
+                  decimals = mintInfo.decimals;
+                } catch {
+                  // Keep default 9
+                }
+              }
+            } catch {
+              // Keep default 9
+            }
+            baseSymbol = zTokenMint.slice(0, 8);
+          }
+        }
+        
+        if (!originMint) {
+          // This shouldn't happen, but handle it
+          continue;
+        }
+        
+        console.debug('[convert-form] Adding private option for zToken from privateBalances', {
+          zTokenMint,
+          originMint,
+          symbol: baseSymbol,
+          balance: balance.toString()
+        });
+        const privateDisplay = formatBaseUnitsToUi(balance, decimals);
+        const metadata = metadataMap[originMint];
+        const symbol = metadata?.symbol || `z${baseSymbol}`;
+        const name = metadata?.name ? `z${metadata.name}` : undefined;
+        
+        options.push({
+          originMint,
+          variant: 'private',
+          label: `${name || symbol} (${symbol}) — ${privateDisplay}`,
+          balance,
+          displayBalance: privateDisplay,
+          symbol,
+          name,
+          image: metadata?.image,
+          decimals,
+          disabled: !walletConnected,
+          zTokenMint,
+          isFrozen: false,
+          isOwned: balance > 0n
+        });
+      }
       
       return options;
     };
 
     if (!walletKey) {
-      const options = buildOptions(new Map(), new Map(), new Map(), currentMetadataMap);
+      const options = await buildOptions(new Map(), new Map(), new Map(), currentMetadataMap, new Map());
       setTokenOptions(options);
       return options;
     }
@@ -541,6 +679,56 @@ export function ConvertForm() {
         }
       } catch (error) {
         console.warn('[convert-form] failed to fetch private balances', error);
+      }
+      
+      // Look up origin mints for zTokens not in catalog
+      const zTokenToOriginMap = new Map<string, { originMint: string; decimals: number; symbol: string }>();
+      const zTokensNotInCatalog = Array.from(privateBalances.keys()).filter(zTokenMint => {
+        return privateBalances.get(zTokenMint)! > 0n && !mints.some(m => m.zTokenMint === zTokenMint);
+      });
+      
+      if (zTokensNotInCatalog.length > 0) {
+        console.debug('[convert-form] Looking up origin mints for zTokens not in catalog', { count: zTokensNotInCatalog.length });
+        try {
+          const allMintMappings = await connection.getProgramAccounts(FACTORY_PROGRAM_ID, {
+            commitment: 'confirmed',
+            filters: [{ dataSize: 114 }] // MintMapping size
+          });
+          
+          const factoryCoder = new BorshCoder(factoryIdl as any);
+          for (const account of allMintMappings) {
+            try {
+              const decoded = factoryCoder.accounts.decode('MintMapping', account.account.data) as any;
+              const ptknMint = decoded.ptknMint || decoded.ptkn_mint;
+              if (ptknMint) {
+                const ptknMintStr = new PublicKey(ptknMint).toBase58();
+                if (zTokensNotInCatalog.includes(ptknMintStr)) {
+                  const originMint = new PublicKey(decoded.originMint || decoded.origin_mint).toBase58();
+                  const decimals = decoded.decimals ?? 9;
+                  // Try to get symbol from metadata
+                  const originMintKey = new PublicKey(originMint);
+                  const metadataKey = deriveTokenMetadata(originMintKey);
+                  let symbol = originMint.slice(0, 8);
+                  try {
+                    const metadataInfo = await connection.getAccountInfo(metadataKey, 'confirmed');
+                    if (metadataInfo) {
+                      const metadata = factoryCoder.accounts.decode('TokenMetadata', metadataInfo.data) as any;
+                      symbol = metadata.symbol || symbol;
+                    }
+                  } catch {
+                    // Use default symbol
+                  }
+                  zTokenToOriginMap.set(ptknMintStr, { originMint, decimals, symbol });
+                  console.debug('[convert-form] Found origin mint for zToken', { zTokenMint: ptknMintStr, originMint, symbol });
+                }
+              }
+            } catch {
+              continue;
+            }
+          }
+        } catch (error) {
+          console.warn('[convert-form] Failed to look up origin mints from MintMapping', { error });
+        }
       }
 
       // Auto-detect tokens from wallet that aren't in catalog
@@ -601,13 +789,15 @@ export function ConvertForm() {
         setCustomMints(newCustomMints);
       }
 
-      // Fetch metadata for all unique mints (including newly detected wallet tokens)
+      // Fetch metadata for all unique mints (including newly detected wallet tokens and zTokens)
       const uniqueMints = new Set<string>();
       mints.forEach(m => {
         uniqueMints.add(m.originMint);
         if (m.zTokenMint) uniqueMints.add(m.zTokenMint);
       });
       newCustomMints.forEach((_, mint) => uniqueMints.add(mint));
+      // Also add zToken mints from private balances for metadata fetching
+      privateBalances.forEach((_, zTokenMint) => uniqueMints.add(zTokenMint));
       
       const metadataPromises = Array.from(uniqueMints).map(async (mintAddress) => {
         try {
@@ -784,7 +974,7 @@ export function ConvertForm() {
       }
       
       // Build options with correct decimals
-      const options = buildOptions(publicBalances, privateBalances, finalCustomMints, currentMetadataMap);
+      const options = await buildOptions(publicBalances, privateBalances, finalCustomMints, currentMetadataMap, zTokenToOriginMap);
       setTokenOptions(options);
       
       // Fetch metadata in background (non-blocking) - update UI as it arrives
@@ -865,12 +1055,13 @@ export function ConvertForm() {
         allowedVariant: mode === 'to-private' ? 'public' : 'private',
         publicBalances: Array.from(publicBalances.entries()).map(([mint, bal]) => ({ mint, balance: bal.toString() })),
         privateBalances: Array.from(privateBalances.entries()).map(([mint, bal]) => ({ mint, balance: bal.toString() })),
-        ownedTokens: ownedOptions.map(o => ({ originMint: o.originMint, variant: o.variant, symbol: o.symbol, balance: o.balance.toString() }))
+        catalogZTokens: mints.filter(m => m.zTokenMint).map(m => ({ originMint: m.originMint, zTokenMint: m.zTokenMint, symbol: m.symbol })),
+        ownedTokens: ownedOptions.map(o => ({ originMint: o.originMint, variant: o.variant, symbol: o.symbol, balance: o.balance.toString(), zTokenMint: o.zTokenMint }))
       });
       return options;
     } catch (error) {
       console.warn('[convert-form] failed to fetch token balances', error);
-      const options = buildOptions(new Map(), new Map(), new Map(), currentMetadataMap);
+      const options = await buildOptions(new Map(), new Map(), new Map(), currentMetadataMap, new Map());
       setTokenOptions(options);
       return options;
     }
