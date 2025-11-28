@@ -3,8 +3,8 @@ import { ConvertForm } from '../../components/ptf/ConvertForm';
 import { PageContainer } from '../../components/PageContainer';
 
 export const metadata: Metadata = {
-  title: 'Convert | zPump',
-  description: 'Shield into zTokens or redeem back to public SPL tokens from a single, simplified flow.'
+  title: 'Shield | zPump',
+  description: 'Shield tokens into privacy or unshield them back to public SPL accounts from a single flow.'
 };
 
 export default function ConvertPage() {
