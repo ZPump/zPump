@@ -1,11 +1,11 @@
 # Photon Indexer Documentation
 
-The Photon indexer (`indexer/photon`) maintains an off-chain snapshot of pool state—commitment tree roots, notes, nullifiers, and shielded balances. Clients query it via REST to avoid heavy RPC scans.
+The Photon indexer (`indexer/photon`) maintains an off-chain snapshot of pool state—commitment tree roots, notes, nullifiers, shielded balances, and now the authoritative mint catalog. Clients query it via REST to avoid heavy RPC scans and to hydrate the UI without coupling directly to devnet bootstrap scripts.
 
 ## Overview
 
 - **Language:** TypeScript (Node.js, Express).
-- **Storage:** JSON snapshot (`indexer/photon/data/state.json`).
+- **Storage:** JSON snapshot (`indexer/photon/data/state.json`) plus an optional Postgres catalog (`mint_catalog` table) that mirrors on-chain `MintMapping` accounts.
 - **Upstream Support:** Optional chaining to a remote Photon/Helius instance; acts as cache when upstream is configured.
 
 ## Data Model (`SnapshotSchema`)
@@ -33,6 +33,8 @@ All canonicalisation routes through `canonicalizeHex` and `normalizeMintKey`.
 
 | Method | Path | Description |
 |--------|------|-------------|
+| `GET` | `/mints` | Returns the mint catalog hydrated from Postgres (falls back to bootstrap file if DB disabled). |
+| `POST` | `/mints/sync` | Triggers an immediate on-chain sync of `MintMapping` accounts into Postgres. |
 | `GET` | `/roots/:mint` | Returns current and recent roots. Falls back to upstream or errors if not found. |
 | `POST` | `/roots/:mint` | Persist updated root(s). Used by frontend after wraps (`publishRoots`). |
 | `GET` | `/nullifiers/:mint` | Returns nullifier array. |
@@ -60,6 +62,22 @@ Responses include metadata:
 - `applyBalanceDelta` ensures balances don’t drop below zero and removes mint entries when they reach zero.
 - Frontend uses it to display shielded totals in the wallet drawer.
 
+## Mint Catalog Store (Postgres)
+
+- Enabled whenever `DATABASE_URL` is provided. Photon connects to Postgres at startup, runs `schema.sql`, and creates/upserts rows inside `mint_catalog`.
+- `MintCatalogStore` periodically (every 5 minutes) crawls on-chain `MintMapping` accounts, decodes them via Anchor, resolves token metadata, and stores:
+  - `origin_mint`, `pool_id`, `symbol`, `decimals`
+  - optional `z_token_mint`, `lookup_table`, metadata URI/name/symbol
+  - feature flags (currently `has_ptkn`, `features`, fee overrides, is_native_ztoken)
+- The `/mints` endpoint powers the frontend `/api/mints` handler. When Postgres is unavailable the handler falls back to the bootstrap-generated JSON file, but the catalog DB is now the source of truth.
+- Force a resync after bootstrap or manual Solana changes with:
+
+  ```bash
+  curl -X POST http://127.0.0.1:8787/mints/sync
+  ```
+
+  Success responses are idempotent; failures mean RPC or DB connectivity issues.
+
 ## Canonicalisation & Validation
 
 - `canonicalizeNote` normalises mint keys, slots, optional view tags.
@@ -86,13 +104,15 @@ Responses include metadata:
 cd indexer/photon
 npm install
 npm run build
-PORT=8787 ENABLE_BALANCE_API=true npm start
+PORT=8787 ENABLE_BALANCE_API=true DATABASE_URL=postgres://... npm start
 ```
 
 PM2 process name: `ptf-indexer`. Restart with `pm2 restart ptf-indexer --update-env`.
 
 ## Common Issues
 
+- **`Cannot GET /mints`:** You are running an older build. Rebuild (`pnpm --filter @ptf/photon-indexer build`) and redeploy to pick up the mint catalog endpoints.
+- **Catalog empty:** Ensure `DATABASE_URL` points to a reachable Postgres instance and run `POST /mints/sync`. The service logs when the upsert loop starts/completes.
 - **Root mismatches:** If frontend pushes new roots but Photon still serves old ones, check file permissions on `data/state.json`, or ensure bootstrap posted the new root (frontend now publishes automatically).
 - **404 `mint_not_found`:** Occurs when Photon has no entry yet. The frontend falls back to on-chain roots and repopulates the snapshot; make sure RPC access is available.
 - **`invalid_hex` errors:** Caused by non-hex strings (usually base58) reaching Photon endpoints; ensure callers convert to canonical hex (SDK’s `canonicalizeHex` helper).
@@ -100,6 +120,7 @@ PM2 process name: `ptf-indexer`. Restart with `pm2 restart ptf-indexer --update-
 ## References
 
 - [Source: `indexer/photon/src/server.ts`](../../indexer/photon/src/server.ts)
+- [Mint catalog store: `indexer/photon/src/db/mintCatalog.ts`](../../indexer/photon/src/db/mintCatalog.ts)
 - [SDK client: `web/app/lib/indexerClient.ts`](../../web/app/lib/indexerClient.ts)
 - [Wrap/unwrap script publishing roots/nullifiers](../development/private-devnet.md)
 

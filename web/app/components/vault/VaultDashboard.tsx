@@ -26,6 +26,7 @@ import { PublicKey } from '@solana/web3.js';
 import {
   ASSOCIATED_TOKEN_PROGRAM_ID,
   TOKEN_PROGRAM_ID,
+  TOKEN_2022_PROGRAM_ID,
   getAssociatedTokenAddress,
   getMint
 } from '@solana/spl-token';
@@ -80,18 +81,26 @@ export function VaultDashboard() {
     try {
       const entries = await Promise.all(
         mints.map(async (mint) => {
+          try {
           const originMintKey = new PublicKey(mint.originMint);
           const vaultStateKey = deriveVaultState(originMintKey);
+          const mintAccountInfo = await connection.getAccountInfo(originMintKey);
+          if (!mintAccountInfo) {
+            throw new Error('Mint account not found');
+          }
+          const tokenProgramId = mintAccountInfo.owner.equals(TOKEN_2022_PROGRAM_ID)
+            ? TOKEN_2022_PROGRAM_ID
+            : TOKEN_PROGRAM_ID;
           const vaultTokenAccount = await getAssociatedTokenAddress(
             originMintKey,
             vaultStateKey,
             true,
-            TOKEN_PROGRAM_ID,
+            tokenProgramId,
             ASSOCIATED_TOKEN_PROGRAM_ID
           );
 
           const [mintInfo, vaultBalanceInfo] = await Promise.all([
-            getMint(connection, originMintKey),
+            getMint(connection, originMintKey, undefined, tokenProgramId),
             connection.getTokenAccountBalance(vaultTokenAccount).catch(() => null)
           ]);
 
@@ -107,9 +116,16 @@ export function VaultDashboard() {
             supply,
             vaultBalance
           } satisfies MintSnapshot;
+          } catch (error) {
+            console.warn('[vault-dashboard] failed to load snapshot', {
+              mint: mint.originMint,
+              error
+            });
+            return null;
+          }
         })
       );
-      setSnapshots(entries);
+      setSnapshots(entries.filter((entry): entry is MintSnapshot => Boolean(entry)));
     } catch (caught) {
       setError((caught as Error).message ?? 'Failed to load vault metrics');
       toast({
