@@ -34,38 +34,56 @@ function getRpcUrl(): string {
   return process.env.RPC_URL ?? process.env.NEXT_PUBLIC_RPC_URL ?? 'http://127.0.0.1:8899';
 }
 
+function decodeMintMappingAccount(data: Buffer): any | null {
+  try {
+    return coder.accounts.decode('MintMapping', data);
+  } catch (error) {
+    if (data.length === 81 || data.length === 73 || data.length === 82) {
+      try {
+        const padded = Buffer.concat([data, Buffer.alloc(Math.max(0, MINT_MAPPING_DATA_SIZE - data.length), 0)]);
+        return coder.accounts.decode('MintMapping', padded);
+      } catch (inner) {
+        console.warn('[api/mints] Unable to decode legacy MintMapping', { error: inner });
+        return null;
+      }
+    }
+    console.warn('[api/mints] Unable to decode MintMapping', { error });
+    return null;
+  }
+}
+
 async function fetchNativeMintEntries(): Promise<GeneratedMint[]> {
   try {
     const connection = new Connection(getRpcUrl(), 'confirmed');
     // Fetch ALL mint mappings (not just isNativeZtoken=true) since we now create regular tokens
     const accounts = await connection.getProgramAccounts(FACTORY_PROGRAM_ID, {
-      commitment: 'confirmed',
-      filters: [
-        { dataSize: MINT_MAPPING_DATA_SIZE }
-      ]
+      commitment: 'confirmed'
     });
 
     const entries: GeneratedMint[] = [];
     for (const account of accounts) {
-      let decoded: any;
-      try {
-        decoded = coder.accounts.decode('MintMapping', account.account.data);
-      } catch (error) {
-        console.warn('[api/mints] Unable to decode MintMapping', { error });
+      const decoded = decodeMintMappingAccount(account.account.data);
+      if (!decoded) {
         continue;
       }
 
       // Skip if origin_mint is default (uninitialized)
-      if (!decoded?.originMint || decoded.originMint === PublicKey.default.toBase58()) {
+      const originMintRaw =
+        decoded.originMint ??
+        decoded.origin_mint ??
+        (decoded.originMint?.toBase58 ? decoded.originMint.toBase58() : null);
+      if (!originMintRaw || originMintRaw === PublicKey.default.toBase58()) {
         continue;
       }
 
-      const originMintKey = new PublicKey(decoded.originMint as PublicKey);
+      const originMintKey =
+        originMintRaw instanceof PublicKey ? originMintRaw : new PublicKey(originMintRaw);
       const originMint = originMintKey.toBase58();
       const poolId = derivePoolState(originMintKey).toBase58();
       const metadataKey = deriveTokenMetadata(originMintKey);
 
-      let symbol = decoded?.symbol ?? originMint.slice(0, 6).toUpperCase();
+      const rawSymbol = decoded?.symbol ?? decoded?.Symbol ?? decoded?.symbol ?? null;
+      let symbol = rawSymbol ?? originMint.slice(0, 6).toUpperCase();
       let metadataUri: string | null = null;
       try {
         const metadataInfo = await connection.getAccountInfo(metadataKey, 'confirmed');
@@ -119,8 +137,9 @@ async function fetchNativeMintEntries(): Promise<GeneratedMint[]> {
 }
 
 async function handleGet(res: NextApiResponse) {
-  // Try to fetch from indexer first (if available)
   const indexerUrl = process.env.INDEXER_INTERNAL_URL ?? process.env.INDEXER_URL ?? 'http://127.0.0.1:8787';
+  let indexerMints: MintConfig[] = [];
+
   try {
     const indexerResponse = await fetch(`${indexerUrl}/mints`, {
       headers: {
@@ -129,35 +148,29 @@ async function handleGet(res: NextApiResponse) {
     });
     if (indexerResponse.ok) {
       const indexerData = await indexerResponse.json();
-      if (indexerData.mints && indexerData.mints.length > 0) {
-        res.status(200).json(indexerData);
-        return;
+      if (Array.isArray(indexerData.mints)) {
+        indexerMints = indexerData.mints as MintConfig[];
       }
     }
   } catch (error) {
-    // Fall back to on-chain + file catalog
     console.warn('[api/mints] Indexer not available, falling back to on-chain fetch', error);
   }
 
-  // Fallback: fetch from on-chain and merge with file catalog
-  const [catalog, nativeEntries] = await Promise.all([
-    readMintCatalog(),
-    fetchNativeMintEntries()
-  ]);
+  const [catalog, nativeEntries] = await Promise.all([readMintCatalog(), fetchNativeMintEntries()]);
   const filteredCatalog = catalog.filter(
     (entry) => entry.originMint !== PLACEHOLDER_ORIGIN && entry.poolId !== PLACEHOLDER_POOL
   );
 
-  const merged = new Map<string, GeneratedMint>();
+  const mergedGenerated = new Map<string, GeneratedMint>();
   for (const entry of filteredCatalog) {
-    merged.set(entry.originMint, entry);
+    mergedGenerated.set(entry.originMint, entry);
   }
   for (const entry of nativeEntries) {
-    if (!merged.has(entry.originMint)) {
-      merged.set(entry.originMint, entry);
+    if (!mergedGenerated.has(entry.originMint)) {
+      mergedGenerated.set(entry.originMint, entry);
     } else {
-      const existing = merged.get(entry.originMint)!;
-      merged.set(entry.originMint, {
+      const existing = mergedGenerated.get(entry.originMint)!;
+      mergedGenerated.set(entry.originMint, {
         ...existing,
         ...entry,
         metadataUri: entry.metadataUri ?? existing.metadataUri,
@@ -166,8 +179,28 @@ async function handleGet(res: NextApiResponse) {
     }
   }
 
-  const mints = Array.from(merged.values()).map(mapGeneratedMint);
-  res.status(200).json({ mints });
+  const fallbackMints = Array.from(mergedGenerated.values()).map(mapGeneratedMint);
+  const combined = new Map<string, MintConfig>();
+
+  for (const mint of indexerMints) {
+    combined.set(mint.originMint, mint);
+  }
+
+  for (const mint of fallbackMints) {
+    if (combined.has(mint.originMint)) {
+      const existing = combined.get(mint.originMint)!;
+      combined.set(mint.originMint, {
+        ...mint,
+        symbol: existing.symbol || mint.symbol,
+        metadataUri: existing.metadataUri ?? mint.metadataUri,
+        lookupTable: existing.lookupTable ?? mint.lookupTable
+      });
+    } else {
+      combined.set(mint.originMint, mint);
+    }
+  }
+
+  res.status(200).json({ mints: Array.from(combined.values()) });
 }
 
 async function handlePost(req: NextApiRequest, res: NextApiResponse) {

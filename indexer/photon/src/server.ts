@@ -8,7 +8,7 @@ import fs from 'fs/promises';
 import { fileURLToPath } from 'url';
 import { z } from 'zod';
 import { Connection } from '@solana/web3.js';
-import { MintCatalogStore } from './db/mintCatalog.js';
+import { MintCatalogStore, type MintCatalogEntry } from './db/mintCatalog.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -561,6 +561,24 @@ function extractApiKey(req: express.Request): string | null {
   return null;
 }
 
+function mapMintCatalogEntry(entry: MintCatalogEntry) {
+  const symbol = entry.metadataSymbol?.trim() || entry.symbol;
+  return {
+    symbol,
+    originMint: entry.originMint,
+    poolId: entry.poolId,
+    zTokenMint: entry.zTokenMint ?? undefined,
+    decimals: entry.decimals,
+    features: {
+      zTokenEnabled: entry.hasPtkn ?? Boolean(entry.zTokenMint),
+      wrappedTransfers: false
+    },
+    lookupTable: entry.lookupTable ?? undefined,
+    metadataUri: entry.metadataUri ?? undefined,
+    isNativeZToken: entry.isNativeZtoken ?? false
+  };
+}
+
 async function bootstrap() {
   const app = express();
   const port = Number(process.env.PORT ?? 8787);
@@ -606,6 +624,29 @@ async function bootstrap() {
 
   app.get('/health', (_req, res) => {
     res.json({ ok: true, upstream: Boolean(upstreamClient) });
+  });
+
+  app.get('/mints', async (_req, res) => {
+    try {
+      const entries = await mintCatalogStore.getAllMints();
+      res.json({
+        mints: entries.map((entry) => mapMintCatalogEntry(entry)),
+        source: 'catalog'
+      });
+    } catch (error) {
+      logger.error({ err: error }, 'failed to fetch mint catalog');
+      res.status(500).json({ error: 'mint_catalog_unavailable' });
+    }
+  });
+
+  app.post('/mints/sync', async (_req, res) => {
+    try {
+      await mintCatalogStore.syncFromChain();
+      res.json({ ok: true });
+    } catch (error) {
+      logger.error({ err: error }, 'mint catalog sync failed');
+      res.status(500).json({ error: 'mint_catalog_sync_failed' });
+    }
   });
 
   app.get('/roots/:mint', async (req, res) => {
