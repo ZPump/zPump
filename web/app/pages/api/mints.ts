@@ -82,12 +82,26 @@ async function fetchNativeMintEntries(): Promise<GeneratedMint[]> {
         console.warn('[api/mints] Failed to decode token metadata', { originMint, error });
       }
 
+      // Check if this mint has a zToken (ptkn mint)
+      let zTokenMint: string | null = null;
+      const hasPtkn = decoded.hasPtkn ?? decoded.has_ptkn ?? false;
+      if (hasPtkn) {
+        const ptknMint = decoded.ptknMint || decoded.ptkn_mint;
+        if (ptknMint) {
+          try {
+            zTokenMint = new PublicKey(ptknMint).toBase58();
+          } catch {
+            // Invalid public key, leave as null
+          }
+        }
+      }
+      
       entries.push({
         symbol,
         originMint,
         poolId,
         decimals: Number(decoded.decimals ?? 0),
-        zTokenMint: null, // Regular tokens don't have zTokenMint initially
+        zTokenMint,
         features: {
           zTokenEnabled: true,
           wrappedTransfers: false
@@ -105,6 +119,27 @@ async function fetchNativeMintEntries(): Promise<GeneratedMint[]> {
 }
 
 async function handleGet(res: NextApiResponse) {
+  // Try to fetch from indexer first (if available)
+  const indexerUrl = process.env.INDEXER_INTERNAL_URL ?? process.env.INDEXER_URL ?? 'http://127.0.0.1:8787';
+  try {
+    const indexerResponse = await fetch(`${indexerUrl}/mints`, {
+      headers: {
+        'x-ptf-api-key': process.env.INDEXER_API_KEY ?? process.env.API_KEY ?? ''
+      }
+    });
+    if (indexerResponse.ok) {
+      const indexerData = await indexerResponse.json();
+      if (indexerData.mints && indexerData.mints.length > 0) {
+        res.status(200).json(indexerData);
+        return;
+      }
+    }
+  } catch (error) {
+    // Fall back to on-chain + file catalog
+    console.warn('[api/mints] Indexer not available, falling back to on-chain fetch', error);
+  }
+
+  // Fallback: fetch from on-chain and merge with file catalog
   const [catalog, nativeEntries] = await Promise.all([
     readMintCatalog(),
     fetchNativeMintEntries()

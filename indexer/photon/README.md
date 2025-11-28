@@ -20,7 +20,8 @@ Environment variables:
 
 - `RPC_URL` – Solana RPC endpoint used for block ingestion (defaults to devnet)
 - `DATABASE_URL` – Postgres connection string.  If omitted the service runs in
-  memory and periodically snapshots to `data/state.json`.
+  memory and periodically snapshots to `data/state.json`. When provided, the
+  mint catalog is persisted to Postgres and automatically synced from on-chain.
 - `PORT` – HTTP port (default: 8787)
 - `PHOTON_URL` – optional upstream Photon/Helius endpoint.  When provided the
   local cache is hydrated from this source on-demand.
