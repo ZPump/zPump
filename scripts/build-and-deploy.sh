@@ -50,7 +50,7 @@ require_cmd cargo
 cd "${PROJECT_ROOT}"
 
 log "Building Anchor programs..."
-if ! anchor build -- 2>&1 | tee "${PROJECT_ROOT}/.anchor-build.log"; then
+if ! "${PROJECT_ROOT}/scripts/build-all-programs.sh" 2>&1 | tee "${PROJECT_ROOT}/.anchor-build.log"; then
   log_error "Anchor build failed. Check .anchor-build.log for details"
   exit 1
 fi

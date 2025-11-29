@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # Starts a long-running local Solana validator that mimics devnet for zPump.
-# The script assumes `anchor build --no-idl` has been executed so that the
+# The script assumes `./scripts/build-all-programs.sh` has been executed so that the
 # latest program artifacts live under `target/deploy`.
 #
 # Usage:
@@ -11,7 +11,7 @@
 #   RPC_PORT     - RPC port to expose (default: 8899)
 #   FAUCET_PORT  - Faucet port (default: RPC_PORT + 1)
 #
-# The validator loads the four Anchor programs with fixed program IDs that
+# The validator loads the five Anchor programs with fixed program IDs that
 # match `Anchor.toml`, so the dApp and bootstrap scripts can connect without
 # recompilation.
 
@@ -63,7 +63,7 @@ for program in \
   "$PROGRAM_DIR/ptf_dex.so"; do
   if [[ ! -f "$program" ]]; then
     echo "error: program artifact not found: $program" >&2
-    echo "hint: run 'anchor build --no-idl' before launching the validator." >&2
+    echo "hint: run './scripts/build-all-programs.sh' before launching the validator." >&2
     exit 1
   fi
 done

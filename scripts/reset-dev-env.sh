@@ -146,7 +146,7 @@ ln -snf ../circuits "${PROJECT_ROOT}/services/circuits"
 # (programs are loaded via --bpf-program flags, so they must exist)
 if [[ "${using_systemd_validator}" == true ]]; then
   log "Building programs before starting systemd validator (required for --bpf-program loading)"
-  if ! (cd "${PROJECT_ROOT}" && anchor build --no-idl 2>&1 | tail -5); then
+  if ! (cd "${PROJECT_ROOT}" && "${PROJECT_ROOT}/scripts/build-all-programs.sh" 2>&1 | tail -10); then
     log "warning: Program build failed, but continuing (validator may use old programs)"
   else
     log "Programs built successfully"

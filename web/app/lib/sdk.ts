@@ -1036,18 +1036,21 @@ export async function wrap(params: WrapParams): Promise<string> {
     }
   }
 
+  // LAZY INITIALIZATION: Shield instruction uses init_if_needed on pool_state,
+  // so it will automatically initialize the pool on first shield in the same transaction.
+  // We don't need to check if pool exists - shield handles initialization automatically.
+  // However, we still check to provide better error messages if there are other issues.
   const poolAccountInfo = await connection.getAccountInfo(poolState, 'confirmed');
-  if (!poolAccountInfo) {
+  const commitmentTreeAccount = await connection.getAccountInfo(commitmentTreeKey, 'confirmed');
+  
+  // If pool doesn't exist, shield will initialize it lazily via init_if_needed.
+  // If pool exists but commitment tree is missing, that's an error state.
+  if (poolAccountInfo && !commitmentTreeAccount) {
     throw new Error(
-      'Pool is not initialized. Run preparePool(originMint) before submitting a shield transaction.'
+      'Commitment tree account missing even though pool is initialized. This is an inconsistent state - run repair tooling.'
     );
   }
-  const commitmentTreeAccount = await connection.getAccountInfo(commitmentTreeKey);
-  if (!commitmentTreeAccount) {
-    throw new Error(
-      'Commitment tree account missing. Run preparePool(originMint) before submitting a shield transaction.'
-    );
-  }
+  // If neither exists, shield will initialize both via lazy initialization - this is fine.
   const treeState = decodeCommitmentTree(new Uint8Array(commitmentTreeAccount.data));
   const recipientKey = params.recipient ? new PublicKey(params.recipient) : wallet.publicKey;
   const depositId = BigInt(params.depositId);

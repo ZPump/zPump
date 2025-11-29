@@ -9,7 +9,7 @@ name = "ptf_factory"
 
 [dependencies]
 anchor-lang = { workspace = true, features = ["init-if-needed"] }
-anchor-spl = { workspace = true }
+anchor-spl = { workspace = true, features = ["idl-build"] }
 ptf-common = { path = "../common" }
 ptf-verifier-groth16 = { path = "../verifier-groth16", features = ["cpi"] }
 thiserror = { workspace = true }
