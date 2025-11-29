@@ -2846,6 +2846,11 @@ interface AddLiquidityParams {
   amountA: bigint;
   amountB: bigint;
   minLpTokens: bigint;
+  // Optional: Proof client for zToken operations
+  proofClient?: ProofClient;
+  // Optional: User notes for zToken transfers (required if adding zToken liquidity)
+  zTokenNotesA?: Array<{ noteId: string; spendingKey: string; amount: bigint }>;
+  zTokenNotesB?: Array<{ noteId: string; spendingKey: string; amount: bigint }>;
 }
 
 interface RemoveLiquidityParams {
@@ -3412,24 +3417,79 @@ export async function addDexLiquidity(params: AddLiquidityParams): Promise<strin
     min_lp_tokens: new BN(params.minLpTokens.toString())
   });
   
+  // Build instruction keys
+  const instructionKeys: Array<{ pubkey: PublicKey; isSigner: boolean; isWritable: boolean }> = [
+    { pubkey: poolState, isSigner: false, isWritable: true },
+    { pubkey: tokenAMint, isSigner: false, isWritable: false },
+    { pubkey: tokenBMint, isSigner: false, isWritable: false },
+    { pubkey: lpTokenMint, isSigner: false, isWritable: true },
+    { pubkey: userLpTokenAccount, isSigner: false, isWritable: true },
+    { pubkey: userTokenAAccount, isSigner: false, isWritable: true },
+    { pubkey: poolTokenAAccount, isSigner: false, isWritable: true },
+    { pubkey: userTokenBAccount, isSigner: false, isWritable: true },
+    { pubkey: poolTokenBAccount, isSigner: false, isWritable: true },
+    { pubkey: payer, isSigner: true, isWritable: true },
+    { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
+    { pubkey: ASSOCIATED_TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
+    { pubkey: SystemProgram.programId, isSigner: false, isWritable: false }
+  ];
+  
+  // Add zToken pool accounts to remaining_accounts if needed
+  // For transfer operations, we need 7 accounts per zToken (not shield)
+  // TODO: Generate transfer proofs and add TransferArgs to instruction data when instruction signature is updated
+  if (poolStateData.tokenAIsZtoken || poolStateData.tokenBIsZtoken) {
+    console.info('[addDexLiquidity] Adding zToken pool accounts to remaining_accounts');
+    
+    if (poolStateData.tokenAIsZtoken) {
+      const zTokenAccountsA = getZTokenPoolAccounts(tokenAMint, false); // forShield = false (transfer)
+      
+      // Add zToken accounts for token A (7 accounts for transfer)
+      instructionKeys.push(...zTokenAccountsA.map(pubkey => ({ 
+        pubkey, 
+        isSigner: false, 
+        isWritable: true // Most accounts are writable for transfer operations
+      })));
+      
+      console.info(`[addDexLiquidity] Added ${zTokenAccountsA.length} accounts for zToken A transfer operation (user → pool PDA)`);
+      
+      // TODO: Generate transfer proof for token A
+      // This requires user notes (zTokenNotesA) and proof generation
+      if (params.zTokenNotesA && params.proofClient) {
+        console.info('[addDexLiquidity] NOTE: Transfer proof generation pending - TransferArgs need to be added to instruction signature');
+        // const transferProof = await generateDexTransferProof(...);
+        // const transferArgs = proofToTransferArgs(transferProof);
+      } else if (poolStateData.tokenAIsZtoken) {
+        console.warn('[addDexLiquidity] zToken A requires notes and proofClient for transfer proof generation');
+      }
+    }
+    
+    if (poolStateData.tokenBIsZtoken) {
+      const zTokenAccountsB = getZTokenPoolAccounts(tokenBMint, false); // forShield = false (transfer)
+      
+      // Add zToken accounts for token B (7 accounts for transfer)
+      instructionKeys.push(...zTokenAccountsB.map(pubkey => ({ 
+        pubkey, 
+        isSigner: false, 
+        isWritable: true
+      })));
+      
+      console.info(`[addDexLiquidity] Added ${zTokenAccountsB.length} accounts for zToken B transfer operation (user → pool PDA)`);
+      
+      // TODO: Generate transfer proof for token B
+      if (params.zTokenNotesB && params.proofClient) {
+        console.info('[addDexLiquidity] NOTE: Transfer proof generation pending - TransferArgs need to be added to instruction signature');
+        // const transferProof = await generateDexTransferProof(...);
+        // const transferArgs = proofToTransferArgs(transferProof);
+      } else if (poolStateData.tokenBIsZtoken) {
+        console.warn('[addDexLiquidity] zToken B requires notes and proofClient for transfer proof generation');
+      }
+    }
+  }
+  
   instructions.push(
     new TransactionInstruction({
       programId: DEX_PROGRAM_ID,
-      keys: [
-        { pubkey: poolState, isSigner: false, isWritable: true },
-        { pubkey: tokenAMint, isSigner: false, isWritable: false },
-        { pubkey: tokenBMint, isSigner: false, isWritable: false },
-        { pubkey: lpTokenMint, isSigner: false, isWritable: true },
-        { pubkey: userLpTokenAccount, isSigner: false, isWritable: true },
-        { pubkey: userTokenAAccount, isSigner: false, isWritable: true },
-        { pubkey: poolTokenAAccount, isSigner: false, isWritable: true },
-        { pubkey: userTokenBAccount, isSigner: false, isWritable: true },
-        { pubkey: poolTokenBAccount, isSigner: false, isWritable: true },
-        { pubkey: payer, isSigner: true, isWritable: true },
-        { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
-        { pubkey: ASSOCIATED_TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
-        { pubkey: SystemProgram.programId, isSigner: false, isWritable: false }
-      ],
+      keys: instructionKeys,
       data: addLiquidityData
     })
   );
