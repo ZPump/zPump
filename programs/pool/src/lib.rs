@@ -6145,6 +6145,7 @@ impl AllowanceAccount {
 #[cfg(feature = "idl-build")]
 mod idl_build_impls {
     use super::*;
+    use anchor_lang::IdlBuild;
 
     impl IdlBuild for PendingShield {}
 }

@@ -236,7 +236,7 @@ async function main() {
   // Test 1: Full flow with public tokens
   console.info('\n[test-1] Full user flow: Create → Add → Swap → Remove (Public/Public)');
   {
-    const userAdapter = createWalletAdapter(user1);
+    const userAdapter = createWalletAdapter(user1) as any;
     const mintA = await createMint(connection, user1, 6, user1.publicKey, user1.publicKey);
     const mintB = await createMint(connection, user1, 6, user1.publicKey, user1.publicKey);
     
@@ -276,7 +276,7 @@ async function main() {
       tokenB: tokenB.toBase58(),
       amountA: 1000n * 10n ** 6n,
       amountB: 2000n * 10n ** 6n,
-      minLPTokens: 0n,
+      minLpTokens: 0n,
     });
     console.info(`[test-1] ✓ Liquidity added: ${addLiquiditySig}`);
     await new Promise(resolve => setTimeout(resolve, 1000));
@@ -310,7 +310,7 @@ async function main() {
   // Test 2: Multiple pools
   console.info('\n[test-2] Multiple pools scenario');
   {
-    const userAdapter = createWalletAdapter(user1);
+    const userAdapter = createWalletAdapter(user1) as any;
     
     // Create multiple token pairs
     const mint1 = await createMint(connection, user1, 6, user1.publicKey, user1.publicKey);
@@ -359,8 +359,8 @@ async function main() {
   // Test 3: Multiple users
   console.info('\n[test-3] Multiple users scenario');
   {
-    const user1Adapter = createWalletAdapter(user1);
-    const user2Adapter = createWalletAdapter(user2);
+    const user1Adapter = createWalletAdapter(user1) as any;
+    const user2Adapter = createWalletAdapter(user2) as any;
     
     const mintA = await createMint(connection, user1, 6, user1.publicKey, user1.publicKey);
     const mintB = await createMint(connection, user1, 6, user1.publicKey, user1.publicKey);
@@ -393,7 +393,7 @@ async function main() {
   // Test 4: zToken flags (structure test)
   console.info('\n[test-4] zToken flag structure test');
   {
-    const userAdapter = createWalletAdapter(user1);
+    const userAdapter = createWalletAdapter(user1) as any;
     const zTokenMintA = await createMint(connection, user1, 6, user1.publicKey, user1.publicKey);
     const zTokenMintB = await createMint(connection, user1, 6, user1.publicKey, user1.publicKey);
     
