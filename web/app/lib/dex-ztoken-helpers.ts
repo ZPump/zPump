@@ -46,15 +46,18 @@ export function getZTokenPoolAccounts(
   const mintMapping = deriveMintMapping(originMint);
   const verifyingKey = deriveVerifyingKey();
   
-  const accounts: PublicKey[] = [];
+  const accounts: PublicKey[] = [
+    poolState,
+    nullifierSet,
+    commitmentTree,
+    noteLedger,
+    mintMapping,
+    VERIFIER_PROGRAM_ID,
+    verifyingKey
+  ];
   
   if (forShield) {
-    // Shield accounts order (from ztoken_cpi.rs):
-    // pool_state, hook_config, hook_whitelist, nullifier_set, commitment_tree,
-    // note_ledger, vault_state, vault_token_account, depositor_token_account,
-    // twin_mint (optional), verifier_program, verifying_key, origin_mint,
-    // mint_mapping, factory_state, vault_program, token_program, system_program, rent
-    // But we only return the accounts that go in remaining_accounts (not system accounts)
+    // Add shield-specific accounts
     const hookConfig = deriveHookConfig(originMint);
     const hookWhitelist = deriveHookWhitelist(originMint);
     const vaultState = deriveVaultState(originMint);
@@ -62,32 +65,13 @@ export function getZTokenPoolAccounts(
     const factoryState = deriveFactoryState();
     
     accounts.push(
-      poolState,
-      nullifierSet,
-      commitmentTree,
-      noteLedger,
-      mintMapping,
-      VERIFIER_PROGRAM_ID,
-      verifyingKey,
       vaultState,
       shieldClaim,
       hookConfig,
       hookWhitelist,
       factoryState
-      // vault_token_account, depositor_token_account, twin_mint are passed separately
-    );
-  } else {
-    // Transfer accounts order (from ztoken_cpi.rs):
-    // pool_state, nullifier_set, commitment_tree, note_ledger, mint_mapping,
-    // verifier_program, verifying_key
-    accounts.push(
-      poolState,
-      nullifierSet,
-      commitmentTree,
-      noteLedger,
-      mintMapping,
-      VERIFIER_PROGRAM_ID,
-      verifyingKey
+      // Note: vault_token_account, depositor_token_account, twin_mint are passed separately
+      // They need to be added to remaining_accounts by the caller
     );
   }
   
