@@ -24,19 +24,27 @@ pub fn add_liquidity(
     require!(amount_a > 0, DexError::InvalidAmount);
     require!(amount_b > 0, DexError::InvalidAmount);
     
-    let pool_state = &mut ctx.accounts.pool_state;
+    // Cache values before mutable borrow
+    let token_a = ctx.accounts.token_a_mint.key();
+    let token_b = ctx.accounts.token_b_mint.key();
+    let pool_state_key = ctx.accounts.pool_state.key();
+    
+    // Read pool_state immutably first to get values we need for CPI parsing
+    let pool_state_ref = &ctx.accounts.pool_state;
+    let token_a_is_ztoken = pool_state_ref.token_a_is_ztoken;
+    let token_b_is_ztoken = pool_state_ref.token_b_is_ztoken;
     
     // Validate pool exists and is initialized
     require!(
-        pool_state.total_lp_supply > 0,
+        pool_state_ref.total_lp_supply > 0,
         DexError::PoolNotInitialized
     );
     
     // Validate token mints match
-    let token_a = ctx.accounts.token_a_mint.key();
-    let token_b = ctx.accounts.token_b_mint.key();
-    require_keys_eq!(pool_state.token_a_mint, token_a, DexError::MintMismatch);
-    require_keys_eq!(pool_state.token_b_mint, token_b, DexError::MintMismatch);
+    require_keys_eq!(pool_state_ref.token_a_mint, token_a, DexError::MintMismatch);
+    require_keys_eq!(pool_state_ref.token_b_mint, token_b, DexError::MintMismatch);
+    
+    let pool_state = &mut ctx.accounts.pool_state;
     
     // Get current reserves (public or private)
     let reserve_a = pool_state.get_reserve_a();
@@ -114,12 +122,9 @@ pub fn add_liquidity(
         msg!("[add_liquidity] zToken pool A accounts structure validated");
         msg!("[add_liquidity] Private transfer CPI structure ready - will be invoked when TransferArgs added to signature");
         
-        // TODO: Fix lifetime issues - same as create_pool
-        // Transfer CPI structure ready but blocked by Rust borrow checker
-        if let Some(transfer_args) = transfer_args_a {
-            msg!("[add_liquidity] TransferArgs provided for token A - CPI structure ready (lifetime fix pending)");
-            // Store for later when lifetime issue is resolved
-            let _transfer_args_a = transfer_args;
+        // TODO: Enable transfer CPI after resolving lifetime issues
+        if let Some(_transfer_args) = transfer_args_a {
+            msg!("[add_liquidity] TransferArgs provided for token A - structure ready (lifetime fix pending)");
         }
     }
     
@@ -163,12 +168,9 @@ pub fn add_liquidity(
         msg!("[add_liquidity] zToken pool B accounts structure validated");
         msg!("[add_liquidity] Private transfer CPI structure ready - will be invoked when TransferArgs added to signature");
         
-        // TODO: Fix lifetime issues - same as create_pool
-        // Transfer CPI structure ready but blocked by Rust borrow checker
-        if let Some(transfer_args) = transfer_args_b {
-            msg!("[add_liquidity] TransferArgs provided for token B - CPI structure ready (lifetime fix pending)");
-            // Store for later when lifetime issue is resolved
-            let _transfer_args_b = transfer_args;
+        // TODO: Enable transfer CPI after resolving lifetime issues
+        if let Some(_transfer_args) = transfer_args_b {
+            msg!("[add_liquidity] TransferArgs provided for token B - structure ready (lifetime fix pending)");
         }
     }
     
