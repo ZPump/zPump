@@ -2011,14 +2011,23 @@ export function ConvertForm() {
         if (tokenVariant !== 'private') {
           throw new Error('Select a private token to unshield.');
         }
-        if (!mintConfig?.zTokenMint) {
+        // When unshielding, we need a valid originMint (public mint) to unshield to
+        // Check that we can find the mint config or have the origin mint from tokenOptions
+        if (!mintConfig && !selectedTokenOption) {
+          throw new Error('Unable to determine origin mint for unshielding. Token may not be registered.');
+        }
+        // Ensure we have a valid origin mint (public mint) - either from mintConfig or tokenOptions
+        const actualOriginMint = mintConfig?.originMint || selectedTokenOption?.originMint || originMint;
+        if (!actualOriginMint) {
           throw new Error('This token does not support private redemptions.');
         }
         await ensureWalletFeeBalance();
         const destinationKey = await resolvePublicKey(unwrapAdvanced.destination, wallet.publicKey);
+        // For unshielding, destination mint is the origin mint (public mint), not the zToken mint
+        const destinationMint = actualOriginMint || originMint;
         await ensureDestinationAccountFunding({
           owner: destinationKey,
-          mint: mintId,
+          mint: destinationMint,
           tokenProgram: TOKEN_PROGRAM_ID
         });
 
@@ -2089,14 +2098,18 @@ export function ConvertForm() {
             }
           : undefined;
 
+        // For unshield proof, mintId should be the origin mint (public mint), poolId should match
+        const unshieldOriginMint = actualOriginMint || originMint;
+        const unshieldPoolId = mintConfig?.poolId || derivePoolState(new PublicKey(unshieldOriginMint)).toBase58();
+        
         const payload = {
           oldRoot: rootValue,
           amount: amountValue.toString(),
           fee: feeValue.toString(),
           destPubkey: destinationKey.toBase58(),
           mode: 'origin',
-          mintId,
-          poolId,
+          mintId: unshieldOriginMint,
+          poolId: unshieldPoolId,
           noteId: unwrapAdvanced.noteId,
           spendingKey: unwrapAdvanced.spendingKey,
           noteAmount: noteAmountValue.toString(),
@@ -2125,18 +2138,28 @@ export function ConvertForm() {
           throw new Error('This note appears to be already spent. Refresh and pick a different note.');
         }
 
-        const privateMint = mintConfig?.zTokenMint;
+        // For unshielding, privateMint is the zToken mint (what we're unshielding from)
+        const privateMint = selectedTokenOption?.zTokenMint || mintConfig?.zTokenMint;
+        if (!privateMint) {
+          throw new Error('Unable to determine zToken mint for unshielding.');
+        }
 
+        // For unshielding, originMint is the public mint we're unshielding to
+        // Use actualOriginMint if we resolved it above, otherwise fall back to originMint from tokenSelection
+        const unwrapOriginMint = actualOriginMint || originMint;
+        const unwrapPoolId = mintConfig?.poolId || derivePoolState(new PublicKey(unwrapOriginMint)).toBase58();
+        const zTokenMintForUnwrap = selectedTokenOption?.zTokenMint || mintConfig?.zTokenMint;
+        
         const unwrapParams = {
           connection,
           wallet,
-          originMint,
+          originMint: unwrapOriginMint,
           amount: amountValue,
-          poolId,
+          poolId: unwrapPoolId,
           destination: destinationKey.toBase58(),
           mode: 'origin',
           proof: proofResponse,
-          twinMint: mintConfig?.zTokenMint
+          twinMint: zTokenMintForUnwrap
         } as {
           connection: typeof connection;
           wallet: typeof wallet;
