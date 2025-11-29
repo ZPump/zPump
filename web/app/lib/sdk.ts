@@ -1568,44 +1568,12 @@ export async function wrap(params: WrapParams): Promise<string> {
           // Wait for pending shield to become inactive
           await waitForPendingShieldInactive(connection, poolState, 30000); // Wait up to 30 seconds
           
-          // Also check shield claim status - wait for it to become inactive or stale
-          // The shield instruction will deactivate stale claims, but we need to wait for that
-          let claimCleared = false;
-          const claimWaitStart = Date.now();
-          const claimWaitTimeout = 30000; // 30 seconds
-          
-          while (Date.now() - claimWaitStart < claimWaitTimeout && !claimCleared) {
-            try {
-              const claimState = await fetchShieldClaimState(connection, shieldClaim);
-              if (claimState.status === SHIELD_CLAIM_STATUS.INACTIVE) {
-                claimCleared = true;
-                console.info('[wrap] Shield claim is inactive');
-                break;
-              }
-              
-              // Check if claim is stale (old_root doesn't match current_root)
-              // If stale, the shield instruction will deactivate it, so we can proceed
-              const treeAccount = await connection.getAccountInfo(commitmentTreeKey);
-              if (treeAccount) {
-                const treeState = decodeCommitmentTree(new Uint8Array(treeAccount.data));
-                const currentRoot = bytesLEToCanonicalHex(treeState.currentRoot);
-                // If we can read the shield claim, check if its old_root matches
-                // For now, we'll just wait and let the shield instruction handle stale claims
-                console.info(`[wrap] Shield claim status: ${claimState.status}, waiting for it to clear or become stale...`);
-              }
-              
-              await sleep(2000); // Wait 2 seconds before checking again
-            } catch (claimError) {
-              // Shield claim doesn't exist or can't be read - this is fine, proceed
-              console.info('[wrap] Shield claim not found or can\'t be read, proceeding...');
-              claimCleared = true;
-              break;
-            }
-          }
-          
-          if (!claimCleared) {
-            console.warn('[wrap] Shield claim did not clear within timeout, but shield instruction will handle stale claims');
-          }
+          // Wait longer for any in-progress shield operations to complete
+          // The shield instruction will automatically deactivate stale shield claims (old_root mismatch)
+          // If the shield claim is valid (old_root matches current_root), it means a shield is in progress
+          // and should complete soon. We wait a bit longer to allow it to complete.
+          console.info('[wrap] Waiting for any in-progress shield operations to complete...');
+          await sleep(5000); // Wait 5 seconds for shield operations to complete or become stale
           
           console.info('[wrap] Pending shield cleared, refreshing root and regenerating proof...');
           // Refresh root after waiting - it may have changed if a shield completed
