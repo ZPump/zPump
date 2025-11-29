@@ -6142,7 +6142,6 @@ impl AllowanceAccount {
     pub const MAX_ALLOWANCE: u64 = 1_000_000_000_000; // 1 trillion max allowance (1 billion with 6 decimals)
 }
 
-#[cfg(feature = "idl-build")]
 mod idl_build_impls {
     use super::*;
     use anchor_lang::IdlBuild;
