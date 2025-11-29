@@ -1242,6 +1242,10 @@ async function main() {
     shieldKeys.push({ pubkey: POOL_PROGRAM_ID, isSigner: false, isWritable: false });
   }
 
+  // CRITICAL: Shield instruction account order must match programs/pool/src/lib.rs exactly:
+  // 10: verifier_program, 11: verifying_key, 12: shield_claim, 13: payer, 14: origin_mint,
+  // 15: mint_mapping, 16: factory_state, 17: vault_program, 18: token_program, 19: system_program, 20: rent
+  const factoryStateKey = deriveFactoryState();
   shieldKeys.push(
     { pubkey: VERIFIER_PROGRAM_ID, isSigner: false, isWritable: false },
     { pubkey: verifyingKey, isSigner: false, isWritable: false },
@@ -1249,6 +1253,7 @@ async function main() {
     { pubkey: owner.publicKey, isSigner: true, isWritable: true },
     { pubkey: originMintKey, isSigner: false, isWritable: false },
     { pubkey: mintMappingKey, isSigner: false, isWritable: false },
+    { pubkey: factoryStateKey, isSigner: false, isWritable: false }, // Position 16 - REQUIRED for lazy pool initialization
     { pubkey: VAULT_PROGRAM_ID, isSigner: false, isWritable: false },
     { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
     { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
