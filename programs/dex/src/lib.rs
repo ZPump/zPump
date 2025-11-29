@@ -8,7 +8,7 @@ pub mod ztoken_cpi;
 
 pub use errors::DexError;
 pub use state::{PoolState, DEX_POOL_SEED};
-pub use ztoken_cpi::{ShieldArgs, TransferArgs, ZTokenPoolAccounts, parse_ztoken_accounts, invoke_shield_cpi, invoke_transfer_cpi};
+pub use ztoken_cpi::{ShieldArgs, TransferArgs, ZTokenPoolAccounts, parse_ztoken_accounts, invoke_shield_cpi, invoke_transfer_cpi, invoke_transfer_cpi_with_accounts};
 
 declare_id!("8PMDczNoSdVhj5DsphLD1TrLAUtrZFpqMVThHQo8m12n");
 
