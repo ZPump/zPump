@@ -3440,7 +3440,8 @@ export async function addDexLiquidity(params: AddLiquidityParams): Promise<strin
   
   // Add zToken pool accounts to remaining_accounts if needed
   // For transfer operations, we need 7 accounts per zToken (not shield)
-  // TODO: Generate transfer proofs and add TransferArgs to instruction data when instruction signature is updated
+  // SOLUTION 1: Add payer, system_program, rent to remaining_accounts to avoid lifetime conflicts
+  // This ensures all accounts have the same lifetime scope from remaining_accounts
   if (poolStateData.tokenAIsZtoken || poolStateData.tokenBIsZtoken) {
     console.info('[addDexLiquidity] Adding zToken pool accounts to remaining_accounts');
     
@@ -3488,6 +3489,17 @@ export async function addDexLiquidity(params: AddLiquidityParams): Promise<strin
         console.warn('[addDexLiquidity] zToken B requires notes and proofClient for transfer proof generation');
       }
     }
+    
+    // SOLUTION 1: Add payer, system_program, rent to remaining_accounts
+    // This ensures all AccountInfos have the same lifetime scope, avoiding Rust borrow checker conflicts
+    // These accounts are shared between token A and B CPIs if both are zTokens
+    instructionKeys.push(
+      { pubkey: payer, isSigner: true, isWritable: true }, // payer (signer for CPI)
+      { pubkey: SystemProgram.programId, isSigner: false, isWritable: false }, // system_program
+      { pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false } // rent
+    );
+    
+    console.info('[addDexLiquidity] Added payer, system_program, rent to remaining_accounts (Solution 1: unified lifetime scope)');
   }
   
   instructions.push(

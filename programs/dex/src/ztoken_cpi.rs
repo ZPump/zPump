@@ -635,6 +635,65 @@ pub fn invoke_transfer_cpi<'info>(
     Ok(())
 }
 
+/// Helper to extract payer, system_program, and rent from remaining_accounts
+/// 
+/// SOLUTION 1: These accounts are passed via remaining_accounts to unify lifetime scope
+/// Order: payer, system_program, rent (after zToken pool accounts, at the end)
+/// 
+/// For multiple zTokens: accounts are at the very end, shared between all zToken CPIs
+pub fn parse_cpi_common_accounts<'info>(
+    remaining_accounts: &'info [AccountInfo<'info>],
+    payer_pubkey: &Pubkey,
+) -> Result<(AccountInfo<'info>, AccountInfo<'info>, AccountInfo<'info>)> {
+    use anchor_lang::solana_program::system_program;
+    
+    // Find payer, system_program, rent at the end of remaining_accounts
+    // They should be the last 3 accounts (shared between all zToken CPIs)
+    require!(
+        remaining_accounts.len() >= 3,
+        crate::errors::DexError::InvalidAccount
+    );
+    
+    let start_idx = remaining_accounts.len() - 3;
+    let payer_account = &remaining_accounts[start_idx];
+    let system_program_account = &remaining_accounts[start_idx + 1];
+    let rent_account = &remaining_accounts[start_idx + 2];
+    
+    // Validate payer
+    require_keys_eq!(
+        payer_account.key(),
+        *payer_pubkey,
+        crate::errors::DexError::InvalidAccount
+    );
+    require!(
+        payer_account.is_signer,
+        crate::errors::DexError::InvalidAccount
+    );
+    
+    // Validate system_program
+    require_keys_eq!(
+        system_program_account.key(),
+        system_program::ID,
+        crate::errors::DexError::InvalidAccount
+    );
+    
+    // Validate rent (SysvarRent is a well-known address)
+    require_keys_eq!(
+        rent_account.key(),
+        anchor_lang::solana_program::sysvar::rent::ID,
+        crate::errors::DexError::InvalidAccount
+    );
+    
+    msg!("[parse_cpi_common_accounts] Found common accounts: payer={}, system={}, rent={}", 
+        payer_account.key(), system_program_account.key(), rent_account.key());
+    
+    Ok((
+        payer_account.clone(),
+        system_program_account.clone(),
+        rent_account.clone(),
+    ))
+}
+
 /// Helper to extract commitment from transfer output for updating pool state
 /// 
 /// After a private_transfer, we need to update the pool's private reserve commitment.
