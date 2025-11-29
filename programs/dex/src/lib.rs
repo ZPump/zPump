@@ -22,6 +22,8 @@ pub mod ptf_dex {
         initial_amount_b: u64,
         token_a_is_ztoken: bool,
         token_b_is_ztoken: bool,
+        shield_args_a: Option<ShieldArgs>,
+        shield_args_b: Option<ShieldArgs>,
     ) -> Result<()> {
         instructions::create_pool::create_pool(
             ctx,
@@ -29,6 +31,8 @@ pub mod ptf_dex {
             initial_amount_b,
             token_a_is_ztoken,
             token_b_is_ztoken,
+            shield_args_a,
+            shield_args_b,
         )
     }
 
@@ -37,8 +41,17 @@ pub mod ptf_dex {
         amount_a: u64,
         amount_b: u64,
         min_lp_tokens: u64,
+        transfer_args_a: Option<TransferArgs>,
+        transfer_args_b: Option<TransferArgs>,
     ) -> Result<()> {
-        instructions::add_liquidity::add_liquidity(ctx, amount_a, amount_b, min_lp_tokens)
+        instructions::add_liquidity::add_liquidity(
+            ctx,
+            amount_a,
+            amount_b,
+            min_lp_tokens,
+            transfer_args_a,
+            transfer_args_b,
+        )
     }
 
     pub fn remove_liquidity(
@@ -46,8 +59,17 @@ pub mod ptf_dex {
         lp_amount: u64,
         min_amount_a: u64,
         min_amount_b: u64,
+        transfer_args_a: Option<TransferArgs>,
+        transfer_args_b: Option<TransferArgs>,
     ) -> Result<()> {
-        instructions::remove_liquidity::remove_liquidity(ctx, lp_amount, min_amount_a, min_amount_b)
+        instructions::remove_liquidity::remove_liquidity(
+            ctx,
+            lp_amount,
+            min_amount_a,
+            min_amount_b,
+            transfer_args_a,
+            transfer_args_b,
+        )
     }
 
     pub fn swap(
@@ -55,8 +77,19 @@ pub mod ptf_dex {
         amount_in: u64,
         min_amount_out: u64,
         a_to_b: bool,
+        transfer_args_in: Option<TransferArgs>,
+        shield_args_out: Option<ShieldArgs>,
+        transfer_args_out: Option<TransferArgs>,
     ) -> Result<()> {
-        instructions::swap::swap(ctx, amount_in, min_amount_out, a_to_b)
+        instructions::swap::swap(
+            ctx,
+            amount_in,
+            min_amount_out,
+            a_to_b,
+            transfer_args_in,
+            shield_args_out,
+            transfer_args_out,
+        )
     }
 
     pub fn collect_fees(ctx: Context<CollectFees>) -> Result<()> {
