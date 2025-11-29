@@ -670,3 +670,52 @@ pub fn validate_ztoken_pool_ready(
     Ok(())
 }
 
+// ====================================================================
+// CONTEXT-AWARE WRAPPER FUNCTIONS - Best practice for avoiding lifetime conflicts  
+// ====================================================================
+// These functions accept a closure to extract AccountInfos, keeping all
+// AccountInfos in the same lifetime scope from the instruction context
+
+/// Invoke transfer CPI with AccountInfos extracted via closure
+/// 
+/// This wrapper pattern avoids lifetime conflicts by keeping all AccountInfo
+/// extraction within the same Context scope via a closure
+pub fn invoke_transfer_cpi_with_accounts<'info, F>(
+    remaining_accounts: &'info [AccountInfo<'info>],
+    origin_mint: &Pubkey,
+    transfer_args: TransferArgs,
+    sender_is_pool_pda: bool,
+    get_accounts: F,
+) -> Result<()>
+where
+    F: FnOnce() -> (
+        AccountInfo<'info>, // payer
+        AccountInfo<'info>, // system_program
+        AccountInfo<'info>, // rent
+    ),
+{
+    // Parse zToken accounts from remaining_accounts
+    let ztoken_accounts = parse_ztoken_accounts(
+        remaining_accounts,
+        origin_mint,
+        &POOL_PROGRAM_ID,
+        false, // is_shield = false
+    )?;
+    
+    // Extract AccountInfos via closure (all in same lifetime scope)
+    let (payer, system_program, rent) = get_accounts();
+    
+    // Call the underlying CPI function
+    invoke_transfer_cpi(
+        &ztoken_accounts,
+        remaining_accounts,
+        &payer,
+        &payer,
+        &system_program,
+        &rent,
+        transfer_args,
+        sender_is_pool_pda,
+        None, // pool_pda_seeds = None for user-initiated transfers
+    )
+}
+
