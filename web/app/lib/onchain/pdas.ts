@@ -1,5 +1,5 @@
 import { PublicKey } from '@solana/web3.js';
-import { POOL_PROGRAM_ID, VAULT_PROGRAM_ID, FACTORY_PROGRAM_ID, VERIFIER_PROGRAM_ID, CIRCUIT_TAGS, VERIFIER_VERSION } from './programIds';
+import { POOL_PROGRAM_ID, VAULT_PROGRAM_ID, FACTORY_PROGRAM_ID, VERIFIER_PROGRAM_ID, DEX_PROGRAM_ID, CIRCUIT_TAGS, VERIFIER_VERSION } from './programIds';
 
 const textEncoder = new TextEncoder();
 
@@ -69,6 +69,23 @@ export function deriveVerifyingKey(): PublicKey {
   return PublicKey.findProgramAddressSync(
     [textEncoder.encode('vk'), CIRCUIT_TAGS.shield, new Uint8Array([VERIFIER_VERSION])],
     VERIFIER_PROGRAM_ID
+  )[0];
+}
+
+/**
+ * Derives the DEX pool state PDA for a token pair.
+ * Seeds: ["pool", token_a_mint, token_b_mint]
+ * Tokens must be in canonical order (token_a < token_b).
+ */
+export function deriveDexPoolState(tokenA: PublicKey, tokenB: PublicKey): PublicKey {
+  // Ensure canonical order (token_a < token_b)
+  const [tokenAMint, tokenBMint] = tokenA.toBuffer().compare(tokenB.toBuffer()) < 0 
+    ? [tokenA, tokenB] 
+    : [tokenB, tokenA];
+  
+  return PublicKey.findProgramAddressSync(
+    [textEncoder.encode('pool'), tokenAMint.toBuffer(), tokenBMint.toBuffer()],
+    DEX_PROGRAM_ID
   )[0];
 }
 

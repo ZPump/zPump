@@ -53,12 +53,14 @@ PROGRAM_FACTORY_PUBKEY="YNZGqPEsKkMcUopmXThpigDdxfCYPE6jS1QtsXfRzjV"
 PROGRAM_VAULT_PUBKEY="ABUQvsF8kdY9HCFrVEomafg9ABbq4zVQuxLfevpwGnvb"
 PROGRAM_POOL_PUBKEY="GBfBiuyXm5YZjnCPkZNjakht41rxEkMRxawQcocowwdi"
 PROGRAM_VERIFIER_PUBKEY="3aCv39mCRFH9BGJskfXqwQoWzW1ULq2yXEbEwGgKtLgg"
+PROGRAM_DEX_PUBKEY="8PMDczNoSdVhj5DsphLD1TrLAUtrZFpqMVThHQo8m12n"
 
 for program in \
   "$PROGRAM_DIR/ptf_factory.so" \
   "$PROGRAM_DIR/ptf_vault.so" \
   "$PROGRAM_DIR/ptf_pool.so" \
-  "$PROGRAM_DIR/ptf_verifier_groth16.so"; do
+  "$PROGRAM_DIR/ptf_verifier_groth16.so" \
+  "$PROGRAM_DIR/ptf_dex.so"; do
   if [[ ! -f "$program" ]]; then
     echo "error: program artifact not found: $program" >&2
     echo "hint: run 'anchor build --no-idl' before launching the validator." >&2
@@ -97,5 +99,6 @@ exec solana-test-validator \
   --bpf-program "$PROGRAM_FACTORY_PUBKEY" "$PROGRAM_DIR/ptf_factory.so" \
   --bpf-program "$PROGRAM_VAULT_PUBKEY" "$PROGRAM_DIR/ptf_vault.so" \
   --bpf-program "$PROGRAM_POOL_PUBKEY" "$PROGRAM_DIR/ptf_pool.so" \
-  --bpf-program "$PROGRAM_VERIFIER_PUBKEY" "$PROGRAM_DIR/ptf_verifier_groth16.so"
+  --bpf-program "$PROGRAM_VERIFIER_PUBKEY" "$PROGRAM_DIR/ptf_verifier_groth16.so" \
+  --bpf-program "$PROGRAM_DEX_PUBKEY" "$PROGRAM_DIR/ptf_dex.so"
 
