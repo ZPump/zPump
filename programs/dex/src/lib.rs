@@ -199,6 +199,7 @@ pub struct AddLiquidity<'info> {
     /// CHECK: Associated token program for creating LP token account if needed
     pub associated_token_program: AccountInfo<'info>,
     pub system_program: Program<'info, System>,
+    pub rent: Sysvar<'info, Rent>,
 }
 
 #[derive(Accounts)]
