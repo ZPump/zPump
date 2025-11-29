@@ -3701,10 +3701,13 @@ export async function removeDexLiquidity(params: RemoveLiquidityParams): Promise
   }
   
   // Encode remove_liquidity instruction
+  // Use snake_case to match IDL
   const removeLiquidityData = dexCoder.instruction.encode('remove_liquidity', {
     lp_amount: new BN(params.lpAmount.toString()),
     min_amount_a: new BN(minAmountA.toString()),
-    min_amount_b: new BN(minAmountB.toString())
+    min_amount_b: new BN(minAmountB.toString()),
+    transfer_args_a: null,  // Optional: null for public tokens, TransferArgs for zTokens
+    transfer_args_b: null   // Optional: null for public tokens, TransferArgs for zTokens
   });
   
   // Build instruction keys
@@ -3720,7 +3723,8 @@ export async function removeDexLiquidity(params: RemoveLiquidityParams): Promise
     { pubkey: poolTokenBAccount, isSigner: false, isWritable: true },
     { pubkey: payer, isSigner: true, isWritable: true },
     { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
-    { pubkey: SystemProgram.programId, isSigner: false, isWritable: false }
+    { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+    { pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false } // rent (required by IDL)
   ];
   
   // Add zToken pool accounts to remaining_accounts if needed
@@ -3903,7 +3907,8 @@ export async function swapDex(params: SwapParams): Promise<string> {
     { pubkey: poolTokenOutAccount, isSigner: false, isWritable: true },
     { pubkey: payer, isSigner: true, isWritable: true },
     { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
-    { pubkey: SystemProgram.programId, isSigner: false, isWritable: false }
+    { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+    { pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false } // rent (required by IDL)
   ];
   
   // Add zToken pool accounts to remaining_accounts if needed
