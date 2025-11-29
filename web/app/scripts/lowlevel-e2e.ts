@@ -552,11 +552,18 @@ function buildManualMessageV0(
   const altAddressMap = new Map(altAddresses.map((addr: PublicKey, idx: number) => [addr.toBase58(), idx]));
   
   // Build staticAccountKeys in correct order: writable signers, readonly signers, writable non-signers, readonly non-signers
-  // Track account metadata: isSigner, isWritable (max across all instructions)
-  const accountMetadata = new Map<string, { pubkey: PublicKey; isSigner: boolean; isWritable: boolean }>();
+  // CRITICAL: Preserve instruction order within each category to ensure correct account mapping
+  // Track account metadata and first occurrence order
+  const accountMetadata = new Map<string, { 
+    pubkey: PublicKey; 
+    isSigner: boolean; 
+    isWritable: boolean; 
+    firstOrder: number; // Order of first occurrence in instructions
+  }>();
   const signerSet = new Set(allSigners.map(s => s.toBase58()));
+  let accountOrderCounter = 0;
   
-  // Collect accounts from instructions
+  // Collect accounts from instructions in order
   for (const ix of instructions) {
     // Add program ID if not in lookup table
     const programIdStr = ix.programId.toBase58();
@@ -565,12 +572,13 @@ function buildManualMessageV0(
         accountMetadata.set(programIdStr, {
           pubkey: ix.programId,
           isSigner: signerSet.has(programIdStr),
-          isWritable: false // Program IDs are always readonly
+          isWritable: false, // Program IDs are always readonly
+          firstOrder: accountOrderCounter++
         });
       }
     }
     
-    // Add account keys not in lookup table
+    // Add account keys not in lookup table (preserve order)
     for (const meta of ix.keys) {
       const addrStr = meta.pubkey.toBase58();
       if (!altAddressMap.has(addrStr)) {
@@ -584,41 +592,48 @@ function buildManualMessageV0(
           accountMetadata.set(addrStr, {
             pubkey: meta.pubkey,
             isSigner: signerSet.has(addrStr),
-            isWritable: meta.isWritable
+            isWritable: meta.isWritable,
+            firstOrder: accountOrderCounter++
           });
         }
       }
     }
   }
   
-  // Sort accounts into correct categories
-  const writableSigners: PublicKey[] = [];
-  const readonlySigners: PublicKey[] = [];
-  const writableNonSigners: PublicKey[] = [];
-  const readonlyNonSigners: PublicKey[] = [];
+  // Sort accounts into correct categories, preserving order within each category
+  const writableSigners: Array<{pubkey: PublicKey; order: number}> = [];
+  const readonlySigners: Array<{pubkey: PublicKey; order: number}> = [];
+  const writableNonSigners: Array<{pubkey: PublicKey; order: number}> = [];
+  const readonlyNonSigners: Array<{pubkey: PublicKey; order: number}> = [];
   
   for (const [addrStr, meta] of accountMetadata) {
     if (meta.isSigner) {
       if (meta.isWritable) {
-        writableSigners.push(meta.pubkey);
+        writableSigners.push({ pubkey: meta.pubkey, order: meta.firstOrder });
       } else {
-        readonlySigners.push(meta.pubkey);
+        readonlySigners.push({ pubkey: meta.pubkey, order: meta.firstOrder });
       }
     } else {
       if (meta.isWritable) {
-        writableNonSigners.push(meta.pubkey);
+        writableNonSigners.push({ pubkey: meta.pubkey, order: meta.firstOrder });
       } else {
-        readonlyNonSigners.push(meta.pubkey);
+        readonlyNonSigners.push({ pubkey: meta.pubkey, order: meta.firstOrder });
       }
     }
   }
   
-  // Build staticAccountKeys in correct order
+  // Sort each category by first occurrence order
+  writableSigners.sort((a, b) => a.order - b.order);
+  readonlySigners.sort((a, b) => a.order - b.order);
+  writableNonSigners.sort((a, b) => a.order - b.order);
+  readonlyNonSigners.sort((a, b) => a.order - b.order);
+  
+  // Build staticAccountKeys in correct order (preserving relative order within categories)
   const staticAccountKeys: PublicKey[] = [
-    ...writableSigners,
-    ...readonlySigners,
-    ...writableNonSigners,
-    ...readonlyNonSigners
+    ...writableSigners.map(a => a.pubkey),
+    ...readonlySigners.map(a => a.pubkey),
+    ...writableNonSigners.map(a => a.pubkey),
+    ...readonlyNonSigners.map(a => a.pubkey)
   ];
   
   // Build map for quick lookup
@@ -654,16 +669,44 @@ function buildManualMessageV0(
   
   // Build mapping from lookup table index to final account index
   // Final account list: staticAccountKeys (0..N-1), then writable ALT accounts (N..N+W-1), then readonly ALT accounts (N+W..N+W+R-1)
+  // CRITICAL: Preserve ALT index order (which matches instruction order) to ensure correct mapping
   const altIndexToAccountIndex = new Map<number, number>();
   
-  // Map writable indexes
+  // Map writable indexes (preserve sorted order from ALT)
   for (let i = 0; i < altWritableIndexes.length; i++) {
-    altIndexToAccountIndex.set(altWritableIndexes[i]!, staticAccountKeys.length + i);
+    const altIdx = altWritableIndexes[i]!;
+    altIndexToAccountIndex.set(altIdx, staticAccountKeys.length + i);
+    // Debug: Log critical mappings
+    const addr = altAddresses[altIdx];
+    if (addr.equals(VAULT_PROGRAM_ID) || addr.equals(TOKEN_PROGRAM_ID)) {
+      console.info(`[buildManualMessageV0] ALT writable: ${addr.toBase58().substring(0, 8)}... (ALT idx ${altIdx}) -> account index ${staticAccountKeys.length + i}`);
+    }
   }
   
-  // Map readonly indexes (after writable)
+  // Map readonly indexes (preserve sorted order from ALT, after writable)
   for (let i = 0; i < altReadonlyIndexes.length; i++) {
-    altIndexToAccountIndex.set(altReadonlyIndexes[i]!, staticAccountKeys.length + altWritableIndexes.length + i);
+    const altIdx = altReadonlyIndexes[i]!;
+    const accountIdx = staticAccountKeys.length + altWritableIndexes.length + i;
+    altIndexToAccountIndex.set(altIdx, accountIdx);
+    // Debug: Log critical mappings
+    const addr = altAddresses[altIdx];
+    if (addr.equals(VAULT_PROGRAM_ID) || addr.equals(TOKEN_PROGRAM_ID)) {
+      console.info(`[buildManualMessageV0] ALT readonly: ${addr.toBase58().substring(0, 8)}... (ALT idx ${altIdx}) -> account index ${accountIdx}`);
+    }
+  }
+  
+  // Verify critical accounts are in correct order
+  const vaultAltIdx = altAddresses.findIndex(a => a.equals(VAULT_PROGRAM_ID));
+  const tokenAltIdx = altAddresses.findIndex(a => a.equals(TOKEN_PROGRAM_ID));
+  if (vaultAltIdx >= 0 && tokenAltIdx >= 0) {
+    const vaultAccountIdx = altIndexToAccountIndex.get(vaultAltIdx);
+    const tokenAccountIdx = altIndexToAccountIndex.get(tokenAltIdx);
+    if (vaultAccountIdx !== undefined && tokenAccountIdx !== undefined) {
+      if (vaultAccountIdx >= tokenAccountIdx) {
+        throw new Error(`Account order mismatch: vault_program (account idx ${vaultAccountIdx}) should come before token_program (account idx ${tokenAccountIdx})`);
+      }
+      console.info(`[buildManualMessageV0] Verified: vault_program (ALT idx ${vaultAltIdx} -> account idx ${vaultAccountIdx}) before token_program (ALT idx ${tokenAltIdx} -> account idx ${tokenAccountIdx})`);
+    }
   }
   
   // Build compiled instructions
@@ -712,6 +755,26 @@ function buildManualMessageV0(
         // Debug: Log critical account mappings
         if (addrStr === VAULT_PROGRAM_ID.toBase58() || addrStr === TOKEN_PROGRAM_ID.toBase58()) {
           console.info(`[buildManualMessageV0] Account ${addrStr.substring(0, 8)}... (instruction pos ${i}, ALT idx ${altIdx}) -> account index ${accountIndex}`);
+        }
+      }
+      
+      // Debug: Log all account indexes for first instruction to verify order
+      if (compiledInstructions.length === 0 && ix.keys.length > 16) {
+        console.info(`[buildManualMessageV0] Instruction account mapping (first ${Math.min(21, ix.keys.length)} accounts):`);
+        for (let j = 0; j < Math.min(21, ix.keys.length); j++) {
+          const m = ix.keys[j]!;
+          const aStr = m.pubkey.toBase58();
+          let accIdx: number | string = '?';
+          if (staticAccountKeyMap.has(aStr)) {
+            accIdx = staticAccountKeyMap.get(aStr)!;
+          } else {
+            const altIdx = altAddressMap.get(aStr);
+            if (altIdx !== undefined) {
+              accIdx = altIndexToAccountIndex.get(altIdx) ?? '?';
+            }
+          }
+          const shortAddr = aStr.substring(0, 8) + '...';
+          console.info(`  [${j}] ${shortAddr} -> account index ${accIdx}`);
         }
       }
     }
@@ -764,6 +827,22 @@ function buildManualMessageV0(
   
   // Validate: Check that account indexes are within bounds
   const totalAccounts = staticAccountKeys.length + altWritableIndexes.length + altReadonlyIndexes.length;
+  
+  // Build final account list for verification
+  const finalAccountList: PublicKey[] = [
+    ...staticAccountKeys,
+    ...altWritableIndexes.map(idx => altAddresses[idx]!),
+    ...altReadonlyIndexes.map(idx => altAddresses[idx]!)
+  ];
+  
+  // Debug: Verify critical accounts are in correct positions
+  for (let i = 0; i < finalAccountList.length; i++) {
+    const addr = finalAccountList[i]!;
+    if (addr.equals(VAULT_PROGRAM_ID) || addr.equals(TOKEN_PROGRAM_ID)) {
+      console.info(`[buildManualMessageV0] Final account list: index ${i} = ${addr.toBase58().substring(0, 8)}...`);
+    }
+  }
+  
   for (const ci of compiledInstructions) {
     if (ci.programIdIndex >= totalAccounts) {
       throw new Error(`Program ID index ${ci.programIdIndex} out of bounds (max ${totalAccounts - 1})`);
