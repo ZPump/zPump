@@ -100,6 +100,7 @@ const SHIELD_CLAIM_STATUS = {
 
 type ShieldClaimAccount = {
   status: number;
+  old_root?: Uint8Array;
 };
 
 function sleep(ms: number): Promise<void> {
@@ -1568,12 +1569,40 @@ export async function wrap(params: WrapParams): Promise<string> {
           // Wait for pending shield to become inactive
           await waitForPendingShieldInactive(connection, poolState, 30000); // Wait up to 30 seconds
           
-          // Wait longer for any in-progress shield operations to complete
+          // Check shield claim status - if it exists and is active, check if it's stale
           // The shield instruction will automatically deactivate stale shield claims (old_root mismatch)
           // If the shield claim is valid (old_root matches current_root), it means a shield is in progress
-          // and should complete soon. We wait a bit longer to allow it to complete.
-          console.info('[wrap] Waiting for any in-progress shield operations to complete...');
-          await sleep(5000); // Wait 5 seconds for shield operations to complete or become stale
+          // and we should wait for it to complete. If it's stale, we can proceed.
+          console.info('[wrap] Checking shield claim status...');
+          let shieldClaimStale = false;
+          try {
+            const claimState = await fetchShieldClaimState(connection, shieldClaim);
+            if (claimState.status !== SHIELD_CLAIM_STATUS.INACTIVE) {
+              // Shield claim is active - check if it's stale by comparing old_root to current_root
+              const treeAccount = await connection.getAccountInfo(commitmentTreeKey);
+              if (treeAccount && claimState.old_root) {
+                const treeState = decodeCommitmentTree(new Uint8Array(treeAccount.data));
+                const currentRootBytes = treeState.currentRoot;
+                // Compare old_root from claim to current_root from tree
+                const claimOldRootMatches = claimState.old_root.every((byte, idx) => byte === currentRootBytes[idx]);
+                if (!claimOldRootMatches) {
+                  // Claim is stale - shield instruction will deactivate it
+                  console.info('[wrap] Shield claim is stale (old_root mismatch), shield instruction will deactivate it');
+                  shieldClaimStale = true;
+                } else {
+                  // Claim is valid - wait for it to complete
+                  console.info('[wrap] Shield claim is valid (old_root matches), waiting for shield operation to complete...');
+                  await sleep(5000); // Wait 5 seconds for shield operation to complete
+                }
+              }
+            } else {
+              console.info('[wrap] Shield claim is inactive');
+            }
+          } catch (claimError) {
+            // Shield claim doesn't exist or can't be read - this is fine, proceed
+            console.info('[wrap] Shield claim not found or can\'t be read, proceeding...');
+            shieldClaimStale = true;
+          }
           
           console.info('[wrap] Pending shield cleared, refreshing root and regenerating proof...');
           // Refresh root after waiting - it may have changed if a shield completed
