@@ -293,6 +293,8 @@ export function isPendingShieldError(error: unknown): boolean {
   return message.includes('Pending shield in flight') ||
          message.includes('PendingShieldInFlight') ||
          message.includes('0x1793') ||
-         message.includes('6035');
+         message.includes('0x17a1') || // Also check for 6049
+         message.includes('6035') ||
+         message.includes('6049');
 }
 

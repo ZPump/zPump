@@ -422,6 +422,15 @@ async function waitForPendingShieldInactive(
   let attempts = 0;
   const maxAttempts = Math.ceil(timeoutMs / 1000);
   
+  // Calculate offset for pending_shield.active in PoolState
+  // PoolState layout: discriminator(8) + pubkeys(32*6) + arrays + fields before pending_shield
+  // Offset calculation:
+  // 8 (discriminator) + 192 (6 pubkeys) + 32 (verifying_key_id) + 32 (verifying_key_hash) + 32 (current_root)
+  // + 1024 (recent_roots) + 256 (recent_roots_timestamps) + 1 (roots_len) + 2 (fee_bps) + 1 (features)
+  // + 32 (note_ledger) + 1 (note_ledger_bump) + 16 (protocol_fees) + 32 (hook_config) + 1 (hook_config_present)
+  // + 1 (hook_config_bump) + 1 (bump) + 32 (twin_mint) + 1 (twin_mint_enabled) = 1697
+  const PENDING_SHIELD_ACTIVE_OFFSET = 1697;
+  
   while (Date.now() - start < timeoutMs) {
     attempts++;
     const accountInfo = await connection.getAccountInfo(poolStateKey, 'confirmed');
@@ -433,6 +442,7 @@ async function waitForPendingShieldInactive(
       return; // Pool doesn't exist, so pending_shield can't be active
     }
     
+    let isActive = false;
     try {
       // Try decoding first
       const decoded = poolCoder.accounts.decode('PoolState', accountInfo.data) as {
@@ -440,26 +450,36 @@ async function waitForPendingShieldInactive(
         pending_shield?: { active?: number };
       };
       const pendingShield = decoded.pendingShield ?? decoded.pending_shield;
-      const isActive = pendingShield?.active !== undefined && pendingShield.active !== 0;
-      
-      if (!isActive) {
-        if (process.env.NEXT_PUBLIC_DEBUG_WRAP === 'true') {
-          console.info(`[wrap] pending_shield is inactive after ${attempts} attempts`);
-        }
-        return;
-      }
-      
-      if (attempts % 10 === 0) {
-        console.info(`[wrap] Waiting for pending_shield to be inactive (attempt ${attempts}/${maxAttempts})...`);
-      }
+      isActive = pendingShield?.active !== undefined && pendingShield.active !== 0;
     } catch (error) {
-      // If decoding fails, we can't reliably check pending_shield status
-      // Skip the check and let the program reject with PendingShieldInFlight if it's active
-      // We'll handle that error below
+      // If decoding fails, read pending_shield.active byte directly from account data
       if (process.env.NEXT_PUBLIC_DEBUG_WRAP === 'true') {
-        console.warn('[wrap] Failed to decode PoolState, skipping pending_shield check:', error);
+        console.warn('[wrap] Failed to decode PoolState, reading pending_shield.active directly:', error);
       }
-      return; // Proceed and let program handle it
+      
+      // Read the active byte directly from account data
+      const accountData = Buffer.from(accountInfo.data);
+      if (accountData.length > PENDING_SHIELD_ACTIVE_OFFSET) {
+        const activeByte = accountData[PENDING_SHIELD_ACTIVE_OFFSET];
+        isActive = activeByte !== undefined && activeByte !== 0;
+        if (process.env.NEXT_PUBLIC_DEBUG_WRAP === 'true') {
+          console.info(`[wrap] Read pending_shield.active directly from offset ${PENDING_SHIELD_ACTIVE_OFFSET}: ${activeByte}`);
+        }
+      } else {
+        // Account data too short - assume inactive (pool might not be initialized)
+        isActive = false;
+      }
+    }
+    
+    if (!isActive) {
+      if (process.env.NEXT_PUBLIC_DEBUG_WRAP === 'true') {
+        console.info(`[wrap] pending_shield is inactive after ${attempts} attempts`);
+      }
+      return;
+    }
+    
+    if (attempts % 10 === 0) {
+      console.info(`[wrap] Waiting for pending_shield to be inactive (attempt ${attempts}/${maxAttempts})...`);
     }
     
     await sleep(1000);
