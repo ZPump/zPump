@@ -250,19 +250,20 @@ pub fn create_pool(
     // For now, we validate that zToken flags are set correctly.
     // Full CPI integration will be completed when SDK proof generation is integrated.
     //
-    // Store values for pool state updates after CPIs
+    // Store values for pool state updates after CPIs  
     let mut private_reserve_a_commitment = [0u8; 32];
     let mut private_reserve_a_amount = if token_a_is_ztoken { initial_amount_a } else { 0 };
     let mut private_reserve_b_commitment = [0u8; 32];
     let mut private_reserve_b_amount = if token_b_is_ztoken { initial_amount_b } else { 0 };
     
-    // Get pool state key before dropping mutable borrow
+    // Get pool state key - we'll need this for CPI calls
     let pool_state_key = pool_state.key();
     
-    // Drop mutable borrow before CPIs
+    // Drop mutable borrow of pool_state before CPIs to avoid conflicts
     drop(pool_state);
     
     // Handle zToken shield CPIs
+    // Note: We'll re-acquire pool_state after CPIs to update private reserves
     if token_a_is_ztoken {
         msg!("[create_pool] Token A is zToken - processing shield CPI for initial liquidity");
         
@@ -290,23 +291,6 @@ pub fn create_pool(
                 true, // is_shield = true
             )?;
             
-            // Create vault_program AccountInfo for CPI
-            // For program accounts, we create a minimal AccountInfo using Box::leak
-            let vault_program_key = Box::leak(Box::new(VAULT_PROGRAM_ID));
-            let vault_program_lamports = Box::leak(Box::new(0u64));
-            let vault_program_data = Box::leak(Box::new([0u8; 0])); // Empty data for program accounts
-            let vault_program_owner = Box::leak(Box::new(VAULT_PROGRAM_ID));
-            let vault_program_account = AccountInfo::new(
-                vault_program_key,
-                false, // is_signer
-                false, // is_writable
-                vault_program_lamports,
-                vault_program_data,
-                vault_program_owner,
-                true, // executable (programs are executable)
-                0, // rent_epoch (dummy)
-            );
-            
             // Invoke shield CPI (user shields tokens to DEX pool PDA)
             invoke_shield_cpi(
                 &ztoken_accounts,
@@ -316,7 +300,7 @@ pub fn create_pool(
                 &ctx.accounts.token_program.to_account_info(),
                 &ctx.accounts.system_program.to_account_info(),
                 &ctx.accounts.rent.to_account_info(),
-                &vault_program_account,
+                &VAULT_PROGRAM_ID, // Pass Pubkey instead of AccountInfo
                 &pool_state_key,
                 shield_args_a.clone(), // Clone to avoid move
             )?;
@@ -361,32 +345,16 @@ pub fn create_pool(
                 true, // is_shield = true
             )?;
             
-            // Create vault_program AccountInfo for CPI
-            let vault_program_key = Box::leak(Box::new(VAULT_PROGRAM_ID));
-            let vault_program_lamports = Box::leak(Box::new(0u64));
-            let vault_program_data = Box::leak(Box::new([0u8; 0]));
-            let vault_program_owner = Box::leak(Box::new(VAULT_PROGRAM_ID));
-            let vault_program_account = AccountInfo::new(
-                vault_program_key,
-                false,
-                false,
-                vault_program_lamports,
-                vault_program_data,
-                vault_program_owner,
-                true,
-                0,
-            );
-            
             // Invoke shield CPI (user shields tokens to DEX pool PDA)
             invoke_shield_cpi(
                 &ztoken_accounts,
-                token_b_accounts,
+                ctx.remaining_accounts, // Use full remaining_accounts
                 &ctx.accounts.token_b_mint.to_account_info(),
                 &ctx.accounts.payer.to_account_info(),
                 &ctx.accounts.token_program.to_account_info(),
                 &ctx.accounts.system_program.to_account_info(),
                 &ctx.accounts.rent.to_account_info(),
-                &vault_program_account,
+                &VAULT_PROGRAM_ID, // Pass Pubkey instead of AccountInfo
                 &pool_state_key,
                 shield_args_b.clone(),
             )?;
@@ -408,7 +376,7 @@ pub fn create_pool(
     msg!("[create_pool] Updated private reserves: A={}, B={}", 
         private_reserve_a_amount, private_reserve_b_amount);
     
-    // Prepare seeds for PDA signing
+    // Prepare seeds for PDA signing (needed for LP mint operations below)
     let seeds: [&[u8]; 4] = [
         DEX_POOL_SEED,
         token_a.as_ref(),
@@ -417,9 +385,6 @@ pub fn create_pool(
     ];
     let signer_seeds_slice: &[&[u8]] = &seeds;
     let signer_seeds: &[&[&[u8]]] = &[signer_seeds_slice];
-    
-    // Drop mutable borrow of pool_state before CPI
-    drop(pool_state);
     
     // Initialize LP token mint if it's not already initialized
     // The mint account is created by SDK with TOKEN_PROGRAM_ID as owner, but data is empty/uninitialized
