@@ -217,6 +217,130 @@ account_infos.push(payer);
 
 ---
 
+### Attempt 7: Scoped Block Pattern (Latest Attempt)
+
+**Approach:** Based on a solution document that suggests using scoped blocks to isolate borrows. The pattern recommends:
+1. Cache only scalar data from `ctx.accounts` upfront
+2. Parse `remaining_accounts` in a short-lived scope (scoped block)
+3. Reborrow `ctx.accounts` in a new scope after the block ends
+
+**Implementation:**
+```rust
+// 1) Cache only scalars from typed accounts
+let pool_state_key = ctx.accounts.pool_state.key();
+let payer_pubkey = ctx.accounts.payer.key();
+
+// 2) Parse remaining accounts in their own scope so the borrow ends
+let ztoken_accounts = {
+    let ra: &[AccountInfo<'_>] = ctx.remaining_accounts;
+    parse_ztoken_accounts(ra, &pool_state_key, &payer_pubkey)?
+}; // `ra` borrow ends here
+
+// 3) Now freely borrow from ctx.accounts again
+{
+    let pool_state = &mut ctx.accounts.pool_state;
+    // update reserves, commitments, etc.
+}
+```
+
+**What We Actually Implemented:**
+
+We applied this pattern to both token A and token B zToken handling:
+
+```rust
+// Scoped block: All remaining_accounts access happens here
+// The borrow ends when this block closes
+let (commitment_a, amount_a_result) = {
+    // Borrow remaining_accounts in this scope only
+    // Use explicit type annotation to make scope clear
+    let ra: &[AccountInfo<'_>] = ctx.remaining_accounts;
+    
+    require!(!ra.is_empty(), DexError::InvalidAccount);
+    
+    // Parse zToken accounts from remaining_accounts
+    let ztoken_accounts = crate::ztoken_cpi::parse_ztoken_accounts(
+        ra,
+        &token_a,
+        &POOL_PROGRAM_ID,
+        false,
+    )?;
+    
+    // Build CPI instruction completely inline
+    // ... construct instruction and invoke CPI ...
+    
+    // Extract commitment for pool state update (return scalar values only)
+    let commitment = extract_pool_commitment(...);
+    let amount_result = ...;
+    
+    // Return only scalar values - no AccountInfos
+    (commitment, amount_result)
+}; // remaining_accounts borrow ends here
+
+// Store commitment results for later pool state update
+if let Some(commitment) = commitment_a {
+    if let Some(amount) = amount_a_result {
+        new_private_reserve_a_commitment = Some(commitment);
+        new_private_reserve_a_amount = Some(amount);
+    }
+}
+
+// Later: Re-access ctx.accounts.pool_state in separate scope
+let pool_state = &mut ctx.accounts.pool_state;
+// Update private reserve commitments
+```
+
+**Result:** ❌ Still Failed - The assignment to `ra` within the scoped block creates a lifetime conflict
+
+**Error:**
+```
+error: lifetime may not live long enough
+   --> programs/dex/src/instructions/add_liquidity.rs:156:46
+    |
+156 |                 let ra: &[AccountInfo<'_>] = ctx.remaining_accounts;
+    |                                              ^^^^^^^^^^^^^^^^^^^^^^
+    |     assignment requires that `'1` must outlive `'2`
+```
+
+**Why it failed:** Even within a scoped block, assigning `ctx.remaining_accounts` to a local variable (`let ra: &[AccountInfo<'_>] = ctx.remaining_accounts;`) creates a lifetime conflict. The assignment itself requires lifetime `'1` (from remaining_accounts) to outlive lifetime `'2` (from accounts), which are incompatible Context lifetime parameters.
+
+**Key Insight:** The problem occurs at the **assignment statement itself**, not just when using the variable. Even extracting `ctx.remaining_accounts` to a local variable within a scoped block triggers the lifetime conflict.
+
+**What We Need:**
+
+We need clarification on:
+
+1. **Can we use `ctx.remaining_accounts` without assigning it to a variable?** 
+   - Should we pass it directly to functions without intermediate assignment?
+   - Example: `parse_ztoken_accounts(ctx.remaining_accounts, ...)?` directly?
+
+2. **Is there a different way to structure the scoped block?**
+   - The solution document shows the pattern, but maybe we're missing something about how to properly isolate the borrow?
+
+3. **Are there additional constraints we need to follow?**
+   - Should we avoid accessing `ctx` at all after the scoped block?
+   - Do we need to restructure the function signature or Context usage?
+
+4. **Is this pattern specific to a particular Anchor version or Context structure?**
+   - Does it require a different Anchor Context API?
+   - Are there Anchor-specific helper methods we should use?
+
+5. **Can the solution work if we complete ALL remaining_accounts operations before re-accessing ctx.accounts?**
+   - We tried doing both token A and token B CPIs in scoped blocks, then accessing ctx.accounts afterward
+   - But even the first scoped block assignment causes the error
+
+**Current Status:**
+- ✅ SDK changes complete (payer, system_program, rent in remaining_accounts)
+- ✅ Parsing functions ready
+- ✅ Code structure follows scoped block pattern
+- ❌ Cannot compile due to lifetime conflict on assignment
+
+The scoped block approach seems correct in theory, but we're hitting the fundamental limitation that **even assigning `ctx.remaining_accounts` to a variable triggers the lifetime conflict**. We need guidance on whether:
+- We should skip the assignment and use it directly
+- There's a different pattern that avoids the assignment conflict
+- This is a known Anchor limitation that requires a workaround
+
+---
+
 ## Current Code Structure
 
 ### Instruction Handler (Simplified)
@@ -407,13 +531,24 @@ A solution that:
 ## Request
 
 Please provide:
-1. **Detailed explanation** of why our attempts failed
-2. **Working solution** with code examples
+1. **Detailed explanation** of why our attempts failed, especially:
+   - Why the scoped block pattern (Attempt 7) still fails on assignment
+   - Whether we can use `ctx.remaining_accounts` without assigning it to a variable
+   - What we're missing about isolating borrows in scoped blocks
+2. **Working solution** with code examples, particularly:
+   - How to properly implement the scoped block pattern if that's the correct approach
+   - Alternative patterns if scoped blocks don't work with Anchor's Context
 3. **Alternative architectures** if no direct solution exists
 4. **Best practices** for handling this pattern in Anchor programs
 5. **Any known limitations** or workarounds in the Anchor framework
+6. **Specific guidance on the scoped block pattern** - whether:
+   - We should pass `ctx.remaining_accounts` directly to functions without assignment
+   - There's a way to structure the assignment that avoids the conflict
+   - This pattern requires a different Anchor version or Context API
 
-We've spent significant time on this issue and have tried multiple approaches. We're open to any solution, including architectural changes, if that's what's needed.
+We've spent significant time on this issue and have tried multiple approaches, including the scoped block pattern that was recommended. We're open to any solution, including architectural changes, if that's what's needed.
+
+**Most Recent Question:** The scoped block pattern seems correct, but even assigning `ctx.remaining_accounts` to a local variable within the block causes the lifetime conflict. Is there a way to use it without assignment, or is there something fundamental we're missing about how Anchor's Context lifetime system works?
 
 Thank you for your help!
 
@@ -519,6 +654,8 @@ Through this process, we've learned:
 2. Sequential access doesn't resolve lifetime conflicts if they're different parameters
 3. Extracting/borrowing doesn't help - lifetimes persist
 4. The SDK approach (unifying accounts in remaining_accounts) is correct in theory, but accessing remaining_accounts at all creates the conflict
+5. **Even assigning `ctx.remaining_accounts` to a local variable within a scoped block triggers the lifetime conflict** - the assignment statement itself is the problem, not just using the variable afterward
+6. Scoped blocks help conceptually, but don't resolve the fundamental Context lifetime parameter incompatibility
 
 ### Final Thoughts
 
