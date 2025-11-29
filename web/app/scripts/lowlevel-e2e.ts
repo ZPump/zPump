@@ -551,40 +551,80 @@ function buildManualMessageV0(
   const altAddresses = lookupTableAccount.state.addresses;
   const altAddressMap = new Map(altAddresses.map((addr: PublicKey, idx: number) => [addr.toBase58(), idx]));
   
-  // Build staticAccountKeys: signers + accounts NOT in lookup table
-  const staticAccountKeys: PublicKey[] = [];
-  const staticAccountKeyMap = new Map<string, number>();
-  const seenAccounts = new Set<string>();
+  // Build staticAccountKeys in correct order: writable signers, readonly signers, writable non-signers, readonly non-signers
+  // Track account metadata: isSigner, isWritable (max across all instructions)
+  const accountMetadata = new Map<string, { pubkey: PublicKey; isSigner: boolean; isWritable: boolean }>();
+  const signerSet = new Set(allSigners.map(s => s.toBase58()));
   
-  // Add signers first (must be in staticAccountKeys)
-  for (const signer of allSigners) {
-    const addrStr = signer.toBase58();
-    if (!seenAccounts.has(addrStr)) {
-      staticAccountKeys.push(signer);
-      staticAccountKeyMap.set(addrStr, staticAccountKeys.length - 1);
-      seenAccounts.add(addrStr);
-    }
-  }
-  
-  // Process all instructions to collect accounts not in lookup table
+  // Collect accounts from instructions
   for (const ix of instructions) {
     // Add program ID if not in lookup table
     const programIdStr = ix.programId.toBase58();
-    if (!altAddressMap.has(programIdStr) && !seenAccounts.has(programIdStr)) {
-      staticAccountKeys.push(ix.programId);
-      staticAccountKeyMap.set(programIdStr, staticAccountKeys.length - 1);
-      seenAccounts.add(programIdStr);
+    if (!altAddressMap.has(programIdStr)) {
+      if (!accountMetadata.has(programIdStr)) {
+        accountMetadata.set(programIdStr, {
+          pubkey: ix.programId,
+          isSigner: signerSet.has(programIdStr),
+          isWritable: false // Program IDs are always readonly
+        });
+      }
     }
     
     // Add account keys not in lookup table
     for (const meta of ix.keys) {
       const addrStr = meta.pubkey.toBase58();
-      if (!altAddressMap.has(addrStr) && !seenAccounts.has(addrStr)) {
-        staticAccountKeys.push(meta.pubkey);
-        staticAccountKeyMap.set(addrStr, staticAccountKeys.length - 1);
-        seenAccounts.add(addrStr);
+      if (!altAddressMap.has(addrStr)) {
+        const existing = accountMetadata.get(addrStr);
+        if (existing) {
+          // Update writability: if writable in any instruction, mark as writable
+          if (meta.isWritable) {
+            existing.isWritable = true;
+          }
+        } else {
+          accountMetadata.set(addrStr, {
+            pubkey: meta.pubkey,
+            isSigner: signerSet.has(addrStr),
+            isWritable: meta.isWritable
+          });
+        }
       }
     }
+  }
+  
+  // Sort accounts into correct categories
+  const writableSigners: PublicKey[] = [];
+  const readonlySigners: PublicKey[] = [];
+  const writableNonSigners: PublicKey[] = [];
+  const readonlyNonSigners: PublicKey[] = [];
+  
+  for (const [addrStr, meta] of accountMetadata) {
+    if (meta.isSigner) {
+      if (meta.isWritable) {
+        writableSigners.push(meta.pubkey);
+      } else {
+        readonlySigners.push(meta.pubkey);
+      }
+    } else {
+      if (meta.isWritable) {
+        writableNonSigners.push(meta.pubkey);
+      } else {
+        readonlyNonSigners.push(meta.pubkey);
+      }
+    }
+  }
+  
+  // Build staticAccountKeys in correct order
+  const staticAccountKeys: PublicKey[] = [
+    ...writableSigners,
+    ...readonlySigners,
+    ...writableNonSigners,
+    ...readonlyNonSigners
+  ];
+  
+  // Build map for quick lookup
+  const staticAccountKeyMap = new Map<string, number>();
+  for (let i = 0; i < staticAccountKeys.length; i++) {
+    staticAccountKeyMap.set(staticAccountKeys[i]!.toBase58(), i);
   }
   
   // Build addressTableLookups with explicit indexes
@@ -649,23 +689,30 @@ function buildManualMessageV0(
     
     // Build account indexes for this instruction
     const accountKeyIndexes: number[] = [];
-    for (const meta of ix.keys) {
+    for (let i = 0; i < ix.keys.length; i++) {
+      const meta = ix.keys[i]!;
       const addrStr = meta.pubkey.toBase58();
       
       // Check if in staticAccountKeys first
       if (staticAccountKeyMap.has(addrStr)) {
-        accountKeyIndexes.push(staticAccountKeyMap.get(addrStr)!);
+        const staticIdx = staticAccountKeyMap.get(addrStr)!;
+        accountKeyIndexes.push(staticIdx);
       } else {
         // Must be in lookup table
         const altIdx = altAddressMap.get(addrStr);
         if (altIdx === undefined) {
-          throw new Error(`Account ${addrStr} not found in staticAccountKeys or lookup table`);
+          throw new Error(`Account ${addrStr} (instruction pos ${i}) not found in staticAccountKeys or lookup table`);
         }
         const accountIndex = altIndexToAccountIndex.get(altIdx);
         if (accountIndex === undefined) {
-          throw new Error(`Account ${addrStr} lookup table index ${altIdx} not found in AddressTableLookups`);
+          throw new Error(`Account ${addrStr} (instruction pos ${i}, ALT idx ${altIdx}) not found in AddressTableLookups`);
         }
         accountKeyIndexes.push(accountIndex);
+        
+        // Debug: Log critical account mappings
+        if (addrStr === VAULT_PROGRAM_ID.toBase58() || addrStr === TOKEN_PROGRAM_ID.toBase58()) {
+          console.info(`[buildManualMessageV0] Account ${addrStr.substring(0, 8)}... (instruction pos ${i}, ALT idx ${altIdx}) -> account index ${accountIndex}`);
+        }
       }
     }
     
@@ -677,48 +724,18 @@ function buildManualMessageV0(
   }
   
   // Build MessageHeader
-  let numReadonlySignedAccounts = 0;
-  let numReadonlyUnsignedAccounts = 0;
+  // Header structure:
+  // - numRequiredSignatures: total number of signers (writable + readonly signers)
+  // - numReadonlySignedAccounts: number of readonly signers (at end of signer section)
+  // - numReadonlyUnsignedAccounts: number of readonly non-signers in staticAccountKeys only (lookup table accounts are separate)
   
-  // Count readonly accounts in staticAccountKeys
-  const readonlyAccountsInStatic = new Set<string>();
-  for (const ix of instructions) {
-    for (const meta of ix.keys) {
-      const addrStr = meta.pubkey.toBase58();
-      if (staticAccountKeyMap.has(addrStr) && !meta.isWritable) {
-        readonlyAccountsInStatic.add(addrStr);
-      }
-    }
-  }
-  
-  // Separate readonly accounts by whether they're signers
-  for (const readonlyAddr of readonlyAccountsInStatic) {
-    const isSigner = allSigners.some(s => s.toBase58() === readonlyAddr);
-    if (isSigner) {
-      numReadonlySignedAccounts++;
-    } else {
-      numReadonlyUnsignedAccounts++;
-    }
-  }
-  
-  // Count readonly accounts in lookup table
-  for (const altIdx of altReadonlyIndexes) {
-    // Check if this lookup table account is referenced as readonly in any instruction
-    const addr = altAddresses[altIdx];
-    for (const ix of instructions) {
-      for (const meta of ix.keys) {
-        if (meta.pubkey.equals(addr) && !meta.isWritable) {
-          numReadonlyUnsignedAccounts++; // Lookup table accounts are never signers
-          break;
-        }
-      }
-    }
-  }
+  const numReadonlySignedAccounts = readonlySigners.length;
+  const numReadonlyUnsignedAccounts = readonlyNonSigners.length; // Only count staticAccountKeys, not lookup table
   
   const header: MessageHeader = {
     numRequiredSignatures: allSigners.length,
     numReadonlySignedAccounts,
-    numReadonlyUnsignedAccounts: numReadonlyUnsignedAccounts - numReadonlySignedAccounts // Subtract signed readonly from unsigned
+    numReadonlyUnsignedAccounts
   };
   
   // Build AddressTableLookups
@@ -731,14 +748,34 @@ function buildManualMessageV0(
     });
   }
   
+  // Debug: Log account structure
+  console.info(`[buildManualMessageV0] Static accounts: ${staticAccountKeys.length} (${writableSigners.length} writable signers, ${readonlySigners.length} readonly signers, ${writableNonSigners.length} writable non-signers, ${readonlyNonSigners.length} readonly non-signers)`);
+  console.info(`[buildManualMessageV0] Header: ${header.numRequiredSignatures} signatures, ${header.numReadonlySignedAccounts} readonly signed, ${header.numReadonlyUnsignedAccounts} readonly unsigned`);
+  console.info(`[buildManualMessageV0] ALT: ${altWritableIndexes.length} writable, ${altReadonlyIndexes.length} readonly`);
+  
   // Construct MessageV0 manually
-  return new MessageV0({
+  const messageV0 = new MessageV0({
     header,
     staticAccountKeys,
     recentBlockhash,
     compiledInstructions,
     addressTableLookups
   });
+  
+  // Validate: Check that account indexes are within bounds
+  const totalAccounts = staticAccountKeys.length + altWritableIndexes.length + altReadonlyIndexes.length;
+  for (const ci of compiledInstructions) {
+    if (ci.programIdIndex >= totalAccounts) {
+      throw new Error(`Program ID index ${ci.programIdIndex} out of bounds (max ${totalAccounts - 1})`);
+    }
+    for (const accIdx of ci.accountKeyIndexes) {
+      if (accIdx >= totalAccounts) {
+        throw new Error(`Account index ${accIdx} out of bounds (max ${totalAccounts - 1})`);
+      }
+    }
+  }
+  
+  return messageV0;
 }
 
 async function sendAndConfirmInstructions(
@@ -926,18 +963,19 @@ async function sendAndConfirmInstructions(
           while (versionedAttempts < maxVersionedAttempts) {
             versionedAttempts++;
             try {
-              // Refresh blockhash and rebuild transaction for retries
+              // Refresh blockhash and rebuild transaction for retries using manual construction
               if (versionedAttempts > 1) {
                 latestBlockhash = await connection.getLatestBlockhash('confirmed');
-                const retryBaseMessage = new TransactionMessage({
-                  payerKey: payer.publicKey,
-                  recentBlockhash: latestBlockhash.blockhash,
-                  instructions
-                });
-                const retryMessageV0 = retryBaseMessage.compileToV0Message([lookupTableResult.value]);
+                const retryMessageV0 = buildManualMessageV0(
+                  payer.publicKey,
+                  instructions,
+                  latestBlockhash.blockhash,
+                  lookupTableResult.value,
+                  allSigners
+                );
                 versionedTx = new VersionedTransaction(retryMessageV0);
                 versionedTx.sign([payer, ...extraSigners]);
-                console.info(`[sendAndConfirmInstructions] Retrying VersionedTransaction (attempt ${versionedAttempts}/${maxVersionedAttempts})...`);
+                console.info(`[sendAndConfirmInstructions] Retrying VersionedTransaction with manual construction (attempt ${versionedAttempts}/${maxVersionedAttempts})...`);
               }
               
               signature = await connection.sendRawTransaction(versionedTx.serialize(), { skipPreflight: false });
