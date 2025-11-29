@@ -3454,13 +3454,22 @@ export async function addDexLiquidity(params: AddLiquidityParams): Promise<strin
     throw new Error(`Pool token B account does not exist. Ensure pool was created properly. Expected: ${poolTokenBAccount.toBase58()}`);
   }
   
-  // Note: User LP token account may not exist - program will skip minting if it doesn't
-  // We'll handle LP token minting in a follow-up transaction if needed
+  // Create user LP token account if it doesn't exist (required by program)
   const userLpAccountInfo = await connection.getAccountInfo(userLpTokenAccount, 'confirmed');
-  if (userLpAccountInfo) {
-    console.log(`[addDexLiquidity] User LP token account exists: ${userLpTokenAccount.toBase58()}`);
+  if (!userLpAccountInfo || userLpAccountInfo.owner.equals(SystemProgram.programId)) {
+    console.log(`[addDexLiquidity] User LP token account does not exist, creating...`);
+    instructions.push(
+      createAssociatedTokenAccountInstruction(
+        payer,
+        userLpTokenAccount,
+        payer,
+        lpTokenMint,
+        lpTokenProgramId,
+        ASSOCIATED_TOKEN_PROGRAM_ID
+      )
+    );
   } else {
-    console.log(`[addDexLiquidity] User LP token account does not exist - program will skip LP minting, handle in follow-up`);
+    console.log(`[addDexLiquidity] User LP token account exists: ${userLpTokenAccount.toBase58()}`);
   }
   
   console.log(`[addDexLiquidity] Total instructions before add_liquidity: ${instructions.length}`);
