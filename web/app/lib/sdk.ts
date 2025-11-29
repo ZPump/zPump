@@ -722,24 +722,47 @@ export async function preparePool(params: PreparePoolParams): Promise<PreparePoo
   } else {
     // ALT doesn't exist - create it
     const shieldClaim = deriveShieldClaim(poolState);
-    const allAddresses = [
-      poolState,
-      hookConfig,
-      hookWhitelist,
-      nullifierSet,
-      commitmentTreeKey,
-      noteLedger,
-      vaultState,
-      VERIFIER_PROGRAM_ID,
-      verifyingKey,
-      shieldClaim,
+    // CRITICAL: Lookup table addresses must be in the EXACT same order as they appear in Shield instruction
+    // This ensures compileToV0Message maps addresses correctly when compressing transactions.
+    // Shield instruction order (from programs/pool/src/lib.rs):
+    // 0: pool_state, 1: hook_config, 2: hook_whitelist, 3: nullifier_set, 4: commitment_tree,
+    // 5: note_ledger, 6: vault_state, 7: vault_token_account, 8: depositor_token_account,
+    // 9: twin_mint (optional, skip in lookup table), 10: verifier_program, 11: verifying_key,
+    // 12: shield_claim, 13: payer (signer, skip in lookup table), 14: origin_mint, 15: mint_mapping,
+    // 16: factory_state, 17: vault_program, 18: token_program, 19: system_program, 20: rent
+    //
+    // Note: vault_token_account and depositor_token_account are user-specific, so we can't include
+    // them in the lookup table. We'll include all other accounts in order.
+    const vaultTokenAccount = await getAssociatedTokenAddress(
       originMintKey,
-      mintMappingKey,
-      factoryState,
-      VAULT_PROGRAM_ID,
+      vaultState,
+      true,
       tokenProgramId,
-      SystemProgram.programId,
-      SYSVAR_RENT_PUBKEY
+      ASSOCIATED_TOKEN_PROGRAM_ID
+    );
+    
+    const allAddresses = [
+      poolState,              // 0
+      hookConfig,             // 1
+      hookWhitelist,          // 2
+      nullifierSet,           // 3
+      commitmentTreeKey,      // 4
+      noteLedger,             // 5
+      vaultState,             // 6
+      // vault_token_account (7) - user-specific, skip
+      // depositor_token_account (8) - user-specific, skip
+      // twin_mint (9) - optional, skip
+      VERIFIER_PROGRAM_ID,    // 10
+      verifyingKey,           // 11
+      shieldClaim,            // 12
+      // payer (13) - signer, skip
+      originMintKey,          // 14
+      mintMappingKey,         // 15
+      factoryState,           // 16
+      VAULT_PROGRAM_ID,       // 17 - CRITICAL: Must come before token_program
+      tokenProgramId,         // 18 - CRITICAL: Must come after vault_program
+      SystemProgram.programId,// 19
+      SYSVAR_RENT_PUBKEY      // 20
     ];
     
     // Remove duplicates
