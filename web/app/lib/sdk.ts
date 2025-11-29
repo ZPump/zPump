@@ -1561,13 +1561,53 @@ export async function wrap(params: WrapParams): Promise<string> {
       const isPendingShield = isPendingShieldError(error);
       
       if (isPendingShield && shieldAttempts < maxShieldAttempts) {
-        console.warn(`[wrap] Shield failed with PendingShieldInFlight (attempt ${shieldAttempts}/${maxShieldAttempts}), waiting for pending shield to clear...`);
-        // Wait for pending shield to become inactive naturally
-        // The shield instruction itself has logic to deactivate stale pending shields,
-        // so we just need to wait for it to clear rather than trying to force clear it
+        console.warn(`[wrap] Shield failed with PendingShieldInFlight (attempt ${shieldAttempts}/${maxShieldAttempts}), waiting for pending shield and shield claim to clear...`);
+        // Wait for both pending shield and shield claim to become inactive/stale
+        // The shield instruction checks both: if there's a valid active shield claim, it rejects
         try {
+          // Wait for pending shield to become inactive
           await waitForPendingShieldInactive(connection, poolState, 30000); // Wait up to 30 seconds
-          console.info('[wrap] Pending shield cleared, retrying shield...');
+          
+          // Also check shield claim status - wait for it to become inactive or stale
+          // The shield instruction will deactivate stale claims, but we need to wait for that
+          let claimCleared = false;
+          const claimWaitStart = Date.now();
+          const claimWaitTimeout = 30000; // 30 seconds
+          
+          while (Date.now() - claimWaitStart < claimWaitTimeout && !claimCleared) {
+            try {
+              const claimState = await fetchShieldClaimState(connection, shieldClaim);
+              if (claimState.status === SHIELD_CLAIM_STATUS.INACTIVE) {
+                claimCleared = true;
+                console.info('[wrap] Shield claim is inactive');
+                break;
+              }
+              
+              // Check if claim is stale (old_root doesn't match current_root)
+              // If stale, the shield instruction will deactivate it, so we can proceed
+              const treeAccount = await connection.getAccountInfo(commitmentTreeKey);
+              if (treeAccount) {
+                const treeState = decodeCommitmentTree(new Uint8Array(treeAccount.data));
+                const currentRoot = bytesLEToCanonicalHex(treeState.currentRoot);
+                // If we can read the shield claim, check if its old_root matches
+                // For now, we'll just wait and let the shield instruction handle stale claims
+                console.info(`[wrap] Shield claim status: ${claimState.status}, waiting for it to clear or become stale...`);
+              }
+              
+              await sleep(2000); // Wait 2 seconds before checking again
+            } catch (claimError) {
+              // Shield claim doesn't exist or can't be read - this is fine, proceed
+              console.info('[wrap] Shield claim not found or can\'t be read, proceeding...');
+              claimCleared = true;
+              break;
+            }
+          }
+          
+          if (!claimCleared) {
+            console.warn('[wrap] Shield claim did not clear within timeout, but shield instruction will handle stale claims');
+          }
+          
+          console.info('[wrap] Pending shield cleared, refreshing root and regenerating proof...');
           // Refresh root after waiting - it may have changed if a shield completed
           const refreshedTreeAccount = await connection.getAccountInfo(commitmentTreeKey);
           if (refreshedTreeAccount) {
@@ -1600,8 +1640,8 @@ export async function wrap(params: WrapParams): Promise<string> {
             console.info('[wrap] Regenerated proof with new root, retrying shield...');
           }
         } catch (waitError) {
-          console.warn('[wrap] Pending shield did not clear within timeout, but retrying anyway (shield instruction may clear stale shields)...');
-          await sleep(2000); // Brief wait before retry
+          console.warn('[wrap] Error while waiting for pending shield/claim to clear, but retrying anyway (shield instruction may clear stale shields)...', waitError);
+          await sleep(3000); // Longer wait before retry
         }
         // Refresh blockhash for retry
         latestBlockhash = await connection.getLatestBlockhash('confirmed');
