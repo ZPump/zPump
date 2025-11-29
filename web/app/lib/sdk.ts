@@ -101,6 +101,8 @@ const SHIELD_CLAIM_STATUS = {
 type ShieldClaimAccount = {
   status: number;
   old_root?: Uint8Array;
+  expires_at?: number | bigint;
+  created_at?: number | bigint;
 };
 
 function sleep(ms: number): Promise<void> {
@@ -1607,9 +1609,36 @@ export async function wrap(params: WrapParams): Promise<string> {
                       console.info('[wrap] Shield claim is stale (old_root mismatch), shield instruction will deactivate it');
                       shieldClaimStale = true;
                     } else {
-                      // Claim is valid - wait for it to complete
-                      console.info('[wrap] Shield claim is valid (old_root matches), waiting for shield operation to complete...');
-                      await sleep(5000); // Wait 5 seconds for shield operation to complete
+                      // Claim is valid - check if it's expired
+                      const now = Math.floor(Date.now() / 1000); // Current Unix timestamp in seconds
+                      const expiresAt = claimState.expires_at 
+                        ? (typeof claimState.expires_at === 'bigint' 
+                            ? Number(claimState.expires_at) 
+                            : claimState.expires_at)
+                        : null;
+                      
+                      if (expiresAt && now > expiresAt) {
+                        // Claim is expired - shield instruction will deactivate it
+                        console.info(`[wrap] Shield claim is expired (expired at ${expiresAt}, now ${now}), shield instruction will deactivate it`);
+                        shieldClaimStale = true;
+                      } else {
+                        // Claim is valid and not expired - wait for it to complete, but with a timeout
+                        console.info(`[wrap] Shield claim is valid (old_root matches${expiresAt ? `, expires at ${expiresAt}` : ''}), waiting for shield operation to complete...`);
+                        // Wait longer for stuck operations - but not too long
+                        await sleep(10000); // Wait 10 seconds for shield operation to complete
+                        // After waiting, check again if claim is still active - if so, it might be stuck
+                        try {
+                          const recheckClaim = await fetchShieldClaimState(connection, shieldClaim);
+                          if (recheckClaim.status !== SHIELD_CLAIM_STATUS.INACTIVE) {
+                            console.warn('[wrap] Shield claim still active after waiting - may be stuck, but shield instruction will handle it');
+                            // Proceed anyway - shield instruction will deactivate if truly stale/expired
+                            shieldClaimStale = true;
+                          }
+                        } catch (e) {
+                          // Claim might have been deactivated - proceed
+                          shieldClaimStale = true;
+                        }
+                      }
                     }
                   } else {
                     console.warn('[wrap] Could not parse old_root from shield claim, waiting anyway...');
