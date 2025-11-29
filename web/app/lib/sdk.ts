@@ -3108,7 +3108,9 @@ export async function createDexPool(params: CreateDexPoolParams): Promise<string
     initial_amount_a: amountABN,  // Use snake_case to match IDL
     initial_amount_b: amountBBN,  // Use snake_case to match IDL
     token_a_is_ztoken: tokenAIsZtoken,  // Use snake_case to match IDL
-    token_b_is_ztoken: tokenBIsZtoken   // Use snake_case to match IDL
+    token_b_is_ztoken: tokenBIsZtoken,   // Use snake_case to match IDL
+    shield_args_a: null,  // Optional: null for public tokens, ShieldArgs for zTokens
+    shield_args_b: null   // Optional: null for public tokens, ShieldArgs for zTokens
   });
   
   // Get pool state bump (for PDA derivation)
@@ -3468,7 +3470,9 @@ export async function addDexLiquidity(params: AddLiquidityParams): Promise<strin
   const addLiquidityData = dexCoder.instruction.encode('add_liquidity', {
     amount_a: new BN(amountA.toString()),
     amount_b: new BN(amountB.toString()),
-    min_lp_tokens: new BN(params.minLpTokens.toString())
+    min_lp_tokens: new BN(params.minLpTokens.toString()),
+    transfer_args_a: null,  // Optional: null for public tokens, TransferArgs for zTokens
+    transfer_args_b: null   // Optional: null for public tokens, TransferArgs for zTokens
   });
   
   // Build instruction keys
@@ -3485,7 +3489,8 @@ export async function addDexLiquidity(params: AddLiquidityParams): Promise<strin
     { pubkey: payer, isSigner: true, isWritable: true },
     { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
     { pubkey: ASSOCIATED_TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
-    { pubkey: SystemProgram.programId, isSigner: false, isWritable: false }
+    { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+    { pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false } // rent (required by IDL)
   ];
   
   // Add zToken pool accounts to remaining_accounts if needed
@@ -3881,7 +3886,10 @@ export async function swapDex(params: SwapParams): Promise<string> {
   const swapData = dexCoder.instruction.encode('swap', {
     amount_in: new BN(params.amountIn.toString()),
     min_amount_out: new BN(params.minAmountOut.toString()),
-    a_to_b: actualAToB
+    a_to_b: actualAToB,
+    transfer_args_in: null,  // Optional: null for public tokens, TransferArgs for zToken input
+    shield_args_out: null,   // Optional: null for public tokens, ShieldArgs for zToken output (Public → zToken)
+    transfer_args_out: null  // Optional: null for public tokens, TransferArgs for zToken output (zToken → zToken)
   });
   
   // Build instruction keys

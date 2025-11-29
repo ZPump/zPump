@@ -7,8 +7,214 @@
   },
   "instructions": [
     {
+      "name": "add_liquidity",
+      "discriminator": [
+        181,
+        157,
+        89,
+        67,
+        143,
+        182,
+        52,
+        72
+      ],
+      "accounts": [
+        {
+          "name": "pool_state",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  111,
+                  111,
+                  108
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "token_a_mint"
+              },
+              {
+                "kind": "account",
+                "path": "token_b_mint"
+              }
+            ]
+          }
+        },
+        {
+          "name": "token_a_mint"
+        },
+        {
+          "name": "token_b_mint"
+        },
+        {
+          "name": "lp_token_mint",
+          "writable": true
+        },
+        {
+          "name": "user_lp_token_account",
+          "writable": true
+        },
+        {
+          "name": "user_token_a_account",
+          "writable": true
+        },
+        {
+          "name": "pool_token_a_account",
+          "writable": true
+        },
+        {
+          "name": "user_token_b_account",
+          "writable": true
+        },
+        {
+          "name": "pool_token_b_account",
+          "writable": true
+        },
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "token_program"
+        },
+        {
+          "name": "associated_token_program"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        },
+        {
+          "name": "rent",
+          "address": "SysvarRent111111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "amount_a",
+          "type": "u64"
+        },
+        {
+          "name": "amount_b",
+          "type": "u64"
+        },
+        {
+          "name": "min_lp_tokens",
+          "type": "u64"
+        },
+        {
+          "name": "transfer_args_a",
+          "type": {
+            "option": {
+              "defined": {
+                "name": "TransferArgs"
+              }
+            }
+          }
+        },
+        {
+          "name": "transfer_args_b",
+          "type": {
+            "option": {
+              "defined": {
+                "name": "TransferArgs"
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "collect_fees",
+      "discriminator": [
+        164,
+        152,
+        207,
+        99,
+        30,
+        186,
+        19,
+        182
+      ],
+      "accounts": [
+        {
+          "name": "pool_state",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  111,
+                  111,
+                  108
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "token_a_mint"
+              },
+              {
+                "kind": "account",
+                "path": "token_b_mint"
+              }
+            ]
+          }
+        },
+        {
+          "name": "token_a_mint"
+        },
+        {
+          "name": "token_b_mint"
+        },
+        {
+          "name": "protocol_token_a_account",
+          "writable": true
+        },
+        {
+          "name": "pool_token_a_account",
+          "writable": true
+        },
+        {
+          "name": "protocol_token_b_account",
+          "writable": true
+        },
+        {
+          "name": "pool_token_b_account",
+          "writable": true
+        },
+        {
+          "name": "protocol_authority",
+          "signer": true
+        },
+        {
+          "name": "token_program"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": []
+    },
+    {
       "name": "create_pool",
-      "discriminator": [233, 146, 209, 142, 207, 104, 64, 188],
+      "discriminator": [
+        233,
+        146,
+        209,
+        142,
+        207,
+        104,
+        64,
+        188
+      ],
       "accounts": [
         {
           "name": "token_a_mint"
@@ -23,7 +229,12 @@
             "seeds": [
               {
                 "kind": "const",
-                "value": [112, 111, 111, 108]
+                "value": [
+                  112,
+                  111,
+                  111,
+                  108
+                ]
               },
               {
                 "kind": "account",
@@ -96,97 +307,41 @@
         {
           "name": "token_b_is_ztoken",
           "type": "bool"
-        }
-      ]
-    },
-    {
-      "name": "add_liquidity",
-      "discriminator": [181, 157, 89, 67, 143, 182, 52, 72],
-      "accounts": [
+        },
         {
-          "name": "pool_state",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [112, 111, 111, 108]
-              },
-              {
-                "kind": "account",
-                "path": "token_a_mint"
-              },
-              {
-                "kind": "account",
-                "path": "token_b_mint"
+          "name": "shield_args_a",
+          "type": {
+            "option": {
+              "defined": {
+                "name": "ShieldArgs"
               }
-            ]
+            }
           }
         },
         {
-          "name": "token_a_mint"
-        },
-        {
-          "name": "token_b_mint"
-        },
-        {
-          "name": "lp_token_mint",
-          "writable": true
-        },
-        {
-          "name": "user_lp_token_account",
-          "writable": true
-        },
-        {
-          "name": "user_token_a_account",
-          "writable": true
-        },
-        {
-          "name": "pool_token_a_account",
-          "writable": true
-        },
-        {
-          "name": "user_token_b_account",
-          "writable": true
-        },
-        {
-          "name": "pool_token_b_account",
-          "writable": true
-        },
-        {
-          "name": "payer",
-          "writable": true,
-          "signer": true
-        },
-        {
-          "name": "token_program"
-        },
-        {
-          "name": "associated_token_program"
-        },
-        {
-          "name": "system_program",
-          "address": "11111111111111111111111111111111"
-        }
-      ],
-      "args": [
-        {
-          "name": "amount_a",
-          "type": "u64"
-        },
-        {
-          "name": "amount_b",
-          "type": "u64"
-        },
-        {
-          "name": "min_lp_tokens",
-          "type": "u64"
+          "name": "shield_args_b",
+          "type": {
+            "option": {
+              "defined": {
+                "name": "ShieldArgs"
+              }
+            }
+          }
         }
       ]
     },
     {
       "name": "remove_liquidity",
-      "discriminator": [80, 85, 209, 72, 24, 206, 177, 108],
+      "discriminator": [
+        80,
+        85,
+        209,
+        72,
+        24,
+        206,
+        177,
+        108
+      ],
       "accounts": [
         {
           "name": "pool_state",
@@ -195,7 +350,12 @@
             "seeds": [
               {
                 "kind": "const",
-                "value": [112, 111, 111, 108]
+                "value": [
+                  112,
+                  111,
+                  111,
+                  108
+                ]
               },
               {
                 "kind": "account",
@@ -249,6 +409,10 @@
         {
           "name": "system_program",
           "address": "11111111111111111111111111111111"
+        },
+        {
+          "name": "rent",
+          "address": "SysvarRent111111111111111111111111111111111"
         }
       ],
       "args": [
@@ -263,12 +427,41 @@
         {
           "name": "min_amount_b",
           "type": "u64"
+        },
+        {
+          "name": "transfer_args_a",
+          "type": {
+            "option": {
+              "defined": {
+                "name": "TransferArgs"
+              }
+            }
+          }
+        },
+        {
+          "name": "transfer_args_b",
+          "type": {
+            "option": {
+              "defined": {
+                "name": "TransferArgs"
+              }
+            }
+          }
         }
       ]
     },
     {
       "name": "swap",
-      "discriminator": [248, 198, 158, 145, 225, 117, 135, 200],
+      "discriminator": [
+        248,
+        198,
+        158,
+        145,
+        225,
+        117,
+        135,
+        200
+      ],
       "accounts": [
         {
           "name": "pool_state",
@@ -277,7 +470,12 @@
             "seeds": [
               {
                 "kind": "const",
-                "value": [112, 111, 111, 108]
+                "value": [
+                  112,
+                  111,
+                  111,
+                  108
+                ]
               },
               {
                 "kind": "account",
@@ -323,6 +521,10 @@
         {
           "name": "system_program",
           "address": "11111111111111111111111111111111"
+        },
+        {
+          "name": "rent",
+          "address": "SysvarRent111111111111111111111111111111111"
         }
       ],
       "args": [
@@ -337,74 +539,53 @@
         {
           "name": "a_to_b",
           "type": "bool"
-        }
-      ]
-    },
-    {
-      "name": "collect_fees",
-      "discriminator": [164, 152, 207, 99, 30, 186, 19, 182],
-      "accounts": [
+        },
         {
-          "name": "pool_state",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [112, 111, 111, 108]
-              },
-              {
-                "kind": "account",
-                "path": "token_a_mint"
-              },
-              {
-                "kind": "account",
-                "path": "token_b_mint"
+          "name": "transfer_args_in",
+          "type": {
+            "option": {
+              "defined": {
+                "name": "TransferArgs"
               }
-            ]
+            }
           }
         },
         {
-          "name": "token_a_mint"
+          "name": "shield_args_out",
+          "type": {
+            "option": {
+              "defined": {
+                "name": "ShieldArgs"
+              }
+            }
+          }
         },
         {
-          "name": "token_b_mint"
-        },
-        {
-          "name": "protocol_token_a_account",
-          "writable": true
-        },
-        {
-          "name": "pool_token_a_account",
-          "writable": true
-        },
-        {
-          "name": "protocol_token_b_account",
-          "writable": true
-        },
-        {
-          "name": "pool_token_b_account",
-          "writable": true
-        },
-        {
-          "name": "protocol_authority",
-          "signer": true
-        },
-        {
-          "name": "token_program"
-        },
-        {
-          "name": "system_program",
-          "address": "11111111111111111111111111111111"
+          "name": "transfer_args_out",
+          "type": {
+            "option": {
+              "defined": {
+                "name": "TransferArgs"
+              }
+            }
+          }
         }
-      ],
-      "args": []
+      ]
     }
   ],
   "accounts": [
     {
       "name": "PoolState",
-      "discriminator": [247, 237, 227, 245, 215, 195, 222, 70]
+      "discriminator": [
+        247,
+        237,
+        227,
+        245,
+        215,
+        195,
+        222,
+        70
+      ]
     }
   ],
   "errors": [
@@ -477,6 +658,16 @@
       "code": 6013,
       "name": "PoolNotInitialized",
       "msg": "Pool not initialized"
+    },
+    {
+      "code": 6014,
+      "name": "InvalidMintFormat",
+      "msg": "Invalid mint format"
+    },
+    {
+      "code": 6015,
+      "name": "InvalidAccount",
+      "msg": "Invalid account"
     }
   ],
   "types": [
@@ -512,14 +703,28 @@
           {
             "name": "private_reserve_a_commitment",
             "type": {
-              "array": ["u8", 32]
+              "array": [
+                "u8",
+                32
+              ]
             }
+          },
+          {
+            "name": "private_reserve_a_amount",
+            "type": "u64"
           },
           {
             "name": "private_reserve_b_commitment",
             "type": {
-              "array": ["u8", 32]
+              "array": [
+                "u8",
+                32
+              ]
             }
+          },
+          {
+            "name": "private_reserve_b_amount",
+            "type": "u64"
           },
           {
             "name": "lp_token_mint",
@@ -555,7 +760,108 @@
           }
         ]
       }
+    },
+    {
+      "name": "ShieldArgs",
+      "docs": [
+        "Shield arguments for ptf_pool::shield CPI"
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "amount_commit",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "amount",
+            "type": "u64"
+          },
+          {
+            "name": "proof",
+            "type": "bytes"
+          },
+          {
+            "name": "public_inputs",
+            "type": "bytes"
+          }
+        ]
+      }
+    },
+    {
+      "name": "TransferArgs",
+      "docs": [
+        "Transfer arguments for ptf_pool::private_transfer CPI"
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "old_root",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "new_root",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "nullifiers",
+            "type": {
+              "vec": {
+                "array": [
+                  "u8",
+                  32
+                ]
+              }
+            }
+          },
+          {
+            "name": "output_commitments",
+            "type": {
+              "vec": {
+                "array": [
+                  "u8",
+                  32
+                ]
+              }
+            }
+          },
+          {
+            "name": "output_amount_commitments",
+            "type": {
+              "vec": {
+                "array": [
+                  "u8",
+                  32
+                ]
+              }
+            }
+          },
+          {
+            "name": "proof",
+            "type": "bytes"
+          },
+          {
+            "name": "public_inputs",
+            "type": "bytes"
+          }
+        ]
+      }
     }
   ]
 }
-
