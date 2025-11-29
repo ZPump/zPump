@@ -259,6 +259,7 @@ pub fn swap(
                     &token_out_mint,
                     &POOL_PROGRAM_ID,
                     &VAULT_PROGRAM_ID,
+                    &ctx.accounts.token_program.key(),
                     shield_args,
                     &pool_state_key,
                     amount_out,

@@ -138,8 +138,6 @@ pub fn parse_ztoken_accounts<'info>(
     // For shield operations, additional accounts are required
     if is_shield {
         require!(vault_state.is_some(), crate::errors::DexError::InvalidAccount);
-        require!(vault_token_account.is_some(), crate::errors::DexError::InvalidAccount);
-        require!(depositor_token_account.is_some(), crate::errors::DexError::InvalidAccount);
         
         // Shield claim is derived from pool_state
         let (expected_shield_claim, _) = AddressDeriver::derive_shield_claim(
@@ -162,6 +160,54 @@ pub fn parse_ztoken_accounts<'info>(
                 break;
             }
         }
+        
+        // Find vault_token_account and depositor_token_account
+        // These are token accounts passed by SDK after the zToken pool accounts
+        // vault_token_account is the ATA for vault_state
+        // depositor_token_account is the user's token account (for create_pool) or pool's token account (for swap)
+        use anchor_spl::associated_token::get_associated_token_address;
+        let vault_state_key = vault_state.as_ref().unwrap().key();
+        let expected_vault_token = get_associated_token_address(
+            &origin_mint,
+            &vault_state_key,
+        );
+        
+        // Find vault_token_account and depositor_token_account from remaining_accounts
+        // They should be token accounts owned by token program
+        let mut token_accounts_found: Vec<AccountInfo<'info>> = Vec::new();
+        for account in remaining_accounts.iter() {
+            // Token accounts are owned by token program (or token-2022)
+            if account.owner == &anchor_spl::token::ID || account.owner == &anchor_spl::token_2022::ID {
+                let key = account.key();
+                // Skip origin_mint itself
+                if key != *origin_mint {
+                    token_accounts_found.push(account.clone());
+                    
+                    // Check if this is vault_token_account
+                    if key == expected_vault_token && vault_token_account.is_none() {
+                        vault_token_account = Some(account.clone());
+                        msg!("[ztoken_cpi] Found vault_token_account: {}", key);
+                    }
+                }
+            }
+        }
+        
+        // Find depositor_token_account - it's the other token account (not vault_token_account, not origin_mint)
+        if vault_token_account.is_some() {
+            for account in token_accounts_found.iter() {
+                if account.key() != expected_vault_token && account.key() != *origin_mint {
+                    if depositor_token_account.is_none() {
+                        depositor_token_account = Some(account.clone());
+                        msg!("[ztoken_cpi] Found depositor_token_account: {}", account.key());
+                        break;
+                    }
+                }
+            }
+        }
+        
+        // Validate required accounts are present
+        require!(vault_token_account.is_some(), crate::errors::DexError::InvalidAccount);
+        require!(depositor_token_account.is_some(), crate::errors::DexError::InvalidAccount);
     }
     
     Ok(ZTokenPoolAccounts {
