@@ -36,18 +36,9 @@ pub fn add_liquidity(
     require_keys_eq!(pool_state.token_a_mint, token_a, DexError::MintMismatch);
     require_keys_eq!(pool_state.token_b_mint, token_b, DexError::MintMismatch);
     
-    // Get current reserves (public reserves for public tokens)
-    let reserve_a = if pool_state.token_a_is_ztoken {
-        0 // TODO: Get from private reserve tracking
-    } else {
-        pool_state.public_reserve_a
-    };
-    
-    let reserve_b = if pool_state.token_b_is_ztoken {
-        0 // TODO: Get from private reserve tracking
-    } else {
-        pool_state.public_reserve_b
-    };
+    // Get current reserves (public or private)
+    let reserve_a = pool_state.get_reserve_a();
+    let reserve_b = pool_state.get_reserve_b();
     
     require!(reserve_a > 0 && reserve_b > 0, DexError::InsufficientLiquidity);
     

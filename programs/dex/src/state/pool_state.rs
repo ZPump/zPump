@@ -14,11 +14,14 @@ pub struct PoolState {
     pub public_reserve_a: u64,
     pub public_reserve_b: u64,
     
-    // Private reserves (commitment hashes, only used if corresponding token is zToken)
+    // Private reserves (commitment hashes and amounts, only used if corresponding token is zToken)
     // These are tracked via the pool PDA's private position in the commitment tree
-    // We store the amount commitments for tracking purposes
+    // We store both the commitment hash (for privacy) and the amount (for AMM calculations)
+    // Note: The pool knows its own reserves, so storing amounts is acceptable
     pub private_reserve_a_commitment: [u8; 32],
+    pub private_reserve_a_amount: u64,
     pub private_reserve_b_commitment: [u8; 32],
+    pub private_reserve_b_amount: u64,
     
     // LP token information
     pub lp_token_mint: Pubkey,
@@ -46,7 +49,9 @@ impl PoolState {
         8 +  // public_reserve_a
         8 +  // public_reserve_b
         32 + // private_reserve_a_commitment
+        8 +  // private_reserve_a_amount
         32 + // private_reserve_b_commitment
+        8 +  // private_reserve_b_amount
         32 + // lp_token_mint
         8 +  // total_lp_supply
         8 +  // protocol_fee_accumulator_a
@@ -72,18 +77,94 @@ impl PoolState {
         }
     }
     
-    /// Update private reserve commitment for token A
-    /// 
-    /// Used after zToken operations to track the pool's private position.
-    pub fn update_private_reserve_a_commitment(&mut self, commitment: [u8; 32]) {
-        self.private_reserve_a_commitment = commitment;
+    /// Get reserve amount for token A (public or private)
+    pub fn get_reserve_a(&self) -> u64 {
+        if self.token_a_is_ztoken {
+            self.private_reserve_a_amount
+        } else {
+            self.public_reserve_a
+        }
     }
     
-    /// Update private reserve commitment for token B
+    /// Get reserve amount for token B (public or private)
+    pub fn get_reserve_b(&self) -> u64 {
+        if self.token_b_is_ztoken {
+            self.private_reserve_b_amount
+        } else {
+            self.public_reserve_b
+        }
+    }
+    
+    /// Update private reserve for token A (commitment and amount)
     /// 
     /// Used after zToken operations to track the pool's private position.
+    pub fn update_private_reserve_a(&mut self, commitment: [u8; 32], amount: u64) {
+        self.private_reserve_a_commitment = commitment;
+        self.private_reserve_a_amount = amount;
+    }
+    
+    /// Update private reserve for token B (commitment and amount)
+    /// 
+    /// Used after zToken operations to track the pool's private position.
+    pub fn update_private_reserve_b(&mut self, commitment: [u8; 32], amount: u64) {
+        self.private_reserve_b_commitment = commitment;
+        self.private_reserve_b_amount = amount;
+    }
+    
+    /// Update private reserve commitment for token A (legacy method, updates amount to 0)
+    /// 
+    /// DEPRECATED: Use update_private_reserve_a instead
+    pub fn update_private_reserve_a_commitment(&mut self, commitment: [u8; 32]) {
+        self.private_reserve_a_commitment = commitment;
+        // Amount should be updated separately when known
+    }
+    
+    /// Update private reserve commitment for token B (legacy method, updates amount to 0)
+    /// 
+    /// DEPRECATED: Use update_private_reserve_b instead
     pub fn update_private_reserve_b_commitment(&mut self, commitment: [u8; 32]) {
         self.private_reserve_b_commitment = commitment;
+        // Amount should be updated separately when known
+    }
+    
+    /// Add to private reserve A amount (for liquidity additions)
+    pub fn add_private_reserve_a(&mut self, amount: u64) -> Result<()> {
+        self.private_reserve_a_amount = self.private_reserve_a_amount
+            .checked_add(amount)
+            .ok_or(crate::errors::DexError::MathOverflow)?;
+        Ok(())
+    }
+    
+    /// Add to private reserve B amount (for liquidity additions)
+    pub fn add_private_reserve_b(&mut self, amount: u64) -> Result<()> {
+        self.private_reserve_b_amount = self.private_reserve_b_amount
+            .checked_add(amount)
+            .ok_or(crate::errors::DexError::MathOverflow)?;
+        Ok(())
+    }
+    
+    /// Subtract from private reserve A amount (for liquidity removals and swaps)
+    pub fn sub_private_reserve_a(&mut self, amount: u64) -> Result<()> {
+        require!(
+            self.private_reserve_a_amount >= amount,
+            crate::errors::DexError::InsufficientLiquidity
+        );
+        self.private_reserve_a_amount = self.private_reserve_a_amount
+            .checked_sub(amount)
+            .ok_or(crate::errors::DexError::MathOverflow)?;
+        Ok(())
+    }
+    
+    /// Subtract from private reserve B amount (for liquidity removals and swaps)
+    pub fn sub_private_reserve_b(&mut self, amount: u64) -> Result<()> {
+        require!(
+            self.private_reserve_b_amount >= amount,
+            crate::errors::DexError::InsufficientLiquidity
+        );
+        self.private_reserve_b_amount = self.private_reserve_b_amount
+            .checked_sub(amount)
+            .ok_or(crate::errors::DexError::MathOverflow)?;
+        Ok(())
     }
     
     /// Get private reserve commitment for token A (returns zero if not zToken)
