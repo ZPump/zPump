@@ -2830,6 +2830,12 @@ interface CreateDexPoolParams {
   initialAmountB: bigint;
   tokenAIsZtoken: boolean;
   tokenBIsZtoken: boolean;
+  // Optional: Proof client for zToken operations
+  proofClient?: ProofClient;
+  // Optional: User notes for zToken transfers (if adding zToken liquidity)
+  // Note: For create_pool, zToken initial liquidity requires shield proofs
+  zTokenNotesA?: Array<{ noteId: string; spendingKey: string; amount: bigint }>;
+  zTokenNotesB?: Array<{ noteId: string; spendingKey: string; amount: bigint }>;
 }
 
 interface AddLiquidityParams {
@@ -3068,25 +3074,98 @@ export async function createDexPool(params: CreateDexPoolParams): Promise<string
     DEX_PROGRAM_ID
   );
   
+  // Build instruction keys
+  const instructionKeys: Array<{ pubkey: PublicKey; isSigner: boolean; isWritable: boolean }> = [
+    { pubkey: tokenAMint, isSigner: false, isWritable: false },
+    { pubkey: tokenBMint, isSigner: false, isWritable: false },
+    { pubkey: poolState, isSigner: false, isWritable: true },
+    { pubkey: lpTokenMint.publicKey, isSigner: true, isWritable: true },
+    { pubkey: userLpTokenAccount, isSigner: false, isWritable: true },
+    { pubkey: userTokenAAccount, isSigner: false, isWritable: true },
+    { pubkey: poolTokenAAccount, isSigner: false, isWritable: true },
+    { pubkey: userTokenBAccount, isSigner: false, isWritable: true },
+    { pubkey: poolTokenBAccount, isSigner: false, isWritable: true },
+    { pubkey: payer, isSigner: true, isWritable: true },
+    { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false }, // Use TOKEN_PROGRAM_ID for regular token transfers
+    { pubkey: ASSOCIATED_TOKEN_PROGRAM_ID, isSigner: false, isWritable: false }, // For creating pool token ATAs
+    { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+    { pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false }
+  ];
+  
+  // Add zToken pool accounts to remaining_accounts if needed
+  // For shield operations, we need 14 accounts per zToken
+  // TODO: Generate proofs and add ShieldArgs to instruction data when instruction signature is updated
+  if (tokenAIsZtoken || tokenBIsZtoken) {
+    console.info('[createDexPool] Adding zToken pool accounts to remaining_accounts');
+    
+    if (tokenAIsZtoken) {
+      const zTokenAccountsA = getZTokenPoolAccounts(tokenAMint, true); // forShield = true
+      const vaultStateA = deriveVaultState(tokenAMint);
+      const poolStateA = derivePoolState(tokenAMint);
+      
+      // Get vault token account and depositor token account
+      // For shield, we need: vault_token_account, depositor_token_account (user's token account)
+      const vaultTokenAccountA = await getAssociatedTokenAddress(
+        tokenAMint,
+        vaultStateA,
+        true, // allowOwnerOffCurve
+        TOKEN_PROGRAM_ID,
+        ASSOCIATED_TOKEN_PROGRAM_ID
+      );
+      
+      // Add zToken accounts for token A (14 accounts for shield)
+      instructionKeys.push(...zTokenAccountsA.map(pubkey => ({ 
+        pubkey, 
+        isSigner: false, 
+        isWritable: true // Most accounts are writable for shield operations
+      })));
+      
+      // Add vault_token_account and depositor_token_account (user's public token account)
+      instructionKeys.push(
+        { pubkey: vaultTokenAccountA, isSigner: false, isWritable: true },
+        { pubkey: userTokenAAccount, isSigner: false, isWritable: true } // depositor_token_account
+      );
+      
+      console.info(`[createDexPool] Added ${zTokenAccountsA.length + 2} accounts for zToken A shield operation`);
+    }
+    
+    if (tokenBIsZtoken) {
+      const zTokenAccountsB = getZTokenPoolAccounts(tokenBMint, true); // forShield = true
+      const vaultStateB = deriveVaultState(tokenBMint);
+      
+      const vaultTokenAccountB = await getAssociatedTokenAddress(
+        tokenBMint,
+        vaultStateB,
+        true, // allowOwnerOffCurve
+        TOKEN_PROGRAM_ID,
+        ASSOCIATED_TOKEN_PROGRAM_ID
+      );
+      
+      // Add zToken accounts for token B (14 accounts for shield)
+      instructionKeys.push(...zTokenAccountsB.map(pubkey => ({ 
+        pubkey, 
+        isSigner: false, 
+        isWritable: true
+      })));
+      
+      // Add vault_token_account and depositor_token_account
+      instructionKeys.push(
+        { pubkey: vaultTokenAccountB, isSigner: false, isWritable: true },
+        { pubkey: userTokenBAccount, isSigner: false, isWritable: true } // depositor_token_account
+      );
+      
+      console.info(`[createDexPool] Added ${zTokenAccountsB.length + 2} accounts for zToken B shield operation`);
+    }
+    
+    // TODO: Generate shield proofs and add ShieldArgs to instruction data
+    // This requires updating the instruction signature to accept ShieldArgs parameters
+    console.info('[createDexPool] NOTE: Shield proof generation pending - ShieldArgs need to be added to instruction signature');
+  }
+  
   instructions.push(
     new TransactionInstruction({
       programId: DEX_PROGRAM_ID,
-      keys: [
-        { pubkey: tokenAMint, isSigner: false, isWritable: false },
-        { pubkey: tokenBMint, isSigner: false, isWritable: false },
-        { pubkey: poolState, isSigner: false, isWritable: true },
-        { pubkey: lpTokenMint.publicKey, isSigner: true, isWritable: true },
-        { pubkey: userLpTokenAccount, isSigner: false, isWritable: true },
-        { pubkey: userTokenAAccount, isSigner: false, isWritable: true },
-        { pubkey: poolTokenAAccount, isSigner: false, isWritable: true },
-        { pubkey: userTokenBAccount, isSigner: false, isWritable: true },
-        { pubkey: poolTokenBAccount, isSigner: false, isWritable: true },
-        { pubkey: payer, isSigner: true, isWritable: true },
-        { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false }, // Use TOKEN_PROGRAM_ID for regular token transfers
-        { pubkey: ASSOCIATED_TOKEN_PROGRAM_ID, isSigner: false, isWritable: false }, // For creating pool token ATAs
-        { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
-        { pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false }
-      ],
+      keys: instructionKeys,
       data: createPoolData
     })
   );
