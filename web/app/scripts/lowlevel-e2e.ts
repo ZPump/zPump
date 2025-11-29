@@ -662,20 +662,27 @@ async function sendAndConfirmInstructions(
           // vault_program at position 18, token_program at position 19
           // So VAULT_PROGRAM_ID must come BEFORE TOKEN_PROGRAM_ID in lookup table.
           
-          // Verify critical program IDs are in correct order (using existing altAddresses variable)
+          // CRITICAL: Verify lookup table address order matches Shield instruction order
+          // Shield instruction requires: factory_state (16) -> vault_program (17) -> token_program (18)
+          // So VAULT_PROGRAM_ID must come after factory_state and before TOKEN_PROGRAM_ID in lookup table
+          const factoryStateKey = deriveFactoryState();
+          const factoryIdx = altAddresses.findIndex((addr: PublicKey) => addr.equals(factoryStateKey));
           const vaultIdx = altAddresses.findIndex((addr: PublicKey) => addr.equals(VAULT_PROGRAM_ID));
           const tokenIdx = altAddresses.findIndex((addr: PublicKey) => addr.equals(TOKEN_PROGRAM_ID));
           
-          if (vaultIdx >= 0 && tokenIdx >= 0 && vaultIdx > tokenIdx) {
-            console.warn(`[sendAndConfirmInstructions] CRITICAL: Lookup table has incorrect order - VAULT_PROGRAM_ID (index ${vaultIdx}) comes AFTER TOKEN_PROGRAM_ID (index ${tokenIdx})`);
-            console.warn(`[sendAndConfirmInstructions] compileToV0Message requires lookup table addresses in same order as instruction accounts`);
-            console.warn(`[sendAndConfirmInstructions] Skipping VersionedTransaction - will use transaction splitting instead`);
-            throw new Error(`Lookup table address order mismatch - cannot use VersionedTransaction`);
+          // Check if lookup table order is correct (factory -> vault -> token)
+          const orderIsCorrect = factoryIdx >= 0 && vaultIdx >= 0 && tokenIdx >= 0 &&
+                                 factoryIdx < vaultIdx && vaultIdx < tokenIdx;
+          
+          if (!orderIsCorrect) {
+            console.warn(`[sendAndConfirmInstructions] Lookup table has incorrect address order for Shield instruction`);
+            console.warn(`[sendAndConfirmInstructions] Expected: factory_state (${factoryIdx}) -> vault_program (${vaultIdx}) -> token_program (${tokenIdx})`);
+            console.warn(`[sendAndConfirmInstructions] This lookup table was created with old address order. Skipping VersionedTransaction.`);
+            console.warn(`[sendAndConfirmInstructions] New lookup tables created after the fix will have correct order.`);
+            throw new Error(`Lookup table address order mismatch - using legacy transaction with skipPreflight instead`);
           }
           
-          if (vaultIdx >= 0 && tokenIdx >= 0 && vaultIdx < tokenIdx) {
-            console.info(`[sendAndConfirmInstructions] Verified lookup table order: VAULT_PROGRAM_ID (${vaultIdx}) before TOKEN_PROGRAM_ID (${tokenIdx})`);
-          }
+          console.info(`[sendAndConfirmInstructions] Verified lookup table order: factory_state (${factoryIdx}) -> vault_program (${vaultIdx}) -> token_program (${tokenIdx})`);
           
           // CRITICAL FIX: compileToV0Message automatically compresses addresses, but it maps accounts
           // based on lookup table order, not instruction order. This can cause incorrect mappings when
@@ -771,15 +778,37 @@ async function sendAndConfirmInstructions(
               legacyTx.recentBlockhash = blockhash.blockhash;
               legacyTx.feePayer = payer.publicKey;
               legacyTx.sign(payer);
+              // Final retry: try with longer timeout and different settings
+              const finalBlockhash = await connection.getLatestBlockhash('confirmed');
+              legacyTx.recentBlockhash = finalBlockhash.blockhash;
+              legacyTx.feePayer = payer.publicKey;
+              legacyTx.sign(payer, ...extraSigners);
+              
               const sig = await connection.sendRawTransaction(legacyTx.serialize(), {
                 skipPreflight: true,
-                maxRetries: 5
+                maxRetries: 10,
+                preflightCommitment: 'processed'
               });
-              await connection.confirmTransaction(sig, 'confirmed');
-              console.info(`[sendAndConfirmInstructions] Oversized transaction (${txSize} bytes) succeeded on retry`);
+              
+              // Wait longer for confirmation since transaction is oversized
+              await connection.confirmTransaction({
+                signature: sig,
+                blockhash: finalBlockhash.blockhash,
+                lastValidBlockHeight: finalBlockhash.lastValidBlockHeight
+              }, 'confirmed');
+              
+              console.info(`[sendAndConfirmInstructions] Oversized transaction (${txSize} bytes) succeeded on final retry with skipPreflight`);
               return sig;
-            } catch (finalError) {
-              throw new Error(`Transaction too large (${txSize} bytes > 1232 bytes). Split the transaction or use lookup tables in production.`);
+            } catch (finalError: any) {
+              const finalErrorMsg = finalError.message || String(finalError);
+              // If the transaction is actually accepted by the validator (skipPreflight bypasses simulation),
+              // we might get a different error. Let's check if it's just a confirmation timeout.
+              if (finalErrorMsg.includes('Blockhash not found') || finalErrorMsg.includes('timed out')) {
+                // Transaction was sent, just confirmation timed out - try to confirm again
+                console.warn(`[sendAndConfirmInstructions] Transaction confirmation timed out, but transaction may have been sent`);
+                // For oversized transactions, we'll still throw since we can't verify
+              }
+              throw new Error(`Transaction too large (${txSize} bytes > 1232 bytes). VersionedTransaction failed due to mapping bug. Split the transaction or recreate lookup tables with correct order. Original error: ${finalErrorMsg.substring(0, 200)}`);
             }
           }
           throw new Error(`Transaction too large (${txSize} bytes > 1232 bytes). Split the transaction or use lookup tables in production.`);
