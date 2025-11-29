@@ -1637,7 +1637,7 @@ export async function wrap(params: WrapParams): Promise<string> {
                             // Instead, throw an error to inform the user
                             throw new Error(
                               'A previous shield operation appears to be stuck. The shield claim is valid but not finalized. ' +
-                              'Please reset the devnet or wait for the claim to expire (1 hour). ' +
+                              'Please wait for the claim to expire (30 seconds). ' +
                               `Claim expires at: ${expiresAt ? new Date(expiresAt * 1000).toISOString() : 'unknown'}`
                             );
                           }
