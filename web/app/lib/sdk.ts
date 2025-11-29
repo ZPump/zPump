@@ -2871,6 +2871,10 @@ interface SwapParams {
   amountIn: bigint;
   minAmountOut: bigint;
   aToB: boolean; // true = swap tokenA -> tokenB, false = swap tokenB -> tokenA
+  // Optional: Proof client for zToken operations
+  proofClient?: ProofClient;
+  // Optional: User notes for zToken input (required if input is zToken)
+  zTokenInputNotes?: Array<{ noteId: string; spendingKey: string; amount: bigint }>;
 }
 
 /**
@@ -3709,6 +3713,8 @@ export async function swapDex(params: SwapParams): Promise<string> {
   // Determine input/output tokens based on swap direction
   const tokenInMint = actualAToB ? tokenAMint : tokenBMint;
   const tokenOutMint = actualAToB ? tokenBMint : tokenAMint;
+  const tokenInIsZtoken = actualAToB ? poolStateData.tokenAIsZtoken : poolStateData.tokenBIsZtoken;
+  const tokenOutIsZtoken = actualAToB ? poolStateData.tokenBIsZtoken : poolStateData.tokenAIsZtoken;
   
   // Get token accounts
   const userTokenInAccount = await getAssociatedTokenAddress(
@@ -3746,19 +3752,21 @@ export async function swapDex(params: SwapParams): Promise<string> {
   // Build instruction
   const instructions: TransactionInstruction[] = [];
   
-  // Ensure output token account exists
-  const userTokenOutAccountInfo = await connection.getAccountInfo(userTokenOutAccount, 'confirmed');
-  if (!userTokenOutAccountInfo) {
-    instructions.push(
-      createAssociatedTokenAccountInstruction(
-        payer,
-        userTokenOutAccount,
-        payer,
-        tokenOutMint,
-        TOKEN_PROGRAM_ID,
-        ASSOCIATED_TOKEN_PROGRAM_ID
-      )
-    );
+  // Ensure output token account exists (for public tokens only)
+  if (!tokenOutIsZtoken) {
+    const userTokenOutAccountInfo = await connection.getAccountInfo(userTokenOutAccount, 'confirmed');
+    if (!userTokenOutAccountInfo) {
+      instructions.push(
+        createAssociatedTokenAccountInstruction(
+          payer,
+          userTokenOutAccount,
+          payer,
+          tokenOutMint,
+          TOKEN_PROGRAM_ID,
+          ASSOCIATED_TOKEN_PROGRAM_ID
+        )
+      );
+    }
   }
   
   // Encode swap instruction
@@ -3769,21 +3777,109 @@ export async function swapDex(params: SwapParams): Promise<string> {
     a_to_b: actualAToB
   });
   
+  // Build instruction keys
+  const instructionKeys: Array<{ pubkey: PublicKey; isSigner: boolean; isWritable: boolean }> = [
+    { pubkey: poolState, isSigner: false, isWritable: true },
+    { pubkey: tokenAMint, isSigner: false, isWritable: false },
+    { pubkey: tokenBMint, isSigner: false, isWritable: false },
+    { pubkey: userTokenInAccount, isSigner: false, isWritable: true },
+    { pubkey: poolTokenInAccount, isSigner: false, isWritable: true },
+    { pubkey: userTokenOutAccount, isSigner: false, isWritable: true },
+    { pubkey: poolTokenOutAccount, isSigner: false, isWritable: true },
+    { pubkey: payer, isSigner: true, isWritable: true },
+    { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
+    { pubkey: SystemProgram.programId, isSigner: false, isWritable: false }
+  ];
+  
+  // Add zToken pool accounts to remaining_accounts if needed
+  // Swap types:
+  // 1. Public → Public: No zToken accounts needed ✅
+  // 2. Public → zToken: Shield accounts for output (14 accounts)
+  // 3. zToken → Public: Transfer accounts for input (7 accounts)
+  // 4. zToken → zToken: Transfer accounts for input (7) + Transfer accounts for output (7)
+  
+  let accountsOffset = 0;
+  
+  // Handle zToken input (transfer from user to pool PDA)
+  if (tokenInIsZtoken) {
+    console.info('[swapDex] Token in is zToken - adding transfer accounts (user → pool PDA)');
+    const zTokenAccountsIn = getZTokenPoolAccounts(tokenInMint, false); // forShield = false (transfer)
+    
+    instructionKeys.push(...zTokenAccountsIn.map(pubkey => ({ 
+      pubkey, 
+      isSigner: false, 
+      isWritable: true
+    })));
+    
+    accountsOffset += zTokenAccountsIn.length;
+    console.info(`[swapDex] Added ${zTokenAccountsIn.length} accounts for zToken input transfer`);
+    
+    // TODO: Generate transfer proof for input
+    if (params.zTokenInputNotes && params.proofClient) {
+      console.info('[swapDex] NOTE: Transfer proof generation pending - TransferArgs need to be added to instruction signature');
+    } else if (tokenInIsZtoken) {
+      console.warn('[swapDex] zToken input requires notes and proofClient for transfer proof generation');
+    }
+  }
+  
+  // Handle zToken output
+  if (tokenOutIsZtoken) {
+    if (!tokenInIsZtoken) {
+      // Public → zToken: Shield output (14 accounts)
+      console.info('[swapDex] Token out is zToken (Public → zToken) - adding shield accounts');
+      const zTokenAccountsOut = getZTokenPoolAccounts(tokenOutMint, true); // forShield = true
+      
+      instructionKeys.push(...zTokenAccountsOut.map(pubkey => ({ 
+        pubkey, 
+        isSigner: false, 
+        isWritable: true
+      })));
+      
+      // Add vault_token_account and depositor_token_account (pool's public token account)
+      const vaultStateOut = deriveVaultState(tokenOutMint);
+      const vaultTokenAccountOut = await getAssociatedTokenAddress(
+        tokenOutMint,
+        vaultStateOut,
+        true,
+        TOKEN_PROGRAM_ID,
+        ASSOCIATED_TOKEN_PROGRAM_ID
+      );
+      
+      instructionKeys.push(
+        { pubkey: vaultTokenAccountOut, isSigner: false, isWritable: true },
+        { pubkey: poolTokenOutAccount, isSigner: false, isWritable: true } // depositor_token_account (pool's public token account)
+      );
+      
+      console.info(`[swapDex] Added ${zTokenAccountsOut.length + 2} accounts for zToken output shield`);
+      
+      // TODO: Generate shield proof for output
+      if (params.proofClient) {
+        console.info('[swapDex] NOTE: Shield proof generation pending - ShieldArgs need to be added to instruction signature');
+      }
+    } else {
+      // zToken → zToken: Transfer output (pool PDA → user) (7 accounts)
+      console.info('[swapDex] Token out is zToken (zToken → zToken) - adding transfer accounts (pool PDA → user)');
+      const zTokenAccountsOut = getZTokenPoolAccounts(tokenOutMint, false); // forShield = false (transfer)
+      
+      instructionKeys.push(...zTokenAccountsOut.map(pubkey => ({ 
+        pubkey, 
+        isSigner: false, 
+        isWritable: true
+      })));
+      
+      console.info(`[swapDex] Added ${zTokenAccountsOut.length} accounts for zToken output transfer`);
+      
+      // TODO: Generate transfer proof for output (pool PDA is sender)
+      if (params.proofClient) {
+        console.info('[swapDex] NOTE: Transfer proof generation pending - TransferArgs need to be added to instruction signature');
+      }
+    }
+  }
+  
   instructions.push(
     new TransactionInstruction({
       programId: DEX_PROGRAM_ID,
-      keys: [
-        { pubkey: poolState, isSigner: false, isWritable: true },
-        { pubkey: tokenAMint, isSigner: false, isWritable: false },
-        { pubkey: tokenBMint, isSigner: false, isWritable: false },
-        { pubkey: userTokenInAccount, isSigner: false, isWritable: true },
-        { pubkey: poolTokenInAccount, isSigner: false, isWritable: true },
-        { pubkey: userTokenOutAccount, isSigner: false, isWritable: true },
-        { pubkey: poolTokenOutAccount, isSigner: false, isWritable: true },
-        { pubkey: payer, isSigner: true, isWritable: true },
-        { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
-        { pubkey: SystemProgram.programId, isSigner: false, isWritable: false }
-      ],
+      keys: instructionKeys,
       data: swapData
     })
   );
