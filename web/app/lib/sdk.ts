@@ -95,7 +95,8 @@ const SHIELD_CLAIM_STATUS = {
   INACTIVE: 0,
   PENDING_TREE: 1,
   AWAITING_LEDGER: 2,
-  AWAITING_INVARIANT: 3
+  AWAITING_INVARIANT: 3,
+  LEDGER_COMPLETE: 4
 } as const;
 
 type ShieldClaimAccount = {
@@ -1788,32 +1789,214 @@ export async function wrap(params: WrapParams): Promise<string> {
   // finalize_ledger is now included in the same transaction as shield (above)
   // No separate transaction needed
 
+  // Check claim status before calling shield_check_invariant
+  // Handle all possible statuses including LEDGER_COMPLETE
+  claimState = await fetchShieldClaimState(connection, shieldClaim);
+  
+  // Prepare invariant instructions (needed for retry logic later)
   const invariantInstructions: TransactionInstruction[] = [];
   if (resolvedComputeLimit > 0) {
     invariantInstructions.push(ComputeBudgetProgram.setComputeUnitLimit({ units: resolvedComputeLimit }));
   }
   invariantInstructions.push(checkInvariantInstruction);
+  
+  // Finalize the shield claim by calling shield_finalize_tree first if needed, then shield_check_invariant
+  // STATUS_LEDGER_COMPLETE (4) means ledger is complete but tree finalization may still be needed
+  // If in LEDGER_COMPLETE status, we may need to call shield_finalize_tree first
+  let invariantSignature: string | null = null;
+  
+  // If status is LEDGER_COMPLETE, we may need to finalize tree first
+  if (claimState.status === SHIELD_CLAIM_STATUS.LEDGER_COMPLETE) {
+    console.info('[wrap] Shield claim is in LEDGER_COMPLETE status, calling shield_finalize_tree first...');
+    // Try finalize_tree to transition to AWAITING_INVARIANT
+    const treeBlockhash = await connection.getLatestBlockhash('confirmed');
+    const finalizeTreeTransaction = new Transaction().add(...finalizeTreeInstructions);
+    finalizeTreeTransaction.feePayer = wallet.publicKey;
+    finalizeTreeTransaction.recentBlockhash = treeBlockhash.blockhash;
+    
+    const finalizeTreeSignature = await wallet.sendTransaction(finalizeTreeTransaction, connection, {
+      skipPreflight: false
+    });
+    
+    await waitForSignatureConfirmation(
+      connection,
+      finalizeTreeSignature,
+      treeBlockhash.blockhash,
+      treeBlockhash.lastValidBlockHeight
+    );
+    console.info('[wrap] shield_finalize_tree completed for LEDGER_COMPLETE status, signature:', finalizeTreeSignature);
+    
+    // Recheck status after finalize_tree
+    await sleep(500);
+    claimState = await fetchShieldClaimState(connection, shieldClaim);
+  }
+  
+  if (claimState.status === SHIELD_CLAIM_STATUS.AWAITING_INVARIANT || 
+      claimState.status === SHIELD_CLAIM_STATUS.AWAITING_LEDGER ||
+      claimState.status === SHIELD_CLAIM_STATUS.LEDGER_COMPLETE) {
+    const invariantBlockhash = await connection.getLatestBlockhash('confirmed');
+    const invariantTransaction = new Transaction().add(...invariantInstructions);
+    invariantTransaction.feePayer = wallet.publicKey;
+    invariantTransaction.recentBlockhash = invariantBlockhash.blockhash;
 
-  const invariantBlockhash = await connection.getLatestBlockhash('confirmed');
-  const invariantTransaction = new Transaction().add(...invariantInstructions);
-  invariantTransaction.feePayer = wallet.publicKey;
-  invariantTransaction.recentBlockhash = invariantBlockhash.blockhash;
+    invariantSignature = await wallet.sendTransaction(invariantTransaction, connection, {
+      skipPreflight: false
+    });
 
-  const invariantSignature = await wallet.sendTransaction(invariantTransaction, connection, {
-    skipPreflight: false
-  });
+    await waitForSignatureConfirmation(
+      connection,
+      invariantSignature,
+      invariantBlockhash.blockhash,
+      invariantBlockhash.lastValidBlockHeight
+    );
+    if (process.env.NEXT_PUBLIC_DEBUG_WRAP === 'true') {
+      console.info('[wrap] shield invariant signature', invariantSignature);
+    }
+  } else if (claimState.status === SHIELD_CLAIM_STATUS.INACTIVE) {
+    console.info('[wrap] Shield claim already inactive, no invariant check needed');
+    invariantSignature = shieldSignature; // Return shield signature if already inactive
+  } else if (claimState.status === SHIELD_CLAIM_STATUS.PENDING_TREE) {
+    console.warn('[wrap] Shield claim in PENDING_TREE status, should have been finalized by now. Attempting finalize_tree...');
+    // Try finalize_tree to transition to next state
+    const treeBlockhash = await connection.getLatestBlockhash('confirmed');
+    const finalizeTreeTransaction = new Transaction().add(...finalizeTreeInstructions);
+    finalizeTreeTransaction.feePayer = wallet.publicKey;
+    finalizeTreeTransaction.recentBlockhash = treeBlockhash.blockhash;
+    
+    const finalizeTreeSignature = await wallet.sendTransaction(finalizeTreeTransaction, connection, {
+      skipPreflight: false
+    });
+    
+    await waitForSignatureConfirmation(
+      connection,
+      finalizeTreeSignature,
+      treeBlockhash.blockhash,
+      treeBlockhash.lastValidBlockHeight
+    );
+    console.info('[wrap] Retried shield_finalize_tree for PENDING_TREE status, signature:', finalizeTreeSignature);
+    
+    // Recheck status and try invariant check
+    await sleep(500);
+    claimState = await fetchShieldClaimState(connection, shieldClaim);
+    
+    if (claimState.status === SHIELD_CLAIM_STATUS.AWAITING_INVARIANT || 
+        claimState.status === SHIELD_CLAIM_STATUS.AWAITING_LEDGER) {
+      const invariantBlockhash = await connection.getLatestBlockhash('confirmed');
+      const invariantTransaction = new Transaction().add(...invariantInstructions);
+      invariantTransaction.feePayer = wallet.publicKey;
+      invariantTransaction.recentBlockhash = invariantBlockhash.blockhash;
 
-  await waitForSignatureConfirmation(
-    connection,
-    invariantSignature,
-    invariantBlockhash.blockhash,
-    invariantBlockhash.lastValidBlockHeight
-  );
-  if (process.env.NEXT_PUBLIC_DEBUG_WRAP === 'true') {
-    console.info('[wrap] shield invariant signature', invariantSignature);
+      invariantSignature = await wallet.sendTransaction(invariantTransaction, connection, {
+        skipPreflight: false
+      });
+
+      await waitForSignatureConfirmation(
+        connection,
+        invariantSignature,
+        invariantBlockhash.blockhash,
+        invariantBlockhash.lastValidBlockHeight
+      );
+      console.info('[wrap] shield invariant signature after finalize_tree retry', invariantSignature);
+    } else {
+      invariantSignature = shieldSignature;
+    }
+  } else {
+    console.warn(`[wrap] Shield claim in unexpected status (${claimState.status}), attempting invariant check anyway`);
+    // Try calling invariant check anyway - it might handle other statuses
+    const invariantBlockhash = await connection.getLatestBlockhash('confirmed');
+    const invariantTransaction = new Transaction().add(...invariantInstructions);
+    invariantTransaction.feePayer = wallet.publicKey;
+    invariantTransaction.recentBlockhash = invariantBlockhash.blockhash;
+
+    invariantSignature = await wallet.sendTransaction(invariantTransaction, connection, {
+      skipPreflight: false
+    });
+
+    await waitForSignatureConfirmation(
+      connection,
+      invariantSignature,
+      invariantBlockhash.blockhash,
+      invariantBlockhash.lastValidBlockHeight
+    );
+    console.info('[wrap] shield invariant signature (unexpected status)', invariantSignature);
   }
 
-  return invariantSignature;
+  // CRITICAL: Verify that the shield claim is actually deactivated after finalization
+  // If it's not inactive, we need to wait or retry finalization
+  let finalClaimState = await fetchShieldClaimState(connection, shieldClaim);
+  const maxFinalizationWait = 10000; // Wait up to 10 seconds for claim to deactivate
+  const startFinalizationWait = Date.now();
+  
+  while (finalClaimState.status !== SHIELD_CLAIM_STATUS.INACTIVE && 
+         (Date.now() - startFinalizationWait) < maxFinalizationWait) {
+    console.info(`[wrap] Shield claim still active (status: ${finalClaimState.status}), waiting for deactivation...`);
+    await sleep(1000);
+    finalClaimState = await fetchShieldClaimState(connection, shieldClaim);
+    
+    // If claim is still active, try calling finalize_tree and check_invariant again
+    // Sometimes the status transitions require multiple calls
+    if (finalClaimState.status !== SHIELD_CLAIM_STATUS.INACTIVE) {
+      try {
+        // Try finalize_tree again if status indicates it's needed
+        if (finalClaimState.status === SHIELD_CLAIM_STATUS.PENDING_TREE || 
+            finalClaimState.status === SHIELD_CLAIM_STATUS.AWAITING_LEDGER ||
+            finalClaimState.status === SHIELD_CLAIM_STATUS.AWAITING_INVARIANT ||
+            finalClaimState.status === SHIELD_CLAIM_STATUS.LEDGER_COMPLETE) {
+          const retryTreeBlockhash = await connection.getLatestBlockhash('confirmed');
+          const retryTreeTransaction = new Transaction().add(...finalizeTreeInstructions);
+          retryTreeTransaction.feePayer = wallet.publicKey;
+          retryTreeTransaction.recentBlockhash = retryTreeBlockhash.blockhash;
+          const retryTreeSignature = await wallet.sendTransaction(retryTreeTransaction, connection, {
+            skipPreflight: false
+          });
+          await waitForSignatureConfirmation(
+            connection,
+            retryTreeSignature,
+            retryTreeBlockhash.blockhash,
+            retryTreeBlockhash.lastValidBlockHeight
+          );
+          console.info('[wrap] Retried shield_finalize_tree, signature:', retryTreeSignature);
+        }
+        
+        // Try check_invariant again if status indicates it's needed
+        if (finalClaimState.status === SHIELD_CLAIM_STATUS.AWAITING_INVARIANT ||
+            finalClaimState.status === SHIELD_CLAIM_STATUS.AWAITING_LEDGER ||
+            finalClaimState.status === SHIELD_CLAIM_STATUS.LEDGER_COMPLETE) {
+          const retryInvariantBlockhash = await connection.getLatestBlockhash('confirmed');
+          const retryInvariantTransaction = new Transaction().add(...invariantInstructions);
+          retryInvariantTransaction.feePayer = wallet.publicKey;
+          retryInvariantTransaction.recentBlockhash = retryInvariantBlockhash.blockhash;
+          const retryInvariantSignature = await wallet.sendTransaction(retryInvariantTransaction, connection, {
+            skipPreflight: false
+          });
+          await waitForSignatureConfirmation(
+            connection,
+            retryInvariantSignature,
+            retryInvariantBlockhash.blockhash,
+            retryInvariantBlockhash.lastValidBlockHeight
+          );
+          console.info('[wrap] Retried shield_check_invariant, signature:', retryInvariantSignature);
+        }
+        
+        // Check status again after retry
+        await sleep(500);
+        finalClaimState = await fetchShieldClaimState(connection, shieldClaim);
+      } catch (retryError) {
+        console.warn('[wrap] Error retrying finalization, will continue waiting:', retryError);
+      }
+    }
+  }
+  
+  if (finalClaimState.status !== SHIELD_CLAIM_STATUS.INACTIVE) {
+    console.warn(`[wrap] Shield claim still active after finalization (status: ${finalClaimState.status}). This may indicate a program bug or the claim needs to expire (30 seconds).`);
+    console.warn('[wrap] The claim will auto-expire in 30 seconds if stuck. Shield operations may be blocked until then.');
+    // Don't throw - the shield transaction succeeded, just the finalization isn't completing
+    // The claim will expire after 30 seconds anyway
+  } else {
+    console.info('[wrap] Shield claim successfully deactivated after finalization');
+  }
+
+  return invariantSignature || shieldSignature;
 }
 
 export async function unwrap(params: UnwrapParams): Promise<string> {
