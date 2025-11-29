@@ -719,3 +719,47 @@ where
     )
 }
 
+// ====================================================================
+// INSTRUCTION-SPECIFIC HELPERS - Most scalable, avoids lifetime conflicts
+// ====================================================================
+// These helpers are tailored to specific instruction contexts, allowing
+// them to access Context directly without lifetime issues
+
+/// Invoke transfer CPI specifically for add_liquidity instruction
+/// 
+/// This instruction-specific helper can access ctx.accounts directly,
+/// avoiding lifetime conflicts by keeping all AccountInfo access in one scope
+pub fn invoke_transfer_for_add_liquidity_ctx<'info, 'a, 'b, 'c>(
+    ctx: &anchor_lang::prelude::Context<'info, 'a, 'b, 'c, crate::AddLiquidity<'info>>,
+    remaining_accounts: &'info [AccountInfo<'info>],
+    origin_mint: &Pubkey,
+    transfer_args: TransferArgs,
+) -> Result<()> {
+    // All AccountInfo access happens in this single scope
+    // Parse zToken accounts
+    let ztoken_accounts = parse_ztoken_accounts(
+        remaining_accounts,
+        origin_mint,
+        &POOL_PROGRAM_ID,
+        false,
+    )?;
+    
+    // Access AccountInfos from Context - all in same scope
+    let payer_info = &ctx.accounts.payer.to_account_info();
+    let system_program_info = &ctx.accounts.system_program.to_account_info();
+    let rent_info = &ctx.accounts.rent.to_account_info();
+    
+    // Call underlying CPI function - all AccountInfos have compatible lifetimes
+    invoke_transfer_cpi(
+        &ztoken_accounts,
+        remaining_accounts,
+        payer_info,
+        payer_info,
+        system_program_info,
+        rent_info,
+        transfer_args,
+        false, // sender_is_pool_pda = false (user is sender)
+        None,
+    )
+}
+

@@ -9,7 +9,7 @@ use spl_associated_token_account_client::{
 
 use crate::errors::DexError;
 use crate::state::DEX_POOL_SEED;
-use crate::ztoken_cpi::{TransferArgs, extract_pool_commitment, invoke_transfer_cpi_with_accounts};
+use crate::ztoken_cpi::{TransferArgs, extract_pool_commitment, invoke_transfer_for_add_liquidity_ctx};
 use ptf_pool::ID as POOL_PROGRAM_ID;
 
 pub fn add_liquidity(
@@ -149,102 +149,13 @@ pub fn add_liquidity(
             
             require!(!ctx.remaining_accounts.is_empty(), DexError::InvalidAccount);
             
-            // BEST PRACTICE: Inline CPI call to avoid lifetime conflicts
-            // Parse zToken accounts from remaining_accounts
-            let ztoken_accounts = crate::ztoken_cpi::parse_ztoken_accounts(
+            // BEST PRACTICE: Use Context-aware helper - accepts Context directly
+            // This avoids lifetime conflicts by keeping all AccountInfo access in one scope
+            invoke_transfer_for_add_liquidity_ctx(
+                &ctx,
                 ctx.remaining_accounts,
                 &token_a,
-                &POOL_PROGRAM_ID,
-                false, // is_shield = false
-            )?;
-            
-            // Build instruction inline - all AccountInfos in same scope
-            let mut account_metas = Vec::new();
-            let mut account_infos: Vec<AccountInfo> = Vec::new();
-            
-            // Add accounts from parsed ztoken_accounts
-            account_metas.push(anchor_lang::solana_program::instruction::AccountMeta::new(
-                ztoken_accounts.pool_state.key(),
-                false, // sender_is_pool_pda = false
-            ));
-            account_infos.push(ztoken_accounts.pool_state.clone());
-            
-            account_metas.push(anchor_lang::solana_program::instruction::AccountMeta::new(
-                ztoken_accounts.nullifier_set.key(),
-                false,
-            ));
-            account_infos.push(ztoken_accounts.nullifier_set.clone());
-            
-            account_metas.push(anchor_lang::solana_program::instruction::AccountMeta::new(
-                ztoken_accounts.commitment_tree.key(),
-                false,
-            ));
-            account_infos.push(ztoken_accounts.commitment_tree.clone());
-            
-            account_metas.push(anchor_lang::solana_program::instruction::AccountMeta::new(
-                ztoken_accounts.note_ledger.key(),
-                false,
-            ));
-            account_infos.push(ztoken_accounts.note_ledger.clone());
-            
-            account_metas.push(anchor_lang::solana_program::instruction::AccountMeta::new_readonly(
-                ztoken_accounts.mint_mapping.key(),
-                false,
-            ));
-            account_infos.push(ztoken_accounts.mint_mapping.clone());
-            
-            account_metas.push(anchor_lang::solana_program::instruction::AccountMeta::new_readonly(
-                ztoken_accounts.verifier_program.key(),
-                false,
-            ));
-            account_infos.push(ztoken_accounts.verifier_program.clone());
-            
-            account_metas.push(anchor_lang::solana_program::instruction::AccountMeta::new_readonly(
-                ztoken_accounts.verifying_key.key(),
-                false,
-            ));
-            account_infos.push(ztoken_accounts.verifying_key.clone());
-            
-            // Add accounts from ctx.accounts (all in same scope now)
-            let payer_info = ctx.accounts.payer.to_account_info();
-            account_metas.push(anchor_lang::solana_program::instruction::AccountMeta::new(
-                payer_info.key(),
-                true, // payer is signer
-            ));
-            account_infos.push(payer_info);
-            
-            let system_program_info = ctx.accounts.system_program.to_account_info();
-            account_metas.push(anchor_lang::solana_program::instruction::AccountMeta::new_readonly(
-                system_program_info.key(),
-                false,
-            ));
-            account_infos.push(system_program_info);
-            
-            let rent_info = ctx.accounts.rent.to_account_info();
-            account_metas.push(anchor_lang::solana_program::instruction::AccountMeta::new_readonly(
-                rent_info.key(),
-                false,
-            ));
-            account_infos.push(rent_info);
-            
-            // Build instruction data
-            let mut instruction_data = Vec::new();
-            let transfer_discriminator: [u8; 8] = [107, 20, 177, 94, 33, 119, 16, 110];
-            instruction_data.extend_from_slice(&transfer_discriminator);
-            let args_data = transfer_args.try_to_vec()
-                .map_err(|_| DexError::InvalidProof)?;
-            instruction_data.extend_from_slice(&args_data);
-            
-            // Construct and invoke instruction
-            let instruction = anchor_lang::solana_program::instruction::Instruction {
-                program_id: POOL_PROGRAM_ID,
-                accounts: account_metas,
-                data: instruction_data,
-            };
-            
-            anchor_lang::solana_program::program::invoke(
-                &instruction,
-                &account_infos,
+                transfer_args.clone(),
             )?;
             
             msg!("[add_liquidity] ✓ Token A private_transfer CPI invoked successfully");
@@ -275,17 +186,12 @@ pub fn add_liquidity(
             // The wrapper will parse correctly from the start, so we can pass full slice
             // Parse will handle finding the right accounts based on origin_mint
             
-            // Use closure-based wrapper - avoids lifetime conflicts
-            invoke_transfer_cpi_with_accounts(
-                ctx.remaining_accounts, // Pass full slice, parser handles offset
+            // BEST PRACTICE: Use Context-aware helper
+            invoke_transfer_for_add_liquidity_ctx(
+                &ctx,
+                ctx.remaining_accounts, // Pass full slice, parser will find token B accounts
                 &token_b,
                 transfer_args.clone(),
-                false, // sender_is_pool_pda = false (user is sender)
-                || (
-                    ctx.accounts.payer.to_account_info(),
-                    ctx.accounts.system_program.to_account_info(),
-                    ctx.accounts.rent.to_account_info(),
-                ),
             )?;
             
             // Extract commitment for pool state update
