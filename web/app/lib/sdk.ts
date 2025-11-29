@@ -1632,7 +1632,7 @@ export async function wrap(params: WrapParams): Promise<string> {
                           if (recheckClaim.status !== SHIELD_CLAIM_STATUS.INACTIVE) {
                             console.warn('[wrap] Shield claim still active after waiting - claim appears to be stuck');
                             console.warn('[wrap] The shield instruction will reject new shields until the claim is finalized or expires');
-                            console.warn('[wrap] Consider resetting the devnet or waiting for the claim to expire (1 hour)');
+                            console.warn('[wrap] Stuck claims will auto-expire after 30 seconds');
                             // Don't proceed - the shield instruction will still reject valid claims
                             // Instead, throw an error to inform the user
                             throw new Error(
