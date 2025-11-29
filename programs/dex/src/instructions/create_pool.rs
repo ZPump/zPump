@@ -52,7 +52,9 @@ pub fn create_pool(
     pool_state.public_reserve_a = if token_a_is_ztoken { 0 } else { initial_amount_a };
     pool_state.public_reserve_b = if token_b_is_ztoken { 0 } else { initial_amount_b };
     pool_state.private_reserve_a_commitment = [0u8; 32];
+    pool_state.private_reserve_a_amount = if token_a_is_ztoken { initial_amount_a } else { 0 };
     pool_state.private_reserve_b_commitment = [0u8; 32];
+    pool_state.private_reserve_b_amount = if token_b_is_ztoken { initial_amount_b } else { 0 };
     pool_state.lp_token_mint = lp_mint_key;
     
     // Calculate initial LP tokens: sqrt(amount_a * amount_b) - MIN_LIQUIDITY

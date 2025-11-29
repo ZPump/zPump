@@ -41,18 +41,9 @@ pub fn remove_liquidity(
     let token_a_is_ztoken = pool_state.token_a_is_ztoken;
     let token_b_is_ztoken = pool_state.token_b_is_ztoken;
     
-    // Get current reserves
-    let reserve_a = if token_a_is_ztoken {
-        0 // TODO: Get from private reserve tracking
-    } else {
-        pool_state.public_reserve_a
-    };
-    
-    let reserve_b = if token_b_is_ztoken {
-        0 // TODO: Get from private reserve tracking
-    } else {
-        pool_state.public_reserve_b
-    };
+    // Get current reserves (public or private)
+    let reserve_a = pool_state.get_reserve_a();
+    let reserve_b = pool_state.get_reserve_b();
     
     require!(reserve_a > 0 && reserve_b > 0, DexError::InsufficientLiquidity);
     

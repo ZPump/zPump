@@ -35,31 +35,15 @@ pub fn swap(
         (
             pool_state.token_a_is_ztoken,
             pool_state.token_b_is_ztoken,
-            if pool_state.token_a_is_ztoken {
-                0 // TODO: Get from private reserve tracking
-            } else {
-                pool_state.public_reserve_a
-            },
-            if pool_state.token_b_is_ztoken {
-                0 // TODO: Get from private reserve tracking
-            } else {
-                pool_state.public_reserve_b
-            },
+            pool_state.get_reserve_a(),
+            pool_state.get_reserve_b(),
         )
     } else {
         (
             pool_state.token_b_is_ztoken,
             pool_state.token_a_is_ztoken,
-            if pool_state.token_b_is_ztoken {
-                0 // TODO: Get from private reserve tracking
-            } else {
-                pool_state.public_reserve_b
-            },
-            if pool_state.token_a_is_ztoken {
-                0 // TODO: Get from private reserve tracking
-            } else {
-                pool_state.public_reserve_a
-            },
+            pool_state.get_reserve_b(),
+            pool_state.get_reserve_a(),
         )
     };
     
