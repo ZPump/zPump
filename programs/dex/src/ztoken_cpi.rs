@@ -44,7 +44,7 @@ pub struct ZTokenPoolAccounts<'info> {
 /// 
 /// Returns the parsed accounts and validates they match expected PDAs.
 pub fn parse_ztoken_accounts<'info>(
-    remaining_accounts: &'info [AccountInfo<'info>],
+    remaining_accounts: &[AccountInfo<'info>],
     origin_mint: &Pubkey,
     _pool_program_id: &Pubkey,
     is_shield: bool,
@@ -642,7 +642,7 @@ pub fn invoke_transfer_cpi<'info>(
 /// 
 /// For multiple zTokens: accounts are at the very end, shared between all zToken CPIs
 pub fn parse_cpi_common_accounts<'info>(
-    remaining_accounts: &'info [AccountInfo<'info>],
+    remaining_accounts: &[AccountInfo<'info>],
     payer_pubkey: &Pubkey,
 ) -> Result<(AccountInfo<'info>, AccountInfo<'info>, AccountInfo<'info>)> {
     use anchor_lang::solana_program::system_program;
