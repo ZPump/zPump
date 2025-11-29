@@ -5,6 +5,7 @@ members = [
     "programs/vault",
     "programs/pool",
     "programs/verifier-groth16",
+    "programs/dex",
     "tests/program-test-harness"
 ]
 resolver = "2"

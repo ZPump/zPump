@@ -67,6 +67,7 @@ PROGRAMS=(
   "ptf_vault:ABUQvsF8kdY9HCFrVEomafg9ABbq4zVQuxLfevpwGnvb"
   "ptf_pool:GBfBiuyXm5YZjnCPkZNjakht41rxEkMRxawQcocowwdi"
   "ptf_verifier_groth16:3aCv39mCRFH9BGJskfXqwQoWzW1ULq2yXEbEwGgKtLgg"
+  "ptf_dex:8PMDczNoSdVhj5DsphLD1TrLAUtrZFpqMVThHQo8m12n"
 )
 
 for program_info in "${PROGRAMS[@]}"; do

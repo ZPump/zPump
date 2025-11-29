@@ -69,10 +69,22 @@ else
   log_skip "Low-Level E2E"
 fi
 
+if [[ "${SKIP_DEX_LOW:-false}" != "true" ]]; then
+  run_test "DEX Low-Level E2E" npx tsx web/app/scripts/dex-lowlevel-e2e.ts || exit 1
+else
+  log_skip "DEX Low-Level E2E"
+fi
+
 if [[ "${SKIP_HIGH}" != "true" ]]; then
   run_test "High-Level E2E" npx tsx web/app/scripts/browser-e2e.ts || exit 1
 else
   log_skip "High-Level E2E"
+fi
+
+if [[ "${SKIP_DEX_HIGH:-false}" != "true" ]]; then
+  run_test "DEX High-Level E2E" npx tsx web/app/scripts/dex-highlevel-e2e.ts || exit 1
+else
+  log_skip "DEX High-Level E2E"
 fi
 
 if [[ "${SKIP_MINT_REG}" != "true" ]]; then

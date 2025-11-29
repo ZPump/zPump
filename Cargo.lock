@@ -3731,6 +3731,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "ptf-dex"
+version = "0.1.0"
+dependencies = [
+ "anchor-lang",
+ "anchor-spl",
+ "ptf-common",
+ "ptf-factory",
+ "ptf-pool",
+ "ptf-vault",
+ "ptf-verifier-groth16",
+ "solana-program 2.3.0",
+ "spl-associated-token-account-client",
+ "thiserror 1.0.69",
+]
+
+[[package]]
 name = "ptf-factory"
 version = "0.1.0"
 dependencies = [

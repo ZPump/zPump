@@ -5,6 +5,7 @@ export const FACTORY_PROGRAM_ID = new PublicKey('YNZGqPEsKkMcUopmXThpigDdxfCYPE6
 export const POOL_PROGRAM_ID = new PublicKey('GBfBiuyXm5YZjnCPkZNjakht41rxEkMRxawQcocowwdi');
 export const VAULT_PROGRAM_ID = new PublicKey('ABUQvsF8kdY9HCFrVEomafg9ABbq4zVQuxLfevpwGnvb');
 export const VERIFIER_PROGRAM_ID = new PublicKey('3aCv39mCRFH9BGJskfXqwQoWzW1ULq2yXEbEwGgKtLgg');
+export const DEX_PROGRAM_ID = new PublicKey('8PMDczNoSdVhj5DsphLD1TrLAUtrZFpqMVThHQo8m12n');
 
 export const TOKEN_PROGRAM_ID = new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA');
 export const TOKEN_2022_PROGRAM_ID = new PublicKey('TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb');

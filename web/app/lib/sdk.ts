@@ -28,7 +28,8 @@ import {
   POOL_PROGRAM_ID,
   VAULT_PROGRAM_ID,
   VERIFIER_PROGRAM_ID,
-  FACTORY_PROGRAM_ID
+  FACTORY_PROGRAM_ID,
+  DEX_PROGRAM_ID
 } from './onchain/programIds';
 import {
   deriveAllowanceAccount,
@@ -44,7 +45,8 @@ import {
   deriveFactoryConfig,
   deriveShieldClaim,
   deriveTokenMetadata,
-  derivePoolState
+  derivePoolState,
+  deriveDexPoolState
 } from './onchain/pdas';
 import { decodeCommitmentTree } from './onchain/commitmentTree';
 import {
@@ -58,11 +60,13 @@ import { ProofResponse, ProofClient } from './proofClient';
 import poolIdl from '../idl/ptf_pool.json';
 import factoryIdl from '../idl/ptf_factory.json';
 import vaultIdl from '../idl/ptf_vault.json';
+import dexIdl from '../idl/ptf_dex.json';
 import {
   getAssociatedTokenAddress,
   createAssociatedTokenAccountInstruction,
   createApproveInstruction,
-  createRevokeInstruction
+  createRevokeInstruction,
+  createInitializeMint2Instruction
 } from '@solana/spl-token';
 
 const DEFAULT_SIGNATURE_TIMEOUT_MS = 60_000;
@@ -71,6 +75,7 @@ const SIGNATURE_POLL_INTERVAL_MS = 500;
 const poolCoder = new BorshCoder(poolIdl as Idl);
 const factoryCoder = new BorshCoder(factoryIdl as Idl);
 const vaultCoder = new BorshCoder(vaultIdl as Idl);
+const dexCoder = new BorshCoder(dexIdl as Idl);
 
 export const MINT_STATUS = {
   UNKNOWN: 0,
@@ -2642,4 +2647,1014 @@ export async function mintNativeZToken(params: MintNativeZTokenParams): Promise<
     symbol: params.symbol,
     uri: params.uri
   };
+}
+
+// ============================================================================
+// DEX Helper Functions
+// ============================================================================
+
+/**
+ * Calculate swap output amount using constant product AMM formula with fees.
+ * Formula: output = (amount_in * reserve_out * (10000 - fee_bps)) / ((reserve_in * 10000) + (amount_in * (10000 - fee_bps)))
+ * 
+ * @param amountIn - Input amount
+ * @param reserveIn - Input token reserve
+ * @param reserveOut - Output token reserve
+ * @param feeBps - Fee in basis points (default: 5 = 0.05%)
+ * @returns Output amount
+ */
+export function calculateSwapOutput(
+  amountIn: bigint,
+  reserveIn: bigint,
+  reserveOut: bigint,
+  feeBps: number = 5
+): bigint {
+  if (amountIn === 0n || reserveIn === 0n || reserveOut === 0n) {
+    return 0n;
+  }
+  
+  const BPS_DENOMINATOR = 10000n;
+  const feeBpsBN = BigInt(feeBps);
+  
+  // amount_in_with_fee = amount_in * (10000 - fee_bps)
+  const amountInWithFee = amountIn * (BPS_DENOMINATOR - feeBpsBN);
+  
+  // numerator = amount_in_with_fee * reserve_out
+  const numerator = amountInWithFee * reserveOut;
+  
+  // denominator = (reserve_in * 10000) + amount_in_with_fee
+  const denominator = (reserveIn * BPS_DENOMINATOR) + amountInWithFee;
+  
+  // output = numerator / denominator
+  return numerator / denominator;
+}
+
+/**
+ * Calculate LP tokens to mint when adding liquidity.
+ * Formula: LP = min((amount_a * total_supply) / reserve_a, (amount_b * total_supply) / reserve_b)
+ * 
+ * @param amountA - Amount of token A
+ * @param amountB - Amount of token B
+ * @param reserveA - Reserve of token A
+ * @param reserveB - Reserve of token B
+ * @param totalSupply - Current LP token total supply
+ * @returns LP tokens to mint
+ */
+export function calculateLPTokens(
+  amountA: bigint,
+  amountB: bigint,
+  reserveA: bigint,
+  reserveB: bigint,
+  totalSupply: bigint
+): bigint {
+  if (reserveA === 0n || reserveB === 0n) {
+    // First liquidity provider: sqrt(amount_a * amount_b) - MIN_LIQUIDITY
+    const MIN_LIQUIDITY = 1000n;
+    const product = amountA * amountB;
+    const sqrt = BigInt(Math.floor(Math.sqrt(Number(product))));
+    return sqrt > MIN_LIQUIDITY ? sqrt - MIN_LIQUIDITY : 0n;
+  }
+  
+  // Calculate LP from both tokens and take minimum
+  const lpFromA = (amountA * totalSupply) / reserveA;
+  const lpFromB = (amountB * totalSupply) / reserveB;
+  
+  return lpFromA < lpFromB ? lpFromA : lpFromB;
+}
+
+/**
+ * Check if a mint is a zToken by checking factory mint mapping.
+ * 
+ * @param connection - Solana connection
+ * @param mint - Mint public key
+ * @returns True if mint is a zToken
+ */
+export async function isZToken(
+  connection: Connection,
+  mint: PublicKey
+): Promise<boolean> {
+  try {
+    const mintMapping = deriveMintMapping(mint);
+    const account = await connection.getAccountInfo(mintMapping, 'confirmed');
+    return account !== null && account.owner.equals(FACTORY_PROGRAM_ID);
+  } catch {
+    return false;
+  }
+}
+
+// ============================================================================
+// DEX SDK Functions
+// ============================================================================
+
+/**
+ * DEX Pool State interface
+ */
+export interface DexPoolState {
+  tokenAMint: PublicKey;
+  tokenBMint: PublicKey;
+  tokenAIsZtoken: boolean;
+  tokenBIsZtoken: boolean;
+  publicReserveA: bigint;
+  publicReserveB: bigint;
+  privateReserveACommitment: Uint8Array;
+  privateReserveBCommitment: Uint8Array;
+  lpTokenMint: PublicKey;
+  totalLpSupply: bigint;
+  protocolFeeAccumulatorA: bigint;
+  protocolFeeAccumulatorB: bigint;
+  lpFeeAccumulatorA: bigint;
+  lpFeeAccumulatorB: bigint;
+  createdAt: bigint;
+  bump: number;
+}
+
+/**
+ * Get DEX pool state.
+ * 
+ * @param connection - Solana connection
+ * @param tokenA - Token A mint
+ * @param tokenB - Token B mint
+ * @returns Pool state or null if pool doesn't exist
+ */
+export async function getDexPoolState(
+  connection: Connection,
+  tokenA: PublicKey,
+  tokenB: PublicKey
+): Promise<DexPoolState | null> {
+  const poolState = deriveDexPoolState(tokenA, tokenB);
+  const account = await connection.getAccountInfo(poolState, 'confirmed');
+  
+  if (!account) {
+    return null;
+  }
+  
+  const decoded = dexCoder.accounts.decode('PoolState', account.data) as any;
+  
+  return {
+    tokenAMint: new PublicKey(decoded.token_a_mint || decoded.tokenAMint),
+    tokenBMint: new PublicKey(decoded.token_b_mint || decoded.tokenBMint),
+    tokenAIsZtoken: decoded.token_a_is_ztoken ?? decoded.tokenAIsZtoken ?? false,
+    tokenBIsZtoken: decoded.token_b_is_ztoken ?? decoded.tokenBIsZtoken ?? false,
+    publicReserveA: BigInt(decoded.public_reserve_a?.toString() || decoded.publicReserveA?.toString() || '0'),
+    publicReserveB: BigInt(decoded.public_reserve_b?.toString() || decoded.publicReserveB?.toString() || '0'),
+    privateReserveACommitment: Buffer.from(decoded.private_reserve_a_commitment || decoded.privateReserveACommitment || Array(32).fill(0)),
+    privateReserveBCommitment: Buffer.from(decoded.private_reserve_b_commitment || decoded.privateReserveBCommitment || Array(32).fill(0)),
+    lpTokenMint: new PublicKey(decoded.lp_token_mint || decoded.lpTokenMint),
+    totalLpSupply: BigInt(decoded.total_lp_supply?.toString() || decoded.totalLpSupply?.toString() || '0'),
+    protocolFeeAccumulatorA: BigInt(decoded.protocol_fee_accumulator_a?.toString() || decoded.protocolFeeAccumulatorA?.toString() || '0'),
+    protocolFeeAccumulatorB: BigInt(decoded.protocol_fee_accumulator_b?.toString() || decoded.protocolFeeAccumulatorB?.toString() || '0'),
+    lpFeeAccumulatorA: BigInt(decoded.lp_fee_accumulator_a?.toString() || decoded.lpFeeAccumulatorA?.toString() || '0'),
+    lpFeeAccumulatorB: BigInt(decoded.lp_fee_accumulator_b?.toString() || decoded.lpFeeAccumulatorB?.toString() || '0'),
+    createdAt: BigInt(decoded.created_at?.toString() || decoded.createdAt?.toString() || '0'),
+    bump: decoded.bump ?? 0
+  };
+}
+
+/**
+ * DEX function parameter interfaces
+ */
+interface CreateDexPoolParams {
+  connection: Connection;
+  wallet: WalletContextState;
+  tokenA: string | PublicKey;
+  tokenB: string | PublicKey;
+  initialAmountA: bigint;
+  initialAmountB: bigint;
+  tokenAIsZtoken: boolean;
+  tokenBIsZtoken: boolean;
+}
+
+interface AddLiquidityParams {
+  connection: Connection;
+  wallet: WalletContextState;
+  tokenA: string | PublicKey;
+  tokenB: string | PublicKey;
+  amountA: bigint;
+  amountB: bigint;
+  minLpTokens: bigint;
+}
+
+interface RemoveLiquidityParams {
+  connection: Connection;
+  wallet: WalletContextState;
+  tokenA: string | PublicKey;
+  tokenB: string | PublicKey;
+  lpAmount: bigint;
+  minAmountA: bigint;
+  minAmountB: bigint;
+}
+
+interface SwapParams {
+  connection: Connection;
+  wallet: WalletContextState;
+  tokenA: string | PublicKey;
+  tokenB: string | PublicKey;
+  amountIn: bigint;
+  minAmountOut: bigint;
+  aToB: boolean; // true = swap tokenA -> tokenB, false = swap tokenB -> tokenA
+}
+
+/**
+ * Create a new DEX pool.
+ * 
+ * @param params - Create pool parameters
+ * @returns Transaction signature
+ */
+export async function createDexPool(params: CreateDexPoolParams): Promise<string> {
+  assertWallet(params.wallet);
+  const { connection, wallet } = params;
+  const payer = wallet.publicKey!;
+  
+  const tokenA = typeof params.tokenA === 'string' ? new PublicKey(params.tokenA) : params.tokenA;
+  const tokenB = typeof params.tokenB === 'string' ? new PublicKey(params.tokenB) : params.tokenB;
+  
+  // Ensure canonical order (token_a < token_b)
+  const [tokenAMint, tokenBMint, tokenAIsZtoken, tokenBIsZtoken] = 
+    tokenA.toBuffer().compare(tokenB.toBuffer()) < 0
+      ? [tokenA, tokenB, params.tokenAIsZtoken, params.tokenBIsZtoken]
+      : [tokenB, tokenA, params.tokenBIsZtoken, params.tokenAIsZtoken];
+  
+  const initialAmountA = tokenA.toBuffer().compare(tokenB.toBuffer()) < 0 
+    ? params.initialAmountA 
+    : params.initialAmountB;
+  const initialAmountB = tokenA.toBuffer().compare(tokenB.toBuffer()) < 0 
+    ? params.initialAmountB 
+    : params.initialAmountA;
+  
+  // Derive PDAs
+  const poolState = deriveDexPoolState(tokenAMint, tokenBMint);
+  
+  // Check if pool already exists
+  const existingPool = await connection.getAccountInfo(poolState, 'confirmed');
+  if (existingPool) {
+    throw new Error('Pool already exists');
+  }
+  
+  // Get or create LP token mint (we'll need to generate a keypair for it)
+  const lpTokenMint = Keypair.generate();
+  
+  // Get or create token accounts
+  const userLpTokenAccount = await getAssociatedTokenAddress(
+    lpTokenMint.publicKey,
+    payer,
+    false,
+    TOKEN_PROGRAM_ID, // Use TOKEN_PROGRAM_ID to match the LP mint
+    ASSOCIATED_TOKEN_PROGRAM_ID
+  );
+  
+  // For zTokens, we still need valid accounts (even if not used) to satisfy Anchor's mut constraint
+  // We'll create valid token accounts but skip transfers in the instruction
+  const userTokenAAccount = tokenAIsZtoken 
+    ? await getAssociatedTokenAddress(
+        tokenAMint,
+        payer,
+        false,
+        TOKEN_PROGRAM_ID,
+        ASSOCIATED_TOKEN_PROGRAM_ID
+      )
+    : await getAssociatedTokenAddress(
+        tokenAMint,
+        payer,
+        false,
+        TOKEN_PROGRAM_ID,
+        ASSOCIATED_TOKEN_PROGRAM_ID
+      );
+  
+  const poolTokenAAccount = tokenAIsZtoken
+    ? await getAssociatedTokenAddress(
+        tokenAMint,
+        poolState,
+        true, // allowOwnerOffCurve - poolState is a PDA
+        TOKEN_PROGRAM_ID,
+        ASSOCIATED_TOKEN_PROGRAM_ID
+      )
+    : await getAssociatedTokenAddress(
+        tokenAMint,
+        poolState,
+        true, // allowOwnerOffCurve - poolState is a PDA
+        TOKEN_PROGRAM_ID,
+        ASSOCIATED_TOKEN_PROGRAM_ID
+      );
+  
+  const userTokenBAccount = tokenBIsZtoken
+    ? await getAssociatedTokenAddress(
+        tokenBMint,
+        payer,
+        false,
+        TOKEN_PROGRAM_ID,
+        ASSOCIATED_TOKEN_PROGRAM_ID
+      )
+    : await getAssociatedTokenAddress(
+        tokenBMint,
+        payer,
+        false,
+        TOKEN_PROGRAM_ID,
+        ASSOCIATED_TOKEN_PROGRAM_ID
+      );
+  
+  const poolTokenBAccount = tokenBIsZtoken
+    ? await getAssociatedTokenAddress(
+        tokenBMint,
+        poolState,
+        true, // allowOwnerOffCurve - poolState is a PDA
+        TOKEN_PROGRAM_ID,
+        ASSOCIATED_TOKEN_PROGRAM_ID
+      )
+    : await getAssociatedTokenAddress(
+        tokenBMint,
+        poolState,
+        true, // allowOwnerOffCurve - poolState is a PDA
+        TOKEN_PROGRAM_ID,
+        ASSOCIATED_TOKEN_PROGRAM_ID
+      );
+  
+  // Build instruction
+  const instructions: TransactionInstruction[] = [];
+  
+  // Create LP token mint account if needed (for public tokens, we'll use Token-2022)
+  // Note: This will be handled in the instruction via CPI, but we need to ensure accounts exist
+  
+  // Check if user token accounts exist, create if needed
+  // Note: Pool token ATAs will be created in a follow-up transaction after poolState exists
+  if (!tokenAIsZtoken) {
+    const userTokenAAccountInfo = await connection.getAccountInfo(userTokenAAccount, 'confirmed');
+    if (!userTokenAAccountInfo) {
+      instructions.push(
+        createAssociatedTokenAccountInstruction(
+          payer,
+          userTokenAAccount,
+          payer,
+          tokenAMint,
+          TOKEN_PROGRAM_ID,
+          ASSOCIATED_TOKEN_PROGRAM_ID
+        )
+      );
+    }
+  }
+  
+  if (!tokenBIsZtoken) {
+    const userTokenBAccountInfo = await connection.getAccountInfo(userTokenBAccount, 'confirmed');
+    if (!userTokenBAccountInfo) {
+      instructions.push(
+        createAssociatedTokenAccountInstruction(
+          payer,
+          userTokenBAccount,
+          payer,
+          tokenBMint,
+          TOKEN_PROGRAM_ID,
+          ASSOCIATED_TOKEN_PROGRAM_ID
+        )
+      );
+    }
+  }
+  
+  // Create LP token mint account FIRST (uninitialized - program will initialize it)
+  // The program will initialize it with pool_state PDA as mint authority
+  const MINT_SIZE = 82;
+  const mintLamports = await connection.getMinimumBalanceForRentExemption(MINT_SIZE);
+  
+  // Create LP mint with TOKEN_PROGRAM_ID (not TOKEN_2022) to match token_program account
+  // This ensures consistency - all tokens use the same program
+  instructions.push(
+    SystemProgram.createAccount({
+      fromPubkey: payer,
+      newAccountPubkey: lpTokenMint.publicKey,
+      space: MINT_SIZE,
+      lamports: mintLamports,
+      programId: TOKEN_PROGRAM_ID  // Use TOKEN_PROGRAM_ID to match token_program account
+    })
+  );
+  
+  // Note: We don't create the user LP token account ATA here because the mint isn't initialized yet
+  // The program will skip minting if the ATA doesn't exist, and we'll handle it in a follow-up transaction
+  
+  // Encode create_pool instruction
+  // Convert BigInt to BN for encoding
+  const amountABN = new BN(initialAmountA.toString());
+  const amountBBN = new BN(initialAmountB.toString());
+  
+  // Debug: Log amounts to verify
+  if (process.env.DEBUG_DEX === 'true') {
+    console.log('[createDexPool] Encoding amounts:', {
+      initialAmountA: initialAmountA.toString(),
+      initialAmountB: initialAmountB.toString(),
+      amountABN: amountABN.toString(),
+      amountBBN: amountBBN.toString()
+    });
+  }
+  
+  const createPoolData = dexCoder.instruction.encode('create_pool', {
+    initial_amount_a: amountABN,  // Use snake_case to match IDL
+    initial_amount_b: amountBBN,  // Use snake_case to match IDL
+    token_a_is_ztoken: tokenAIsZtoken,  // Use snake_case to match IDL
+    token_b_is_ztoken: tokenBIsZtoken   // Use snake_case to match IDL
+  });
+  
+  // Get pool state bump (for PDA derivation)
+  const [poolStatePDA, bump] = PublicKey.findProgramAddressSync(
+    [
+      Buffer.from('pool'),
+      tokenAMint.toBuffer(),
+      tokenBMint.toBuffer()
+    ],
+    DEX_PROGRAM_ID
+  );
+  
+  instructions.push(
+    new TransactionInstruction({
+      programId: DEX_PROGRAM_ID,
+      keys: [
+        { pubkey: tokenAMint, isSigner: false, isWritable: false },
+        { pubkey: tokenBMint, isSigner: false, isWritable: false },
+        { pubkey: poolState, isSigner: false, isWritable: true },
+        { pubkey: lpTokenMint.publicKey, isSigner: true, isWritable: true },
+        { pubkey: userLpTokenAccount, isSigner: false, isWritable: true },
+        { pubkey: userTokenAAccount, isSigner: false, isWritable: true },
+        { pubkey: poolTokenAAccount, isSigner: false, isWritable: true },
+        { pubkey: userTokenBAccount, isSigner: false, isWritable: true },
+        { pubkey: poolTokenBAccount, isSigner: false, isWritable: true },
+        { pubkey: payer, isSigner: true, isWritable: true },
+        { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false }, // Use TOKEN_PROGRAM_ID for regular token transfers
+        { pubkey: ASSOCIATED_TOKEN_PROGRAM_ID, isSigner: false, isWritable: false }, // For creating pool token ATAs
+        { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+        { pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false }
+      ],
+      data: createPoolData
+    })
+  );
+  
+  // Send transaction
+  const latestBlockhash = await connection.getLatestBlockhash('confirmed');
+  const tx = new Transaction().add(...instructions);
+  tx.feePayer = payer;
+  tx.recentBlockhash = latestBlockhash.blockhash;
+  tx.partialSign(lpTokenMint); // Sign the LP mint creation
+  
+  console.log('[createDexPool] Transaction has', instructions.length, 'instructions');
+  instructions.forEach((ix, idx) => {
+    console.log(`[createDexPool] Instruction ${idx}: program=${ix.programId.toBase58()}, keys=${ix.keys.length}, data=${ix.data.length} bytes`);
+    if (ix.keys.length > 0) {
+      console.log(`[createDexPool]   First key: ${ix.keys[0].pubkey.toBase58()} (signer=${ix.keys[0].isSigner}, writable=${ix.keys[0].isWritable})`);
+    }
+  });
+  
+  const signature = await wallet.sendTransaction(tx, connection, { skipPreflight: false });
+  
+  await waitForSignatureConfirmation(
+    connection,
+    signature,
+    latestBlockhash.blockhash,
+    latestBlockhash.lastValidBlockHeight
+  );
+  
+  // Follow-up transaction 1: Create pool token ATAs (now poolState exists)
+  const followUpInstructions1: TransactionInstruction[] = [];
+  
+  if (!tokenAIsZtoken) {
+    const poolTokenAAccountInfo = await connection.getAccountInfo(poolTokenAAccount, 'confirmed');
+    if (!poolTokenAAccountInfo) {
+      followUpInstructions1.push(
+        createAssociatedTokenAccountInstruction(
+          payer,
+          poolTokenAAccount,
+          poolState,  // Now poolState PDA exists
+          tokenAMint,
+          TOKEN_PROGRAM_ID,
+          ASSOCIATED_TOKEN_PROGRAM_ID
+        )
+      );
+    }
+  }
+  
+  if (!tokenBIsZtoken) {
+    const poolTokenBAccountInfo = await connection.getAccountInfo(poolTokenBAccount, 'confirmed');
+    if (!poolTokenBAccountInfo) {
+      followUpInstructions1.push(
+        createAssociatedTokenAccountInstruction(
+          payer,
+          poolTokenBAccount,
+          poolState,  // Now poolState PDA exists
+          tokenBMint,
+          TOKEN_PROGRAM_ID,
+          ASSOCIATED_TOKEN_PROGRAM_ID
+        )
+      );
+    }
+  }
+  
+  // Send first follow-up transaction to create pool token ATAs
+  if (followUpInstructions1.length > 0) {
+    const followUpBlockhash1 = await connection.getLatestBlockhash('confirmed');
+    const followUpTx1 = new Transaction().add(...followUpInstructions1);
+    followUpTx1.feePayer = payer;
+    followUpTx1.recentBlockhash = followUpBlockhash1.blockhash;
+    
+    const followUpSignature1 = await wallet.sendTransaction(followUpTx1, connection, { skipPreflight: false });
+    await waitForSignatureConfirmation(
+      connection,
+      followUpSignature1,
+      followUpBlockhash1.blockhash,
+      followUpBlockhash1.lastValidBlockHeight
+    );
+    console.info(`[createDexPool] Pool token ATAs created: ${followUpSignature1}`);
+  }
+  
+  // Follow-up transaction 2: Add initial liquidity (transfer tokens to pool and mint initial LP tokens)
+  // This will be handled by add_liquidity instruction, but for now we'll create a simple transfer + mint transaction
+  // For simplicity, we'll use add_liquidity in a separate call, or create a helper function
+  // For now, just return the pool creation signature - user can call add_liquidity separately
+  
+  // TODO: Add initial liquidity transfer + LP mint in follow-up transaction
+  
+  return signature;
+}
+
+/**
+ * Add liquidity to a DEX pool.
+ * 
+ * @param params - Add liquidity parameters
+ * @returns Transaction signature
+ */
+export async function addDexLiquidity(params: AddLiquidityParams): Promise<string> {
+  assertWallet(params.wallet);
+  const { connection, wallet } = params;
+  const payer = wallet.publicKey!;
+  
+  const tokenA = typeof params.tokenA === 'string' ? new PublicKey(params.tokenA) : params.tokenA;
+  const tokenB = typeof params.tokenB === 'string' ? new PublicKey(params.tokenB) : params.tokenB;
+  
+  // Ensure canonical order
+  const [tokenAMint, tokenBMint] = tokenA.toBuffer().compare(tokenB.toBuffer()) < 0
+    ? [tokenA, tokenB]
+    : [tokenB, tokenA];
+  
+  const amountA = tokenA.toBuffer().compare(tokenB.toBuffer()) < 0 
+    ? params.amountA 
+    : params.amountB;
+  const amountB = tokenA.toBuffer().compare(tokenB.toBuffer()) < 0 
+    ? params.amountB 
+    : params.amountA;
+  
+  // Get pool state to check if it exists and get LP mint
+  const poolState = deriveDexPoolState(tokenAMint, tokenBMint);
+  const poolStateData = await getDexPoolState(connection, tokenAMint, tokenBMint);
+  if (!poolStateData) {
+    throw new Error('Pool does not exist. Create pool first.');
+  }
+  
+  const lpTokenMint = poolStateData.lpTokenMint;
+  
+  // Get or create token accounts
+  // First, verify LP mint exists and get the correct token program ID
+  const lpMintInfo = await connection.getAccountInfo(lpTokenMint, 'confirmed');
+  if (!lpMintInfo) {
+    throw new Error(`LP token mint does not exist: ${lpTokenMint.toBase58()}. Pool may not have been created properly.`);
+  }
+  const lpMintProgramId = lpMintInfo.owner;
+  if (!lpMintProgramId.equals(TOKEN_PROGRAM_ID) && !lpMintProgramId.equals(TOKEN_2022_PROGRAM_ID)) {
+    throw new Error(`LP token mint has invalid owner: ${lpMintProgramId.toBase58()}. Expected TOKEN_PROGRAM_ID or TOKEN_2022_PROGRAM_ID.`);
+  }
+  const lpTokenProgramId = lpMintProgramId.equals(TOKEN_2022_PROGRAM_ID) ? TOKEN_2022_PROGRAM_ID : TOKEN_PROGRAM_ID;
+  
+  // Use the correct token program ID to derive user LP token account
+  let userLpTokenAccount = await getAssociatedTokenAddress(
+    lpTokenMint,
+    payer,
+    false,
+    lpTokenProgramId,
+    ASSOCIATED_TOKEN_PROGRAM_ID
+  );
+  
+  const userTokenAAccount = await getAssociatedTokenAddress(
+    tokenAMint,
+    payer,
+    false,
+    TOKEN_PROGRAM_ID,
+    ASSOCIATED_TOKEN_PROGRAM_ID
+  );
+  
+  const poolTokenAAccount = await getAssociatedTokenAddress(
+    tokenAMint,
+    poolState,
+    true, // allowOwnerOffCurve - poolState is a PDA
+    TOKEN_PROGRAM_ID,
+    ASSOCIATED_TOKEN_PROGRAM_ID
+  );
+  
+  const userTokenBAccount = await getAssociatedTokenAddress(
+    tokenBMint,
+    payer,
+    false,
+    TOKEN_PROGRAM_ID,
+    ASSOCIATED_TOKEN_PROGRAM_ID
+  );
+  
+  const poolTokenBAccount = await getAssociatedTokenAddress(
+    tokenBMint,
+    poolState,
+    true, // allowOwnerOffCurve - poolState is a PDA
+    TOKEN_PROGRAM_ID,
+    ASSOCIATED_TOKEN_PROGRAM_ID
+  );
+  
+  // Build instruction
+  const instructions: TransactionInstruction[] = [];
+  
+  // Ensure token accounts exist
+  // Note: User token accounts should already exist from test setup, but check anyway
+  const userTokenAAccountInfo = await connection.getAccountInfo(userTokenAAccount, 'confirmed');
+  if (!userTokenAAccountInfo) {
+    console.log(`[addDexLiquidity] Creating user token A account for mint: ${tokenAMint.toBase58()}`);
+    instructions.push(
+      createAssociatedTokenAccountInstruction(
+        payer,
+        userTokenAAccount,
+        payer,
+        tokenAMint,
+        TOKEN_PROGRAM_ID,
+        ASSOCIATED_TOKEN_PROGRAM_ID
+      )
+    );
+  } else {
+    console.log(`[addDexLiquidity] User token A account exists: ${userTokenAAccount.toBase58()}`);
+  }
+  
+  // Pool token ATAs should already exist from pool creation follow-up transaction
+  // Don't try to create them here - if they don't exist, there's a problem
+  const poolTokenAAccountInfo = await connection.getAccountInfo(poolTokenAAccount, 'confirmed');
+  if (!poolTokenAAccountInfo) {
+    throw new Error(`Pool token A account does not exist. Ensure pool was created properly. Expected: ${poolTokenAAccount.toBase58()}`);
+  }
+  
+  const userTokenBAccountInfo = await connection.getAccountInfo(userTokenBAccount, 'confirmed');
+  if (!userTokenBAccountInfo) {
+    instructions.push(
+      createAssociatedTokenAccountInstruction(
+        payer,
+        userTokenBAccount,
+        payer,
+        tokenBMint,
+        TOKEN_PROGRAM_ID,
+        ASSOCIATED_TOKEN_PROGRAM_ID
+      )
+    );
+  }
+  
+  // Pool token B ATA should already exist
+  const poolTokenBAccountInfo = await connection.getAccountInfo(poolTokenBAccount, 'confirmed');
+  if (!poolTokenBAccountInfo) {
+    throw new Error(`Pool token B account does not exist. Ensure pool was created properly. Expected: ${poolTokenBAccount.toBase58()}`);
+  }
+  
+  // Note: User LP token account may not exist - program will skip minting if it doesn't
+  // We'll handle LP token minting in a follow-up transaction if needed
+  const userLpAccountInfo = await connection.getAccountInfo(userLpTokenAccount, 'confirmed');
+  if (userLpAccountInfo) {
+    console.log(`[addDexLiquidity] User LP token account exists: ${userLpTokenAccount.toBase58()}`);
+  } else {
+    console.log(`[addDexLiquidity] User LP token account does not exist - program will skip LP minting, handle in follow-up`);
+  }
+  
+  console.log(`[addDexLiquidity] Total instructions before add_liquidity: ${instructions.length}`);
+  
+  // Encode add_liquidity instruction
+  // Use snake_case to match IDL
+  const addLiquidityData = dexCoder.instruction.encode('add_liquidity', {
+    amount_a: new BN(amountA.toString()),
+    amount_b: new BN(amountB.toString()),
+    min_lp_tokens: new BN(params.minLpTokens.toString())
+  });
+  
+  instructions.push(
+    new TransactionInstruction({
+      programId: DEX_PROGRAM_ID,
+      keys: [
+        { pubkey: poolState, isSigner: false, isWritable: true },
+        { pubkey: tokenAMint, isSigner: false, isWritable: false },
+        { pubkey: tokenBMint, isSigner: false, isWritable: false },
+        { pubkey: lpTokenMint, isSigner: false, isWritable: true },
+        { pubkey: userLpTokenAccount, isSigner: false, isWritable: true },
+        { pubkey: userTokenAAccount, isSigner: false, isWritable: true },
+        { pubkey: poolTokenAAccount, isSigner: false, isWritable: true },
+        { pubkey: userTokenBAccount, isSigner: false, isWritable: true },
+        { pubkey: poolTokenBAccount, isSigner: false, isWritable: true },
+        { pubkey: payer, isSigner: true, isWritable: true },
+        { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
+        { pubkey: ASSOCIATED_TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
+        { pubkey: SystemProgram.programId, isSigner: false, isWritable: false }
+      ],
+      data: addLiquidityData
+    })
+  );
+  
+  // Send transaction
+  const latestBlockhash = await connection.getLatestBlockhash('confirmed');
+  const tx = new Transaction().add(...instructions);
+  tx.feePayer = payer;
+  tx.recentBlockhash = latestBlockhash.blockhash;
+  
+  const signature = await wallet.sendTransaction(tx, connection, { skipPreflight: false });
+  
+  await waitForSignatureConfirmation(
+    connection,
+    signature,
+    latestBlockhash.blockhash,
+    latestBlockhash.lastValidBlockHeight
+  );
+  
+  return signature;
+}
+
+/**
+ * Remove liquidity from a DEX pool.
+ * 
+ * @param params - Remove liquidity parameters
+ * @returns Transaction signature
+ */
+export async function removeDexLiquidity(params: RemoveLiquidityParams): Promise<string> {
+  assertWallet(params.wallet);
+  const { connection, wallet } = params;
+  const payer = wallet.publicKey!;
+  
+  const tokenA = typeof params.tokenA === 'string' ? new PublicKey(params.tokenA) : params.tokenA;
+  const tokenB = typeof params.tokenB === 'string' ? new PublicKey(params.tokenB) : params.tokenB;
+  
+  // Ensure canonical order
+  const [tokenAMint, tokenBMint] = tokenA.toBuffer().compare(tokenB.toBuffer()) < 0
+    ? [tokenA, tokenB]
+    : [tokenB, tokenA];
+  
+  const minAmountA = tokenA.toBuffer().compare(tokenB.toBuffer()) < 0 
+    ? params.minAmountA 
+    : params.minAmountB;
+  const minAmountB = tokenA.toBuffer().compare(tokenB.toBuffer()) < 0 
+    ? params.minAmountB 
+    : params.minAmountA;
+  
+  // Get pool state
+  const poolState = deriveDexPoolState(tokenAMint, tokenBMint);
+  const poolStateData = await getDexPoolState(connection, tokenAMint, tokenBMint);
+  if (!poolStateData) {
+    throw new Error('Pool does not exist.');
+  }
+  
+  const lpTokenMint = poolStateData.lpTokenMint;
+  
+  // Get the LP mint's program ID to use the correct token program
+  const lpMintInfo = await connection.getAccountInfo(lpTokenMint, 'confirmed');
+  if (!lpMintInfo) {
+    throw new Error(`LP token mint does not exist: ${lpTokenMint.toBase58()}`);
+  }
+  const lpTokenProgramId = lpMintInfo.owner;
+  if (!lpTokenProgramId.equals(TOKEN_PROGRAM_ID) && !lpTokenProgramId.equals(TOKEN_2022_PROGRAM_ID)) {
+    throw new Error(`LP token mint has invalid owner: ${lpTokenProgramId.toBase58()}`);
+  }
+  
+  // Get token accounts
+  const userLpTokenAccount = await getAssociatedTokenAddress(
+    lpTokenMint,
+    payer,
+    false,
+    lpTokenProgramId,
+    ASSOCIATED_TOKEN_PROGRAM_ID
+  );
+  
+  const userTokenAAccount = await getAssociatedTokenAddress(
+    tokenAMint,
+    payer,
+    false,
+    TOKEN_PROGRAM_ID,
+    ASSOCIATED_TOKEN_PROGRAM_ID
+  );
+  
+  const poolTokenAAccount = await getAssociatedTokenAddress(
+    tokenAMint,
+    poolState,
+    true, // allowOwnerOffCurve - poolState is a PDA
+    TOKEN_PROGRAM_ID,
+    ASSOCIATED_TOKEN_PROGRAM_ID
+  );
+  
+  const userTokenBAccount = await getAssociatedTokenAddress(
+    tokenBMint,
+    payer,
+    false,
+    TOKEN_PROGRAM_ID,
+    ASSOCIATED_TOKEN_PROGRAM_ID
+  );
+  
+  const poolTokenBAccount = await getAssociatedTokenAddress(
+    tokenBMint,
+    poolState,
+    true, // allowOwnerOffCurve - poolState is a PDA
+    TOKEN_PROGRAM_ID,
+    ASSOCIATED_TOKEN_PROGRAM_ID
+  );
+  
+  // Ensure user token accounts exist (for receiving output)
+  const instructions: TransactionInstruction[] = [];
+  
+  const userTokenAAccountInfo = await connection.getAccountInfo(userTokenAAccount, 'confirmed');
+  if (!userTokenAAccountInfo) {
+    instructions.push(
+      createAssociatedTokenAccountInstruction(
+        payer,
+        userTokenAAccount,
+        payer,
+        tokenAMint,
+        TOKEN_PROGRAM_ID,
+        ASSOCIATED_TOKEN_PROGRAM_ID
+      )
+    );
+  }
+  
+  const userTokenBAccountInfo = await connection.getAccountInfo(userTokenBAccount, 'confirmed');
+  if (!userTokenBAccountInfo) {
+    instructions.push(
+      createAssociatedTokenAccountInstruction(
+        payer,
+        userTokenBAccount,
+        payer,
+        tokenBMint,
+        TOKEN_PROGRAM_ID,
+        ASSOCIATED_TOKEN_PROGRAM_ID
+      )
+    );
+  }
+  
+  // Encode remove_liquidity instruction
+  const removeLiquidityData = dexCoder.instruction.encode('remove_liquidity', {
+    lp_amount: new BN(params.lpAmount.toString()),
+    min_amount_a: new BN(minAmountA.toString()),
+    min_amount_b: new BN(minAmountB.toString())
+  });
+  
+  instructions.push(
+    new TransactionInstruction({
+      programId: DEX_PROGRAM_ID,
+      keys: [
+        { pubkey: poolState, isSigner: false, isWritable: true },
+        { pubkey: tokenAMint, isSigner: false, isWritable: false },
+        { pubkey: tokenBMint, isSigner: false, isWritable: false },
+        { pubkey: lpTokenMint, isSigner: false, isWritable: true },
+        { pubkey: userLpTokenAccount, isSigner: false, isWritable: true },
+        { pubkey: userTokenAAccount, isSigner: false, isWritable: true },
+        { pubkey: poolTokenAAccount, isSigner: false, isWritable: true },
+        { pubkey: userTokenBAccount, isSigner: false, isWritable: true },
+        { pubkey: poolTokenBAccount, isSigner: false, isWritable: true },
+        { pubkey: payer, isSigner: true, isWritable: true },
+        { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
+        { pubkey: SystemProgram.programId, isSigner: false, isWritable: false }
+      ],
+      data: removeLiquidityData
+    })
+  );
+  
+  // Send transaction
+  const latestBlockhash = await connection.getLatestBlockhash('confirmed');
+  const tx = new Transaction().add(...instructions);
+  tx.feePayer = payer;
+  tx.recentBlockhash = latestBlockhash.blockhash;
+  
+  const signature = await wallet.sendTransaction(tx, connection, { skipPreflight: false });
+  
+  await waitForSignatureConfirmation(
+    connection,
+    signature,
+    latestBlockhash.blockhash,
+    latestBlockhash.lastValidBlockHeight
+  );
+  
+  return signature;
+}
+
+/**
+ * Execute a swap on a DEX pool.
+ * 
+ * @param params - Swap parameters
+ * @returns Transaction signature
+ */
+export async function swapDex(params: SwapParams): Promise<string> {
+  assertWallet(params.wallet);
+  const { connection, wallet } = params;
+  const payer = wallet.publicKey!;
+  
+  const tokenA = typeof params.tokenA === 'string' ? new PublicKey(params.tokenA) : params.tokenA;
+  const tokenB = typeof params.tokenB === 'string' ? new PublicKey(params.tokenB) : params.tokenB;
+  
+  // Ensure canonical order
+  const [tokenAMint, tokenBMint] = tokenA.toBuffer().compare(tokenB.toBuffer()) < 0
+    ? [tokenA, tokenB]
+    : [tokenB, tokenA];
+  
+  // Determine which direction we're swapping
+  // If params.aToB is true and tokenA < tokenB, we're swapping A -> B
+  // If params.aToB is true and tokenA > tokenB, we're swapping B -> A (so aToB should be false)
+  const actualAToB = (tokenA.toBuffer().compare(tokenB.toBuffer()) < 0) === params.aToB;
+  
+  // Get pool state
+  const poolState = deriveDexPoolState(tokenAMint, tokenBMint);
+  const poolStateData = await getDexPoolState(connection, tokenAMint, tokenBMint);
+  if (!poolStateData) {
+    throw new Error('Pool does not exist.');
+  }
+  
+  // Determine input/output tokens based on swap direction
+  const tokenInMint = actualAToB ? tokenAMint : tokenBMint;
+  const tokenOutMint = actualAToB ? tokenBMint : tokenAMint;
+  
+  // Get token accounts
+  const userTokenInAccount = await getAssociatedTokenAddress(
+    tokenInMint,
+    payer,
+    false,
+    TOKEN_PROGRAM_ID,
+    ASSOCIATED_TOKEN_PROGRAM_ID
+  );
+  
+  const poolTokenInAccount = await getAssociatedTokenAddress(
+    tokenInMint,
+    poolState,
+    true, // allowOwnerOffCurve - poolState is a PDA
+    TOKEN_PROGRAM_ID,
+    ASSOCIATED_TOKEN_PROGRAM_ID
+  );
+  
+  const userTokenOutAccount = await getAssociatedTokenAddress(
+    tokenOutMint,
+    payer,
+    false,
+    TOKEN_PROGRAM_ID,
+    ASSOCIATED_TOKEN_PROGRAM_ID
+  );
+  
+  const poolTokenOutAccount = await getAssociatedTokenAddress(
+    tokenOutMint,
+    poolState,
+    true, // allowOwnerOffCurve - poolState is a PDA
+    TOKEN_PROGRAM_ID,
+    ASSOCIATED_TOKEN_PROGRAM_ID
+  );
+  
+  // Build instruction
+  const instructions: TransactionInstruction[] = [];
+  
+  // Ensure output token account exists
+  const userTokenOutAccountInfo = await connection.getAccountInfo(userTokenOutAccount, 'confirmed');
+  if (!userTokenOutAccountInfo) {
+    instructions.push(
+      createAssociatedTokenAccountInstruction(
+        payer,
+        userTokenOutAccount,
+        payer,
+        tokenOutMint,
+        TOKEN_PROGRAM_ID,
+        ASSOCIATED_TOKEN_PROGRAM_ID
+      )
+    );
+  }
+  
+  // Encode swap instruction
+  // Use snake_case to match IDL
+  const swapData = dexCoder.instruction.encode('swap', {
+    amount_in: new BN(params.amountIn.toString()),
+    min_amount_out: new BN(params.minAmountOut.toString()),
+    a_to_b: actualAToB
+  });
+  
+  instructions.push(
+    new TransactionInstruction({
+      programId: DEX_PROGRAM_ID,
+      keys: [
+        { pubkey: poolState, isSigner: false, isWritable: true },
+        { pubkey: tokenAMint, isSigner: false, isWritable: false },
+        { pubkey: tokenBMint, isSigner: false, isWritable: false },
+        { pubkey: userTokenInAccount, isSigner: false, isWritable: true },
+        { pubkey: poolTokenInAccount, isSigner: false, isWritable: true },
+        { pubkey: userTokenOutAccount, isSigner: false, isWritable: true },
+        { pubkey: poolTokenOutAccount, isSigner: false, isWritable: true },
+        { pubkey: payer, isSigner: true, isWritable: true },
+        { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
+        { pubkey: SystemProgram.programId, isSigner: false, isWritable: false }
+      ],
+      data: swapData
+    })
+  );
+  
+  // Send transaction
+  const latestBlockhash = await connection.getLatestBlockhash('confirmed');
+  const tx = new Transaction().add(...instructions);
+  tx.feePayer = payer;
+  tx.recentBlockhash = latestBlockhash.blockhash;
+  
+  const signature = await wallet.sendTransaction(tx, connection, { skipPreflight: false });
+  
+  await waitForSignatureConfirmation(
+    connection,
+    signature,
+    latestBlockhash.blockhash,
+    latestBlockhash.lastValidBlockHeight
+  );
+  
+  return signature;
 }
