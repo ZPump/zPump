@@ -142,127 +142,140 @@ pub fn add_liquidity(
     // ====================================================================
     // ZTOKEN HANDLING: Add liquidity with zToken (token A)
     // ====================================================================
-    // For zTokens, adding liquidity requires transferring zTokens from user
-    // to the DEX pool PDA via ptf_pool::private_transfer CPI.
-    // SOLUTION 1: All accounts (zToken + payer/system/rent) come from remaining_accounts
-    // This ensures unified lifetime scope
+    // SOLUTION: Use scoped blocks to isolate remaining_accounts borrow
+    // Parse, build CPI, and invoke all within a block so the borrow clearly ends
     if token_a_is_ztoken {
         if let Some(transfer_args) = transfer_args_a {
             msg!("[add_liquidity] Token A is zToken - invoking private_transfer CPI (user → pool PDA)");
             
-            require!(!ctx.remaining_accounts.is_empty(), DexError::InvalidAccount);
-            
-            // SOLUTION 1: Parse zToken accounts from remaining_accounts
-            // All AccountInfos share the same lifetime scope from remaining_accounts
-            let ztoken_accounts = crate::ztoken_cpi::parse_ztoken_accounts(
-                ctx.remaining_accounts,
-                &token_a,
-                &POOL_PROGRAM_ID,
-                false,
-            )?;
-            
-            // Build instruction completely inline - access all AccountInfos in same scope
-            let mut account_metas = Vec::new();
-            let mut account_infos: Vec<AccountInfo> = Vec::new();
-            
-            // Add parsed zToken accounts
-            account_metas.push(anchor_lang::solana_program::instruction::AccountMeta::new(
-                ztoken_accounts.pool_state.key(),
-                false,
-            ));
-            account_infos.push(ztoken_accounts.pool_state.clone());
-            
-            account_metas.push(anchor_lang::solana_program::instruction::AccountMeta::new(
-                ztoken_accounts.nullifier_set.key(),
-                false,
-            ));
-            account_infos.push(ztoken_accounts.nullifier_set.clone());
-            
-            account_metas.push(anchor_lang::solana_program::instruction::AccountMeta::new(
-                ztoken_accounts.commitment_tree.key(),
-                false,
-            ));
-            account_infos.push(ztoken_accounts.commitment_tree.clone());
-            
-            account_metas.push(anchor_lang::solana_program::instruction::AccountMeta::new(
-                ztoken_accounts.note_ledger.key(),
-                false,
-            ));
-            account_infos.push(ztoken_accounts.note_ledger.clone());
-            
-            account_metas.push(anchor_lang::solana_program::instruction::AccountMeta::new_readonly(
-                ztoken_accounts.mint_mapping.key(),
-                false,
-            ));
-            account_infos.push(ztoken_accounts.mint_mapping.clone());
-            
-            account_metas.push(anchor_lang::solana_program::instruction::AccountMeta::new_readonly(
-                ztoken_accounts.verifier_program.key(),
-                false,
-            ));
-            account_infos.push(ztoken_accounts.verifier_program.clone());
-            
-            account_metas.push(anchor_lang::solana_program::instruction::AccountMeta::new_readonly(
-                ztoken_accounts.verifying_key.key(),
-                false,
-            ));
-            account_infos.push(ztoken_accounts.verifying_key.clone());
-            
-            // SOLUTION 1: Get payer, system_program, rent from remaining_accounts
-            // This ensures all AccountInfos have the same lifetime scope from remaining_accounts
-            let (payer_account, system_program_account, rent_account) = 
-                crate::ztoken_cpi::parse_cpi_common_accounts(
-                    ctx.remaining_accounts,
-                    &payer_pubkey, // Use cached pubkey (no ctx.accounts access needed)
+            // Scoped block: All remaining_accounts access happens here
+            // The borrow ends when this block closes
+            let (commitment_a, amount_a_result) = {
+                // Borrow remaining_accounts in this scope only
+                // Use explicit type annotation to make scope clear
+                let ra: &[AccountInfo<'_>] = ctx.remaining_accounts;
+                
+                require!(!ra.is_empty(), DexError::InvalidAccount);
+                
+                // Parse zToken accounts from remaining_accounts
+                let ztoken_accounts = crate::ztoken_cpi::parse_ztoken_accounts(
+                    ra,
+                    &token_a,
+                    &POOL_PROGRAM_ID,
+                    false,
                 )?;
-            
-            account_metas.push(anchor_lang::solana_program::instruction::AccountMeta::new(
-                payer_account.key(),
-                true,
-            ));
-            account_infos.push(payer_account);
-            
-            account_metas.push(anchor_lang::solana_program::instruction::AccountMeta::new_readonly(
-                system_program_account.key(),
-                false,
-            ));
-            account_infos.push(system_program_account);
-            
-            account_metas.push(anchor_lang::solana_program::instruction::AccountMeta::new_readonly(
-                rent_account.key(),
-                false,
-            ));
-            account_infos.push(rent_account);
-            
-            // Build instruction data
-            let mut instruction_data = Vec::new();
-            instruction_data.extend_from_slice(&[107, 20, 177, 94, 33, 119, 16, 110]); // discriminator
-            let args_data = transfer_args.try_to_vec()
-                .map_err(|_| DexError::InvalidProof)?;
-            instruction_data.extend_from_slice(&args_data);
-            
-            // Construct and invoke - all AccountInfos in same Vec
-            let instruction = anchor_lang::solana_program::instruction::Instruction {
-                program_id: POOL_PROGRAM_ID,
-                accounts: account_metas,
-                data: instruction_data,
-            };
-            
-            anchor_lang::solana_program::program::invoke(
-                &instruction,
-                &account_infos,
-            )?;
-            
-            msg!("[add_liquidity] ✓ Token A private_transfer CPI invoked successfully");
-            
-            // Extract commitment for pool state update
-            if let Some(commitment) = extract_pool_commitment(&transfer_args.output_commitments, &pool_state_key) {
-                new_private_reserve_a_commitment = Some(commitment);
-                new_private_reserve_a_amount = Some(
+                
+                // Build instruction completely inline - access all AccountInfos in same scope
+                let mut account_metas = Vec::new();
+                let mut account_infos: Vec<AccountInfo> = Vec::new();
+                
+                // Add parsed zToken accounts
+                account_metas.push(anchor_lang::solana_program::instruction::AccountMeta::new(
+                    ztoken_accounts.pool_state.key(),
+                    false,
+                ));
+                account_infos.push(ztoken_accounts.pool_state.clone());
+                
+                account_metas.push(anchor_lang::solana_program::instruction::AccountMeta::new(
+                    ztoken_accounts.nullifier_set.key(),
+                    false,
+                ));
+                account_infos.push(ztoken_accounts.nullifier_set.clone());
+                
+                account_metas.push(anchor_lang::solana_program::instruction::AccountMeta::new(
+                    ztoken_accounts.commitment_tree.key(),
+                    false,
+                ));
+                account_infos.push(ztoken_accounts.commitment_tree.clone());
+                
+                account_metas.push(anchor_lang::solana_program::instruction::AccountMeta::new(
+                    ztoken_accounts.note_ledger.key(),
+                    false,
+                ));
+                account_infos.push(ztoken_accounts.note_ledger.clone());
+                
+                account_metas.push(anchor_lang::solana_program::instruction::AccountMeta::new_readonly(
+                    ztoken_accounts.mint_mapping.key(),
+                    false,
+                ));
+                account_infos.push(ztoken_accounts.mint_mapping.clone());
+                
+                account_metas.push(anchor_lang::solana_program::instruction::AccountMeta::new_readonly(
+                    ztoken_accounts.verifier_program.key(),
+                    false,
+                ));
+                account_infos.push(ztoken_accounts.verifier_program.clone());
+                
+                account_metas.push(anchor_lang::solana_program::instruction::AccountMeta::new_readonly(
+                    ztoken_accounts.verifying_key.key(),
+                    false,
+                ));
+                account_infos.push(ztoken_accounts.verifying_key.clone());
+                
+                // Get payer, system_program, rent from remaining_accounts
+                let (payer_account, system_program_account, rent_account) = 
+                    crate::ztoken_cpi::parse_cpi_common_accounts(
+                        ra,
+                        &payer_pubkey,
+                    )?;
+                
+                account_metas.push(anchor_lang::solana_program::instruction::AccountMeta::new(
+                    payer_account.key(),
+                    true,
+                ));
+                account_infos.push(payer_account);
+                
+                account_metas.push(anchor_lang::solana_program::instruction::AccountMeta::new_readonly(
+                    system_program_account.key(),
+                    false,
+                ));
+                account_infos.push(system_program_account);
+                
+                account_metas.push(anchor_lang::solana_program::instruction::AccountMeta::new_readonly(
+                    rent_account.key(),
+                    false,
+                ));
+                account_infos.push(rent_account);
+                
+                // Build instruction data
+                let mut instruction_data = Vec::new();
+                instruction_data.extend_from_slice(&[107, 20, 177, 94, 33, 119, 16, 110]); // discriminator
+                let args_data = transfer_args.try_to_vec()
+                    .map_err(|_| DexError::InvalidProof)?;
+                instruction_data.extend_from_slice(&args_data);
+                
+                // Construct and invoke - all AccountInfos in same Vec
+                let instruction = anchor_lang::solana_program::instruction::Instruction {
+                    program_id: POOL_PROGRAM_ID,
+                    accounts: account_metas,
+                    data: instruction_data,
+                };
+                
+                anchor_lang::solana_program::program::invoke(
+                    &instruction,
+                    &account_infos,
+                )?;
+                
+                msg!("[add_liquidity] ✓ Token A private_transfer CPI invoked successfully");
+                
+                // Extract commitment for pool state update (return scalar values only)
+                let commitment = extract_pool_commitment(&transfer_args.output_commitments, &pool_state_key);
+                let amount_result = commitment.map(|_| {
                     current_private_reserve_a_amount
                         .checked_add(amount_a)
-                        .ok_or(DexError::MathOverflow)?
-                );
+                        .ok_or(DexError::MathOverflow)
+                }).transpose()?;
+                
+                // Return only scalar values - no AccountInfos
+                (commitment, amount_result)
+            }; // remaining_accounts borrow ends here
+            
+            // Store commitment results for later pool state update
+            if let Some(commitment) = commitment_a {
+                if let Some(amount) = amount_a_result {
+                    new_private_reserve_a_commitment = Some(commitment);
+                    new_private_reserve_a_amount = Some(amount);
+                }
             }
         }
     }
@@ -270,124 +283,141 @@ pub fn add_liquidity(
     // ====================================================================
     // ZTOKEN HANDLING: Add liquidity with zToken (token B)
     // ====================================================================
+    // SOLUTION: Use scoped blocks to isolate remaining_accounts borrow
     if token_b_is_ztoken {
         if let Some(transfer_args) = transfer_args_b {
             msg!("[add_liquidity] Token B is zToken - invoking private_transfer CPI (user → pool PDA)");
             
             let account_offset = if token_a_is_ztoken { 7 } else { 0 };
-            require!(ctx.remaining_accounts.len() > account_offset, DexError::InvalidAccount);
             
-            // SOLUTION 1: Inline CPI construction for token B (same approach as token A)
-            // Parse zToken accounts for token B (with offset if token A is also zToken)
-            let token_b_accounts_slice = &ctx.remaining_accounts[account_offset..];
-            let ztoken_accounts_b = crate::ztoken_cpi::parse_ztoken_accounts(
-                token_b_accounts_slice,
-                &token_b,
-                &POOL_PROGRAM_ID,
-                false,
-            )?;
-            
-            // Build instruction inline - all AccountInfos from remaining_accounts
-            let mut account_metas_b = Vec::new();
-            let mut account_infos_b: Vec<AccountInfo> = Vec::new();
-            
-            // Add parsed zToken accounts for token B
-            account_metas_b.push(anchor_lang::solana_program::instruction::AccountMeta::new(
-                ztoken_accounts_b.pool_state.key(),
-                false,
-            ));
-            account_infos_b.push(ztoken_accounts_b.pool_state.clone());
-            
-            account_metas_b.push(anchor_lang::solana_program::instruction::AccountMeta::new(
-                ztoken_accounts_b.nullifier_set.key(),
-                false,
-            ));
-            account_infos_b.push(ztoken_accounts_b.nullifier_set.clone());
-            
-            account_metas_b.push(anchor_lang::solana_program::instruction::AccountMeta::new(
-                ztoken_accounts_b.commitment_tree.key(),
-                false,
-            ));
-            account_infos_b.push(ztoken_accounts_b.commitment_tree.clone());
-            
-            account_metas_b.push(anchor_lang::solana_program::instruction::AccountMeta::new(
-                ztoken_accounts_b.note_ledger.key(),
-                false,
-            ));
-            account_infos_b.push(ztoken_accounts_b.note_ledger.clone());
-            
-            account_metas_b.push(anchor_lang::solana_program::instruction::AccountMeta::new_readonly(
-                ztoken_accounts_b.mint_mapping.key(),
-                false,
-            ));
-            account_infos_b.push(ztoken_accounts_b.mint_mapping.clone());
-            
-            account_metas_b.push(anchor_lang::solana_program::instruction::AccountMeta::new_readonly(
-                ztoken_accounts_b.verifier_program.key(),
-                false,
-            ));
-            account_infos_b.push(ztoken_accounts_b.verifier_program.clone());
-            
-            account_metas_b.push(anchor_lang::solana_program::instruction::AccountMeta::new_readonly(
-                ztoken_accounts_b.verifying_key.key(),
-                false,
-            ));
-            account_infos_b.push(ztoken_accounts_b.verifying_key.clone());
-            
-            // SOLUTION 1: Get common accounts from remaining_accounts (same lifetime scope)
-            let (payer_account_b, system_program_account_b, rent_account_b) = 
-                crate::ztoken_cpi::parse_cpi_common_accounts(
-                    ctx.remaining_accounts, // Full slice to get accounts at end
-                    &payer_pubkey,
+            // Scoped block: All remaining_accounts access happens here
+            // The borrow ends when this block closes
+            let (commitment_b, amount_b_result) = {
+                // Borrow remaining_accounts in this scope only
+                let ra: &[AccountInfo<'_>] = ctx.remaining_accounts;
+                
+                require!(ra.len() > account_offset, DexError::InvalidAccount);
+                
+                // Parse zToken accounts for token B (with offset if token A is also zToken)
+                let token_b_accounts_slice = &ra[account_offset..];
+                let ztoken_accounts_b = crate::ztoken_cpi::parse_ztoken_accounts(
+                    token_b_accounts_slice,
+                    &token_b,
+                    &POOL_PROGRAM_ID,
+                    false,
                 )?;
-            
-            account_metas_b.push(anchor_lang::solana_program::instruction::AccountMeta::new(
-                payer_account_b.key(),
-                true,
-            ));
-            account_infos_b.push(payer_account_b);
-            
-            account_metas_b.push(anchor_lang::solana_program::instruction::AccountMeta::new_readonly(
-                system_program_account_b.key(),
-                false,
-            ));
-            account_infos_b.push(system_program_account_b);
-            
-            account_metas_b.push(anchor_lang::solana_program::instruction::AccountMeta::new_readonly(
-                rent_account_b.key(),
-                false,
-            ));
-            account_infos_b.push(rent_account_b);
-            
-            // Build instruction data
-            let mut instruction_data_b = Vec::new();
-            instruction_data_b.extend_from_slice(&[107, 20, 177, 94, 33, 119, 16, 110]); // discriminator
-            let args_data_b = transfer_args.try_to_vec()
-                .map_err(|_| DexError::InvalidProof)?;
-            instruction_data_b.extend_from_slice(&args_data_b);
-            
-            // Construct and invoke
-            let instruction_b = anchor_lang::solana_program::instruction::Instruction {
-                program_id: POOL_PROGRAM_ID,
-                accounts: account_metas_b,
-                data: instruction_data_b,
-            };
-            
-            anchor_lang::solana_program::program::invoke(
-                &instruction_b,
-                &account_infos_b,
-            )?;
-            
-            msg!("[add_liquidity] ✓ Token B private_transfer CPI invoked successfully");
-            
-            // Extract commitment for pool state update
-            if let Some(commitment) = extract_pool_commitment(&transfer_args.output_commitments, &pool_state_key) {
-                new_private_reserve_b_commitment = Some(commitment);
-                new_private_reserve_b_amount = Some(
+                
+                // Build instruction inline - all AccountInfos from remaining_accounts
+                let mut account_metas_b = Vec::new();
+                let mut account_infos_b: Vec<AccountInfo> = Vec::new();
+                
+                // Add parsed zToken accounts for token B
+                account_metas_b.push(anchor_lang::solana_program::instruction::AccountMeta::new(
+                    ztoken_accounts_b.pool_state.key(),
+                    false,
+                ));
+                account_infos_b.push(ztoken_accounts_b.pool_state.clone());
+                
+                account_metas_b.push(anchor_lang::solana_program::instruction::AccountMeta::new(
+                    ztoken_accounts_b.nullifier_set.key(),
+                    false,
+                ));
+                account_infos_b.push(ztoken_accounts_b.nullifier_set.clone());
+                
+                account_metas_b.push(anchor_lang::solana_program::instruction::AccountMeta::new(
+                    ztoken_accounts_b.commitment_tree.key(),
+                    false,
+                ));
+                account_infos_b.push(ztoken_accounts_b.commitment_tree.clone());
+                
+                account_metas_b.push(anchor_lang::solana_program::instruction::AccountMeta::new(
+                    ztoken_accounts_b.note_ledger.key(),
+                    false,
+                ));
+                account_infos_b.push(ztoken_accounts_b.note_ledger.clone());
+                
+                account_metas_b.push(anchor_lang::solana_program::instruction::AccountMeta::new_readonly(
+                    ztoken_accounts_b.mint_mapping.key(),
+                    false,
+                ));
+                account_infos_b.push(ztoken_accounts_b.mint_mapping.clone());
+                
+                account_metas_b.push(anchor_lang::solana_program::instruction::AccountMeta::new_readonly(
+                    ztoken_accounts_b.verifier_program.key(),
+                    false,
+                ));
+                account_infos_b.push(ztoken_accounts_b.verifier_program.clone());
+                
+                account_metas_b.push(anchor_lang::solana_program::instruction::AccountMeta::new_readonly(
+                    ztoken_accounts_b.verifying_key.key(),
+                    false,
+                ));
+                account_infos_b.push(ztoken_accounts_b.verifying_key.clone());
+                
+                // Get common accounts from remaining_accounts (same lifetime scope)
+                let (payer_account_b, system_program_account_b, rent_account_b) = 
+                    crate::ztoken_cpi::parse_cpi_common_accounts(
+                        ra, // Full slice to get accounts at end
+                        &payer_pubkey,
+                    )?;
+                
+                account_metas_b.push(anchor_lang::solana_program::instruction::AccountMeta::new(
+                    payer_account_b.key(),
+                    true,
+                ));
+                account_infos_b.push(payer_account_b);
+                
+                account_metas_b.push(anchor_lang::solana_program::instruction::AccountMeta::new_readonly(
+                    system_program_account_b.key(),
+                    false,
+                ));
+                account_infos_b.push(system_program_account_b);
+                
+                account_metas_b.push(anchor_lang::solana_program::instruction::AccountMeta::new_readonly(
+                    rent_account_b.key(),
+                    false,
+                ));
+                account_infos_b.push(rent_account_b);
+                
+                // Build instruction data
+                let mut instruction_data_b = Vec::new();
+                instruction_data_b.extend_from_slice(&[107, 20, 177, 94, 33, 119, 16, 110]); // discriminator
+                let args_data_b = transfer_args.try_to_vec()
+                    .map_err(|_| DexError::InvalidProof)?;
+                instruction_data_b.extend_from_slice(&args_data_b);
+                
+                // Construct and invoke
+                let instruction_b = anchor_lang::solana_program::instruction::Instruction {
+                    program_id: POOL_PROGRAM_ID,
+                    accounts: account_metas_b,
+                    data: instruction_data_b,
+                };
+                
+                anchor_lang::solana_program::program::invoke(
+                    &instruction_b,
+                    &account_infos_b,
+                )?;
+                
+                msg!("[add_liquidity] ✓ Token B private_transfer CPI invoked successfully");
+                
+                // Extract commitment for pool state update (return scalar values only)
+                let commitment = extract_pool_commitment(&transfer_args.output_commitments, &pool_state_key);
+                let amount_result = commitment.map(|_| {
                     current_private_reserve_b_amount
                         .checked_add(amount_b)
-                        .ok_or(DexError::MathOverflow)?
-                );
+                        .ok_or(DexError::MathOverflow)
+                }).transpose()?;
+                
+                // Return only scalar values - no AccountInfos
+                (commitment, amount_result)
+            }; // remaining_accounts borrow ends here
+            
+            // Store commitment results for later pool state update
+            if let Some(commitment) = commitment_b {
+                if let Some(amount) = amount_b_result {
+                    new_private_reserve_b_commitment = Some(commitment);
+                    new_private_reserve_b_amount = Some(amount);
+                }
             }
         }
     }
