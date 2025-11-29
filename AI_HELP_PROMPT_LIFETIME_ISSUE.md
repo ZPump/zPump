@@ -4,6 +4,16 @@
 
 We are encountering a persistent Rust lifetime conflict when trying to integrate zToken CPI (Cross-Program Invocation) calls within an Anchor-based Solana program. Despite multiple attempted solutions following Rust best practices, we cannot resolve the borrow checker errors that prevent accessing both `ctx.remaining_accounts` and `ctx.accounts` in the same instruction handler, even when used sequentially.
 
+## IMPORTANT: What We Need You To Do
+
+**Please do not just provide suggestions - we need you to:**
+1. **Implement the solution** - Make the actual code changes to fix the lifetime issue
+2. **Test that it compiles** - Run `cargo check` and ensure there are no compilation errors
+3. **Verify the solution works** - The code should compile without lifetime conflicts
+4. **Update all necessary files** - Fix the code in the actual files, not just show examples
+
+We've spent significant time on this and have tried 7 different approaches. We need a working implementation, not just guidance.
+
 ## Problem Description
 
 ### Context: What We're Building
@@ -528,27 +538,59 @@ A solution that:
 - Follows Rust best practices (no unsafe code if possible)
 - Is scalable and maintainable
 
-## Request
+## Request - ACTION REQUIRED
 
-Please provide:
-1. **Detailed explanation** of why our attempts failed, especially:
-   - Why the scoped block pattern (Attempt 7) still fails on assignment
-   - Whether we can use `ctx.remaining_accounts` without assigning it to a variable
-   - What we're missing about isolating borrows in scoped blocks
-2. **Working solution** with code examples, particularly:
-   - How to properly implement the scoped block pattern if that's the correct approach
-   - Alternative patterns if scoped blocks don't work with Anchor's Context
-3. **Alternative architectures** if no direct solution exists
-4. **Best practices** for handling this pattern in Anchor programs
-5. **Any known limitations** or workarounds in the Anchor framework
-6. **Specific guidance on the scoped block pattern** - whether:
-   - We should pass `ctx.remaining_accounts` directly to functions without assignment
-   - There's a way to structure the assignment that avoids the conflict
-   - This pattern requires a different Anchor version or Context API
+**IMPORTANT: Please implement the solution, don't just suggest it.**
 
-We've spent significant time on this issue and have tried multiple approaches, including the scoped block pattern that was recommended. We're open to any solution, including architectural changes, if that's what's needed.
+We need you to:
 
-**Most Recent Question:** The scoped block pattern seems correct, but even assigning `ctx.remaining_accounts` to a local variable within the block causes the lifetime conflict. Is there a way to use it without assignment, or is there something fundamental we're missing about how Anchor's Context lifetime system works?
+1. **Implement the fix** - Make the actual code changes to resolve the lifetime conflict
+   - Modify the files in `programs/dex/src/instructions/add_liquidity.rs`
+   - Update any helper functions in `programs/dex/src/ztoken_cpi.rs` if needed
+   - Make whatever changes are necessary to get it compiling
+
+2. **Test the solution** - Verify it works:
+   - Run `cargo check` or `cargo build` in `programs/dex/`
+   - Ensure there are NO lifetime errors
+   - Confirm the program compiles successfully
+   - If there are other errors, fix those too
+
+3. **Explain what you did** - After implementing:
+   - Explain why the solution works
+   - Explain why previous attempts failed
+   - Document any key insights about Anchor's Context lifetime system
+
+4. **Provide working code** - Not just examples, but the actual implementation that compiles
+
+### Specific Questions to Address
+
+While implementing, please address:
+1. Why the scoped block pattern (Attempt 7) still fails on assignment
+2. Whether we can use `ctx.remaining_accounts` without assigning it to a variable
+3. What we're missing about isolating borrows in scoped blocks
+4. How to properly implement the scoped block pattern if that's the correct approach
+5. Alternative patterns if scoped blocks don't work with Anchor's Context
+6. Any known limitations or workarounds in the Anchor framework
+
+### Testing Requirements
+
+**Before marking this as complete:**
+- ✅ `cargo check` in `programs/dex/` must pass with no errors
+- ✅ No lifetime conflicts in the output
+- ✅ All CPI calls must be enabled and functional
+- ✅ Code must follow Rust and Anchor best practices
+
+### File Locations
+
+- Main instruction handler: `programs/dex/src/instructions/add_liquidity.rs` (around lines 140-420)
+- Parsing functions: `programs/dex/src/ztoken_cpi.rs`
+- Account struct: `programs/dex/src/lib.rs`
+
+### What We've Tried
+
+We've documented 7 different attempts in this file. The latest (Attempt 7) was the scoped block pattern, which still failed because even assigning `ctx.remaining_accounts` to a local variable within a scoped block causes the lifetime conflict.
+
+**Bottom line:** We need working code that compiles, not just explanations. Please implement the fix and test it.
 
 Thank you for your help!
 
