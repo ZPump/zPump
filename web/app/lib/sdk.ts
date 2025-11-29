@@ -1630,9 +1630,16 @@ export async function wrap(params: WrapParams): Promise<string> {
                         try {
                           const recheckClaim = await fetchShieldClaimState(connection, shieldClaim);
                           if (recheckClaim.status !== SHIELD_CLAIM_STATUS.INACTIVE) {
-                            console.warn('[wrap] Shield claim still active after waiting - may be stuck, but shield instruction will handle it');
-                            // Proceed anyway - shield instruction will deactivate if truly stale/expired
-                            shieldClaimStale = true;
+                            console.warn('[wrap] Shield claim still active after waiting - claim appears to be stuck');
+                            console.warn('[wrap] The shield instruction will reject new shields until the claim is finalized or expires');
+                            console.warn('[wrap] Consider resetting the devnet or waiting for the claim to expire (1 hour)');
+                            // Don't proceed - the shield instruction will still reject valid claims
+                            // Instead, throw an error to inform the user
+                            throw new Error(
+                              'A previous shield operation appears to be stuck. The shield claim is valid but not finalized. ' +
+                              'Please reset the devnet or wait for the claim to expire (1 hour). ' +
+                              `Claim expires at: ${expiresAt ? new Date(expiresAt * 1000).toISOString() : 'unknown'}`
+                            );
                           }
                         } catch (e) {
                           // Claim might have been deactivated - proceed
