@@ -1460,6 +1460,11 @@ export async function wrap(params: WrapParams): Promise<string> {
               skipPreflight: false
             });
           } catch (signError: any) {
+            // Check if this is a PendingShieldInFlight error - if so, throw it to trigger retry logic
+            const { isPendingShieldError } = require('./errorHandler');
+            if (isPendingShieldError(signError)) {
+              throw signError; // Re-throw to trigger retry logic in catch block below
+            }
             console.warn('[wrap] Failed to sign VersionedTransaction with wallet adapter:', signError);
             // Fall through to try keypair or regular transaction
             signedTransaction = null;
@@ -1467,7 +1472,7 @@ export async function wrap(params: WrapParams): Promise<string> {
         }
         
         // Fallback: try manual signing with keypair (for test scenarios)
-        if (!signedTransaction) {
+        if (!signedTransaction && !shieldSignature) {
           let signerKeypair: Keypair | null = null;
           if (params.keypair) {
             signerKeypair = params.keypair;
@@ -1477,29 +1482,73 @@ export async function wrap(params: WrapParams): Promise<string> {
           }
           
           if (signerKeypair) {
-            shieldTransaction.sign([signerKeypair]);
-            shieldSignature = await connection.sendRawTransaction(shieldTransaction.serialize(), {
-              skipPreflight: false
-            });
-          } else {
-            // Can't sign VersionedTransaction - fall back to regular Transaction
+            try {
+              shieldTransaction.sign([signerKeypair]);
+              shieldSignature = await connection.sendRawTransaction(shieldTransaction.serialize(), {
+                skipPreflight: false
+              });
+            } catch (keypairError: any) {
+              // Check if this is a PendingShieldInFlight error - if so, throw it to trigger retry logic
+              const { isPendingShieldError } = require('./errorHandler');
+              if (isPendingShieldError(keypairError)) {
+                throw keypairError; // Re-throw to trigger retry logic in catch block below
+              }
+              console.warn('[wrap] Failed to send signed VersionedTransaction:', keypairError);
+              signedTransaction = null;
+            }
+          }
+          
+          // Can't sign VersionedTransaction - fall back to regular Transaction
+          // BUT: If transaction is too large, we need to wait for pending shield or retry with VersionedTransaction
+          if (!shieldSignature) {
             console.warn('[wrap] Cannot sign VersionedTransaction, falling back to regular Transaction (may exceed size limits)');
-            shieldTransaction = new Transaction().add(...shieldInstructionSet);
-            shieldTransaction.feePayer = wallet.publicKey;
-            shieldTransaction.recentBlockhash = latestBlockhash.blockhash;
-            shieldSignature = await wallet.sendTransaction(shieldTransaction, connection, {
-              skipPreflight: false
-            });
+            const regularTx = new Transaction().add(...shieldInstructionSet);
+            const txSize = regularTx.serialize().length;
+            if (txSize > 1232) {
+              // Transaction is too large - check if this is due to pending shield blocking VersionedTransaction
+              // If so, throw an error that will be caught and trigger retry logic
+              console.warn(`[wrap] Regular Transaction too large (${txSize} bytes > 1232). VersionedTransaction likely failed due to pending shield. Will retry.`);
+              // Throw error to trigger retry - will be caught as PendingShieldInFlight if that's the cause
+              throw new Error('Transaction too large for regular Transaction. VersionedTransaction failed, likely due to pending shield.');
+            }
+            regularTx.feePayer = wallet.publicKey;
+            regularTx.recentBlockhash = latestBlockhash.blockhash;
+            try {
+              shieldSignature = await wallet.sendTransaction(regularTx, connection, {
+                skipPreflight: false
+              });
+            } catch (txError: any) {
+              // Check if this is a PendingShieldInFlight error - if so, throw it to trigger retry logic
+              const { isPendingShieldError } = require('./errorHandler');
+              if (isPendingShieldError(txError)) {
+                throw txError; // Re-throw to trigger retry logic in catch block below
+              }
+              throw txError; // Re-throw other errors
+            }
           }
         }
       } else {
         // Fall back to regular Transaction if ALT not available
-        shieldTransaction = new Transaction().add(...shieldInstructionSet);
-        shieldTransaction.feePayer = wallet.publicKey;
-        shieldTransaction.recentBlockhash = latestBlockhash.blockhash;
-        shieldSignature = await wallet.sendTransaction(shieldTransaction, connection, {
-          skipPreflight: false
-        });
+        const regularTx = new Transaction().add(...shieldInstructionSet);
+        const txSize = regularTx.serialize().length;
+        if (txSize > 1232) {
+          // Transaction too large - cannot proceed without ALT
+          throw new Error(`Transaction too large (${txSize} bytes > 1232). Address Lookup Table required but not available.`);
+        }
+        regularTx.feePayer = wallet.publicKey;
+        regularTx.recentBlockhash = latestBlockhash.blockhash;
+        try {
+          shieldSignature = await wallet.sendTransaction(regularTx, connection, {
+            skipPreflight: false
+          });
+        } catch (txError: any) {
+          // Check if this is a PendingShieldInFlight error - if so, throw it to trigger retry logic
+          const { isPendingShieldError } = require('./errorHandler');
+          if (isPendingShieldError(txError)) {
+            throw txError; // Re-throw to trigger retry logic in catch block below
+          }
+          throw txError; // Re-throw other errors
+        }
       }
       
       // Only break if we successfully sent the transaction
