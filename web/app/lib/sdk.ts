@@ -1576,23 +1576,48 @@ export async function wrap(params: WrapParams): Promise<string> {
           console.info('[wrap] Checking shield claim status...');
           let shieldClaimStale = false;
           try {
-            const claimState = await fetchShieldClaimState(connection, shieldClaim);
+            const claimDecoded = await fetchShieldClaimState(connection, shieldClaim);
+            const claimState = claimDecoded as any; // Cast to access old_root which may be in different formats
             if (claimState.status !== SHIELD_CLAIM_STATUS.INACTIVE) {
               // Shield claim is active - check if it's stale by comparing old_root to current_root
               const treeAccount = await connection.getAccountInfo(commitmentTreeKey);
-              if (treeAccount && claimState.old_root) {
+              if (treeAccount) {
                 const treeState = decodeCommitmentTree(new Uint8Array(treeAccount.data));
                 const currentRootBytes = treeState.currentRoot;
-                // Compare old_root from claim to current_root from tree
-                const claimOldRootMatches = claimState.old_root.every((byte, idx) => byte === currentRootBytes[idx]);
-                if (!claimOldRootMatches) {
-                  // Claim is stale - shield instruction will deactivate it
-                  console.info('[wrap] Shield claim is stale (old_root mismatch), shield instruction will deactivate it');
-                  shieldClaimStale = true;
+                
+                // Get old_root from decoded claim - it might be in different formats
+                const claimOldRootRaw = claimState.old_root || claimState.oldRoot;
+                if (claimOldRootRaw) {
+                  // Convert to Uint8Array regardless of input format
+                  const claimOldRootBytes = claimOldRootRaw instanceof Uint8Array
+                    ? claimOldRootRaw
+                    : Buffer.isBuffer(claimOldRootRaw)
+                    ? new Uint8Array(claimOldRootRaw)
+                    : Array.isArray(claimOldRootRaw)
+                    ? new Uint8Array(claimOldRootRaw)
+                    : claimOldRootRaw instanceof Object && Object.values(claimOldRootRaw).length === 32
+                    ? new Uint8Array(Object.values(claimOldRootRaw) as number[])
+                    : null;
+                  
+                  if (claimOldRootBytes && claimOldRootBytes.length === currentRootBytes.length) {
+                    // Compare old_root from claim to current_root from tree
+                    const claimOldRootMatches = claimOldRootBytes.every((byte, idx) => byte === currentRootBytes[idx]);
+                    if (!claimOldRootMatches) {
+                      // Claim is stale - shield instruction will deactivate it
+                      console.info('[wrap] Shield claim is stale (old_root mismatch), shield instruction will deactivate it');
+                      shieldClaimStale = true;
+                    } else {
+                      // Claim is valid - wait for it to complete
+                      console.info('[wrap] Shield claim is valid (old_root matches), waiting for shield operation to complete...');
+                      await sleep(5000); // Wait 5 seconds for shield operation to complete
+                    }
+                  } else {
+                    console.warn('[wrap] Could not parse old_root from shield claim, waiting anyway...');
+                    await sleep(3000);
+                  }
                 } else {
-                  // Claim is valid - wait for it to complete
-                  console.info('[wrap] Shield claim is valid (old_root matches), waiting for shield operation to complete...');
-                  await sleep(5000); // Wait 5 seconds for shield operation to complete
+                  console.warn('[wrap] Shield claim has no old_root field, waiting anyway...');
+                  await sleep(3000);
                 }
               }
             } else {
