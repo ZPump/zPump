@@ -3169,6 +3169,18 @@ export async function createDexPool(params: CreateDexPoolParams): Promise<string
     // TODO: Generate shield proofs and add ShieldArgs to instruction data
     // This requires updating the instruction signature to accept ShieldArgs parameters
     console.info('[createDexPool] NOTE: Shield proof generation pending - ShieldArgs need to be added to instruction signature');
+    
+    // Add payer, system_program, rent to remaining_accounts
+    // This ensures all AccountInfos have the same lifetime scope, avoiding Rust borrow checker conflicts
+    // Note: payer and system_program are already in instructionKeys, but rent is needed for CPIs
+    // Add them again to remaining_accounts for CPI calls (they'll be deduplicated by Solana runtime)
+    instructionKeys.push(
+      { pubkey: payer, isSigner: true, isWritable: true }, // payer (signer for CPI)
+      { pubkey: SystemProgram.programId, isSigner: false, isWritable: false }, // system_program
+      { pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false } // rent
+    );
+    
+    console.info('[createDexPool] Added payer, system_program, rent to remaining_accounts (unified lifetime scope)');
   }
   
   instructions.push(
@@ -3652,23 +3664,68 @@ export async function removeDexLiquidity(params: RemoveLiquidityParams): Promise
     min_amount_b: new BN(minAmountB.toString())
   });
   
+  // Build instruction keys
+  const instructionKeys: Array<{ pubkey: PublicKey; isSigner: boolean; isWritable: boolean }> = [
+    { pubkey: poolState, isSigner: false, isWritable: true },
+    { pubkey: tokenAMint, isSigner: false, isWritable: false },
+    { pubkey: tokenBMint, isSigner: false, isWritable: false },
+    { pubkey: lpTokenMint, isSigner: false, isWritable: true },
+    { pubkey: userLpTokenAccount, isSigner: false, isWritable: true },
+    { pubkey: userTokenAAccount, isSigner: false, isWritable: true },
+    { pubkey: poolTokenAAccount, isSigner: false, isWritable: true },
+    { pubkey: userTokenBAccount, isSigner: false, isWritable: true },
+    { pubkey: poolTokenBAccount, isSigner: false, isWritable: true },
+    { pubkey: payer, isSigner: true, isWritable: true },
+    { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
+    { pubkey: SystemProgram.programId, isSigner: false, isWritable: false }
+  ];
+  
+  // Add zToken pool accounts to remaining_accounts if needed
+  // For transfer operations (pool PDA → user), we need 7 accounts per zToken
+  if (poolStateData.tokenAIsZtoken || poolStateData.tokenBIsZtoken) {
+    console.info('[removeDexLiquidity] Adding zToken pool accounts to remaining_accounts');
+    
+    if (poolStateData.tokenAIsZtoken) {
+      const zTokenAccountsA = getZTokenPoolAccounts(tokenAMint, false); // forShield = false (transfer)
+      
+      // Add zToken accounts for token A (7 accounts for transfer)
+      instructionKeys.push(...zTokenAccountsA.map(pubkey => ({ 
+        pubkey, 
+        isSigner: false, 
+        isWritable: true
+      })));
+      
+      console.info(`[removeDexLiquidity] Added ${zTokenAccountsA.length} accounts for zToken A transfer operation (pool PDA → user)`);
+    }
+    
+    if (poolStateData.tokenBIsZtoken) {
+      const zTokenAccountsB = getZTokenPoolAccounts(tokenBMint, false); // forShield = false (transfer)
+      
+      // Add zToken accounts for token B (7 accounts for transfer)
+      instructionKeys.push(...zTokenAccountsB.map(pubkey => ({ 
+        pubkey, 
+        isSigner: false, 
+        isWritable: true
+      })));
+      
+      console.info(`[removeDexLiquidity] Added ${zTokenAccountsB.length} accounts for zToken B transfer operation (pool PDA → user)`);
+    }
+    
+    // Add payer, system_program, rent to remaining_accounts
+    // This ensures all AccountInfos have the same lifetime scope, avoiding Rust borrow checker conflicts
+    instructionKeys.push(
+      { pubkey: payer, isSigner: true, isWritable: true }, // payer (signer for CPI)
+      { pubkey: SystemProgram.programId, isSigner: false, isWritable: false }, // system_program
+      { pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false } // rent
+    );
+    
+    console.info('[removeDexLiquidity] Added payer, system_program, rent to remaining_accounts (unified lifetime scope)');
+  }
+  
   instructions.push(
     new TransactionInstruction({
       programId: DEX_PROGRAM_ID,
-      keys: [
-        { pubkey: poolState, isSigner: false, isWritable: true },
-        { pubkey: tokenAMint, isSigner: false, isWritable: false },
-        { pubkey: tokenBMint, isSigner: false, isWritable: false },
-        { pubkey: lpTokenMint, isSigner: false, isWritable: true },
-        { pubkey: userLpTokenAccount, isSigner: false, isWritable: true },
-        { pubkey: userTokenAAccount, isSigner: false, isWritable: true },
-        { pubkey: poolTokenAAccount, isSigner: false, isWritable: true },
-        { pubkey: userTokenBAccount, isSigner: false, isWritable: true },
-        { pubkey: poolTokenBAccount, isSigner: false, isWritable: true },
-        { pubkey: payer, isSigner: true, isWritable: true },
-        { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
-        { pubkey: SystemProgram.programId, isSigner: false, isWritable: false }
-      ],
+      keys: instructionKeys,
       data: removeLiquidityData
     })
   );
@@ -3886,6 +3943,18 @@ export async function swapDex(params: SwapParams): Promise<string> {
         console.info('[swapDex] NOTE: Transfer proof generation pending - TransferArgs need to be added to instruction signature');
       }
     }
+  }
+  
+  // Add payer, system_program, rent to remaining_accounts if zToken accounts were added
+  // This ensures all AccountInfos have the same lifetime scope, avoiding Rust borrow checker conflicts
+  if (tokenInIsZtoken || tokenOutIsZtoken) {
+    instructionKeys.push(
+      { pubkey: payer, isSigner: true, isWritable: true }, // payer (signer for CPI)
+      { pubkey: SystemProgram.programId, isSigner: false, isWritable: false }, // system_program
+      { pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false } // rent
+    );
+    
+    console.info('[swapDex] Added payer, system_program, rent to remaining_accounts (unified lifetime scope)');
   }
   
   instructions.push(
