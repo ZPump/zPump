@@ -1074,16 +1074,27 @@ export async function wrap(params: WrapParams): Promise<string> {
     );
   }
   
-  // If commitment tree doesn't exist, shield will initialize it via lazy initialization.
-  // For lazy initialization, we need to use a default/empty tree state for root fetching.
-  // The actual tree will be initialized by shield instruction.
+  // CRITICAL: Program validates old_root against pool_state.current_root, not commitment tree root
+  // Fetch root from pool_state if it exists, otherwise use default empty root
+  let currentRootBytes: Uint8Array;
+  if (poolAccountInfo) {
+    // Pool exists - read current_root from pool_state
+    const poolStateData = Buffer.from(poolAccountInfo.data);
+    const CURRENT_ROOT_OFFSET = 8 + 32 * 8; // discriminator (8) + 6 pubkeys (32*6) + verifying_key_id (32) + verifying_key_hash (32)
+    currentRootBytes = new Uint8Array(poolStateData.slice(CURRENT_ROOT_OFFSET, CURRENT_ROOT_OFFSET + 32));
+  } else {
+    // Pool doesn't exist - use default empty root for lazy initialization
+    currentRootBytes = new Uint8Array(32);
+  }
+  
+  // Still need treeState for other operations (e.g., nextIndex for depositId)
   let treeState;
   if (commitmentTreeAccount) {
     treeState = decodeCommitmentTree(new Uint8Array(commitmentTreeAccount.data));
   } else {
     // Lazy initialization - use default root (empty tree)
     treeState = {
-      currentRoot: new Uint8Array(32), // Empty tree root
+      currentRoot: currentRootBytes, // Use pool_state root if available
       roots: []
     };
   }
@@ -1177,12 +1188,14 @@ export async function wrap(params: WrapParams): Promise<string> {
   const decodedProof = decodeProofPayload(params.proof);
   if (process.env.NEXT_PUBLIC_DEBUG_WRAP === 'true') {
     // eslint-disable-next-line no-console
-    console.info('[wrap] current root', Buffer.from(treeState.currentRoot).toString('hex'));
+    console.info('[wrap] current root from pool_state', Buffer.from(currentRootBytes).toString('hex'));
     // eslint-disable-next-line no-console
     console.info('[wrap] old root field', Buffer.from(decodedProof.fields[0] ?? []).toString('hex'));
     if (decodedProof.fields[0]) {
       // eslint-disable-next-line no-console
       console.info('[wrap] old root field (canonical)', bytesLEToCanonicalHex(decodedProof.fields[0]));
+      // eslint-disable-next-line no-console
+      console.info('[wrap] pool_state root (canonical)', bytesLEToCanonicalHex(currentRootBytes));
     }
     if (decodedProof.fields[1]) {
       // eslint-disable-next-line no-console

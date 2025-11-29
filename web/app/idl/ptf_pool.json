@@ -1442,6 +1442,9 @@
       "accounts": [
         {
           "name": "pool_state",
+          "docs": [
+            "LAZY INITIALIZATION: Pool will be initialized on first shield if it doesn't exist"
+          ],
           "writable": true,
           "pda": {
             "seeds": [
@@ -1456,7 +1459,7 @@
               },
               {
                 "kind": "account",
-                "path": "pool_state"
+                "path": "origin_mint"
               }
             ]
           }
@@ -1477,7 +1480,7 @@
               },
               {
                 "kind": "account",
-                "path": "pool_state"
+                "path": "origin_mint"
               }
             ]
           }
@@ -1508,7 +1511,7 @@
               },
               {
                 "kind": "account",
-                "path": "pool_state"
+                "path": "origin_mint"
               }
             ]
           }
@@ -1533,7 +1536,7 @@
               },
               {
                 "kind": "account",
-                "path": "pool_state"
+                "path": "origin_mint"
               }
             ]
           }
@@ -1558,7 +1561,7 @@
               },
               {
                 "kind": "account",
-                "path": "pool_state"
+                "path": "origin_mint"
               }
             ]
           }
@@ -1579,7 +1582,7 @@
               },
               {
                 "kind": "account",
-                "path": "pool_state"
+                "path": "origin_mint"
               }
             ]
           }
@@ -1651,7 +1654,7 @@
               },
               {
                 "kind": "account",
-                "path": "pool_state"
+                "path": "origin_mint"
               }
             ],
             "program": {
@@ -1692,6 +1695,9 @@
               ]
             }
           }
+        },
+        {
+          "name": "factory_state"
         },
         {
           "name": "vault_program",
@@ -4710,6 +4716,12 @@
           {
             "name": "is_native_ztoken",
             "type": "bool"
+          },
+          {
+            "name": "lookup_table",
+            "type": {
+              "option": "pubkey"
+            }
           }
         ]
       }
@@ -5133,66 +5145,6 @@
           {
             "name": "features",
             "type": "u8"
-          }
-        ]
-      }
-    },
-    {
-      "name": "PendingShield",
-      "type": {
-        "kind": "struct",
-        "fields": [
-          {
-            "name": "active",
-            "type": "u8"
-          },
-          {
-            "name": "old_root",
-            "type": {
-              "array": [
-                "u8",
-                32
-              ]
-            }
-          },
-          {
-            "name": "new_root",
-            "type": {
-              "array": [
-                "u8",
-                32
-              ]
-            }
-          },
-          {
-            "name": "commitment",
-            "type": {
-              "array": [
-                "u8",
-                32
-              ]
-            }
-          },
-          {
-            "name": "amount_commit",
-            "type": {
-              "array": [
-                "u8",
-                32
-              ]
-            }
-          },
-          {
-            "name": "amount",
-            "type": "u64"
-          },
-          {
-            "name": "depositor",
-            "type": "pubkey"
-          },
-          {
-            "name": "next_index",
-            "type": "u64"
           }
         ]
       }
