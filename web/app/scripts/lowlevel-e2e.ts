@@ -1941,6 +1941,9 @@ async function main() {
     shieldKeys2.push({ pubkey: POOL_PROGRAM_ID, isSigner: false, isWritable: false });
   }
 
+  // CRITICAL: Shield instruction account order must match programs/pool/src/lib.rs exactly:
+  // 10: verifier_program, 11: verifying_key, 12: shield_claim, 13: payer, 14: origin_mint,
+  // 15: mint_mapping, 16: factory_state, 17: vault_program, 18: token_program, 19: system_program, 20: rent
   shieldKeys2.push(
     { pubkey: VERIFIER_PROGRAM_ID, isSigner: false, isWritable: false },
     { pubkey: verifyingKey, isSigner: false, isWritable: false },
@@ -1948,6 +1951,7 @@ async function main() {
     { pubkey: owner.publicKey, isSigner: true, isWritable: true },
     { pubkey: originMintKey, isSigner: false, isWritable: false },
     { pubkey: mintMappingKey, isSigner: false, isWritable: false },
+    { pubkey: factoryStateKey, isSigner: false, isWritable: false }, // Position 16 - REQUIRED for lazy pool initialization
     { pubkey: VAULT_PROGRAM_ID, isSigner: false, isWritable: false },
     { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
     { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
@@ -2183,6 +2187,9 @@ async function main() {
     shieldKeys3.push({ pubkey: POOL_PROGRAM_ID, isSigner: false, isWritable: false });
   }
 
+  // CRITICAL: Shield instruction account order must match programs/pool/src/lib.rs exactly:
+  // 10: verifier_program, 11: verifying_key, 12: shield_claim, 13: payer, 14: origin_mint,
+  // 15: mint_mapping, 16: factory_state, 17: vault_program, 18: token_program, 19: system_program, 20: rent
   shieldKeys3.push(
     { pubkey: VERIFIER_PROGRAM_ID, isSigner: false, isWritable: false },
     { pubkey: verifyingKey, isSigner: false, isWritable: false },
@@ -2190,6 +2197,7 @@ async function main() {
     { pubkey: owner.publicKey, isSigner: true, isWritable: true },
     { pubkey: originMintKey, isSigner: false, isWritable: false },
     { pubkey: mintMappingKey, isSigner: false, isWritable: false },
+    { pubkey: factoryStateKey, isSigner: false, isWritable: false }, // Position 16 - REQUIRED for lazy pool initialization
     { pubkey: VAULT_PROGRAM_ID, isSigner: false, isWritable: false },
     { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
     { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
@@ -2422,6 +2430,9 @@ async function main() {
     shieldKeys4.push({ pubkey: POOL_PROGRAM_ID, isSigner: false, isWritable: false });
   }
 
+  // CRITICAL: Shield instruction account order must match programs/pool/src/lib.rs exactly:
+  // 10: verifier_program, 11: verifying_key, 12: shield_claim, 13: payer, 14: origin_mint,
+  // 15: mint_mapping, 16: factory_state, 17: vault_program, 18: token_program, 19: system_program, 20: rent
   shieldKeys4.push(
     { pubkey: VERIFIER_PROGRAM_ID, isSigner: false, isWritable: false },
     { pubkey: verifyingKey, isSigner: false, isWritable: false },
@@ -2429,6 +2440,7 @@ async function main() {
     { pubkey: receiver.publicKey, isSigner: true, isWritable: true },
     { pubkey: originMintKey, isSigner: false, isWritable: false },
     { pubkey: mintMappingKey, isSigner: false, isWritable: false },
+    { pubkey: factoryStateKey, isSigner: false, isWritable: false }, // Position 16 - REQUIRED for lazy pool initialization
     { pubkey: VAULT_PROGRAM_ID, isSigner: false, isWritable: false },
     { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
     { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
@@ -2709,6 +2721,9 @@ async function main() {
     shieldKeys5.push({ pubkey: POOL_PROGRAM_ID, isSigner: false, isWritable: false });
   }
 
+  // CRITICAL: Shield instruction account order must match programs/pool/src/lib.rs exactly:
+  // 10: verifier_program, 11: verifying_key, 12: shield_claim, 13: payer, 14: origin_mint,
+  // 15: mint_mapping, 16: factory_state, 17: vault_program, 18: token_program, 19: system_program, 20: rent
   shieldKeys5.push(
     { pubkey: VERIFIER_PROGRAM_ID, isSigner: false, isWritable: false },
     { pubkey: verifyingKey, isSigner: false, isWritable: false },
@@ -2716,6 +2731,7 @@ async function main() {
     { pubkey: owner.publicKey, isSigner: true, isWritable: true },
     { pubkey: originMintKey, isSigner: false, isWritable: false },
     { pubkey: mintMappingKey, isSigner: false, isWritable: false },
+    { pubkey: factoryStateKey, isSigner: false, isWritable: false }, // Position 16 - REQUIRED for lazy pool initialization
     { pubkey: VAULT_PROGRAM_ID, isSigner: false, isWritable: false },
     { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
     { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
@@ -2938,29 +2954,23 @@ async function main() {
     ? { pubkey: nativeFactoryConfig, isSigner: false, isWritable: true }
     : { pubkey: FACTORY_PROGRAM_ID, isSigner: false, isWritable: false };
 
+  // CRITICAL: MintNativeZtoken instruction account order must match programs/factory/src/lib.rs exactly:
+  // 0: factory_state, 1: payer, 2: origin_mint, 3: metadata, 4: mint_mapping,
+  // 5: factory_config (optional), 6: user_token_account, 7: token_program,
+  // 8: associated_token_program, 9: system_program, 10: rent
+  // Note: Pool/vault accounts are NOT part of this instruction - they're initialized lazily on first shield
   const nativeMintKeys = [
-    { pubkey: nativeFactoryState, isSigner: false, isWritable: true },
-    { pubkey: nativeMinter.publicKey, isSigner: true, isWritable: true }, // payer
-    { pubkey: nativeOriginMint, isSigner: true, isWritable: true }, // mint (keypair)
-    { pubkey: nativeMetadata, isSigner: false, isWritable: true },
-    { pubkey: nativeMintMapping, isSigner: false, isWritable: true },
-    nativeFactoryConfigMeta,
-    { pubkey: POOL_PROGRAM_ID, isSigner: false, isWritable: false }, // pool_program
-    { pubkey: VAULT_PROGRAM_ID, isSigner: false, isWritable: false }, // vault_program
-    { pubkey: nativePoolState, isSigner: false, isWritable: true },
-    { pubkey: nativeVaultState, isSigner: false, isWritable: true },
-    { pubkey: nativeCommitmentTree, isSigner: false, isWritable: true },
-    { pubkey: nativeNullifierSet, isSigner: false, isWritable: true },
-    { pubkey: nativeNoteLedger, isSigner: false, isWritable: true },
-    { pubkey: nativeHookConfig, isSigner: false, isWritable: true },
-    { pubkey: nativeHookWhitelist, isSigner: false, isWritable: true },
-    { pubkey: VERIFIER_PROGRAM_ID, isSigner: false, isWritable: false },
-    { pubkey: nativeVerifyingKey, isSigner: false, isWritable: false },
-    { pubkey: nativeUserTokenAccount, isSigner: false, isWritable: true },
-    { pubkey: TOKEN_2022_PROGRAM_ID, isSigner: false, isWritable: false },
-    { pubkey: ASSOCIATED_TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
-    { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
-    { pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false },
+    { pubkey: nativeFactoryState, isSigner: false, isWritable: true }, // 0
+    { pubkey: nativeMinter.publicKey, isSigner: true, isWritable: true }, // 1 payer
+    { pubkey: nativeOriginMint, isSigner: true, isWritable: true }, // 2 mint (keypair)
+    { pubkey: nativeMetadata, isSigner: false, isWritable: true }, // 3
+    { pubkey: nativeMintMapping, isSigner: false, isWritable: true }, // 4
+    nativeFactoryConfigMeta, // 5 (optional)
+    { pubkey: nativeUserTokenAccount, isSigner: false, isWritable: true }, // 6
+    { pubkey: TOKEN_2022_PROGRAM_ID, isSigner: false, isWritable: false }, // 7 token_program
+    { pubkey: ASSOCIATED_TOKEN_PROGRAM_ID, isSigner: false, isWritable: false }, // 8
+    { pubkey: SystemProgram.programId, isSigner: false, isWritable: false }, // 9
+    { pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false }, // 10
   ];
 
   nativeMintInstructions.push(

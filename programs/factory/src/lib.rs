@@ -1172,7 +1172,7 @@ pub mod ptf_factory {
             mapping.bump = ctx.bumps.mint_mapping;
             mapping.has_ptkn = false;
             mapping.ptkn_mint = Pubkey::default();
-            mapping.is_native_ztoken = false; // Regular token, not native zToken
+            mapping.is_native_ztoken = true; // Native zToken
             mapping.lookup_table = None; // ALT will be created during preparePool
         } // Drop mutable borrow here
         
@@ -1208,7 +1208,7 @@ pub mod ptf_factory {
             body[68..70].copy_from_slice(&fee_bps_override.unwrap_or_default().to_le_bytes());
             body[70] = fee_bps_override.is_some() as u8;
             body[71] = ctx.bumps.mint_mapping;
-            body[72] = 0; // is_native_ztoken (false = 0) - regular token
+            body[72] = 1; // is_native_ztoken (true = 1) - native zToken
             // lookup_table: Option<Pubkey> - 1 byte discriminant + 32 bytes Pubkey = 33 bytes
             // Option discriminant: 0 = None, 1 = Some
             body[73] = 0; // lookup_table discriminant (None = 0)
