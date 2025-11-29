@@ -9,8 +9,9 @@ use spl_associated_token_account_client::{
 
 use crate::errors::DexError;
 use crate::state::DEX_POOL_SEED;
-use crate::ztoken_cpi::{parse_ztoken_accounts, invoke_shield_cpi, ShieldArgs};
+use crate::ztoken_cpi::{parse_ztoken_accounts, invoke_shield_cpi, ShieldArgs, extract_pool_commitment};
 use ptf_pool::ID as POOL_PROGRAM_ID;
+use ptf_vault::ID as VAULT_PROGRAM_ID;
 
 pub fn create_pool(
     ctx: Context<crate::CreatePool>,
@@ -249,6 +250,19 @@ pub fn create_pool(
     // For now, we validate that zToken flags are set correctly.
     // Full CPI integration will be completed when SDK proof generation is integrated.
     //
+    // Store values for pool state updates after CPIs
+    let mut private_reserve_a_commitment = [0u8; 32];
+    let mut private_reserve_a_amount = if token_a_is_ztoken { initial_amount_a } else { 0 };
+    let mut private_reserve_b_commitment = [0u8; 32];
+    let mut private_reserve_b_amount = if token_b_is_ztoken { initial_amount_b } else { 0 };
+    
+    // Get pool state key before dropping mutable borrow
+    let pool_state_key = pool_state.key();
+    
+    // Drop mutable borrow before CPIs
+    drop(pool_state);
+    
+    // Handle zToken shield CPIs
     if token_a_is_ztoken {
         msg!("[create_pool] Token A is zToken - processing shield CPI for initial liquidity");
         
@@ -260,29 +274,58 @@ pub fn create_pool(
         
         msg!("[create_pool] Found {} remaining_accounts for zToken pool A", ctx.remaining_accounts.len());
         
-        // Parse zToken pool accounts from remaining_accounts
-        // For shield operations, we need 14 accounts (pool_state, commitment_tree, etc.)
-        // NOTE: Lifetime issue needs to be resolved when adding ShieldArgs as instruction parameters
-        // For now, validate account structure is ready
-        msg!("[create_pool] zToken pool A accounts structure validated");
-        msg!("[create_pool] Account parsing ready - will be invoked when ShieldArgs added to signature");
-        // TODO: Uncomment when lifetime issue resolved and ShieldArgs added:
-        // let ztoken_accounts = parse_ztoken_accounts(
-        //     ctx.remaining_accounts,
-        //     &token_a,
-        //     &POOL_PROGRAM_ID,
-        //     true,
-        // )?;
-        
-        // Note: Shield CPI requires proof data (ShieldArgs) which will be passed from SDK
-        // For now, we validate account structure. Full invocation requires SDK to pass ShieldArgs.
-        // When SDK integration is complete, proof data will be passed as instruction parameters
-        // and we can invoke: invoke_shield_cpi(&ztoken_accounts, ..., shield_args, &pool_state_key)?;
-        msg!("[create_pool] zToken pool A accounts validated - shield CPI structure ready");
-        msg!("[create_pool] NOTE: Shield CPI invocation requires ShieldArgs proof data from SDK");
-        
-        // Initialize private reserve commitment to zero (will be updated after shield)
-        pool_state.private_reserve_a_commitment = [0u8; 32];
+        // If ShieldArgs provided, invoke shield CPI
+        if let Some(shield_args_a) = shield_args_a {
+            msg!("[create_pool] ShieldArgs provided for token A - invoking shield CPI");
+            
+            // Store values before moving shield_args_a
+            private_reserve_a_commitment = shield_args_a.amount_commit;
+            private_reserve_a_amount = shield_args_a.amount;
+            
+            // Parse zToken pool accounts from remaining_accounts
+            let ztoken_accounts = parse_ztoken_accounts(
+                ctx.remaining_accounts,
+                &token_a,
+                &POOL_PROGRAM_ID,
+                true, // is_shield = true
+            )?;
+            
+            // Create vault_program AccountInfo for CPI
+            // For program accounts, we create a minimal AccountInfo using Box::leak
+            let vault_program_key = Box::leak(Box::new(VAULT_PROGRAM_ID));
+            let vault_program_lamports = Box::leak(Box::new(0u64));
+            let vault_program_data = Box::leak(Box::new([0u8; 0])); // Empty data for program accounts
+            let vault_program_owner = Box::leak(Box::new(VAULT_PROGRAM_ID));
+            let vault_program_account = AccountInfo::new(
+                vault_program_key,
+                false, // is_signer
+                false, // is_writable
+                vault_program_lamports,
+                vault_program_data,
+                vault_program_owner,
+                true, // executable (programs are executable)
+                0, // rent_epoch (dummy)
+            );
+            
+            // Invoke shield CPI (user shields tokens to DEX pool PDA)
+            invoke_shield_cpi(
+                &ztoken_accounts,
+                ctx.remaining_accounts,
+                &ctx.accounts.token_a_mint.to_account_info(),
+                &ctx.accounts.payer.to_account_info(),
+                &ctx.accounts.token_program.to_account_info(),
+                &ctx.accounts.system_program.to_account_info(),
+                &ctx.accounts.rent.to_account_info(),
+                &vault_program_account,
+                &pool_state_key,
+                shield_args_a.clone(), // Clone to avoid move
+            )?;
+            
+            msg!("[create_pool] Shield CPI completed for token A");
+        } else {
+            msg!("[create_pool] No ShieldArgs provided for token A - skipping shield CPI");
+            msg!("[create_pool] NOTE: Shield CPI requires ShieldArgs proof data from SDK");
+        }
     }
     
     if token_b_is_ztoken {
@@ -300,30 +343,70 @@ pub fn create_pool(
         msg!("[create_pool] Processing zToken pool B accounts (offset: {})", account_offset);
         
         // Create slice directly with proper lifetime
-        // We need to ensure the slice has the same lifetime as ctx.remaining_accounts
         let token_b_accounts = &ctx.remaining_accounts[account_offset..];
         
-        // Parse zToken pool accounts from remaining_accounts
-        // NOTE: Lifetime issue needs to be resolved when adding ShieldArgs as instruction parameters
-        // For now, validate account structure is ready
-        msg!("[create_pool] zToken pool B accounts structure validated");
-        msg!("[create_pool] Account parsing ready - will be invoked when ShieldArgs added to signature");
-        // TODO: Uncomment when lifetime issue resolved and ShieldArgs added:
-        // let ztoken_accounts = parse_ztoken_accounts(
-        //     token_b_accounts,
-        //     &token_b,
-        //     &POOL_PROGRAM_ID,
-        //     true,
-        // )?;
-        
-        // Note: Shield CPI requires proof data (ShieldArgs) which will be passed from SDK
-        // For now, we validate account structure. Full invocation requires SDK to pass ShieldArgs.
-        msg!("[create_pool] zToken pool B accounts validated - shield CPI structure ready");
-        msg!("[create_pool] NOTE: Shield CPI invocation requires ShieldArgs proof data from SDK");
-        
-        // Initialize private reserve commitment to zero (will be updated after shield)
-        pool_state.private_reserve_b_commitment = [0u8; 32];
+        // If ShieldArgs provided, invoke shield CPI
+        if let Some(shield_args_b) = shield_args_b {
+            msg!("[create_pool] ShieldArgs provided for token B - invoking shield CPI");
+            
+            // Store values before moving shield_args_b
+            private_reserve_b_commitment = shield_args_b.amount_commit;
+            private_reserve_b_amount = shield_args_b.amount;
+            
+            // Parse zToken pool accounts from remaining_accounts
+            let ztoken_accounts = parse_ztoken_accounts(
+                token_b_accounts,
+                &token_b,
+                &POOL_PROGRAM_ID,
+                true, // is_shield = true
+            )?;
+            
+            // Create vault_program AccountInfo for CPI
+            let vault_program_key = Box::leak(Box::new(VAULT_PROGRAM_ID));
+            let vault_program_lamports = Box::leak(Box::new(0u64));
+            let vault_program_data = Box::leak(Box::new([0u8; 0]));
+            let vault_program_owner = Box::leak(Box::new(VAULT_PROGRAM_ID));
+            let vault_program_account = AccountInfo::new(
+                vault_program_key,
+                false,
+                false,
+                vault_program_lamports,
+                vault_program_data,
+                vault_program_owner,
+                true,
+                0,
+            );
+            
+            // Invoke shield CPI (user shields tokens to DEX pool PDA)
+            invoke_shield_cpi(
+                &ztoken_accounts,
+                token_b_accounts,
+                &ctx.accounts.token_b_mint.to_account_info(),
+                &ctx.accounts.payer.to_account_info(),
+                &ctx.accounts.token_program.to_account_info(),
+                &ctx.accounts.system_program.to_account_info(),
+                &ctx.accounts.rent.to_account_info(),
+                &vault_program_account,
+                &pool_state_key,
+                shield_args_b.clone(),
+            )?;
+            
+            msg!("[create_pool] Shield CPI completed for token B");
+        } else {
+            msg!("[create_pool] No ShieldArgs provided for token B - skipping shield CPI");
+            msg!("[create_pool] NOTE: Shield CPI requires ShieldArgs proof data from SDK");
+        }
     }
+    
+    // Re-acquire mutable borrow to update pool state with private reserves
+    let pool_state = &mut ctx.accounts.pool_state;
+    pool_state.private_reserve_a_commitment = private_reserve_a_commitment;
+    pool_state.private_reserve_a_amount = private_reserve_a_amount;
+    pool_state.private_reserve_b_commitment = private_reserve_b_commitment;
+    pool_state.private_reserve_b_amount = private_reserve_b_amount;
+    
+    msg!("[create_pool] Updated private reserves: A={}, B={}", 
+        private_reserve_a_amount, private_reserve_b_amount);
     
     // Prepare seeds for PDA signing
     let seeds: [&[u8]; 4] = [
