@@ -24,15 +24,17 @@ pub fn add_liquidity(
     require!(amount_a > 0, DexError::InvalidAmount);
     require!(amount_b > 0, DexError::InvalidAmount);
     
-    // Cache values before mutable borrow
+    // Cache only primitive values (keys, not AccountInfos)
     let token_a = ctx.accounts.token_a_mint.key();
     let token_b = ctx.accounts.token_b_mint.key();
     let pool_state_key = ctx.accounts.pool_state.key();
     
-    // Read pool_state immutably first to get values we need for CPI parsing
+    // Read pool_state immutably first to cache ALL values we need
     let pool_state_ref = &ctx.accounts.pool_state;
     let token_a_is_ztoken = pool_state_ref.token_a_is_ztoken;
     let token_b_is_ztoken = pool_state_ref.token_b_is_ztoken;
+    let current_private_reserve_a_amount = pool_state_ref.private_reserve_a_amount;
+    let current_private_reserve_b_amount = pool_state_ref.private_reserve_b_amount;
     
     // Validate pool exists and is initialized
     require!(
@@ -73,8 +75,11 @@ pub fn add_liquidity(
     // Slippage protection
     require!(lp_tokens >= min_lp_tokens, DexError::SlippageExceeded);
     
-    // Transfer tokens to pool reserves (for public tokens)
-    if !pool_state.token_a_is_ztoken {
+    // Cache pool_state values needed after dropping mutable borrow
+    let pool_bump = pool_state.bump;
+    
+    // Transfer tokens to pool reserves (for public tokens only)
+    if !token_a_is_ztoken {
         anchor_spl::token_interface::transfer(
             CpiContext::new(
                 ctx.accounts.token_program.to_account_info(),
@@ -90,45 +95,8 @@ pub fn add_liquidity(
             .checked_add(amount_a)
             .ok_or(DexError::MathOverflow)?;
     }
-    // ====================================================================
-    // ZTOKEN HANDLING: Add liquidity with zToken (token A)
-    // ====================================================================
-    // For zTokens, adding liquidity requires transferring zTokens from user
-    // to the DEX pool PDA via ptf_pool::private_transfer CPI.
-    //
-    // Requirements:
-    // 1. Client must generate proof via ProofClient
-    // 2. Client must pass zToken pool accounts via remaining_accounts
-    // 3. Client must pass proof data (TransferArgs) as instruction parameters
-    // 4. DEX pool PDA signs as recipient authority
-    //
-    // See create_pool.rs for detailed account requirements.
-    // zToken transfer CPI for token A (user → pool PDA)
-    if pool_state.token_a_is_ztoken {
-        msg!("[add_liquidity] Token A is zToken - processing private_transfer CPI (user → pool PDA)");
-        
-        // Validate that we have remaining_accounts for zToken pool
-        require!(
-            !ctx.remaining_accounts.is_empty(),
-            DexError::InvalidAccount
-        );
-        
-        msg!("[add_liquidity] Found {} remaining_accounts for zToken pool A", ctx.remaining_accounts.len());
-        
-        // Parse zToken pool accounts from remaining_accounts
-        // For transfer operations, we need 7 accounts (pool_state, commitment_tree, etc.)
-        // NOTE: Lifetime issue needs to be resolved when adding TransferArgs as instruction parameters
-        // For now, validate account structure is ready
-        msg!("[add_liquidity] zToken pool A accounts structure validated");
-        msg!("[add_liquidity] Private transfer CPI structure ready - will be invoked when TransferArgs added to signature");
-        
-        // TODO: Enable transfer CPI after resolving lifetime issues
-        if let Some(_transfer_args) = transfer_args_a {
-            msg!("[add_liquidity] TransferArgs provided for token A - structure ready (lifetime fix pending)");
-        }
-    }
     
-    if !pool_state.token_b_is_ztoken {
+    if !token_b_is_ztoken {
         anchor_spl::token_interface::transfer(
             CpiContext::new(
                 ctx.accounts.token_program.to_account_info(),
@@ -144,50 +112,137 @@ pub fn add_liquidity(
             .checked_add(amount_b)
             .ok_or(DexError::MathOverflow)?;
     }
-    // ====================================================================
-    // ZTOKEN HANDLING: Add liquidity with zToken (token B)
-    // ====================================================================
-    // Similar to token A - see comments above.
-    // zToken transfer CPI for token B (user → pool PDA)
-    if pool_state.token_b_is_ztoken {
-        msg!("[add_liquidity] Token B is zToken - processing private_transfer CPI (user → pool PDA)");
-        
-        // For token B, remaining_accounts come after token A accounts if token A is also zToken
-        // Calculate offset: if token A is zToken, it uses first 7 accounts; token B uses next 7
-        let account_offset = if pool_state.token_a_is_ztoken { 7 } else { 0 };
-        
-        require!(
-            ctx.remaining_accounts.len() > account_offset,
-            DexError::InvalidAccount
-        );
-        
-        msg!("[add_liquidity] Processing zToken pool B accounts (offset: {})", account_offset);
-        
-        // NOTE: Lifetime issue needs to be resolved when adding TransferArgs as instruction parameters
-        // For now, validate account structure is ready
-        msg!("[add_liquidity] zToken pool B accounts structure validated");
-        msg!("[add_liquidity] Private transfer CPI structure ready - will be invoked when TransferArgs added to signature");
-        
-        // TODO: Enable transfer CPI after resolving lifetime issues
-        if let Some(_transfer_args) = transfer_args_b {
-            msg!("[add_liquidity] TransferArgs provided for token B - structure ready (lifetime fix pending)");
-        }
-    }
     
     // Update total LP supply
     pool_state.total_lp_supply = pool_state.total_lp_supply
         .checked_add(lp_tokens)
         .ok_or(DexError::MathOverflow)?;
     
-    // Prepare seeds for PDA signing
+    // Prepare seeds for PDA signing (cache before dropping)
     let seeds: [&[u8]; 4] = [
         DEX_POOL_SEED,
         token_a.as_ref(),
         token_b.as_ref(),
-        &[pool_state.bump],
+        &[pool_bump],
     ];
     let signer_seeds_slice: &[&[u8]] = &seeds;
     let signer_seeds: &[&[&[u8]]] = &[signer_seeds_slice];
+    
+    // Store private reserve commitments to update after CPIs
+    let mut new_private_reserve_a_commitment: Option<[u8; 32]> = None;
+    let mut new_private_reserve_a_amount: Option<u64> = None;
+    let mut new_private_reserve_b_commitment: Option<[u8; 32]> = None;
+    let mut new_private_reserve_b_amount: Option<u64> = None;
+    
+    // CRITICAL: Drop mutable borrow BEFORE accessing remaining_accounts
+    // This prevents lifetime conflicts with Rust borrow checker
+    drop(pool_state);
+    
+    // ====================================================================
+    // ZTOKEN HANDLING: Add liquidity with zToken (token A)
+    // ====================================================================
+    // For zTokens, adding liquidity requires transferring zTokens from user
+    // to the DEX pool PDA via ptf_pool::private_transfer CPI.
+    if token_a_is_ztoken {
+        if let Some(transfer_args) = transfer_args_a {
+            msg!("[add_liquidity] Token A is zToken - invoking private_transfer CPI (user → pool PDA)");
+            
+            require!(!ctx.remaining_accounts.is_empty(), DexError::InvalidAccount);
+            
+            let ztoken_accounts = parse_ztoken_accounts(
+                ctx.remaining_accounts,
+                &token_a,
+                &POOL_PROGRAM_ID,
+                false, // is_shield = false (this is a transfer)
+            )?;
+            
+            // Invoke private_transfer CPI (user is sender, pool PDA is recipient)
+            // Access AccountInfos directly after dropping pool_state
+            invoke_transfer_cpi(
+                &ztoken_accounts,
+                ctx.remaining_accounts,
+                &ctx.accounts.payer.to_account_info(),
+                &ctx.accounts.payer.to_account_info(),
+                &ctx.accounts.system_program.to_account_info(),
+                &ctx.accounts.rent.to_account_info(),
+                transfer_args.clone(),
+                false, // sender_is_pool_pda = false (user is sender)
+                None, // pool_pda_seeds = None (user signs, not pool PDA)
+            )?;
+            
+            // Extract commitment for pool state update
+            if let Some(commitment) = extract_pool_commitment(&transfer_args.output_commitments, &pool_state_key) {
+                new_private_reserve_a_commitment = Some(commitment);
+                new_private_reserve_a_amount = Some(
+                    current_private_reserve_a_amount
+                        .checked_add(amount_a)
+                        .ok_or(DexError::MathOverflow)?
+                );
+            }
+        }
+    }
+    
+    // ====================================================================
+    // ZTOKEN HANDLING: Add liquidity with zToken (token B)
+    // ====================================================================
+    if token_b_is_ztoken {
+        if let Some(transfer_args) = transfer_args_b {
+            msg!("[add_liquidity] Token B is zToken - invoking private_transfer CPI (user → pool PDA)");
+            
+            let account_offset = if token_a_is_ztoken { 7 } else { 0 };
+            require!(ctx.remaining_accounts.len() > account_offset, DexError::InvalidAccount);
+            
+            let token_b_accounts = &ctx.remaining_accounts[account_offset..];
+            let ztoken_accounts = parse_ztoken_accounts(
+                token_b_accounts,
+                &token_b,
+                &POOL_PROGRAM_ID,
+                false, // is_shield = false (this is a transfer)
+            )?;
+            
+            // Invoke private_transfer CPI (user is sender, pool PDA is recipient)
+            // Access AccountInfos directly after dropping pool_state
+            invoke_transfer_cpi(
+                &ztoken_accounts,
+                ctx.remaining_accounts,
+                &ctx.accounts.payer.to_account_info(),
+                &ctx.accounts.payer.to_account_info(),
+                &ctx.accounts.system_program.to_account_info(),
+                &ctx.accounts.rent.to_account_info(),
+                transfer_args.clone(),
+                false, // sender_is_pool_pda = false (user is sender)
+                None, // pool_pda_seeds = None (user signs, not pool PDA)
+            )?;
+            
+            // Extract commitment for pool state update
+            if let Some(commitment) = extract_pool_commitment(&transfer_args.output_commitments, &pool_state_key) {
+                new_private_reserve_b_commitment = Some(commitment);
+                new_private_reserve_b_amount = Some(
+                    current_private_reserve_b_amount
+                        .checked_add(amount_b)
+                        .ok_or(DexError::MathOverflow)?
+                );
+            }
+        }
+    }
+    
+    // Re-acquire mutable borrow to update private reserve commitments
+    let pool_state = &mut ctx.accounts.pool_state;
+    
+    // Update private reserves if CPIs were executed
+    if let Some(commitment) = new_private_reserve_a_commitment {
+        if let Some(amount) = new_private_reserve_a_amount {
+            pool_state.update_private_reserve_a(commitment, amount);
+            msg!("[add_liquidity] Updated private reserve A: commitment={:?}, amount={}", commitment, amount);
+        }
+    }
+    
+    if let Some(commitment) = new_private_reserve_b_commitment {
+        if let Some(amount) = new_private_reserve_b_amount {
+            pool_state.update_private_reserve_b(commitment, amount);
+            msg!("[add_liquidity] Updated private reserve B: commitment={:?}, amount={}", commitment, amount);
+        }
+    }
     
     // Verify LP mint is valid before minting
     let lp_mint_info = ctx.accounts.lp_token_mint.to_account_info();
@@ -200,9 +255,6 @@ pub fn add_liquidity(
         DexError::InvalidMintFormat
     );
     msg!("[add_liquidity] LP mint validated: {}, owner: {}", lp_mint_info.key(), lp_mint_info.owner);
-    
-    // Drop mutable borrow before CPI
-    drop(pool_state);
     
     // Verify user LP token account exists and is valid
     let user_lp_account_info = ctx.accounts.user_lp_token_account.to_account_info();
