@@ -1073,8 +1073,20 @@ export async function wrap(params: WrapParams): Promise<string> {
       'Commitment tree account missing even though pool is initialized. This is an inconsistent state - run repair tooling.'
     );
   }
-  // If neither exists, shield will initialize both via lazy initialization - this is fine.
-  const treeState = decodeCommitmentTree(new Uint8Array(commitmentTreeAccount.data));
+  
+  // If commitment tree doesn't exist, shield will initialize it via lazy initialization.
+  // For lazy initialization, we need to use a default/empty tree state for root fetching.
+  // The actual tree will be initialized by shield instruction.
+  let treeState;
+  if (commitmentTreeAccount) {
+    treeState = decodeCommitmentTree(new Uint8Array(commitmentTreeAccount.data));
+  } else {
+    // Lazy initialization - use default root (empty tree)
+    treeState = {
+      currentRoot: new Uint8Array(32), // Empty tree root
+      roots: []
+    };
+  }
   const recipientKey = params.recipient ? new PublicKey(params.recipient) : wallet.publicKey;
   const depositId = BigInt(params.depositId);
   const blinding = BigInt(params.blinding);

@@ -74,7 +74,7 @@ interface MintConfig {
   symbol: string;
   decimals: number;
   zTokenMint?: string;
-  // lookupTable removed - addresses are now derived programmatically
+  lookupTable?: string; // Optional lookup table address for VersionedTransaction
 }
 
 interface DecodedProofPayload {
