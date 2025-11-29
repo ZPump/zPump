@@ -18,6 +18,8 @@ pub fn create_pool(
     initial_amount_b: u64,
     token_a_is_ztoken: bool,
     token_b_is_ztoken: bool,
+    shield_args_a: Option<ShieldArgs>,
+    shield_args_b: Option<ShieldArgs>,
 ) -> Result<()> {
     // Validate amounts
     require!(initial_amount_a > 0, DexError::InvalidAmount);

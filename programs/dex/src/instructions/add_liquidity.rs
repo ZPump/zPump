@@ -17,6 +17,8 @@ pub fn add_liquidity(
     amount_a: u64,
     amount_b: u64,
     min_lp_tokens: u64,
+    transfer_args_a: Option<TransferArgs>,
+    transfer_args_b: Option<TransferArgs>,
 ) -> Result<()> {
     // Validate amounts
     require!(amount_a > 0, DexError::InvalidAmount);

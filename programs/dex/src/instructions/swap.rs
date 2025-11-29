@@ -12,6 +12,9 @@ pub fn swap(
     amount_in: u64,
     min_amount_out: u64,
     a_to_b: bool,
+    transfer_args_in: Option<TransferArgs>,
+    shield_args_out: Option<ShieldArgs>,
+    transfer_args_out: Option<TransferArgs>,
 ) -> Result<()> {
     // Validate amounts
     require!(amount_in > 0, DexError::InvalidAmount);

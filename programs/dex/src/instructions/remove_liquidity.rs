@@ -11,6 +11,8 @@ pub fn remove_liquidity(
     lp_amount: u64,
     min_amount_a: u64,
     min_amount_b: u64,
+    transfer_args_a: Option<TransferArgs>,
+    transfer_args_b: Option<TransferArgs>,
 ) -> Result<()> {
     // Validate amounts
     require!(lp_amount > 0, DexError::InvalidAmount);
