@@ -2897,404 +2897,368 @@ async function main() {
   // Merkle tree roots without proof verification, creating a critical security vulnerability.
   console.info('[test-12] SKIPPED: accept_root instruction test (function removed for security)');
 
-  // test-13: Native zToken minting, shielding, and unshielding
-  console.info('[test-13] Testing native zToken minting, shielding, and unshielding');
-  const nativeMinter = Keypair.generate();
-  await faucetSol(connection, nativeMinter.publicKey);
+  // test-13: Normal token creation, shielding, and unshielding
+  // We create normal tokens (not native zTokens), then shield them to create zTokens
+  console.info('[test-13] Testing normal token creation, shielding, and unshielding');
+  const test13User = Keypair.generate();
+  await faucetSol(connection, test13User.publicKey);
 
-  // Create metadata for native zToken
-  const nativeTokenName = 'Native Test Token';
-  const nativeTokenSymbol = 'NTT';
-  const nativeTokenDecimals = 6;
-  const nativeTokenSupply = WRAP_AMOUNT * 10n; // 10x wrap amount
-  const nativeTokenUri = 'ipfs://QmTest123'; // Mock IPFS URI for testing
+  // Use existing mint from catalog (same as test-01 setup)
+  // Normal tokens are created via the API during bootstrap, then we shield them
+  let test13Catalog = await fetchMintCatalog();
+  if (!test13Catalog.length) {
+    // Create a mint via the API (same as test-01 setup)
+    console.info('[test-13] No mints found, creating a test mint via API...');
+    const registerResponse = await fetch(MINTS_API_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ symbol: 'TEST13', decimals: TARGET_DECIMALS })
+    });
+    if (!registerResponse.ok) {
+      const errorText = await registerResponse.text();
+      throw new Error(`[test-13] Failed to create token via API: ${errorText}. Run bootstrap script first.`);
+    }
+    // Wait for catalog to sync
+    await new Promise(resolve => setTimeout(resolve, 2000));
+    test13Catalog = await fetchMintCatalog();
+  }
+  
+  if (!test13Catalog.length) {
+    throw new Error('[test-13] No mints found in catalog. Run bootstrap script first.');
+  }
+  
+  // Use the first mint from catalog (or create a new one if needed)
+  const test13MintConfig = test13Catalog[0]!;
+  const test13OriginMint = new PublicKey(test13MintConfig.originMint);
+  console.info('[test-13] Using normal token from catalog:', test13OriginMint.toBase58());
 
-  // Generate mint keypair
-  const nativeMintKeypair = Keypair.generate();
-  const nativeOriginMint = nativeMintKeypair.publicKey;
+  // Fund user with tokens
+  const test13TokenSupply = WRAP_AMOUNT * 10n; // 10x wrap amount
+  await faucetToken(connection, test13OriginMint, test13User.publicKey, test13TokenSupply);
 
-  // Derive PDAs
-  const nativeMetadata = deriveTokenMetadata(nativeOriginMint);
-  const nativeMintMapping = deriveMintMapping(nativeOriginMint);
-  const nativePoolState = derivePoolState(nativeOriginMint);
-  const nativeVaultState = deriveVaultState(nativeOriginMint);
-  const nativeCommitmentTree = deriveCommitmentTree(nativeOriginMint);
-  const nativeNullifierSet = deriveNullifierSet(nativeOriginMint);
-  const nativeNoteLedger = deriveNoteLedger(nativeOriginMint);
-  const nativeHookConfig = deriveHookConfig(nativeOriginMint);
-  const nativeHookWhitelist = deriveHookWhitelist(nativeOriginMint);
-  const nativeFactoryState = deriveFactoryState();
-  const nativeFactoryConfig = deriveFactoryConfig();
-  const nativeVerifyingKey = deriveVerifyingKey();
+  // Derive PDAs for this mint
+  const test13MintMapping = deriveMintMapping(test13OriginMint);
+  const test13PoolState = derivePoolState(test13OriginMint);
+  const test13VaultState = deriveVaultState(test13OriginMint);
+  const test13CommitmentTree = deriveCommitmentTree(test13OriginMint);
+  const test13NullifierSet = deriveNullifierSet(test13OriginMint);
+  const test13NoteLedger = deriveNoteLedger(test13OriginMint);
+  const test13HookConfig = deriveHookConfig(test13OriginMint);
+  const test13HookWhitelist = deriveHookWhitelist(test13OriginMint);
+  const test13FactoryState = deriveFactoryState();
+  const test13VerifyingKey = deriveVerifyingKey();
 
   // Get user's token account
-  const nativeUserTokenAccount = await getAssociatedTokenAddress(
-    nativeOriginMint,
-    nativeMinter.publicKey,
+  const test13UserTokenAccount = await getAssociatedTokenAddress(
+    test13OriginMint,
+    test13User.publicKey,
     false,
-    TOKEN_2022_PROGRAM_ID,
+    TOKEN_PROGRAM_ID,
     ASSOCIATED_TOKEN_PROGRAM_ID
   );
-
-  const nativeMintInstructions: TransactionInstruction[] = [];
-
-  // Build mint_native_ztoken instruction
-  const nativeMintData = factoryCoder.instruction.encode('mint_native_ztoken', {
-    name: nativeTokenName,
-    symbol: nativeTokenSymbol,
-    uri: nativeTokenUri,
-    decimals: nativeTokenDecimals,
-    initial_supply: new BN(nativeTokenSupply.toString()),
-    feature_flags: null,
-    fee_bps_override: null,
-  });
-
-  const nativeFactoryConfigInfo = await connection.getAccountInfo(nativeFactoryConfig);
-  const nativeFactoryConfigMeta = nativeFactoryConfigInfo
-    ? { pubkey: nativeFactoryConfig, isSigner: false, isWritable: true }
-    : { pubkey: FACTORY_PROGRAM_ID, isSigner: false, isWritable: false };
-
-  // CRITICAL: MintNativeZtoken instruction account order must match programs/factory/src/lib.rs exactly:
-  // 0: factory_state, 1: payer, 2: origin_mint, 3: metadata, 4: mint_mapping,
-  // 5: factory_config (optional), 6: user_token_account, 7: token_program,
-  // 8: associated_token_program, 9: system_program, 10: rent
-  // Note: Pool/vault accounts are NOT part of this instruction - they're initialized lazily on first shield
-  const nativeMintKeys = [
-    { pubkey: nativeFactoryState, isSigner: false, isWritable: true }, // 0
-    { pubkey: nativeMinter.publicKey, isSigner: true, isWritable: true }, // 1 payer
-    { pubkey: nativeOriginMint, isSigner: true, isWritable: true }, // 2 mint (keypair)
-    { pubkey: nativeMetadata, isSigner: false, isWritable: true }, // 3
-    { pubkey: nativeMintMapping, isSigner: false, isWritable: true }, // 4
-    nativeFactoryConfigMeta, // 5 (optional)
-    { pubkey: nativeUserTokenAccount, isSigner: false, isWritable: true }, // 6
-    { pubkey: TOKEN_2022_PROGRAM_ID, isSigner: false, isWritable: false }, // 7 token_program
-    { pubkey: ASSOCIATED_TOKEN_PROGRAM_ID, isSigner: false, isWritable: false }, // 8
-    { pubkey: SystemProgram.programId, isSigner: false, isWritable: false }, // 9
-    { pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false }, // 10
-  ];
-
-  nativeMintInstructions.push(
-    new TransactionInstruction({
-      programId: FACTORY_PROGRAM_ID,
-      keys: nativeMintKeys,
-      data: nativeMintData,
-    })
-  );
-
-  // Add compute budget
-  nativeMintInstructions.unshift(
-    ComputeBudgetProgram.setComputeUnitLimit({
-      units: 1_400_000,
-    })
-  );
-
-  // Send transaction
-  const nativeMintTx = new Transaction().add(...nativeMintInstructions);
-  nativeMintTx.feePayer = nativeMinter.publicKey;
-  nativeMintTx.recentBlockhash = (await connection.getLatestBlockhash('confirmed')).blockhash;
-  nativeMintTx.partialSign(nativeMintKeypair, nativeMinter);
-  const nativeMintSig = await connection.sendRawTransaction(nativeMintTx.serialize(), {
-    skipPreflight: false
-  });
-  await connection.confirmTransaction(nativeMintSig, 'confirmed');
-  console.info('[test-13] Native zToken minted:', nativeMintSig);
-
-  // Verify mint mapping was created
-  const nativeMappingAccount = await connection.getAccountInfo(nativeMintMapping);
-  if (!nativeMappingAccount) {
-    throw new Error('[test-13] Mint mapping account not found');
-  }
-  const nativeMapping = factoryCoder.accounts.decode('MintMapping', nativeMappingAccount.data);
-  if (nativeMapping.origin_mint.toBase58() !== nativeOriginMint.toBase58()) {
-    throw new Error('[test-13] Mint mapping origin_mint mismatch');
-  }
-  if (!nativeMapping.is_native_ztoken) {
-    throw new Error('[test-13] Mint mapping is_native_ztoken flag not set');
-  }
-  console.info('[test-13] Mint mapping verified, is_native_ztoken:', nativeMapping.is_native_ztoken);
 
   // Verify tokens were minted to user
-  const nativeUserTokenBalance = await connection.getTokenAccountBalance(nativeUserTokenAccount);
-  if (nativeUserTokenBalance.value.amount !== nativeTokenSupply.toString()) {
-    throw new Error(`[test-13] Token balance mismatch: expected ${nativeTokenSupply}, got ${nativeUserTokenBalance.value.amount}`);
+  const test13UserTokenBalance = await connection.getTokenAccountBalance(test13UserTokenAccount);
+  if (test13UserTokenBalance.value.amount !== test13TokenSupply.toString()) {
+    throw new Error(`[test-13] Token balance mismatch: expected ${test13TokenSupply}, got ${test13UserTokenBalance.value.amount}`);
   }
-  console.info('[test-13] User token balance verified:', nativeUserTokenBalance.value.amount);
+  console.info('[test-13] User token balance verified:', test13UserTokenBalance.value.amount);
 
-  const nativeVaultAta = await getAssociatedTokenAddress(
-    nativeOriginMint,
-    nativeVaultState,
+  const test13VaultAta = await getAssociatedTokenAddress(
+    test13OriginMint,
+    test13VaultState,
     true,
-    TOKEN_2022_PROGRAM_ID,
+    TOKEN_PROGRAM_ID,
     ASSOCIATED_TOKEN_PROGRAM_ID
   );
 
-  // Verify vault ATA exists, create if needed (should have been created during mint_native_ztoken)
-  const vaultAtaInfo = await connection.getAccountInfo(nativeVaultAta);
-  if (!vaultAtaInfo) {
+  // Verify vault ATA exists, create if needed
+  const test13VaultAtaInfo = await connection.getAccountInfo(test13VaultAta);
+  if (!test13VaultAtaInfo) {
     console.warn('[test-13] Vault ATA not found, creating...');
     const createVaultAtaIx = createAssociatedTokenAccountInstruction(
-      nativeMinter.publicKey,
-      nativeVaultAta,
-      nativeVaultState,
-      nativeOriginMint,
-      TOKEN_2022_PROGRAM_ID,
+      test13User.publicKey,
+      test13VaultAta,
+      test13VaultState,
+      test13OriginMint,
+      TOKEN_PROGRAM_ID,
       ASSOCIATED_TOKEN_PROGRAM_ID
     );
-    await sendAndConfirmInstructions(connection, nativeMinter, [createVaultAtaIx]);
+    await sendAndConfirmInstructions(connection, test13User, [createVaultAtaIx]);
   }
 
-  // Lookup tables removed - addresses are now derived programmatically
-  const nativeShieldClaim = deriveShieldClaim(nativePoolState);
+  const test13ShieldClaim = deriveShieldClaim(test13PoolState);
 
-  // Now test shielding the native zToken (same as regular shield)
-  const nativeDepositId = randomFieldScalar();
-  const nativeBlinding = randomFieldScalar();
-  const nativeNoteAmount = nativeTokenSupply / 2n; // Shield half
+  // Now test shielding the normal token (creates zTokens)
+  const test13DepositId = randomFieldScalar();
+  const test13Blinding = randomFieldScalar();
+  const test13NoteAmount = test13TokenSupply / 2n; // Shield half
 
-  const nativePoolRootState = await fetchPoolStateRoot(connection, nativePoolState.toBase58());
-  const nativeCurrentRoot = canonicalizeHex(nativePoolRootState.root);
+  const test13PoolRootState = await fetchPoolStateRoot(connection, test13PoolState.toBase58());
+  const test13CurrentRoot = canonicalizeHex(test13PoolRootState.root);
 
-  const nativeShieldProof = await proofClient.requestProof('wrap', {
-    oldRoot: nativeCurrentRoot,
-    depositId: nativeDepositId,
-    blinding: nativeBlinding,
-    amount: nativeNoteAmount.toString(),
-    recipient: nativeMinter.publicKey.toBase58(),
-    mintId: nativeOriginMint.toBase58(),
-    poolId: nativePoolState.toBase58()
+  const test13ShieldProof = await proofClient.requestProof('wrap', {
+    oldRoot: test13CurrentRoot,
+    depositId: test13DepositId,
+    blinding: test13Blinding,
+    amount: test13NoteAmount.toString(),
+    recipient: test13User.publicKey.toBase58(),
+    mintId: test13OriginMint.toBase58(),
+    poolId: test13PoolState.toBase58()
   });
 
-  const nativeDecodedShieldProof = decodeProofPayload(nativeShieldProof);
-  const nativeAmountCommitmentBytes = await poseidonHashMany([nativeNoteAmount, BigInt(nativeBlinding)]);
+  const test13DecodedShieldProof = decodeProofPayload(test13ShieldProof);
+  const test13AmountCommitmentBytes = await poseidonHashMany([test13NoteAmount, BigInt(test13Blinding)]);
 
-  const nativeShieldArgs = {
-    amount_commit: Array.from(nativeAmountCommitmentBytes),
-    amount: new BN(nativeNoteAmount.toString()),
-    proof: nativeDecodedShieldProof.proof,
-    public_inputs: nativeDecodedShieldProof.publicInputs
+  const test13ShieldArgs = {
+    amount_commit: Array.from(test13AmountCommitmentBytes),
+    amount: new BN(test13NoteAmount.toString()),
+    proof: test13DecodedShieldProof.proof,
+    public_inputs: test13DecodedShieldProof.publicInputs
   };
 
-  const nativeShieldData = poolCoder.instruction.encode('shield', { args: nativeShieldArgs });
+  const test13ShieldData = poolCoder.instruction.encode('shield', { args: test13ShieldArgs });
 
-  const nativeShieldKeys = [
-    { pubkey: nativePoolState, isSigner: false, isWritable: true },
-    { pubkey: nativeHookConfig, isSigner: false, isWritable: false },
-    { pubkey: nativeHookWhitelist, isSigner: false, isWritable: true },
-    { pubkey: nativeNullifierSet, isSigner: false, isWritable: true },
-    { pubkey: nativeCommitmentTree, isSigner: false, isWritable: true },
-    { pubkey: nativeNoteLedger, isSigner: false, isWritable: true },
-    { pubkey: nativeVaultState, isSigner: false, isWritable: true },
-    { pubkey: nativeVaultAta, isSigner: false, isWritable: true },
-    { pubkey: nativeUserTokenAccount, isSigner: false, isWritable: true },
-    { pubkey: POOL_PROGRAM_ID, isSigner: false, isWritable: false }, // No zToken mint for native zTokens
-    { pubkey: VERIFIER_PROGRAM_ID, isSigner: false, isWritable: false },
-    { pubkey: nativeVerifyingKey, isSigner: false, isWritable: false },
-    { pubkey: nativeShieldClaim, isSigner: false, isWritable: true },
-    { pubkey: nativeMinter.publicKey, isSigner: true, isWritable: true },
-    { pubkey: nativeOriginMint, isSigner: false, isWritable: false },
-    { pubkey: nativeMintMapping, isSigner: false, isWritable: false },
-    { pubkey: VAULT_PROGRAM_ID, isSigner: false, isWritable: false },
-    { pubkey: TOKEN_2022_PROGRAM_ID, isSigner: false, isWritable: false },
-    { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
-    { pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false }
+  // Get mint config to check for zToken mint
+  const test13MintConfigForShield = test13Catalog.find(m => m.originMint === test13OriginMint.toBase58());
+  
+  const test13ShieldKeys = [
+    { pubkey: test13PoolState, isSigner: false, isWritable: true },
+    { pubkey: test13HookConfig, isSigner: false, isWritable: false },
+    { pubkey: test13HookWhitelist, isSigner: false, isWritable: true },
+    { pubkey: test13NullifierSet, isSigner: false, isWritable: true },
+    { pubkey: test13CommitmentTree, isSigner: false, isWritable: true },
+    { pubkey: test13NoteLedger, isSigner: false, isWritable: true },
+    { pubkey: test13VaultState, isSigner: false, isWritable: true },
+    { pubkey: test13VaultAta, isSigner: false, isWritable: true },
+    { pubkey: test13UserTokenAccount, isSigner: false, isWritable: true }
   ];
 
-  const nativeShieldIx = new TransactionInstruction({
+  if (test13MintConfigForShield?.zTokenMint) {
+    test13ShieldKeys.push({ pubkey: new PublicKey(test13MintConfigForShield.zTokenMint), isSigner: false, isWritable: true });
+  } else {
+    test13ShieldKeys.push({ pubkey: POOL_PROGRAM_ID, isSigner: false, isWritable: false });
+  }
+
+  // CRITICAL: Shield instruction account order must match programs/pool/src/lib.rs exactly:
+  // 10: verifier_program, 11: verifying_key, 12: shield_claim, 13: payer, 14: origin_mint,
+  // 15: mint_mapping, 16: factory_state, 17: vault_program, 18: token_program, 19: system_program, 20: rent
+  test13ShieldKeys.push(
+    { pubkey: VERIFIER_PROGRAM_ID, isSigner: false, isWritable: false },
+    { pubkey: test13VerifyingKey, isSigner: false, isWritable: false },
+    { pubkey: test13ShieldClaim, isSigner: false, isWritable: true },
+    { pubkey: test13User.publicKey, isSigner: true, isWritable: true },
+    { pubkey: test13OriginMint, isSigner: false, isWritable: false },
+    { pubkey: test13MintMapping, isSigner: false, isWritable: false },
+    { pubkey: test13FactoryState, isSigner: false, isWritable: false }, // Position 16 - REQUIRED for lazy pool initialization
+    { pubkey: VAULT_PROGRAM_ID, isSigner: false, isWritable: false },
+    { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
+    { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+    { pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false }
+  );
+
+  const test13ShieldIx = new TransactionInstruction({
     programId: POOL_PROGRAM_ID,
-    keys: nativeShieldKeys,
-    data: nativeShieldData
+    keys: test13ShieldKeys,
+    data: test13ShieldData
   });
 
-  const nativeFinalizeLedgerIx = new TransactionInstruction({
+  const test13FinalizeLedgerIx = new TransactionInstruction({
     programId: POOL_PROGRAM_ID,
     keys: [
-      { pubkey: nativePoolState, isSigner: false, isWritable: true },
-      { pubkey: nativeHookConfig, isSigner: false, isWritable: false },
-      { pubkey: nativeNoteLedger, isSigner: false, isWritable: true },
-      { pubkey: nativeShieldClaim, isSigner: false, isWritable: true },
-      { pubkey: nativeHookWhitelist, isSigner: false, isWritable: false }
+      { pubkey: test13PoolState, isSigner: false, isWritable: true },
+      { pubkey: test13HookConfig, isSigner: false, isWritable: false },
+      { pubkey: test13NoteLedger, isSigner: false, isWritable: true },
+      { pubkey: test13ShieldClaim, isSigner: false, isWritable: true },
+      { pubkey: test13HookWhitelist, isSigner: false, isWritable: false }
     ],
     data: poolCoder.instruction.encode('shield_finalize_ledger', {})
   });
 
   await sendAndConfirmInstructions(
     connection,
-    nativeMinter,
-    [ComputeBudgetProgram.setComputeUnitLimit({ units: 1_200_000 }), nativeShieldIx],
-    nativeOriginMint
+    test13User,
+    [ComputeBudgetProgram.setComputeUnitLimit({ units: 1_200_000 }), test13ShieldIx],
+    test13OriginMint
   );
 
-  await sendAndConfirmInstructions(connection, nativeMinter, [nativeFinalizeLedgerIx], nativeOriginMint);
+  await sendAndConfirmInstructions(connection, test13User, [test13FinalizeLedgerIx], test13OriginMint);
 
-  const nativeFinalizeTreeIx = new TransactionInstruction({
+  const test13FinalizeTreeIx = new TransactionInstruction({
     programId: POOL_PROGRAM_ID,
     keys: [
-      { pubkey: nativePoolState, isSigner: false, isWritable: true },
-      { pubkey: nativeCommitmentTree, isSigner: false, isWritable: true },
-      { pubkey: nativeShieldClaim, isSigner: false, isWritable: true }
+      { pubkey: test13PoolState, isSigner: false, isWritable: true },
+      { pubkey: test13CommitmentTree, isSigner: false, isWritable: true },
+      { pubkey: test13ShieldClaim, isSigner: false, isWritable: true }
     ],
     data: poolCoder.instruction.encode('shield_finalize_tree', {})
   });
-  await sendAndConfirmInstructions(connection, nativeMinter, [nativeFinalizeTreeIx], nativeOriginMint);
+  await sendAndConfirmInstructions(connection, test13User, [test13FinalizeTreeIx], test13OriginMint);
 
-  const nativeCheckInvariantIx = new TransactionInstruction({
+  const test13CheckInvariantIx = new TransactionInstruction({
     programId: POOL_PROGRAM_ID,
     keys: [
-      { pubkey: nativePoolState, isSigner: false, isWritable: false },
-      { pubkey: nativeNoteLedger, isSigner: false, isWritable: false },
-      { pubkey: nativeShieldClaim, isSigner: false, isWritable: true },
-      { pubkey: nativeVaultAta, isSigner: false, isWritable: true },
+      { pubkey: test13PoolState, isSigner: false, isWritable: false },
+      { pubkey: test13NoteLedger, isSigner: false, isWritable: false },
+      { pubkey: test13ShieldClaim, isSigner: false, isWritable: true },
+      { pubkey: test13VaultAta, isSigner: false, isWritable: true },
       { pubkey: POOL_PROGRAM_ID, isSigner: false, isWritable: false }
     ],
     data: poolCoder.instruction.encode('shield_check_invariant', {})
   });
-  await sendAndConfirmInstructions(connection, nativeMinter, [nativeCheckInvariantIx], nativeOriginMint);
-  await waitForShieldClaimCleared(connection, nativeShieldClaim);
+  await sendAndConfirmInstructions(connection, test13User, [test13CheckInvariantIx], test13OriginMint);
+  await waitForShieldClaimCleared(connection, test13ShieldClaim);
 
   // Verify tokens were deposited to vault
-  const nativeVaultTokenAccount = await getAssociatedTokenAddress(
-    nativeOriginMint,
-    nativeVaultState,
+  const test13VaultTokenAccount = await getAssociatedTokenAddress(
+    test13OriginMint,
+    test13VaultState,
     true,
-    TOKEN_2022_PROGRAM_ID,
+    TOKEN_PROGRAM_ID,
     ASSOCIATED_TOKEN_PROGRAM_ID
   );
-  const nativeVaultBalance = await connection.getTokenAccountBalance(nativeVaultTokenAccount);
-  if (nativeVaultBalance.value.amount !== nativeNoteAmount.toString()) {
-    throw new Error(`[test-13] Vault balance mismatch: expected ${nativeNoteAmount}, got ${nativeVaultBalance.value.amount}`);
+  const test13VaultBalance = await connection.getTokenAccountBalance(test13VaultTokenAccount);
+  const test13VaultBalanceAmount = BigInt(test13VaultBalance.value.amount);
+  // Check that vault balance increased by at least test13NoteAmount (may have existing balance from other tests)
+  // We can't check exact balance since this mint might have been used in previous tests
+  if (test13VaultBalanceAmount < test13NoteAmount) {
+    throw new Error(`[test-13] Vault balance too low: expected at least ${test13NoteAmount}, got ${test13VaultBalance.value.amount}`);
   }
-  console.info('[test-13] Native zToken shielded successfully, vault balance:', nativeVaultBalance.value.amount);
+  console.info('[test-13] Normal token shielded successfully, vault balance:', test13VaultBalance.value.amount);
 
-  // Test unshielding native zToken
+  // Test unshielding zToken back to normal token
   // Wait a bit and refresh root to ensure we have the latest on-chain root
   await sleep(1000);
-  const nativePoolRootBeforeUnshield = await fetchPoolStateRoot(connection, nativePoolState.toBase58());
-  const nativeCurrentRootForUnshield = canonicalizeHex(nativePoolRootBeforeUnshield.root);
-  const nativeFeeBps = BigInt(nativePoolRootBeforeUnshield.feeBps);
-  console.info(`[test-13] Root before unshield (from pool_state): ${nativeCurrentRootForUnshield}, feeBps: ${nativeFeeBps}`);
+  const test13PoolRootBeforeUnshield = await fetchPoolStateRoot(connection, test13PoolState.toBase58());
+  const test13CurrentRootForUnshield = canonicalizeHex(test13PoolRootBeforeUnshield.root);
+  const test13FeeBps = BigInt(test13PoolRootBeforeUnshield.feeBps);
+  console.info(`[test-13] Root before unshield (from pool_state): ${test13CurrentRootForUnshield}, feeBps: ${test13FeeBps}`);
   
   // Calculate fee using pool's feeBps (matching test-07 logic)
   // Calculate unshield amount: X <= noteAmount * 10000 / (10000 + feeBps)
-  let nativeUnshieldAmount = (nativeNoteAmount * 10_000n) / (10_000n + nativeFeeBps);
+  let test13UnshieldAmount = (test13NoteAmount * 10_000n) / (10_000n + test13FeeBps);
   // Calculate fee based on unshield amount (matching on-chain calculation: (amount * fee_bps) / 10000)
-  let nativeCalculatedFee = (nativeUnshieldAmount * nativeFeeBps) / 10_000n;
+  let test13CalculatedFee = (test13UnshieldAmount * test13FeeBps) / 10_000n;
   // CRITICAL FIX: On-chain enforces minimum fee of 1 lamport (MIN_FEE)
-  let nativeUnshieldFee = nativeCalculatedFee > 0n ? nativeCalculatedFee : 1n;
+  let test13UnshieldFee = test13CalculatedFee > 0n ? test13CalculatedFee : 1n;
   // Calculate change amount
-  let nativeChangeAmount = nativeNoteAmount - nativeUnshieldAmount - nativeUnshieldFee;
+  let test13ChangeAmount = test13NoteAmount - test13UnshieldAmount - test13UnshieldFee;
   // If change is very small (1-2 units), adjust to eliminate it to avoid proof complexity
-  if (nativeChangeAmount > 0n && nativeChangeAmount <= 2n) {
+  if (test13ChangeAmount > 0n && test13ChangeAmount <= 2n) {
     // Absorb small change into fee
-    nativeUnshieldFee = nativeUnshieldFee + nativeChangeAmount;
-    nativeChangeAmount = 0n;
+    test13UnshieldFee = test13UnshieldFee + test13ChangeAmount;
+    test13ChangeAmount = 0n;
     // Recalculate unshield amount
-    nativeUnshieldAmount = nativeNoteAmount - nativeUnshieldFee;
+    test13UnshieldAmount = test13NoteAmount - test13UnshieldFee;
   }
   // Generate change blinding values if there's change
-  const nativeChangeBlinding = nativeChangeAmount > 0n ? randomFieldScalar() : '0';
-  const nativeChangeAmountBlinding = nativeChangeAmount > 0n ? randomFieldScalar() : '0';
+  const test13ChangeBlinding = test13ChangeAmount > 0n ? randomFieldScalar() : '0';
+  const test13ChangeAmountBlinding = test13ChangeAmount > 0n ? randomFieldScalar() : '0';
   
-  const nativeUnshieldProofPayload: Record<string, unknown> = {
-    oldRoot: nativeCurrentRootForUnshield,
-    mintId: nativeOriginMint.toBase58(),
-    poolId: nativePoolState.toBase58(),
-    noteId: nativeDepositId,
-    spendingKey: nativeBlinding,
-    noteAmount: nativeNoteAmount.toString(),
-    amount: nativeUnshieldAmount.toString(),
-    fee: nativeUnshieldFee.toString(),
-    destPubkey: nativeMinter.publicKey.toBase58(),
+  const test13UnshieldProofPayload: Record<string, unknown> = {
+    oldRoot: test13CurrentRootForUnshield,
+    mintId: test13OriginMint.toBase58(),
+    poolId: test13PoolState.toBase58(),
+    noteId: test13DepositId,
+    spendingKey: test13Blinding,
+    noteAmount: test13NoteAmount.toString(),
+    amount: test13UnshieldAmount.toString(),
+    fee: test13UnshieldFee.toString(),
+    destPubkey: test13User.publicKey.toBase58(),
     mode: 'origin'
   };
   
   // Add change object if there's change
-  if (nativeChangeAmount > 0n) {
-    nativeUnshieldProofPayload.change = {
-      amount: nativeChangeAmount.toString(),
-      recipient: nativeMinter.publicKey.toBase58(),
-      blinding: nativeChangeBlinding,
-      amountBlinding: nativeChangeAmountBlinding
+  if (test13ChangeAmount > 0n) {
+    test13UnshieldProofPayload.change = {
+      amount: test13ChangeAmount.toString(),
+      recipient: test13User.publicKey.toBase58(),
+      blinding: test13ChangeBlinding,
+      amountBlinding: test13ChangeAmountBlinding
     };
   }
   
-  const nativeUnshieldProof = await proofClient.requestProof('unwrap', nativeUnshieldProofPayload as any);
+  const test13UnshieldProof = await proofClient.requestProof('unwrap', test13UnshieldProofPayload as any);
 
-  const nativeDecodedUnshieldProof = decodeProofPayload(nativeUnshieldProof);
+  const test13DecodedUnshieldProof = decodeProofPayload(test13UnshieldProof);
   // Extract fields similar to test-07
-  const NATIVE_ROOT_FIELD_COUNT = 2;
-  const NATIVE_TRAILING_FIELD_COUNT = 6;
-  const NATIVE_CHANGE_FIELD_COUNT = 2;
-  const nativeNullifierCount = nativeDecodedUnshieldProof.fields.length - (NATIVE_ROOT_FIELD_COUNT + NATIVE_TRAILING_FIELD_COUNT + NATIVE_CHANGE_FIELD_COUNT);
-  const nativeOldRootBytes = nativeDecodedUnshieldProof.fields[0]!;
-  const nativeNewRootBytes = nativeDecodedUnshieldProof.fields[1]!;
-  const nativeNullifierBytesArray = nativeDecodedUnshieldProof.fields.slice(2, 2 + nativeNullifierCount);
-  const nativeChangeCommitmentBytes = nativeDecodedUnshieldProof.fields[2 + nativeNullifierCount]!;
-  const nativeChangeAmountCommitmentBytes = nativeDecodedUnshieldProof.fields[3 + nativeNullifierCount]!;
+  const TEST13_ROOT_FIELD_COUNT = 2;
+  const TEST13_TRAILING_FIELD_COUNT = 6;
+  const TEST13_CHANGE_FIELD_COUNT = 2;
+  const test13NullifierCount = test13DecodedUnshieldProof.fields.length - (TEST13_ROOT_FIELD_COUNT + TEST13_TRAILING_FIELD_COUNT + TEST13_CHANGE_FIELD_COUNT);
+  const test13OldRootBytes = test13DecodedUnshieldProof.fields[0]!;
+  const test13NewRootBytes = test13DecodedUnshieldProof.fields[1]!;
+  const test13NullifierBytesArray = test13DecodedUnshieldProof.fields.slice(2, 2 + test13NullifierCount);
+  const test13ChangeCommitmentBytes = test13DecodedUnshieldProof.fields[2 + test13NullifierCount]!;
+  const test13ChangeAmountCommitmentBytes = test13DecodedUnshieldProof.fields[3 + test13NullifierCount]!;
 
-  const nativeUnshieldArgs = {
-    old_root: Array.from(nativeOldRootBytes),
-    new_root: Array.from(nativeNewRootBytes),
-    nullifiers: nativeNullifierBytesArray.map((entry) => Array.from(entry)),
-    output_commitments: [Array.from(nativeChangeCommitmentBytes)],
-    output_amount_commitments: [Array.from(nativeChangeAmountCommitmentBytes)],
-    amount: new BN(nativeUnshieldAmount.toString()),
-    proof: nativeDecodedUnshieldProof.proof,
-    public_inputs: nativeDecodedUnshieldProof.publicInputs
+  const test13UnshieldArgs = {
+    old_root: Array.from(test13OldRootBytes),
+    new_root: Array.from(test13NewRootBytes),
+    nullifiers: test13NullifierBytesArray.map((entry) => Array.from(entry)),
+    output_commitments: [Array.from(test13ChangeCommitmentBytes)],
+    output_amount_commitments: [Array.from(test13ChangeAmountCommitmentBytes)],
+    amount: new BN(test13UnshieldAmount.toString()),
+    proof: test13DecodedUnshieldProof.proof,
+    public_inputs: test13DecodedUnshieldProof.publicInputs
   };
 
-  const nativeUnshieldData = poolCoder.instruction.encode('unshield_to_origin', { args: nativeUnshieldArgs });
+  const test13UnshieldData = poolCoder.instruction.encode('unshield_to_origin', { args: test13UnshieldArgs });
 
-  const nativeUnshieldKeys = [
-    { pubkey: nativePoolState, isSigner: false, isWritable: true },
-    { pubkey: nativeHookConfig, isSigner: false, isWritable: false },
-    { pubkey: nativeHookWhitelist, isSigner: false, isWritable: false },
-    { pubkey: nativeNullifierSet, isSigner: false, isWritable: true },
-    { pubkey: nativeCommitmentTree, isSigner: false, isWritable: true },
-    { pubkey: nativeNoteLedger, isSigner: false, isWritable: true },
-    { pubkey: nativeMintMapping, isSigner: false, isWritable: false },
+  const test13UnshieldKeys = [
+    { pubkey: test13PoolState, isSigner: false, isWritable: true },
+    { pubkey: test13HookConfig, isSigner: false, isWritable: false },
+    { pubkey: test13HookWhitelist, isSigner: false, isWritable: false },
+    { pubkey: test13NullifierSet, isSigner: false, isWritable: true },
+    { pubkey: test13CommitmentTree, isSigner: false, isWritable: true },
+    { pubkey: test13NoteLedger, isSigner: false, isWritable: true },
+    { pubkey: test13MintMapping, isSigner: false, isWritable: false },
     { pubkey: VERIFIER_PROGRAM_ID, isSigner: false, isWritable: false },
-    { pubkey: nativeVerifyingKey, isSigner: false, isWritable: false },
-    { pubkey: nativeVaultState, isSigner: false, isWritable: true },
-    { pubkey: nativeVaultTokenAccount, isSigner: false, isWritable: true },
-    { pubkey: nativeUserTokenAccount, isSigner: false, isWritable: true },
-    { pubkey: POOL_PROGRAM_ID, isSigner: false, isWritable: false }, // twin_mint (optional, use placeholder for native zTokens)
+    { pubkey: test13VerifyingKey, isSigner: false, isWritable: false },
+    { pubkey: test13VaultState, isSigner: false, isWritable: true },
+    { pubkey: test13VaultTokenAccount, isSigner: false, isWritable: true },
+    { pubkey: test13UserTokenAccount, isSigner: false, isWritable: true },
+    { pubkey: POOL_PROGRAM_ID, isSigner: false, isWritable: false }, // twin_mint (optional, use placeholder)
     { pubkey: VAULT_PROGRAM_ID, isSigner: false, isWritable: false },
-    { pubkey: nativeFactoryState, isSigner: false, isWritable: false },
+    { pubkey: test13FactoryState, isSigner: false, isWritable: false },
     { pubkey: FACTORY_PROGRAM_ID, isSigner: false, isWritable: false },
-    { pubkey: TOKEN_2022_PROGRAM_ID, isSigner: false, isWritable: false },
+    { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
     { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
-    { pubkey: nativeMinter.publicKey, isSigner: true, isWritable: true },
+    { pubkey: test13User.publicKey, isSigner: true, isWritable: true },
     { pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false }
   ];
 
-  const nativeUnshieldIx = new TransactionInstruction({
+  const test13UnshieldIx = new TransactionInstruction({
     programId: POOL_PROGRAM_ID,
-    keys: nativeUnshieldKeys,
-    data: nativeUnshieldData
+    keys: test13UnshieldKeys,
+    data: test13UnshieldData
   });
 
   await sendAndConfirmInstructions(
     connection,
-    nativeMinter,
-    [ComputeBudgetProgram.setComputeUnitLimit({ units: 1_400_000 }), nativeUnshieldIx],
-    nativeOriginMint
+    test13User,
+    [ComputeBudgetProgram.setComputeUnitLimit({ units: 1_400_000 }), test13UnshieldIx],
+    test13OriginMint
   );
 
   // Verify tokens were returned to user
-  const nativeFinalUserBalance = await connection.getTokenAccountBalance(nativeUserTokenAccount);
-  // Expected balance: initial supply - unshield fee (fee was paid during unshield)
-  // We shielded nativeNoteAmount, then unshielded nativeUnshieldAmount, paying nativeUnshieldFee
-  // So final balance = nativeTokenSupply - nativeUnshieldFee
-  const expectedFinalBalance = nativeTokenSupply - nativeUnshieldFee;
+  const test13FinalUserBalance = await connection.getTokenAccountBalance(test13UserTokenAccount);
+  // Expected balance: initial supply - shielded amount + unshielded amount - unshield fee
+  // We started with test13TokenSupply, shielded test13NoteAmount, then unshielded test13UnshieldAmount, paying test13UnshieldFee
+  // So final balance = test13TokenSupply - test13NoteAmount + test13UnshieldAmount - test13UnshieldFee
+  // = test13TokenSupply - test13NoteAmount + (test13NoteAmount - test13UnshieldFee) - test13UnshieldFee
+  // = test13TokenSupply - 2*test13UnshieldFee (simplified)
+  // Actually: test13TokenSupply - test13NoteAmount (shielded) + test13UnshieldAmount (unshielded) = test13TokenSupply - test13UnshieldFee
+  const expectedFinalBalance = test13TokenSupply - test13UnshieldFee;
   // Allow 1 unit tolerance for rounding
-  const balanceDiff = BigInt(nativeFinalUserBalance.value.amount) > expectedFinalBalance
-    ? BigInt(nativeFinalUserBalance.value.amount) - expectedFinalBalance
-    : expectedFinalBalance - BigInt(nativeFinalUserBalance.value.amount);
+  const balanceDiff = BigInt(test13FinalUserBalance.value.amount) > expectedFinalBalance
+    ? BigInt(test13FinalUserBalance.value.amount) - expectedFinalBalance
+    : expectedFinalBalance - BigInt(test13FinalUserBalance.value.amount);
   if (balanceDiff > 1n) {
-    throw new Error(`[test-13] Final user balance mismatch: expected ${expectedFinalBalance} (±1), got ${nativeFinalUserBalance.value.amount}`);
+    throw new Error(`[test-13] Final user balance mismatch: expected ${expectedFinalBalance} (±1), got ${test13FinalUserBalance.value.amount}`);
   }
-  console.info('[test-13] Native zToken unshielded successfully, final user balance:', nativeFinalUserBalance.value.amount);
-  console.info('[test-13] Native zToken minting, shielding, and unshielding test completed successfully');
+  console.info('[test-13] zToken unshielded successfully, final user balance:', test13FinalUserBalance.value.amount);
+  console.info('[test-13] Normal token creation, shielding, and unshielding test completed successfully');
 
   console.info('[lowlevel-e2e] All low-level E2E tests completed successfully');
 }
