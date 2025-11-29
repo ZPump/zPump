@@ -256,126 +256,6 @@ pub fn create_pool(
     let mut private_reserve_b_commitment = [0u8; 32];
     let mut private_reserve_b_amount = if token_b_is_ztoken { initial_amount_b } else { 0 };
     
-    // Get pool state key - we'll need this for CPI calls
-    let pool_state_key = pool_state.key();
-    
-    // Drop mutable borrow of pool_state before CPIs to avoid conflicts
-    drop(pool_state);
-    
-    // Handle zToken shield CPIs
-    // Note: We'll re-acquire pool_state after CPIs to update private reserves
-    if token_a_is_ztoken {
-        msg!("[create_pool] Token A is zToken - processing shield CPI for initial liquidity");
-        
-        // Validate that we have remaining_accounts for zToken pool
-        require!(
-            !ctx.remaining_accounts.is_empty(),
-            DexError::InvalidAccount
-        );
-        
-        msg!("[create_pool] Found {} remaining_accounts for zToken pool A", ctx.remaining_accounts.len());
-        
-        // If ShieldArgs provided, invoke shield CPI
-        if let Some(shield_args_a) = shield_args_a {
-            msg!("[create_pool] ShieldArgs provided for token A - invoking shield CPI");
-            
-            // Store values before moving shield_args_a
-            private_reserve_a_commitment = shield_args_a.amount_commit;
-            private_reserve_a_amount = shield_args_a.amount;
-            
-            // Parse zToken pool accounts from remaining_accounts
-            let ztoken_accounts = parse_ztoken_accounts(
-                ctx.remaining_accounts,
-                &token_a,
-                &POOL_PROGRAM_ID,
-                true, // is_shield = true
-            )?;
-            
-            // Invoke shield CPI (user shields tokens to DEX pool PDA)
-            invoke_shield_cpi(
-                &ztoken_accounts,
-                ctx.remaining_accounts,
-                &ctx.accounts.token_a_mint.to_account_info(),
-                &ctx.accounts.payer.to_account_info(),
-                &ctx.accounts.token_program.to_account_info(),
-                &ctx.accounts.system_program.to_account_info(),
-                &ctx.accounts.rent.to_account_info(),
-                &VAULT_PROGRAM_ID, // Pass Pubkey instead of AccountInfo
-                &pool_state_key,
-                shield_args_a.clone(), // Clone to avoid move
-            )?;
-            
-            msg!("[create_pool] Shield CPI completed for token A");
-        } else {
-            msg!("[create_pool] No ShieldArgs provided for token A - skipping shield CPI");
-            msg!("[create_pool] NOTE: Shield CPI requires ShieldArgs proof data from SDK");
-        }
-    }
-    
-    if token_b_is_ztoken {
-        msg!("[create_pool] Token B is zToken - processing shield CPI for initial liquidity");
-        
-        // For token B, remaining_accounts come after token A accounts if token A is also zToken
-        // Calculate offset: if token A is zToken, it uses first 14 accounts; token B uses next 14
-        let account_offset = if token_a_is_ztoken { 14 } else { 0 };
-        
-        require!(
-            ctx.remaining_accounts.len() > account_offset,
-            DexError::InvalidAccount
-        );
-        
-        msg!("[create_pool] Processing zToken pool B accounts (offset: {})", account_offset);
-        
-        // Create slice directly with proper lifetime
-        let token_b_accounts = &ctx.remaining_accounts[account_offset..];
-        
-        // If ShieldArgs provided, invoke shield CPI
-        if let Some(shield_args_b) = shield_args_b {
-            msg!("[create_pool] ShieldArgs provided for token B - invoking shield CPI");
-            
-            // Store values before moving shield_args_b
-            private_reserve_b_commitment = shield_args_b.amount_commit;
-            private_reserve_b_amount = shield_args_b.amount;
-            
-            // Parse zToken pool accounts from remaining_accounts
-            let ztoken_accounts = parse_ztoken_accounts(
-                token_b_accounts,
-                &token_b,
-                &POOL_PROGRAM_ID,
-                true, // is_shield = true
-            )?;
-            
-            // Invoke shield CPI (user shields tokens to DEX pool PDA)
-            invoke_shield_cpi(
-                &ztoken_accounts,
-                ctx.remaining_accounts, // Use full remaining_accounts
-                &ctx.accounts.token_b_mint.to_account_info(),
-                &ctx.accounts.payer.to_account_info(),
-                &ctx.accounts.token_program.to_account_info(),
-                &ctx.accounts.system_program.to_account_info(),
-                &ctx.accounts.rent.to_account_info(),
-                &VAULT_PROGRAM_ID, // Pass Pubkey instead of AccountInfo
-                &pool_state_key,
-                shield_args_b.clone(),
-            )?;
-            
-            msg!("[create_pool] Shield CPI completed for token B");
-        } else {
-            msg!("[create_pool] No ShieldArgs provided for token B - skipping shield CPI");
-            msg!("[create_pool] NOTE: Shield CPI requires ShieldArgs proof data from SDK");
-        }
-    }
-    
-    // Re-acquire mutable borrow to update pool state with private reserves
-    let pool_state = &mut ctx.accounts.pool_state;
-    pool_state.private_reserve_a_commitment = private_reserve_a_commitment;
-    pool_state.private_reserve_a_amount = private_reserve_a_amount;
-    pool_state.private_reserve_b_commitment = private_reserve_b_commitment;
-    pool_state.private_reserve_b_amount = private_reserve_b_amount;
-    
-    msg!("[create_pool] Updated private reserves: A={}, B={}", 
-        private_reserve_a_amount, private_reserve_b_amount);
-    
     // Prepare seeds for PDA signing (needed for LP mint operations below)
     let seeds: [&[u8]; 4] = [
         DEX_POOL_SEED,
@@ -478,6 +358,21 @@ pub fn create_pool(
     } else {
         msg!("Warning: User LP token account does not exist or is not initialized. SDK will create it and mint tokens in follow-up transaction.");
     }
+    
+    // ====================================================================
+    // ZTOKEN SHIELD CPIs - Handle at the end after all pool_state operations
+    // ====================================================================
+    // TODO: Fix lifetime issues with zToken CPIs
+    // For now, just update pool state with private reserves
+    // CPIs will be enabled once lifetime issues are resolved
+    
+    pool_state.private_reserve_a_commitment = private_reserve_a_commitment;
+    pool_state.private_reserve_a_amount = private_reserve_a_amount;
+    pool_state.private_reserve_b_commitment = private_reserve_b_commitment;
+    pool_state.private_reserve_b_amount = private_reserve_b_amount;
+    
+    msg!("[create_pool] Updated private reserves: A={}, B={}", 
+        private_reserve_a_amount, private_reserve_b_amount);
     
     Ok(())
 }
