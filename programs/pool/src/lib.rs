@@ -4742,8 +4742,9 @@ impl ShieldClaim {
     pub const STATUS_AWAITING_LEDGER: u8 = 2;
     pub const STATUS_AWAITING_INVARIANT: u8 = 3;
     pub const STATUS_LEDGER_COMPLETE: u8 = 4;
-    // CRITICAL FIX: Shield claim expiration time (1 hour in seconds) to prevent stale claim reuse
-    pub const EXPIRATION_SECONDS: i64 = 60 * 60; // 1 hour
+    // CRITICAL FIX: Shield claim expiration time (30 seconds) to prevent stale claim reuse
+    // If a shield claim isn't finalized within 30 seconds, it's likely stuck and should expire
+    pub const EXPIRATION_SECONDS: i64 = 30; // 30 seconds
     // SPACE = discriminator[8] + pool[32] + depositor[32] + commitment[32] + amount_commit[32] + old_root[32] + new_root[32] + amount[8] + next_index[8] + bump[1] + status[1] + enforce_invariant[1] + tree_level[1] + tree_index_cursor[8] + tree_node[32] + created_at[8] + expires_at[8]
     pub const SPACE: usize = 8 + 32 + 32 + 32 + 32 + 32 + 32 + 8 + 8 + 1 + 1 + 1 + 1 + 8 + 32 + 8 + 8;
 
