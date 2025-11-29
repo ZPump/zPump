@@ -57,6 +57,14 @@ import {
 } from './onchain/utils';
 import { poseidonHashMany } from './onchain/poseidon';
 import { ProofResponse, ProofClient } from './proofClient';
+import {
+  getZTokenPoolAccounts,
+  fetchZTokenPoolRoot,
+  generateDexShieldProof,
+  generateDexTransferProof,
+  proofToShieldArgs,
+  proofToTransferArgs
+} from './dex-ztoken-helpers';
 import poolIdl from '../idl/ptf_pool.json';
 import factoryIdl from '../idl/ptf_factory.json';
 import vaultIdl from '../idl/ptf_vault.json';
