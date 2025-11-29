@@ -1561,90 +1561,47 @@ export async function wrap(params: WrapParams): Promise<string> {
       const isPendingShield = isPendingShieldError(error);
       
       if (isPendingShield && shieldAttempts < maxShieldAttempts) {
-        console.warn(`[wrap] Shield failed with PendingShieldInFlight (attempt ${shieldAttempts}/${maxShieldAttempts}), waiting and trying to clear...`);
-        // Wait a bit and try to clear pending_shield
-        await sleep(2000);
-        // Try to clear by calling shield_finalize_tree if shield claim exists
+        console.warn(`[wrap] Shield failed with PendingShieldInFlight (attempt ${shieldAttempts}/${maxShieldAttempts}), waiting for pending shield to clear...`);
+        // Wait for pending shield to become inactive naturally
+        // The shield instruction itself has logic to deactivate stale pending shields,
+        // so we just need to wait for it to clear rather than trying to force clear it
         try {
-          const claimState = await fetchShieldClaimState(connection, shieldClaim);
-          if (claimState.status !== 0) {
-            const finalizeTreeData = poolCoder.instruction.encode('shield_finalize_tree', {});
-            const finalizeTreeInstruction = new TransactionInstruction({
-              programId: POOL_PROGRAM_ID,
-              keys: [
-                { pubkey: poolState, isSigner: false, isWritable: true },
-                { pubkey: commitmentTreeKey, isSigner: false, isWritable: true },
-                { pubkey: shieldClaim, isSigner: false, isWritable: true }
-              ],
-              data: finalizeTreeData
+          await waitForPendingShieldInactive(connection, poolState, 30000); // Wait up to 30 seconds
+          console.info('[wrap] Pending shield cleared, retrying shield...');
+          // Refresh root after waiting - it may have changed if a shield completed
+          const refreshedTreeAccount = await connection.getAccountInfo(commitmentTreeKey);
+          if (refreshedTreeAccount) {
+            const refreshedTreeState = decodeCommitmentTree(new Uint8Array(refreshedTreeAccount.data));
+            const newRoot = bytesLEToCanonicalHex(refreshedTreeState.currentRoot);
+            // Regenerate proof with new root
+            const proofClient = new ProofClient({ baseUrl: process.env.PROOF_RPC_URL ?? 'http://127.0.0.1:8788' });
+            const refreshedProof = await proofClient.requestProof('wrap', {
+              oldRoot: newRoot,
+              amount: amount.toString(),
+              recipient: recipientKey.toBase58(),
+              depositId: depositId.toString(),
+              poolId: poolState.toBase58(),
+              blinding: blinding.toString(),
+              mintId: originMintKey.toBase58()
             });
-            const clearBlockhash = await connection.getLatestBlockhash('confirmed');
-            const clearTransaction = new Transaction().add(finalizeTreeInstruction);
-            clearTransaction.feePayer = wallet.publicKey;
-            clearTransaction.recentBlockhash = clearBlockhash.blockhash;
-            try {
-              const clearSignature = await wallet.sendTransaction(clearTransaction, connection, {
-                skipPreflight: false
-              });
-              await waitForSignatureConfirmation(
-                connection,
-                clearSignature,
-                clearBlockhash.blockhash,
-                clearBlockhash.lastValidBlockHeight
-              );
-              console.info('[wrap] Cleared pending_shield via shield_finalize_tree, refreshing root and regenerating proof...');
-              await sleep(1000);
-              // Refresh root after clearing pending_shield - it may have changed
-              const refreshedTreeAccount = await connection.getAccountInfo(commitmentTreeKey);
-              if (refreshedTreeAccount) {
-                const refreshedTreeState = decodeCommitmentTree(new Uint8Array(refreshedTreeAccount.data));
-                // Use bytesLEToCanonicalHex to convert little-endian bytes to canonical hex format
-                const newRoot = bytesLEToCanonicalHex(refreshedTreeState.currentRoot);
-                // Regenerate proof with new root
-                const proofClient = new ProofClient({ baseUrl: process.env.PROOF_RPC_URL ?? 'http://127.0.0.1:8788' });
-                const refreshedProof = await proofClient.requestProof('wrap', {
-                  oldRoot: newRoot,
-                  amount: amount.toString(),
-                  recipient: recipientKey.toBase58(),
-                  depositId: depositId.toString(),
-                  poolId: poolState.toBase58(),
-                  blinding: blinding.toString(),
-                  mintId: originMintKey.toBase58()
-                });
-                // Update proof and public inputs
-                const refreshedAmountCommitmentBytes = await poseidonHashMany([amount, blinding]);
-                const refreshedDecodedProof = decodeProofPayload(refreshedProof);
-                const refreshedShieldArgs = {
-                  amount_commit: Array.from(refreshedAmountCommitmentBytes),
-                  amount: new BN(amount.toString()),
-                  proof: Buffer.from(refreshedDecodedProof.proof),
-                  public_inputs: Buffer.from(refreshedDecodedProof.publicInputs)
-                };
-                const refreshedShieldData = poolCoder.instruction.encode('shield', { args: refreshedShieldArgs });
-                // Update shield instruction with new data
-                shieldInstruction.data = refreshedShieldData;
-                shieldInstructionSet[shieldInstructionSet.length - 1] = shieldInstruction;
-                console.info('[wrap] Regenerated proof with new root, retrying shield...');
-              }
-              await sleep(1000); // Wait for state to settle
-            } catch (clearError: any) {
-              // shield_finalize_tree may fail if the shield claim doesn't match current state
-              // This is expected if the shield claim is stale - just wait and retry
-              const isRootMismatch = clearError?.logs?.some((log: string) => log.includes('0x1792') || log.includes('RootMismatch')) ||
-                                    clearError?.transactionLogs?.some((log: string) => log.includes('0x1792') || log.includes('RootMismatch'));
-              if (isRootMismatch) {
-                console.warn('[wrap] shield_finalize_tree failed with RootMismatch (stale shield claim), waiting longer...');
-                await sleep(3000);
-              } else {
-                console.warn('[wrap] Failed to clear pending_shield:', clearError);
-                await sleep(2000);
-              }
-            }
+            // Update proof and public inputs
+            const refreshedAmountCommitmentBytes = await poseidonHashMany([amount, blinding]);
+            const refreshedDecodedProof = decodeProofPayload(refreshedProof);
+            const refreshedShieldArgs = {
+              amount_commit: Array.from(refreshedAmountCommitmentBytes),
+              amount: new BN(amount.toString()),
+              proof: Buffer.from(refreshedDecodedProof.proof),
+              public_inputs: Buffer.from(refreshedDecodedProof.publicInputs)
+            };
+            const refreshedShieldData = poolCoder.instruction.encode('shield', { args: refreshedShieldArgs });
+            // Update shield instruction with new data
+            shieldInstruction.data = refreshedShieldData;
+            shieldInstructionSet[shieldInstructionSet.length - 1] = shieldInstruction;
+            console.info('[wrap] Regenerated proof with new root, retrying shield...');
           }
-        } catch (claimError) {
-          // Shield claim doesn't exist or can't be read - just wait longer
-          console.warn('[wrap] Could not read shield claim, waiting longer...');
-          await sleep(3000);
+        } catch (waitError) {
+          console.warn('[wrap] Pending shield did not clear within timeout, but retrying anyway (shield instruction may clear stale shields)...');
+          await sleep(2000); // Brief wait before retry
         }
         // Refresh blockhash for retry
         latestBlockhash = await connection.getLatestBlockhash('confirmed');
