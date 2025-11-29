@@ -44,6 +44,44 @@ pub fn create_pool(
     let token_program_key = ctx.accounts.token_program.key();
     let pool_state_account_info = ctx.accounts.pool_state.to_account_info();
     
+    // Cache AccountInfos for zToken CPIs
+    let token_a_mint_account = ctx.accounts.token_a_mint.to_account_info();
+    let token_b_mint_account = ctx.accounts.token_b_mint.to_account_info();
+    let payer_account = ctx.accounts.payer.to_account_info();
+    let token_program_account = ctx.accounts.token_program.to_account_info();
+    let system_program_account = ctx.accounts.system_program.to_account_info();
+    let rent_account = ctx.accounts.rent.to_account_info();
+    
+    // Store values for pool state updates after CPIs
+    let mut private_reserve_a_commitment = [0u8; 32];
+    let mut private_reserve_a_amount = if token_a_is_ztoken { initial_amount_a } else { 0 };
+    let mut private_reserve_b_commitment = [0u8; 32];
+    let mut private_reserve_b_amount = if token_b_is_ztoken { initial_amount_b } else { 0 };
+    
+    // ====================================================================
+    // ZTOKEN SHIELD CPIs - Temporarily disabled due to lifetime issues
+    // ====================================================================
+    // TODO: Fix lifetime conflicts - need to restructure or use different approach
+    // The CPIs are structured correctly but Rust's borrow checker is preventing
+    // access to ctx.remaining_accounts after/before pool_state mutations
+    if token_a_is_ztoken && shield_args_a.is_some() {
+        msg!("[create_pool] Token A is zToken - shield CPI structure ready (lifetime fix pending)");
+        // Store commitment from shield_args for pool state initialization
+        if let Some(ref args) = shield_args_a {
+            private_reserve_a_commitment = args.amount_commit;
+            private_reserve_a_amount = args.amount;
+        }
+    }
+    
+    if token_b_is_ztoken && shield_args_b.is_some() {
+        msg!("[create_pool] Token B is zToken - shield CPI structure ready (lifetime fix pending)");
+        // Store commitment from shield_args for pool state initialization
+        if let Some(ref args) = shield_args_b {
+            private_reserve_b_commitment = args.amount_commit;
+            private_reserve_b_amount = args.amount;
+        }
+    }
+    
     // Load pool state (will be initialized by Anchor's init constraint)
     let pool_state = &mut ctx.accounts.pool_state;
     
@@ -54,10 +92,10 @@ pub fn create_pool(
     pool_state.token_b_is_ztoken = token_b_is_ztoken;
     pool_state.public_reserve_a = if token_a_is_ztoken { 0 } else { initial_amount_a };
     pool_state.public_reserve_b = if token_b_is_ztoken { 0 } else { initial_amount_b };
-    pool_state.private_reserve_a_commitment = [0u8; 32];
-    pool_state.private_reserve_a_amount = if token_a_is_ztoken { initial_amount_a } else { 0 };
-    pool_state.private_reserve_b_commitment = [0u8; 32];
-    pool_state.private_reserve_b_amount = if token_b_is_ztoken { initial_amount_b } else { 0 };
+    pool_state.private_reserve_a_commitment = private_reserve_a_commitment;
+    pool_state.private_reserve_a_amount = private_reserve_a_amount;
+    pool_state.private_reserve_b_commitment = private_reserve_b_commitment;
+    pool_state.private_reserve_b_amount = private_reserve_b_amount;
     pool_state.lp_token_mint = lp_mint_key;
     
     // Calculate initial LP tokens: sqrt(amount_a * amount_b) - MIN_LIQUIDITY
@@ -250,12 +288,6 @@ pub fn create_pool(
     // For now, we validate that zToken flags are set correctly.
     // Full CPI integration will be completed when SDK proof generation is integrated.
     //
-    // Store values for pool state updates after CPIs  
-    let mut private_reserve_a_commitment = [0u8; 32];
-    let mut private_reserve_a_amount = if token_a_is_ztoken { initial_amount_a } else { 0 };
-    let mut private_reserve_b_commitment = [0u8; 32];
-    let mut private_reserve_b_amount = if token_b_is_ztoken { initial_amount_b } else { 0 };
-    
     // Prepare seeds for PDA signing (needed for LP mint operations below)
     let seeds: [&[u8]; 4] = [
         DEX_POOL_SEED,
@@ -359,19 +391,7 @@ pub fn create_pool(
         msg!("Warning: User LP token account does not exist or is not initialized. SDK will create it and mint tokens in follow-up transaction.");
     }
     
-    // ====================================================================
-    // ZTOKEN SHIELD CPIs - Handle at the end after all pool_state operations
-    // ====================================================================
-    // TODO: Fix lifetime issues with zToken CPIs
-    // For now, just update pool state with private reserves
-    // CPIs will be enabled once lifetime issues are resolved
-    
-    pool_state.private_reserve_a_commitment = private_reserve_a_commitment;
-    pool_state.private_reserve_a_amount = private_reserve_a_amount;
-    pool_state.private_reserve_b_commitment = private_reserve_b_commitment;
-    pool_state.private_reserve_b_amount = private_reserve_b_amount;
-    
-    msg!("[create_pool] Updated private reserves: A={}, B={}", 
+    msg!("[create_pool] Pool initialized with private reserves: A={}, B={}", 
         private_reserve_a_amount, private_reserve_b_amount);
     
     Ok(())
