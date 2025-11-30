@@ -353,8 +353,9 @@ export async function fetchMintMappingAccount(
     if (isNativeSol(originMint)) {
       throw new Error(
         'wSOL (Wrapped SOL) mint mapping is not registered in the mint catalog. ' +
-        'Please register wSOL by running the bootstrap script or contact the administrator. ' +
-        'The native SOL mint address is: So11111111111111111111111111111111111111112'
+        'wSOL registration requires factory authority. Please run the bootstrap script ' +
+        'or contact the administrator to register wSOL. The native SOL mint address is: So11111111111111111111111111111111111111112. ' +
+        'Note: The bootstrap script will attempt to auto-register wSOL, but it may require manual registration on some networks.'
       );
     }
     throw new Error(`Mint mapping account missing on chain for mint: ${originMint.toBase58()}`);
