@@ -12,10 +12,8 @@ import {
 import { useState, useMemo, useEffect, useRef } from 'react';
 import { PublicKey } from '@solana/web3.js';
 import { useMintCatalog } from '../providers/MintCatalogProvider';
-import { useConnection, useWallet } from '@solana/wallet-adapter-react';
+import { useConnection } from '@solana/wallet-adapter-react';
 import { getTokenMetadata } from '../../lib/sdk';
-import { NATIVE_SOL_MINT, getWrappedSolBalance } from '../../lib/solWrapping';
-import { LAMPORTS_PER_SOL } from '@solana/web3.js';
 
 interface TokenSelectorProps {
   value: string;
@@ -30,80 +28,58 @@ interface TokenSelectorProps {
 export function TokenSelector({ value, onChange, placeholder = 'Select token', excludeMint }: TokenSelectorProps) {
   const { mints } = useMintCatalog();
   const { connection } = useConnection();
-  const wallet = useWallet();
   const [searchQuery, setSearchQuery] = useState('');
   const [isOpen, setIsOpen] = useBoolean(false);
   const containerRef = useRef<HTMLDivElement>(null);
   const [tokenImages, setTokenImages] = useState<Record<string, string>>({});
-  const [solBalance, setSolBalance] = useState<number>(0);
-  const [wsolBalance, setWsolBalance] = useState<bigint>(0n);
   
-  // Fetch SOL and wSOL balances
-  useEffect(() => {
-    if (!connection || !wallet.publicKey) {
-      setSolBalance(0);
-      setWsolBalance(0n);
-      return;
-    }
-    
-    const fetchBalances = async () => {
-      try {
-        const [lamports, wsolLamports] = await Promise.all([
-          connection.getBalance(wallet.publicKey!),
-          getWrappedSolBalance(connection, wallet.publicKey!)
-        ]);
-        setSolBalance(lamports / LAMPORTS_PER_SOL);
-        setWsolBalance(wsolLamports);
-      } catch (error) {
-        console.warn('[TokenSelector] Failed to fetch SOL balances:', error);
-      }
-    };
-    
-    void fetchBalances();
-  }, [connection, wallet.publicKey]);
-  
-  // Find selected token info
+  // Find selected token info (only zTokens - mints that have zTokenMint)
+  // value is the zTokenMint address
   const selectedToken = useMemo(() => {
     if (!value) return null;
-    if (value === NATIVE_SOL_MINT.toBase58()) {
-      return { originMint: NATIVE_SOL_MINT.toBase58(), symbol: 'SOL', decimals: 9 };
-    }
-    return mints.find(m => m.originMint === value);
+    const mint = mints.find(m => m.zTokenMint === value);
+    if (!mint || !mint.zTokenMint) return null;
+    return {
+      originMint: mint.originMint,
+      zTokenMint: mint.zTokenMint,
+      symbol: `z${mint.symbol}`,
+      decimals: mint.decimals,
+      name: mint.name || mint.symbol
+    };
   }, [value, mints]);
   
-  // Filter tokens by search query, including SOL option
+  // Filter tokens by search query - only show zTokens (mints with zTokenMint)
   const filteredTokens = useMemo(() => {
     const query = searchQuery.toLowerCase();
-    const solOption = {
-      originMint: NATIVE_SOL_MINT.toBase58(),
-      symbol: 'SOL',
-      decimals: 9,
-      name: 'Solana'
-    };
-    
-    // Always include SOL if it matches query or no query
-    const includeSOL = !searchQuery || 'sol'.includes(query);
-    const solIncluded = includeSOL && solOption.originMint !== excludeMint;
     
     const filteredMints = mints
       .filter(m => 
+        m.zTokenMint && // Only show mints that have been shielded (have zTokenMint)
+        m.zTokenMint !== excludeMint &&
         m.originMint !== excludeMint &&
-        m.originMint !== NATIVE_SOL_MINT.toBase58() && // Don't show wSOL separately
         (!searchQuery || 
          m.symbol.toLowerCase().includes(query) || 
-         m.originMint.toLowerCase().includes(query))
+         m.originMint.toLowerCase().includes(query) ||
+         m.zTokenMint.toLowerCase().includes(query))
       )
-      .slice(0, solIncluded ? 9 : 10); // Reserve one slot for SOL if including it
+      .map(m => ({
+        originMint: m.originMint,
+        zTokenMint: m.zTokenMint!,
+        symbol: `z${m.symbol}`,
+        decimals: m.decimals,
+        name: m.name || m.symbol
+      }))
+      .slice(0, 10);
     
-    return solIncluded ? [solOption, ...filteredMints] : filteredMints;
+    return filteredMints;
   }, [searchQuery, mints, excludeMint]);
   
-  // Fetch token metadata/images for visible tokens
+  // Fetch token metadata/images for visible tokens (use originMint for metadata lookup)
   useEffect(() => {
     if (!connection || !isOpen) return;
     
     const fetchImages = async () => {
-      const tokensToFetch = filteredTokens.filter(m => !tokenImages[m.originMint]);
+      const tokensToFetch = filteredTokens.filter(m => !tokenImages[m.zTokenMint]);
       if (tokensToFetch.length === 0) return;
       
       const newImages: Record<string, string> = {};
@@ -122,7 +98,7 @@ export function TokenSelector({ value, onChange, placeholder = 'Select token', e
                     const imageUrl = metadataJson.image.startsWith('ipfs://')
                       ? `https://ipfs.io/ipfs/${metadataJson.image.replace('ipfs://', '')}`
                       : metadataJson.image;
-                    newImages[mint.originMint] = imageUrl;
+                    newImages[mint.zTokenMint] = imageUrl; // Use zTokenMint as key
                   }
                 }
               } catch {
@@ -168,8 +144,9 @@ export function TokenSelector({ value, onChange, placeholder = 'Select token', e
     }
   }, [isOpen, setIsOpen]);
   
-  const handleSelectToken = (mint: string) => {
-    onChange(mint);
+  const handleSelectToken = (zTokenMint: string) => {
+    // zTokenMint is the zToken mint address to use in DEX operations
+    onChange(zTokenMint);
     setIsOpen.off();
     setSearchQuery('');
   };
@@ -194,7 +171,7 @@ export function TokenSelector({ value, onChange, placeholder = 'Select token', e
           _hover={{ borderColor: 'brand.400', bg: 'gray.50' }}
         >
           <HStack spacing={3}>
-            {tokenImages[selectedToken.originMint] && (
+            {tokenImages[value] && (
               <Box
                 w={8}
                 h={8}
@@ -206,7 +183,7 @@ export function TokenSelector({ value, onChange, placeholder = 'Select token', e
                 flexShrink={0}
               >
                 <img
-                  src={tokenImages[selectedToken.originMint]}
+                  src={tokenImages[value]}
                   alt={selectedToken.symbol}
                   style={{ width: '100%', height: '100%', objectFit: 'cover' }}
                   onError={(e) => {
@@ -217,17 +194,13 @@ export function TokenSelector({ value, onChange, placeholder = 'Select token', e
             )}
             <VStack align="start" spacing={0} flex={1}>
               <Text fontWeight="medium" color="gray.800">{selectedToken.symbol}</Text>
-              {selectedToken.originMint === NATIVE_SOL_MINT.toBase58() && (
-                <Text fontSize="xs" color="gray.500">
-                  {(solBalance + Number(wsolBalance) / LAMPORTS_PER_SOL).toFixed(4)} available
-                </Text>
-              )}
-            </VStack>
-            {selectedToken.originMint !== NATIVE_SOL_MINT.toBase58() && (
-              <Text fontSize="sm" color="gray.500" ml="auto">
+              <Text fontSize="xs" color="gray.500">
                 {selectedToken.originMint.slice(0, 8)}...
               </Text>
-            )}
+            </VStack>
+            <Text fontSize="sm" color="gray.500" ml="auto">
+              {value.slice(0, 8)}...
+            </Text>
           </HStack>
         </Box>
       ) : (
@@ -292,10 +265,10 @@ export function TokenSelector({ value, onChange, placeholder = 'Select token', e
                   cursor="pointer"
                   bg="white"
                   _hover={{ bg: 'gray.100' }}
-                  onClick={() => handleSelectToken(mint.originMint)}
+                  onClick={() => handleSelectToken(mint.zTokenMint)}
                 >
                   <HStack spacing={3}>
-                    {tokenImages[mint.originMint] ? (
+                    {tokenImages[mint.zTokenMint] ? (
                       <Box
                         w={8}
                         h={8}
@@ -307,7 +280,7 @@ export function TokenSelector({ value, onChange, placeholder = 'Select token', e
                         flexShrink={0}
                       >
                         <img
-                          src={tokenImages[mint.originMint]}
+                          src={tokenImages[mint.zTokenMint]}
                           alt={mint.symbol}
                           style={{ width: '100%', height: '100%', objectFit: 'cover' }}
                           onError={(e) => {
@@ -335,13 +308,7 @@ export function TokenSelector({ value, onChange, placeholder = 'Select token', e
                     )}
                     <VStack align="start" spacing={0} flex={1}>
                       <Text fontSize="sm" fontWeight="medium" color="gray.800">{mint.symbol}</Text>
-                      {mint.originMint === NATIVE_SOL_MINT.toBase58() ? (
-                        <Text fontSize="xs" color="gray.500">
-                          {(solBalance + Number(wsolBalance) / LAMPORTS_PER_SOL).toFixed(4)} available
-                        </Text>
-                      ) : (
-                        <Text fontSize="xs" color="gray.500">{mint.originMint.slice(0, 8)}...</Text>
-                      )}
+                      <Text fontSize="xs" color="gray.500">{mint.originMint.slice(0, 8)}...</Text>
                     </VStack>
                   </HStack>
                 </Box>

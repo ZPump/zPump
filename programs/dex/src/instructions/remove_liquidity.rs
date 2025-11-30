@@ -11,8 +11,8 @@ pub fn remove_liquidity(
     lp_amount: u64,
     min_amount_a: u64,
     min_amount_b: u64,
-    transfer_args_a: Option<TransferArgs>,
-    transfer_args_b: Option<TransferArgs>,
+    transfer_args_a: TransferArgs,
+    transfer_args_b: TransferArgs,
 ) -> Result<()> {
     // Validate amounts
     require!(lp_amount > 0, DexError::InvalidAmount);
@@ -44,10 +44,8 @@ pub fn remove_liquidity(
     
     // Cache values before mutable borrow for CPIs
     let pool_bump = pool_state.bump;
-    let token_a_is_ztoken = pool_state.token_a_is_ztoken;
-    let token_b_is_ztoken = pool_state.token_b_is_ztoken;
     
-    // Get current reserves (public or private)
+    // Get current reserves (always private for zTokens)
     let reserve_a = pool_state.get_reserve_a();
     let reserve_b = pool_state.get_reserve_b();
     
@@ -87,18 +85,7 @@ pub fn remove_liquidity(
     let signer_seeds_slice: &[&[u8]] = &seeds;
     let signer_seeds: &[&[&[u8]]] = &[signer_seeds_slice];
     
-    // Update reserves for public tokens
-    if !token_a_is_ztoken {
-        pool_state.public_reserve_a = pool_state.public_reserve_a
-            .checked_sub(amount_a)
-            .ok_or(DexError::MathOverflow)?;
-    }
-    if !token_b_is_ztoken {
-        pool_state.public_reserve_b = pool_state.public_reserve_b
-            .checked_sub(amount_b)
-            .ok_or(DexError::MathOverflow)?;
-    }
-    
+    // Update LP supply (reserves updated after CPIs)
     pool_state.total_lp_supply = pool_state.total_lp_supply
         .checked_sub(lp_amount)
         .ok_or(DexError::MathOverflow)?;
@@ -116,68 +103,58 @@ pub fn remove_liquidity(
     // ====================================================================
     // ZTOKEN HANDLING: Remove liquidity with zToken (token A)
     // ====================================================================
-    // For zTokens, removing liquidity requires transferring zTokens from
-    // the DEX pool PDA to the user via ptf_pool::private_transfer CPI.
-    //
-    // SOLUTION: Use Vec pattern to break lifetime dependency
-    if token_a_is_ztoken {
-        if let Some(transfer_args) = transfer_args_a {
-            msg!("[remove_liquidity] Token A is zToken - invoking private_transfer CPI (pool PDA → user)");
-            let (commitment_a, amount_a_result) = handle_ztoken_remove_liquidity(
-                ctx.remaining_accounts.to_vec(),
-                &payer_pubkey,
-                &token_a,
-                &POOL_PROGRAM_ID,
-                transfer_args,
-                &pool_state_key,
-                &token_a,
-                &token_b,
-                pool_bump,
-                current_private_reserve_a_amount,
-                amount_a,
-                0,
-            )?;
-            
-            // Store commitment results for later pool state update
-            if let Some(commitment) = commitment_a {
-                if let Some(amount) = amount_a_result {
-                    new_private_reserve_a_commitment = Some(commitment);
-                    new_private_reserve_a_amount = Some(amount);
-                }
-            }
+    // Both tokens are always zTokens - use private transfer CPIs
+    msg!("[remove_liquidity] Token A is zToken - invoking private_transfer CPI (pool PDA → user)");
+    let (commitment_a, amount_a_result) = handle_ztoken_remove_liquidity(
+        ctx.remaining_accounts.to_vec(),
+        &payer_pubkey,
+        &token_a,
+        &POOL_PROGRAM_ID,
+        transfer_args_a,
+        &pool_state_key,
+        &token_a,
+        &token_b,
+        pool_bump,
+        current_private_reserve_a_amount,
+        amount_a,
+        0,
+    )?;
+    
+    // Store commitment results for later pool state update
+    if let Some(commitment) = commitment_a {
+        if let Some(amount) = amount_a_result {
+            new_private_reserve_a_commitment = Some(commitment);
+            new_private_reserve_a_amount = Some(amount);
         }
     }
     
     // ====================================================================
     // ZTOKEN HANDLING: Remove liquidity with zToken (token B)
     // ====================================================================
-    if token_b_is_ztoken {
-        if let Some(transfer_args) = transfer_args_b {
-            msg!("[remove_liquidity] Token B is zToken - invoking private_transfer CPI (pool PDA → user)");
-            
-            let account_offset = if token_a_is_ztoken { 7 } else { 0 };
-            let (commitment_b, amount_b_result) = handle_ztoken_remove_liquidity(
-                ctx.remaining_accounts.to_vec(),
-                &payer_pubkey,
-                &token_b,
-                &POOL_PROGRAM_ID,
-                transfer_args,
-                &pool_state_key,
-                &token_a,
-                &token_b,
-                pool_bump,
-                current_private_reserve_b_amount,
-                amount_b,
-                account_offset,
-            )?;
-            
-            // Store commitment results for later pool state update
-            if let Some(commitment) = commitment_b {
-                if let Some(amount) = amount_b_result {
-                    new_private_reserve_b_commitment = Some(commitment);
-                    new_private_reserve_b_amount = Some(amount);
-                }
-            }
+    msg!("[remove_liquidity] Token B is zToken - invoking private_transfer CPI (pool PDA → user)");
+    
+    // Token A uses first 7 accounts, Token B uses next 7
+    let account_offset = 7;
+    let (commitment_b, amount_b_result) = handle_ztoken_remove_liquidity(
+        ctx.remaining_accounts.to_vec(),
+        &payer_pubkey,
+        &token_b,
+        &POOL_PROGRAM_ID,
+        transfer_args_b,
+        &pool_state_key,
+        &token_a,
+        &token_b,
+        pool_bump,
+        current_private_reserve_b_amount,
+        amount_b,
+        account_offset,
+    )?;
+    
+    // Store commitment results for later pool state update
+    if let Some(commitment) = commitment_b {
+        if let Some(amount) = amount_b_result {
+            new_private_reserve_b_commitment = Some(commitment);
+            new_private_reserve_b_amount = Some(amount);
         }
     }
     
@@ -235,37 +212,7 @@ pub fn remove_liquidity(
     anchor_spl::token_interface::burn(burn_ctx, lp_amount)?;
     msg!("[remove_liquidity] ✓ LP tokens burned successfully");
     
-    // Transfer tokens from pool to user (for public tokens)
-    if !token_a_is_ztoken {
-        anchor_spl::token_interface::transfer(
-            CpiContext::new_with_signer(
-                ctx.accounts.token_program.to_account_info(),
-                Transfer {
-                    from: ctx.accounts.pool_token_a_account.to_account_info(),
-                    to: ctx.accounts.user_token_a_account.to_account_info(),
-                    authority: ctx.accounts.pool_state.to_account_info(),
-                },
-                signer_seeds,
-            ),
-            amount_a,
-        )?;
-    }
-    // TODO: Handle zToken transfer via ptf_pool::transfer
-    
-    if !token_b_is_ztoken {
-        anchor_spl::token_interface::transfer(
-            CpiContext::new_with_signer(
-                ctx.accounts.token_program.to_account_info(),
-                Transfer {
-                    from: ctx.accounts.pool_token_b_account.to_account_info(),
-                    to: ctx.accounts.user_token_b_account.to_account_info(),
-                    authority: ctx.accounts.pool_state.to_account_info(),
-                },
-                signer_seeds,
-            ),
-            amount_b,
-        )?;
-    }
+    // zToken-only: Transfer is handled via handle_ztoken_remove_liquidity below
     // TODO: Handle zToken transfer via ptf_pool::transfer
     
     Ok(())

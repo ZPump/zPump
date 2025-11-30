@@ -17,8 +17,8 @@ pub fn add_liquidity(
     amount_a: u64,
     amount_b: u64,
     min_lp_tokens: u64,
-    transfer_args_a: Option<TransferArgs>,
-    transfer_args_b: Option<TransferArgs>,
+    transfer_args_a: TransferArgs,
+    transfer_args_b: TransferArgs,
 ) -> Result<()> {
     // Validate amounts
     require!(amount_a > 0, DexError::InvalidAmount);
@@ -32,8 +32,6 @@ pub fn add_liquidity(
 
     // Read pool_state immutably first to cache ALL values we need
     let pool_state_ref = &ctx.accounts.pool_state;
-    let token_a_is_ztoken = pool_state_ref.token_a_is_ztoken;
-    let token_b_is_ztoken = pool_state_ref.token_b_is_ztoken;
     let current_private_reserve_a_amount = pool_state_ref.private_reserve_a_amount;
     let current_private_reserve_b_amount = pool_state_ref.private_reserve_b_amount;
     
@@ -79,41 +77,6 @@ pub fn add_liquidity(
     // Cache pool_state values needed after dropping mutable borrow
     let pool_bump = pool_state.bump;
     
-    // Transfer tokens to pool reserves (for public tokens only)
-    if !token_a_is_ztoken {
-        anchor_spl::token_interface::transfer(
-            CpiContext::new(
-                ctx.accounts.token_program.to_account_info(),
-                Transfer {
-                    from: ctx.accounts.user_token_a_account.to_account_info(),
-                    to: ctx.accounts.pool_token_a_account.to_account_info(),
-                    authority: ctx.accounts.payer.to_account_info(),
-                },
-            ),
-            amount_a,
-        )?;
-        pool_state.public_reserve_a = pool_state.public_reserve_a
-            .checked_add(amount_a)
-            .ok_or(DexError::MathOverflow)?;
-    }
-    
-    if !token_b_is_ztoken {
-        anchor_spl::token_interface::transfer(
-            CpiContext::new(
-                ctx.accounts.token_program.to_account_info(),
-                Transfer {
-                    from: ctx.accounts.user_token_b_account.to_account_info(),
-                    to: ctx.accounts.pool_token_b_account.to_account_info(),
-                    authority: ctx.accounts.payer.to_account_info(),
-                },
-            ),
-            amount_b,
-        )?;
-        pool_state.public_reserve_b = pool_state.public_reserve_b
-            .checked_add(amount_b)
-            .ok_or(DexError::MathOverflow)?;
-    }
-    
     // Update total LP supply
     pool_state.total_lp_supply = pool_state.total_lp_supply
         .checked_add(lp_tokens)
@@ -142,61 +105,52 @@ pub fn add_liquidity(
     // ====================================================================
     // ZTOKEN HANDLING: Add liquidity with zToken (token A)
     // ====================================================================
-    // SOLUTION: Use scoped blocks to isolate remaining_accounts borrow
-    // Parse, build CPI, and invoke all within a block so the borrow clearly ends
-    if token_a_is_ztoken {
-        if let Some(transfer_args) = transfer_args_a {
-            msg!("[add_liquidity] Token A is zToken - invoking private_transfer CPI (user → pool PDA)");
-            let (commitment_a, amount_a_result) = handle_ztoken_liquidity(
-                ctx.remaining_accounts.to_vec(),
-                &payer_pubkey,
-                &token_a,
-                &POOL_PROGRAM_ID,
-                transfer_args,
-                &pool_state_key,
-                current_private_reserve_a_amount,
-                amount_a,
-                0,
-            )?;
-            
-            // Store commitment results for later pool state update
-            if let Some(commitment) = commitment_a {
-                if let Some(amount) = amount_a_result {
-                    new_private_reserve_a_commitment = Some(commitment);
-                    new_private_reserve_a_amount = Some(amount);
-                }
-            }
+    // Both tokens are always zTokens - use private transfer CPIs
+    msg!("[add_liquidity] Token A is zToken - invoking private_transfer CPI (user → pool PDA)");
+    let (commitment_a, amount_a_result) = handle_ztoken_liquidity(
+        ctx.remaining_accounts.to_vec(),
+        &payer_pubkey,
+        &token_a,
+        &POOL_PROGRAM_ID,
+        transfer_args_a,
+        &pool_state_key,
+        current_private_reserve_a_amount,
+        amount_a,
+        0,
+    )?;
+    
+    // Store commitment results for later pool state update
+    if let Some(commitment) = commitment_a {
+        if let Some(amount) = amount_a_result {
+            new_private_reserve_a_commitment = Some(commitment);
+            new_private_reserve_a_amount = Some(amount);
         }
     }
     
     // ====================================================================
     // ZTOKEN HANDLING: Add liquidity with zToken (token B)
     // ====================================================================
-    // SOLUTION: Use scoped blocks to isolate remaining_accounts borrow
-    if token_b_is_ztoken {
-        if let Some(transfer_args) = transfer_args_b {
-            msg!("[add_liquidity] Token B is zToken - invoking private_transfer CPI (user → pool PDA)");
-
-            let account_offset = if token_a_is_ztoken { 7 } else { 0 };
-            let (commitment_b, amount_b_result) = handle_ztoken_liquidity(
-                ctx.remaining_accounts.to_vec(),
-                &payer_pubkey,
-                &token_b,
-                &POOL_PROGRAM_ID,
-                transfer_args,
-                &pool_state_key,
-                current_private_reserve_b_amount,
-                amount_b,
-                account_offset,
-            )?;
-            
-            // Store commitment results for later pool state update
-            if let Some(commitment) = commitment_b {
-                if let Some(amount) = amount_b_result {
-                    new_private_reserve_b_commitment = Some(commitment);
-                    new_private_reserve_b_amount = Some(amount);
-                }
-            }
+    msg!("[add_liquidity] Token B is zToken - invoking private_transfer CPI (user → pool PDA)");
+    
+    // Token A uses first 7 accounts, Token B uses next 7
+    let account_offset = 7;
+    let (commitment_b, amount_b_result) = handle_ztoken_liquidity(
+        ctx.remaining_accounts.to_vec(),
+        &payer_pubkey,
+        &token_b,
+        &POOL_PROGRAM_ID,
+        transfer_args_b,
+        &pool_state_key,
+        current_private_reserve_b_amount,
+        amount_b,
+        account_offset,
+    )?;
+    
+    // Store commitment results for later pool state update
+    if let Some(commitment) = commitment_b {
+        if let Some(amount) = amount_b_result {
+            new_private_reserve_b_commitment = Some(commitment);
+            new_private_reserve_b_amount = Some(amount);
         }
     }
     

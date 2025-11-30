@@ -1909,27 +1909,55 @@ export function ConvertForm() {
 
       // Derive poolId from originMint (works for all SPL tokens)
       const originMintKey = new PublicKey(originMint);
-      const poolId = mintConfig?.poolId ?? derivePoolState(originMintKey).toBase58();
-      const mintId = originMint;
+      
+      // SOL HANDLING: When shielding SOL, use wSOL mint for pool/root derivation
+      // The SDK will wrap SOL to wSOL, so we need to use wSOL pool for proof generation
+      const isShieldingSOL = mode === 'to-private' && isNativeSol(originMintKey);
+      const actualShieldMint = isShieldingSOL ? NATIVE_SOL_MINT : originMintKey; // wSOL mint is same as NATIVE_SOL_MINT
+      const actualPoolId = mintConfig?.poolId ?? derivePoolState(actualShieldMint).toBase58();
+      const poolId = actualPoolId;
+      const mintId = isShieldingSOL ? NATIVE_SOL_MINT.toBase58() : originMint;
 
+      // CRITICAL: For SOL shielding, fetch root from wSOL pool (actualShieldMint)
+      // The indexer might use originMint, but we need the actual pool's root
       let rootValue = resolvedOldRoot;
-      const latestRoots = await refreshRoots();
-      if (latestRoots?.current) {
-        rootValue = latestRoots.current;
+      
+      // Try fetching from pool_state.current_root first (most reliable, matches SDK)
+      try {
+        const poolStateKey = derivePoolState(actualShieldMint);
+        const poolStateAccount = await connection.getAccountInfo(poolStateKey, 'confirmed');
+        if (poolStateAccount) {
+          // Read current_root from pool_state at offset: discriminator(8) + 6 pubkeys(32*6) + verifying_key_id(32) + verifying_key_hash(32) = 280
+          const poolStateData = Buffer.from(poolStateAccount.data);
+          const CURRENT_ROOT_OFFSET = 8 + 32 * 8; // discriminator + 6 pubkeys + verifying_key_id + verifying_key_hash
+          const currentRootBytes = poolStateData.slice(CURRENT_ROOT_OFFSET, CURRENT_ROOT_OFFSET + 32);
+          rootValue = bytesLEToCanonicalHex(currentRootBytes);
+          console.info('[convert-form] Fetched root from pool_state.current_root:', rootValue);
+        }
+      } catch (chainError) {
+        console.warn('[convert-form] Failed to fetch root from pool_state:', chainError);
       }
-
-      // Final fallback: fetch root directly from chain if indexer doesn't have it
+      
+      // Fallback to indexer if pool_state fetch failed
+      if (!rootValue) {
+        const latestRoots = await refreshRoots();
+        if (latestRoots?.current) {
+          rootValue = latestRoots.current;
+        }
+      }
+      
+      // Final fallback: fetch from commitment tree
       if (!rootValue) {
         try {
-          const commitmentTreeKey = deriveCommitmentTree(originMintKey);
+          const commitmentTreeKey = deriveCommitmentTree(actualShieldMint);
           const commitmentTreeAccount = await connection.getAccountInfo(commitmentTreeKey, 'confirmed');
           if (commitmentTreeAccount) {
             const treeState = decodeCommitmentTree(new Uint8Array(commitmentTreeAccount.data));
             rootValue = bytesLEToCanonicalHex(Buffer.from(treeState.currentRoot));
-            console.info('[convert-form] Fetched root directly from chain:', rootValue);
+            console.info('[convert-form] Fetched root from commitment tree:', rootValue);
           }
         } catch (chainError) {
-          console.warn('[convert-form] Failed to fetch root from chain:', chainError);
+          console.warn('[convert-form] Failed to fetch root from commitment tree:', chainError);
         }
       }
 
@@ -2313,12 +2341,14 @@ export function ConvertForm() {
     );
   }
 
-  if (!mintCatalogLoading && !mints.length) {
+  // SOL is always available and shown in token options, so allow form to render even if no mints registered
+  // The form will still show SOL as an option regardless of registration status
+  if (!mintCatalogLoading && !mints.length && tokenOptions.length === 0) {
     return (
       <Alert status="info" variant="left-accent">
         <AlertIcon />
         <AlertDescription>
-          No origin mints are registered yet. Use the Faucet page to create a local token, then refresh this view.
+          No tokens are available. Connect your wallet to see SOL balance, or use the Faucet page to create a local token.
         </AlertDescription>
       </Alert>
     );

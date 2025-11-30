@@ -1593,36 +1593,63 @@ export async function bootstrapPrivateDevnet() {
           PROGRAM_IDS.factory
         )[0];
         
-        // Register wSOL just like any other SPL token
-        // wSOL is owned by TOKEN_PROGRAM_ID (standard token program)
-        // Since enable_ptkn is false, token_program is not needed (it's optional)
-        // The factory validates the mint owner directly in the instruction
-        const registerAccounts: Record<string, PublicKey> = {
-          factory_state: factoryState,
-          authority: ctx.payer.publicKey,
-          mint_mapping: wsolMintMapping,
-          origin_mint: NATIVE_MINT,
-          payer: ctx.payer.publicKey,
-          rent: SYSVAR_RENT_PUBKEY,
-          system_program: SystemProgram.programId
-          // token_program is optional and only needed for ptkn mint creation
-        };
+        // Register wSOL manually by building the instruction directly
+        // This bypasses Anchor's Interface constraint validation for optional accounts
+        // Manual instruction building avoids the token_program validation issue
         
-        await sendInstruction(
-          ctx,
-          ctx.idls.factory,
-          ctx.coders.factory,
-          PROGRAM_IDS.factory,
-          'register_mint',
-          registerAccounts,
-          {
-            decimals: wsolDecimals,
-            enable_ptkn: false,
-            feature_flags: null,
-            fee_bps_override: null
-          }
-        );
-        console.log('[bootstrap] ✓ Registered wSOL in factory');
+        // Discriminator for register_mint instruction (from IDL)
+        const registerMintDiscriminator = Buffer.from([242, 43, 74, 162, 217, 214, 191, 171]);
+        
+        // Build instruction args manually (decimals, enable_ptkn, feature_flags, fee_bps_override)
+        // Anchor serializes args in order: u8 (decimals), bool (enable_ptkn), Option<u8> (feature_flags), Option<u16> (fee_bps_override)
+        const argsBuffer = Buffer.alloc(1 + 1 + 1 + 2); // u8 + bool + Option<u8> + Option<u16>
+        let offset = 0;
+        
+        // decimals: u8
+        argsBuffer.writeUInt8(wsolDecimals, offset);
+        offset += 1;
+        
+        // enable_ptkn: bool (false = 0)
+        argsBuffer.writeUInt8(0, offset);
+        offset += 1;
+        
+        // feature_flags: Option<u8> (None = 0)
+        argsBuffer.writeUInt8(0, offset);
+        offset += 1;
+        
+        // fee_bps_override: Option<u16> (None = 0)
+        argsBuffer.writeUInt16LE(0, offset);
+        offset += 2;
+        
+        // Combine discriminator + args
+        const instructionData = Buffer.concat([registerMintDiscriminator, argsBuffer]);
+        
+        // Build account metas manually in the exact order
+        // Account order from IDL: factory_state, authority, mint_mapping, origin_mint, payer, ptkn_mint (optional), token_program (optional), rent, system_program
+        // For optional accounts, we must include placeholders (Anchor validates all accounts in struct)
+        // Use program ID as placeholder for optional accounts (Anchor's convention)
+        const accountMetas: AccountMeta[] = [
+          { pubkey: factoryState, isSigner: false, isWritable: true },           // factory_state
+          { pubkey: ctx.payer.publicKey, isSigner: true, isWritable: false },    // authority
+          { pubkey: wsolMintMapping, isSigner: false, isWritable: true },        // mint_mapping
+          { pubkey: NATIVE_MINT, isSigner: false, isWritable: false },           // origin_mint
+          { pubkey: ctx.payer.publicKey, isSigner: true, isWritable: true },     // payer
+          { pubkey: PROGRAM_IDS.factory, isSigner: false, isWritable: false },   // ptkn_mint (optional) - placeholder
+          { pubkey: PROGRAM_IDS.factory, isSigner: false, isWritable: false },   // token_program (optional) - placeholder
+          { pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false },    // rent
+          { pubkey: SystemProgram.programId, isSigner: false, isWritable: false } // system_program
+        ];
+        
+        // Create the instruction manually
+        const registerMintInstruction = new TransactionInstruction({
+          programId: PROGRAM_IDS.factory,
+          keys: accountMetas,
+          data: instructionData
+        });
+        
+        // Send and confirm
+        await sendAndConfirm(ctx, [registerMintInstruction]);
+        console.log('[bootstrap] ✓ Registered wSOL in factory (manual instruction)');
       }
     } catch (error) {
       console.warn('[bootstrap] Failed to register wSOL:', (error as Error).message);

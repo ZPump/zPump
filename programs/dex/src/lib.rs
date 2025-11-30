@@ -20,17 +20,13 @@ pub mod ptf_dex {
         ctx: Context<CreatePool>,
         initial_amount_a: u64,
         initial_amount_b: u64,
-        token_a_is_ztoken: bool,
-        token_b_is_ztoken: bool,
-        shield_args_a: Option<ShieldArgs>,
-        shield_args_b: Option<ShieldArgs>,
+        shield_args_a: ShieldArgs,
+        shield_args_b: ShieldArgs,
     ) -> Result<()> {
         instructions::create_pool::create_pool(
             ctx,
             initial_amount_a,
             initial_amount_b,
-            token_a_is_ztoken,
-            token_b_is_ztoken,
             shield_args_a,
             shield_args_b,
         )
@@ -41,8 +37,8 @@ pub mod ptf_dex {
         amount_a: u64,
         amount_b: u64,
         min_lp_tokens: u64,
-        transfer_args_a: Option<TransferArgs>,
-        transfer_args_b: Option<TransferArgs>,
+        transfer_args_a: TransferArgs,
+        transfer_args_b: TransferArgs,
     ) -> Result<()> {
         instructions::add_liquidity::add_liquidity(
             ctx,
@@ -59,8 +55,8 @@ pub mod ptf_dex {
         lp_amount: u64,
         min_amount_a: u64,
         min_amount_b: u64,
-        transfer_args_a: Option<TransferArgs>,
-        transfer_args_b: Option<TransferArgs>,
+        transfer_args_a: TransferArgs,
+        transfer_args_b: TransferArgs,
     ) -> Result<()> {
         instructions::remove_liquidity::remove_liquidity(
             ctx,
@@ -77,9 +73,8 @@ pub mod ptf_dex {
         amount_in: u64,
         min_amount_out: u64,
         a_to_b: bool,
-        transfer_args_in: Option<TransferArgs>,
-        shield_args_out: Option<ShieldArgs>,
-        transfer_args_out: Option<TransferArgs>,
+        transfer_args_in: TransferArgs,
+        transfer_args_out: TransferArgs,
     ) -> Result<()> {
         instructions::swap::swap(
             ctx,
@@ -87,7 +82,6 @@ pub mod ptf_dex {
             min_amount_out,
             a_to_b,
             transfer_args_in,
-            shield_args_out,
             transfer_args_out,
         )
     }

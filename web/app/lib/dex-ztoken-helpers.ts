@@ -8,6 +8,7 @@
  */
 
 import { Connection, PublicKey } from '@solana/web3.js';
+import { BN } from '@coral-xyz/anchor';
 import { ProofResponse, ProofClient } from './proofClient';
 import {
   derivePoolState,
@@ -24,7 +25,7 @@ import {
 } from './onchain/pdas';
 import { VERIFIER_PROGRAM_ID } from './onchain/programIds';
 import { decodeCommitmentTree } from './onchain/commitmentTree';
-import { bytesLEToCanonicalHex, canonicalHexToBytesLE } from './onchain/utils';
+import { bytesLEToCanonicalHex, canonicalHexToBytesLE, canonicalizeHex } from './onchain/utils';
 import { poseidonHashMany } from './onchain/poseidon';
 
 /**
@@ -127,7 +128,10 @@ export async function generateDexShieldProof(
   const currentRoot = await fetchZTokenPoolRoot(connection, originMint);
   
   // Generate deposit ID and blinding
-  const depositId = Date.now().toString() + Math.random().toString(36).substring(2, 9);
+  // Deposit ID must be numeric (proof RPC converts to BigInt)
+  const timestamp = Date.now();
+  const random = Math.floor(Math.random() * 1_000_000);
+  const depositId = `${timestamp}${random}`;
   const blinding = Math.floor(Math.random() * 10 ** 18).toString();
   
   const poolState = derivePoolState(originMint);
@@ -153,6 +157,13 @@ export async function generateDexShieldProof(
     blinding,
     amountCommit
   };
+}
+
+/**
+ * Generate a random blinding value for transfer outputs
+ */
+function generateRandomBlinding(): string {
+  return Math.floor(Math.random() * 10 ** 18).toString();
 }
 
 /**
@@ -247,6 +258,88 @@ export async function generateDexTransferProof(
 }
 
 /**
+ * Simplified wrapper for generating transfer proofs with automatic change handling.
+ * Calculates total input, generates change output if needed, and creates the transfer proof.
+ * 
+ * @param proofClient - Proof client instance
+ * @param connection - Solana connection
+ * @param originMint - The zToken origin mint
+ * @param notes - Input notes to spend
+ * @param transferAmount - Amount to transfer to recipient
+ * @param recipient - Recipient public key
+ * @param changeRecipient - Recipient for change (defaults to first note owner)
+ * @returns Transfer proof response with proof data
+ */
+export async function generateDexTransferProofSimple(
+  proofClient: ProofClient,
+  connection: Connection,
+  originMint: PublicKey,
+  notes: Array<{
+    noteId: string;
+    spendingKey: string;
+    amount: bigint;
+  }>,
+  transferAmount: bigint,
+  recipient: PublicKey,
+  changeRecipient?: PublicKey
+): Promise<ProofResponse & {
+  oldRoot: string;
+  nullifiers: Uint8Array[];
+  outputCommitments: Uint8Array[];
+  outputAmountCommitments: Uint8Array[];
+  outputs: Array<{
+    amount: bigint;
+    recipient: PublicKey;
+    blinding: string;
+  }>;
+}> {
+  // Calculate total input
+  const totalInput = notes.reduce((sum, note) => sum + note.amount, 0n);
+  
+  if (totalInput < transferAmount) {
+    throw new Error(`Insufficient notes: have ${totalInput}, need ${transferAmount}`);
+  }
+  
+  const changeAmount = totalInput - transferAmount;
+  
+  // Build outputs array
+  const outputs: Array<{
+    amount: bigint;
+    recipient: PublicKey;
+    blinding: string;
+  }> = [
+    {
+      amount: transferAmount,
+      recipient,
+      blinding: generateRandomBlinding()
+    }
+  ];
+  
+  // Add change output if needed
+  if (changeAmount > 0n) {
+    outputs.push({
+      amount: changeAmount,
+      recipient: changeRecipient || recipient, // Default to recipient if no change recipient
+      blinding: generateRandomBlinding()
+    });
+  }
+  
+  // Generate the transfer proof
+  const proof = await generateDexTransferProof(
+    proofClient,
+    connection,
+    originMint,
+    notes,
+    outputs
+  );
+  
+  return {
+    ...proof,
+    outputs
+  };
+}
+
+/**
  * Convert proof response to ShieldArgs format for DEX instruction.
  * 
  * @param proofResponse - Proof response from generateDexShieldProof
@@ -255,30 +348,72 @@ export async function generateDexTransferProof(
 export function proofToShieldArgs(proofResponse: {
   proof: string;
   publicInputs: string[];
-  amountCommit: Uint8Array;
+  amountCommit: Uint8Array | Buffer;
   amount: bigint;
 }): {
   amount_commit: number[];
-  amount: number;
-  proof: number[];
-  public_inputs: number[];
+  amount: BN;
+  proof: Buffer;
+  public_inputs: Buffer;
 } {
-  // Decode base64 proof to bytes
+  // Decode base64 proof to bytes (same as decodeProofPayload)
   const proofBytes = Buffer.from(proofResponse.proof, 'base64');
   
-  // Serialize public inputs (array of hex strings to bytes)
-  const publicInputsBytes = Buffer.concat(
-    proofResponse.publicInputs.map(hex => {
-      const normalized = hex.startsWith('0x') ? hex.slice(2) : hex;
-      return Buffer.from(normalized.padStart(64, '0'), 'hex');
-    })
-  );
+  // Serialize public inputs using the same logic as decodeProofPayload
+  // Each public input is canonicalized and converted to 32-byte little-endian format
+  const fieldBytes = proofResponse.publicInputs.map((input, index) => {
+    if (typeof input !== 'string') {
+      throw new Error(`Public input at index ${index} is not a string`);
+    }
+    const canonical = canonicalizeHex(input);
+    const bytes = canonicalHexToBytesLE(canonical, 32);
+    if (bytes.length !== 32) {
+      throw new Error(`Public input at index ${index} must be 32 bytes`);
+    }
+    return bytes;
+  });
+  
+  // Flatten public inputs into a single Buffer (same as decodeProofPayload)
+  const publicInputsBytes = Buffer.concat(fieldBytes.map((entry) => Buffer.from(entry)));
+  
+  // Convert amountCommit to array (handle both Buffer and Uint8Array)
+  // Ensure it's exactly 32 bytes (pad or truncate if needed)
+  let amountCommitBuf = Buffer.isBuffer(proofResponse.amountCommit)
+    ? Buffer.from(proofResponse.amountCommit)
+    : Buffer.from(proofResponse.amountCommit);
+  
+  // Pad or truncate to exactly 32 bytes
+  if (amountCommitBuf.length < 32) {
+    amountCommitBuf = Buffer.concat([amountCommitBuf, Buffer.alloc(32 - amountCommitBuf.length)]);
+  } else if (amountCommitBuf.length > 32) {
+    amountCommitBuf = amountCommitBuf.slice(0, 32);
+  }
   
   return {
-    amount_commit: Array.from(proofResponse.amountCommit),
-    amount: Number(proofResponse.amount),
-    proof: Array.from(proofBytes),
-    public_inputs: Array.from(publicInputsBytes)
+    amount_commit: Array.from(amountCommitBuf),
+    amount: new BN(proofResponse.amount.toString()), // Convert bigint to BN for u64 encoding
+    proof: proofBytes, // Buffer for bytes type in IDL (same format as SDK)
+    public_inputs: publicInputsBytes // Buffer for bytes type in IDL (same format as SDK)
+  };
+}
+
+/**
+ * Create empty ShieldArgs for empty pool creation (when amounts are 0).
+ * The program will skip shield CPIs when amounts are 0, so these are dummy values.
+ * 
+ * @returns Empty ShieldArgs with zeros/minimal values
+ */
+export function createEmptyShieldArgs(): {
+  amount_commit: number[];
+  amount: BN;
+  proof: Buffer;
+  public_inputs: Buffer;
+} {
+  return {
+    amount_commit: Array.from(Buffer.alloc(32, 0)), // 32 bytes of zeros
+    amount: new BN(0),
+    proof: Buffer.alloc(0), // Empty proof
+    public_inputs: Buffer.alloc(0) // Empty public inputs
   };
 }
 

@@ -29,9 +29,12 @@ import {
   addDexLiquidity,
   removeDexLiquidity,
   getDexPoolState,
-  calculateLPTokens
+  deriveDexPoolState
 } from '../../lib/sdk';
 import { TokenSelector } from './TokenSelector';
+import { ProofClient } from '../../lib/proofClient';
+import { readStoredNotes } from '../../lib/notes/storage';
+import { generateDexShieldProof } from '../../lib/dex-ztoken-helpers';
 
 const AMOUNT_INPUT_PATTERN = /^\d*(?:\.\d*)?$/;
 
@@ -48,15 +51,16 @@ interface LiquidityFormProps {
 }
 
 /**
- * LiquidityForm component for managing DEX liquidity
- * Handles adding and removing liquidity for all pair types
+ * LiquidityForm component for managing zToken-only DEX liquidity
  */
 export function LiquidityForm({ onTokenChange }: LiquidityFormProps = {}) {
   const { connection } = useConnection();
   const wallet = useWallet();
+  const { mints } = useMintCatalog();
+  const proofClient = useMemo(() => new ProofClient(), []);
   
-  const [tokenA, setTokenA] = useState<string>('');
-  const [tokenB, setTokenB] = useState<string>('');
+  const [tokenA, setTokenA] = useState<string>(''); // zToken mint addresses
+  const [tokenB, setTokenB] = useState<string>(''); // zToken mint addresses
   
   // Notify parent of token changes
   useEffect(() => {
@@ -72,9 +76,22 @@ export function LiquidityForm({ onTokenChange }: LiquidityFormProps = {}) {
   const [poolState, setPoolState] = useState<any>(null);
   const [loadingPool, setLoadingPool] = useBoolean(false);
   
+  // Get origin mints from zToken mints (for pool lookup)
+  const originMintA = useMemo(() => {
+    if (!tokenA) return null;
+    const mint = mints.find(m => m.zTokenMint === tokenA);
+    return mint?.originMint || null;
+  }, [tokenA, mints]);
+  
+  const originMintB = useMemo(() => {
+    if (!tokenB) return null;
+    const mint = mints.find(m => m.zTokenMint === tokenB);
+    return mint?.originMint || null;
+  }, [tokenB, mints]);
+  
   // Fetch pool state when tokens change
   useEffect(() => {
-    if (!tokenA || !tokenB || !connection) {
+    if (!originMintA || !originMintB || !connection) {
       setPoolState(null);
       return;
     }
@@ -85,8 +102,8 @@ export function LiquidityForm({ onTokenChange }: LiquidityFormProps = {}) {
       try {
         const pool = await getDexPoolState(
           connection,
-          new PublicKey(tokenA),
-          new PublicKey(tokenB)
+          new PublicKey(originMintA),
+          new PublicKey(originMintB)
         );
         setPoolState(pool);
       } catch (err) {
@@ -97,37 +114,10 @@ export function LiquidityForm({ onTokenChange }: LiquidityFormProps = {}) {
     };
     
     void fetchPool();
-  }, [tokenA, tokenB, connection, setLoadingPool]);
-  
-  // Calculate expected LP tokens for adding liquidity
-  const expectedLpTokens = useMemo(() => {
-    if (!amountA || !amountB || !poolState) return null;
-    
-    try {
-      const amountABigInt = BigInt(amountA.replace('.', ''));
-      const amountBBigInt = BigInt(amountB.replace('.', ''));
-      
-      if (poolState.totalLpSupply === 0n) {
-        // Initial liquidity
-        const product = amountABigInt * amountBBigInt;
-        const sqrt = BigInt(Math.sqrt(Number(product)));
-        return sqrt > 1000n ? sqrt - 1000n : 0n;
-      } else {
-        return calculateLPTokens(
-          amountABigInt,
-          amountBBigInt,
-          poolState.publicReserveA,
-          poolState.publicReserveB,
-          poolState.totalLpSupply
-        );
-      }
-    } catch {
-      return null;
-    }
-  }, [amountA, amountB, poolState]);
+  }, [originMintA, originMintB, connection, setLoadingPool]);
   
   const handleAddLiquidity = async () => {
-    if (!wallet.connected || !tokenA || !tokenB || !amountA || !amountB) {
+    if (!wallet.connected || !wallet.publicKey || !tokenA || !tokenB || !amountA || !amountB || !originMintA || !originMintB) {
       setError('Please fill in all fields');
       return;
     }
@@ -138,30 +128,92 @@ export function LiquidityForm({ onTokenChange }: LiquidityFormProps = {}) {
     try {
       const amountABigInt = BigInt(amountA.replace('.', ''));
       const amountBBigInt = BigInt(amountB.replace('.', ''));
-      const minLpTokens = expectedLpTokens ? (expectedLpTokens * 95n) / 100n : 0n;
       
       if (!poolState) {
-        // Create pool first
+        // Create pool first - requires shield proofs for initial liquidity
+        // Ensure canonical order for pool state derivation
+        const canonicalOrder = new PublicKey(originMintA).toBuffer().compare(new PublicKey(originMintB).toBuffer()) < 0;
+        const canonicalMintA = canonicalOrder ? originMintA : originMintB;
+        const canonicalMintB = canonicalOrder ? originMintB : originMintA;
+        const canonicalAmountA = canonicalOrder ? amountABigInt : amountBBigInt;
+        const canonicalAmountB = canonicalOrder ? amountBBigInt : amountABigInt;
+        
+        const poolStatePDA = deriveDexPoolState(new PublicKey(canonicalMintA), new PublicKey(canonicalMintB));
+        
+        const shieldProofA = await generateDexShieldProof(
+          proofClient,
+          connection,
+          new PublicKey(canonicalMintA),
+          canonicalAmountA,
+          poolStatePDA
+        );
+        
+        const shieldProofB = await generateDexShieldProof(
+          proofClient,
+          connection,
+          new PublicKey(canonicalMintB),
+          canonicalAmountB,
+          poolStatePDA
+        );
+        
         await createDexPool({
           connection,
           wallet: wallet as any,
-          tokenA,
-          tokenB,
-          initialAmountA: amountABigInt,
-          initialAmountB: amountBBigInt,
-          tokenAIsZtoken: false, // TODO: detect zToken
-          tokenBIsZtoken: false
+          tokenA: canonicalMintA,
+          tokenB: canonicalMintB,
+          initialAmountA: canonicalAmountA,
+          initialAmountB: canonicalAmountB,
+          proofClient,
+          shieldProofA: {
+            proof: shieldProofA.proof,
+            publicInputs: shieldProofA.publicInputs,
+            amountCommit: shieldProofA.amountCommit
+          },
+          shieldProofB: {
+            proof: shieldProofB.proof,
+            publicInputs: shieldProofB.publicInputs,
+            amountCommit: shieldProofB.amountCommit
+          }
         });
       } else {
-        // Add to existing pool
+        // Add to existing pool - requires transfer notes
+        const storedNotes = readStoredNotes(wallet.publicKey.toBase58());
+        const notesA = storedNotes.filter(note => 
+          note.originMint === originMintA &&
+          BigInt(note.amount) >= amountABigInt
+        );
+        const notesB = storedNotes.filter(note => 
+          note.originMint === originMintB &&
+          BigInt(note.amount) >= amountBBigInt
+        );
+        
+        if (notesA.length === 0 || notesB.length === 0) {
+          setError('Insufficient zToken notes. Shield tokens first.');
+          setSubmitting.off();
+          return;
+        }
+        
+        const minLpTokens = 0n; // TODO: Calculate from private reserves
+        
         await addDexLiquidity({
           connection,
           wallet: wallet as any,
-          tokenA,
-          tokenB,
+          tokenA: originMintA,
+          tokenB: originMintB,
           amountA: amountABigInt,
           amountB: amountBBigInt,
-          minLpTokens
+          minLpTokens,
+          proofClient,
+          zTokenNotesA: notesA.map(note => ({
+            noteId: note.noteId,
+            spendingKey: note.spendingKey,
+            amount: BigInt(note.amount)
+          })),
+          zTokenNotesB: notesB.map(note => ({
+            noteId: note.noteId,
+            spendingKey: note.spendingKey,
+            amount: BigInt(note.amount)
+          }))
         });
       }
       
@@ -176,7 +228,7 @@ export function LiquidityForm({ onTokenChange }: LiquidityFormProps = {}) {
   };
   
   const handleRemoveLiquidity = async () => {
-    if (!wallet.connected || !tokenA || !tokenB || !lpAmount || !poolState) {
+    if (!wallet.connected || !wallet.publicKey || !tokenA || !tokenB || !lpAmount || !poolState || !originMintA || !originMintB) {
       setError('Please fill in all fields and ensure pool exists');
       return;
     }
@@ -186,19 +238,25 @@ export function LiquidityForm({ onTokenChange }: LiquidityFormProps = {}) {
     
     try {
       const lpAmountBigInt = BigInt(lpAmount.replace('.', ''));
-      const expectedAmountA = (lpAmountBigInt * poolState.publicReserveA) / poolState.totalLpSupply;
-      const expectedAmountB = (lpAmountBigInt * poolState.publicReserveB) / poolState.totalLpSupply;
-      const minAmountA = (expectedAmountA * 95n) / 100n;
-      const minAmountB = (expectedAmountB * 95n) / 100n;
+      
+      // Fetch notes - pool PDA notes would be needed, but for now we'll need to implement this
+      const storedNotes = readStoredNotes(wallet.publicKey.toBase58());
+      // TODO: Fetch pool PDA notes for removal
+      
+      const minAmountA = 0n; // TODO: Calculate from private reserves
+      const minAmountB = 0n; // TODO: Calculate from private reserves
       
       await removeDexLiquidity({
         connection,
         wallet: wallet as any,
-        tokenA,
-        tokenB,
+        tokenA: originMintA,
+        tokenB: originMintB,
         lpAmount: lpAmountBigInt,
         minAmountA,
-        minAmountB
+        minAmountB,
+        proofClient,
+        zTokenNotesA: [], // TODO: Pool PDA notes
+        zTokenNotesB: [] // TODO: Pool PDA notes
       });
       
       setError(null);
@@ -252,7 +310,7 @@ export function LiquidityForm({ onTokenChange }: LiquidityFormProps = {}) {
         <Box p={3} bg="gray.50" borderRadius="md">
           <Text fontSize="sm" fontWeight="bold">Pool Info:</Text>
           <Text fontSize="xs" color="gray.600">
-            Reserves: {poolState.publicReserveA.toString()} / {poolState.publicReserveB.toString()}
+            Pool exists (private reserves)
           </Text>
           <Text fontSize="xs" color="gray.600">
             Total LP Supply: {poolState.totalLpSupply.toString()}
@@ -299,12 +357,12 @@ export function LiquidityForm({ onTokenChange }: LiquidityFormProps = {}) {
                 />
               </FormControl>
               
-              {expectedLpTokens && (
-                <Box p={3} bg="blue.50" borderRadius="md">
-                  <Text fontSize="sm" fontWeight="bold">Expected LP Tokens:</Text>
-                  <Text fontSize="lg">{expectedLpTokens.toString()}</Text>
-                </Box>
-              )}
+              <Box p={3} bg="blue.50" borderRadius="md">
+                <Text fontSize="sm" fontWeight="bold">LP Tokens:</Text>
+                <Text fontSize="xs" color="gray.600">
+                  LP tokens will be calculated based on private reserves (coming soon)
+                </Text>
+              </Box>
               
               <Button 
                 colorScheme="blue" 
@@ -346,11 +404,8 @@ export function LiquidityForm({ onTokenChange }: LiquidityFormProps = {}) {
               {lpAmount && poolState && (
                 <Box p={3} bg="blue.50" borderRadius="md">
                   <Text fontSize="sm" fontWeight="bold">You will receive:</Text>
-                  <Text fontSize="sm">
-                    Token A: {((BigInt(lpAmount.replace('.', '')) * poolState.publicReserveA) / poolState.totalLpSupply).toString()}
-                  </Text>
-                  <Text fontSize="sm">
-                    Token B: {((BigInt(lpAmount.replace('.', '')) * poolState.publicReserveB) / poolState.totalLpSupply).toString()}
+                  <Text fontSize="xs" color="gray.600">
+                    Amounts calculated from private reserves (coming soon)
                   </Text>
                 </Box>
               )}

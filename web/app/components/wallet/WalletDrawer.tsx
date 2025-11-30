@@ -382,9 +382,17 @@ function WalletDrawerContent({ disclosure }: { disclosure: ReturnType<typeof use
   const mintMap = useMemo(() => {
     const map = new Map<string, { symbol: string; decimals: number }>();
     mints.forEach((mint) => {
-      map.set(mint.originMint, { symbol: mint.symbol, decimals: mint.decimals });
+      // Special case: Use "SOL" for native SOL mint instead of truncated symbol
+      const baseSymbol = (mint.originMint === NATIVE_SOL_MINT.toBase58()) 
+        ? 'SOL' 
+        : mint.symbol;
+      map.set(mint.originMint, { symbol: baseSymbol, decimals: mint.decimals });
       if (mint.zTokenMint) {
-        map.set(mint.zTokenMint, { symbol: `z${mint.symbol}`, decimals: mint.decimals });
+        // Special case: Use "zSOL" for zSOL mint instead of truncated symbol
+        const zSymbol = (mint.originMint === NATIVE_SOL_MINT.toBase58()) 
+          ? 'zSOL' 
+          : `z${baseSymbol}`;
+        map.set(mint.zTokenMint, { symbol: zSymbol, decimals: mint.decimals });
       }
     });
     return map;
@@ -1148,11 +1156,24 @@ function WalletDrawerContent({ disclosure }: { disclosure: ReturnType<typeof use
         if (amount === 0n) {
           return null;
         }
-        const metadata = mintMap.get(mint);
+        // Special case: wSOL doesn't have a separate zToken mint, so private balances use the wSOL mint address
+        // For wSOL private balances (zTokens), always use "zSOL" as the symbol, not "SOL"
+        let metadata: { symbol: string; decimals: number } | undefined;
+        if (mint === NATIVE_SOL_MINT.toBase58()) {
+          // This is a private balance for wSOL - use "zSOL" symbol
+          const wsolMintConfig = mints.find(m => m.originMint === NATIVE_SOL_MINT.toBase58());
+          metadata = { 
+            symbol: 'zSOL', 
+            decimals: wsolMintConfig?.decimals ?? 9 
+          };
+        } else {
+          // For other tokens, look up in mintMap (which already has "z" prefix for zTokens)
+          metadata = mintMap.get(mint);
+        }
         // Use catalog decimals if available, otherwise use cached decimals from chain, otherwise default to 0
         const decimals = metadata?.decimals ?? mintDecimalsCache[mint] ?? 0;
-        const baseSymbol = metadata?.symbol?.replace(/^z/, '') ?? mint.slice(0, 6);
-        const symbol = `z${baseSymbol}`;
+        // Use symbol directly from mintMap (already includes "z" prefix), or generate fallback
+        const symbol = metadata?.symbol ?? `z${mint.slice(0, 6)}`;
         const formatted = formatBaseUnitsToUi(amount, decimals);
         return {
           mint,
@@ -1166,7 +1187,7 @@ function WalletDrawerContent({ disclosure }: { disclosure: ReturnType<typeof use
         (entry): entry is { mint: string; symbol: string; formatted: string; decimals: number; amount: bigint } =>
           Boolean(entry)
       );
-  }, [mintMap, privateBalances, mintDecimalsCache]);
+  }, [mintMap, privateBalances, mintDecimalsCache, mints]);
   const canSendShielded = Boolean(viewingId);
 
   const handleCreateAccount = () => {

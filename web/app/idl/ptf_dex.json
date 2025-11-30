@@ -301,30 +301,18 @@
           "type": "u64"
         },
         {
-          "name": "token_a_is_ztoken",
-          "type": "bool"
-        },
-        {
-          "name": "token_b_is_ztoken",
-          "type": "bool"
-        },
-        {
           "name": "shield_args_a",
           "type": {
-            "option": {
-              "defined": {
-                "name": "ShieldArgs"
-              }
+            "defined": {
+              "name": "ShieldArgs"
             }
           }
         },
         {
           "name": "shield_args_b",
           "type": {
-            "option": {
-              "defined": {
-                "name": "ShieldArgs"
-              }
+            "defined": {
+              "name": "ShieldArgs"
             }
           }
         }
@@ -683,22 +671,6 @@
           {
             "name": "token_b_mint",
             "type": "pubkey"
-          },
-          {
-            "name": "token_a_is_ztoken",
-            "type": "bool"
-          },
-          {
-            "name": "token_b_is_ztoken",
-            "type": "bool"
-          },
-          {
-            "name": "public_reserve_a",
-            "type": "u64"
-          },
-          {
-            "name": "public_reserve_b",
-            "type": "u64"
           },
           {
             "name": "private_reserve_a_commitment",

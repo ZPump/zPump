@@ -216,10 +216,21 @@ pub mod ptf_factory {
         let effective_fee_bps = fee_bps_override.unwrap_or(state.default_fee_bps);
 
         if enable_ptkn {
+            // Validate token_program when enable_ptkn is true
+            // Validate token_program is a valid token program account
+            let token_program_account = ctx.accounts.token_program.as_ref()
+                .ok_or(FactoryError::TokenProgramMissing)?;
+            let token_program_id = anchor_spl::token::ID;
+            let token_2022_program_id = spl_token_2022::ID;
+            require!(
+                token_program_account.to_account_info().key == &token_program_id || token_program_account.to_account_info().key == &token_2022_program_id,
+                FactoryError::InvalidMintFormat
+            );
+            
             let mint_key = prepare_ptkn_mint(
                 state,
                 ctx.accounts.ptkn_mint.as_ref(),
-                ctx.accounts.token_program.as_ref(),
+                ctx.accounts.token_program.as_ref().map(|u| u.to_account_info()),
                 Some(&ctx.accounts.rent),
                 Some(&ctx.accounts.payer),
                 decimals,
@@ -839,7 +850,7 @@ pub mod ptf_factory {
                     let mint_key = prepare_ptkn_mint(
                         state,
                         ctx.accounts.ptkn_mint.as_ref(),
-                        ctx.accounts.token_program.as_ref(),
+                        ctx.accounts.token_program.as_ref().map(|i| i.to_account_info()),
                         Some(&ctx.accounts.rent),
                         Some(&ctx.accounts.executor),
                         *decimals,
@@ -1396,7 +1407,9 @@ pub struct RegisterMint<'info> {
     pub payer: Signer<'info>,
     #[account(mut)]
     pub ptkn_mint: Option<UncheckedAccount<'info>>,
-    pub token_program: Option<Interface<'info, TokenInterface>>,
+    /// CHECK: Validated manually in instruction when enable_ptkn is true
+    /// Changed from Interface to UncheckedAccount to avoid Anchor validation issues with optional accounts
+    pub token_program: Option<UncheckedAccount<'info>>,
     pub rent: Sysvar<'info, Rent>,
     pub system_program: Program<'info, System>,
 }
@@ -1849,7 +1862,7 @@ fn apply_mint_update<'info>(
                 let mint_key = prepare_ptkn_mint(
                     factory_state,
                     ptkn_mint,
-                    token_program,
+                    token_program.map(|i| i.to_account_info()),
                     rent,
                     payer,
                     mapping.decimals,
@@ -1881,14 +1894,14 @@ fn apply_mint_update<'info>(
 fn prepare_ptkn_mint<'info>(
     factory_state: &Account<'info, FactoryState>,
     ptkn_mint: Option<&UncheckedAccount<'info>>,
-    token_program: Option<&Interface<'info, TokenInterface>>,
+    token_program_info: Option<AccountInfo<'info>>,
     rent: Option<&Sysvar<'info, Rent>>,
     payer: Option<&Signer<'info>>,
     decimals: u8,
     current_authority: Option<&Signer<'info>>,
 ) -> Result<Pubkey> {
     let ptkn_account = ptkn_mint.ok_or(FactoryError::PtknMintMissing)?;
-    let token_program = token_program.ok_or(FactoryError::TokenProgramMissing)?;
+    let token_program_info = token_program_info.ok_or(FactoryError::TokenProgramMissing)?;
     let mint_info = ptkn_account.to_account_info();
 
     if mint_info.owner == &system_program::ID && mint_info.data_is_empty() {
@@ -1901,20 +1914,21 @@ fn prepare_ptkn_mint<'info>(
             mint_info.key,
             lamports,
             mint_space as u64,
-            token_program.key,
+            token_program_info.key,
         );
         invoke(&create_ix, &[payer.to_account_info(), mint_info.clone()])?;
         let init_accounts = token_interface::InitializeMint2 {
             mint: mint_info.clone(),
         };
-        let init_ctx = CpiContext::new(token_program.to_account_info(), init_accounts);
+        // Use AccountInfo directly - CpiContext accepts AccountInfo for program accounts
+        let init_ctx = CpiContext::new(token_program_info.clone(), init_accounts);
         // CRITICAL FIX: Set freeze authority to None for new mints
         // This prevents attackers from freezing accounts after registration
         token_interface::initialize_mint2(init_ctx, decimals, &factory_state.key(), None)?;
     } else {
         require_keys_eq!(
             *mint_info.owner,
-            token_program.key(),
+            *token_program_info.key,
             FactoryError::PtknMintMismatch
         );
         let mint_decimals = load_mint_decimals(&mint_info)?;
@@ -1928,7 +1942,8 @@ fn prepare_ptkn_mint<'info>(
                         account_or_mint: mint_info.clone(),
                         current_authority: signer.to_account_info(),
                     };
-                    let cpi_ctx = CpiContext::new(token_program.to_account_info(), cpi_accounts);
+                    // Use AccountInfo directly - CpiContext accepts AccountInfo for program accounts
+                    let cpi_ctx = CpiContext::new(token_program_info.clone(), cpi_accounts);
                     token_interface::set_authority(
                         cpi_ctx,
                         AuthorityType::MintTokens,

@@ -3,18 +3,11 @@ use anchor_lang::prelude::*;
 #[account]
 pub struct PoolState {
     // Token pair identifiers (ordered: token_a < token_b)
+    // Both tokens must be zTokens (private tokens)
     pub token_a_mint: Pubkey,
     pub token_b_mint: Pubkey,
     
-    // Token type flags
-    pub token_a_is_ztoken: bool,
-    pub token_b_is_ztoken: bool,
-    
-    // Public reserves (only used if corresponding token is public)
-    pub public_reserve_a: u64,
-    pub public_reserve_b: u64,
-    
-    // Private reserves (commitment hashes and amounts, only used if corresponding token is zToken)
+    // Private reserves (commitment hashes and amounts)
     // These are tracked via the pool PDA's private position in the commitment tree
     // We store both the commitment hash (for privacy) and the amount (for AMM calculations)
     // Note: The pool knows its own reserves, so storing amounts is acceptable
@@ -44,10 +37,6 @@ impl PoolState {
     pub const LEN: usize = 8 + // discriminator
         32 + // token_a_mint
         32 + // token_b_mint
-        1 +  // token_a_is_ztoken
-        1 +  // token_b_is_ztoken
-        8 +  // public_reserve_a
-        8 +  // public_reserve_b
         32 + // private_reserve_a_commitment
         8 +  // private_reserve_a_amount
         32 + // private_reserve_b_commitment
@@ -61,38 +50,14 @@ impl PoolState {
         8 +  // created_at
         1;   // bump
     
-    pub fn get_public_reserve_a(&self) -> u64 {
-        if self.token_a_is_ztoken {
-            0
-        } else {
-            self.public_reserve_a
-        }
-    }
-    
-    pub fn get_public_reserve_b(&self) -> u64 {
-        if self.token_b_is_ztoken {
-            0
-        } else {
-            self.public_reserve_b
-        }
-    }
-    
-    /// Get reserve amount for token A (public or private)
+    /// Get reserve amount for token A (always private)
     pub fn get_reserve_a(&self) -> u64 {
-        if self.token_a_is_ztoken {
-            self.private_reserve_a_amount
-        } else {
-            self.public_reserve_a
-        }
+        self.private_reserve_a_amount
     }
     
-    /// Get reserve amount for token B (public or private)
+    /// Get reserve amount for token B (always private)
     pub fn get_reserve_b(&self) -> u64 {
-        if self.token_b_is_ztoken {
-            self.private_reserve_b_amount
-        } else {
-            self.public_reserve_b
-        }
+        self.private_reserve_b_amount
     }
     
     /// Update private reserve for token A (commitment and amount)
@@ -167,18 +132,18 @@ impl PoolState {
         Ok(())
     }
     
-    /// Get private reserve commitment for token A (returns zero if not zToken)
+    /// Get private reserve commitment for token A
     pub fn get_private_reserve_a_commitment(&self) -> Option<[u8; 32]> {
-        if self.token_a_is_ztoken && self.private_reserve_a_commitment != [0u8; 32] {
+        if self.private_reserve_a_commitment != [0u8; 32] {
             Some(self.private_reserve_a_commitment)
         } else {
             None
         }
     }
     
-    /// Get private reserve commitment for token B (returns zero if not zToken)
+    /// Get private reserve commitment for token B
     pub fn get_private_reserve_b_commitment(&self) -> Option<[u8; 32]> {
-        if self.token_b_is_ztoken && self.private_reserve_b_commitment != [0u8; 32] {
+        if self.private_reserve_b_commitment != [0u8; 32] {
             Some(self.private_reserve_b_commitment)
         } else {
             None

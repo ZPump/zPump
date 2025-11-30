@@ -3,18 +3,16 @@ use anchor_spl::token_interface::Transfer;
 
 use crate::errors::DexError;
 use crate::state::DEX_POOL_SEED;
-use crate::ztoken_cpi::{parse_ztoken_accounts, invoke_shield_cpi, invoke_transfer_cpi, ShieldArgs, TransferArgs, extract_pool_commitment};
+use crate::ztoken_cpi::{parse_ztoken_accounts, invoke_transfer_cpi, TransferArgs, extract_pool_commitment};
 use ptf_pool::ID as POOL_PROGRAM_ID;
-use ptf_vault::ID as VAULT_PROGRAM_ID;
 
 pub fn swap(
     ctx: Context<crate::Swap>,
     amount_in: u64,
     min_amount_out: u64,
     a_to_b: bool,
-    transfer_args_in: Option<TransferArgs>,
-    shield_args_out: Option<ShieldArgs>,
-    transfer_args_out: Option<TransferArgs>,
+    transfer_args_in: TransferArgs,
+    transfer_args_out: TransferArgs,
 ) -> Result<()> {
     // Validate amounts
     require!(amount_in > 0, DexError::InvalidAmount);
@@ -38,10 +36,9 @@ pub fn swap(
     require_keys_eq!(pool_state.token_b_mint, token_b, DexError::MintMismatch);
     
     // Determine swap direction: if a_to_b is true, swap token_a -> token_b, else token_b -> token_a
-    let (token_in_is_ztoken, token_out_is_ztoken, reserve_in, reserve_out, token_in_mint, token_out_mint) = if a_to_b {
+    // Both tokens are always zTokens
+    let (reserve_in, reserve_out, token_in_mint, token_out_mint) = if a_to_b {
         (
-            pool_state.token_a_is_ztoken,
-            pool_state.token_b_is_ztoken,
             pool_state.get_reserve_a(),
             pool_state.get_reserve_b(),
             token_a,
@@ -49,8 +46,6 @@ pub fn swap(
         )
     } else {
         (
-            pool_state.token_b_is_ztoken,
-            pool_state.token_a_is_ztoken,
             pool_state.get_reserve_b(),
             pool_state.get_reserve_a(),
             token_b,
@@ -113,44 +108,19 @@ pub fn swap(
     let current_private_reserve_a_amount = pool_state.private_reserve_a_amount;
     let current_private_reserve_b_amount = pool_state.private_reserve_b_amount;
     
-    // Update reserves based on swap direction (for public tokens)
-    // Reserve_in increases by (amount_in - total_fee), reserve_out decreases by amount_out
-    // LP fee (70% of total_fee) auto-compounds into reserve_in
+    // Update protocol fee accumulators (reserves updated after CPIs)
+    // LP fee (70% of total_fee) auto-compounds into reserves via CPIs
     // Protocol fee (30% of total_fee) is tracked in accumulator
-    let amount_in_after_fee = amount_in
-        .checked_sub(total_fee)
-        .ok_or(DexError::MathOverflow)?;
-    
     if a_to_b {
         // Swapping token_a -> token_b
-        if !pool_state.token_a_is_ztoken {
-            pool_state.public_reserve_a = pool_state.public_reserve_a
-                .checked_add(amount_in_after_fee)
-                .ok_or(DexError::MathOverflow)?;
-            pool_state.protocol_fee_accumulator_a = pool_state.protocol_fee_accumulator_a
-                .checked_add(protocol_fee)
-                .ok_or(DexError::MathOverflow)?;
-        }
-        if !pool_state.token_b_is_ztoken {
-            pool_state.public_reserve_b = pool_state.public_reserve_b
-                .checked_sub(amount_out)
-                .ok_or(DexError::MathOverflow)?;
-        }
+        pool_state.protocol_fee_accumulator_a = pool_state.protocol_fee_accumulator_a
+            .checked_add(protocol_fee)
+            .ok_or(DexError::MathOverflow)?;
     } else {
         // Swapping token_b -> token_a
-        if !pool_state.token_b_is_ztoken {
-            pool_state.public_reserve_b = pool_state.public_reserve_b
-                .checked_add(amount_in_after_fee)
-                .ok_or(DexError::MathOverflow)?;
-            pool_state.protocol_fee_accumulator_b = pool_state.protocol_fee_accumulator_b
-                .checked_add(protocol_fee)
-                .ok_or(DexError::MathOverflow)?;
-        }
-        if !pool_state.token_a_is_ztoken {
-            pool_state.public_reserve_a = pool_state.public_reserve_a
-                .checked_sub(amount_out)
-                .ok_or(DexError::MathOverflow)?;
-        }
+        pool_state.protocol_fee_accumulator_b = pool_state.protocol_fee_accumulator_b
+            .checked_add(protocol_fee)
+            .ok_or(DexError::MathOverflow)?;
     }
     
     // Store results from zToken CPIs for later pool state updates
@@ -173,152 +143,85 @@ pub fn swap(
     // This prevents lifetime conflicts with Rust borrow checker
     drop(pool_state);
     
-    // Transfer input token from user to pool (for public tokens)
-    if !token_in_is_ztoken {
-        anchor_spl::token_interface::transfer(
-            CpiContext::new(
-                ctx.accounts.token_program.to_account_info(),
-                Transfer {
-                    from: ctx.accounts.user_token_in_account.to_account_info(),
-                    to: ctx.accounts.pool_token_in_account.to_account_info(),
-                    authority: ctx.accounts.payer.to_account_info(),
-                },
-            ),
-            amount_in,
-        )?;
-    }
     // ====================================================================
     // ZTOKEN HANDLING: Swap with zToken input (user → pool PDA)
     // ====================================================================
-    // SOLUTION: Use Vec pattern to break lifetime dependency
-    if token_in_is_ztoken {
-        if let Some(transfer_args) = transfer_args_in {
-            msg!("[swap] Token in is zToken - invoking private_transfer CPI (user → pool PDA)");
-            
-            // Determine current private reserve based on swap direction
-            let current_private_reserve = if a_to_b {
-                current_private_reserve_a_amount
+    // Both tokens are always zTokens - use private transfer CPIs
+    msg!("[swap] Token in is zToken - invoking private_transfer CPI (user → pool PDA)");
+    msg!("[swap] Token in is zToken - invoking private_transfer CPI (user → pool PDA)");
+    
+    // Determine current private reserve based on swap direction
+    let current_private_reserve = if a_to_b {
+        current_private_reserve_a_amount
+    } else {
+        current_private_reserve_b_amount
+    };
+    
+    let (commitment, amount_result) = handle_ztoken_swap_input(
+        ctx.remaining_accounts.to_vec(),
+        &payer_pubkey,
+        &token_in_mint,
+        &POOL_PROGRAM_ID,
+        transfer_args_in,
+        &pool_state_key,
+        current_private_reserve,
+        amount_in,
+        0,
+    )?;
+    
+    // Store commitment results for later pool state update
+    if let Some(commitment) = commitment {
+        if let Some(amount) = amount_result {
+            if a_to_b {
+                new_private_reserve_a_commitment = Some(commitment);
+                new_private_reserve_a_amount = Some(amount);
             } else {
-                current_private_reserve_b_amount
-            };
-            
-            let (commitment, amount_result) = handle_ztoken_swap_input(
-                ctx.remaining_accounts.to_vec(),
-                &payer_pubkey,
-                &token_in_mint,
-                &POOL_PROGRAM_ID,
-                transfer_args,
-                &pool_state_key,
-                current_private_reserve,
-                amount_in,
-                0,
-            )?;
-            
-            // Store commitment results for later pool state update
-            if let Some(commitment) = commitment {
-                if let Some(amount) = amount_result {
-                    if a_to_b {
-                        new_private_reserve_a_commitment = Some(commitment);
-                        new_private_reserve_a_amount = Some(amount);
-                    } else {
-                        new_private_reserve_b_commitment = Some(commitment);
-                        new_private_reserve_b_amount = Some(amount);
-                    }
-                }
+                new_private_reserve_b_commitment = Some(commitment);
+                new_private_reserve_b_amount = Some(amount);
             }
         }
     }
     
-    // Transfer output token from pool to user (for public tokens)
-    if !token_out_is_ztoken {
-        anchor_spl::token_interface::transfer(
-            CpiContext::new_with_signer(
-                ctx.accounts.token_program.to_account_info(),
-                Transfer {
-                    from: ctx.accounts.pool_token_out_account.to_account_info(),
-                    to: ctx.accounts.user_token_out_account.to_account_info(),
-                    authority: ctx.accounts.pool_state.to_account_info(),
-                },
-                signer_seeds,
-            ),
-            amount_out,
-        )?;
-    }
     // ====================================================================
-    // ZTOKEN HANDLING: Swap with zToken output
+    // ZTOKEN HANDLING: Swap with zToken output (pool PDA → user)
     // ====================================================================
-    if token_out_is_ztoken {
-        if !token_in_is_ztoken {
-            // Scenario 1: Public → zToken - Shield public tokens to create zTokens for user
-            if let Some(shield_args) = shield_args_out {
-                msg!("[swap] Public → zToken swap - invoking shield CPI");
-                
-                let commitment = handle_ztoken_swap_shield_output(
-                    ctx.remaining_accounts.to_vec(),
-                    &payer_pubkey,
-                    &token_out_mint,
-                    &POOL_PROGRAM_ID,
-                    &VAULT_PROGRAM_ID,
-                    &ctx.accounts.token_program.key(),
-                    shield_args,
-                    &pool_state_key,
-                    amount_out,
-                    0,
-                )?;
-                
-                // Store commitment result for later pool state update
-                if let Some(commitment) = commitment {
-                    if a_to_b {
-                        new_private_reserve_b_commitment = Some(commitment);
-                        new_private_reserve_b_amount = Some(amount_out);
-                    } else {
-                        new_private_reserve_a_commitment = Some(commitment);
-                        new_private_reserve_a_amount = Some(amount_out);
-                    }
-                }
-            }
-        } else {
-            // Scenario 2: zToken → zToken - Private transfer from pool PDA to user
-            if let Some(transfer_args) = transfer_args_out {
-                msg!("[swap] zToken → zToken swap - invoking private_transfer CPI (pool PDA → user)");
-                
-                // Calculate offset: if input is zToken, it uses first 7 accounts; output uses next 7
-                let account_offset = if token_in_is_ztoken { 7 } else { 0 };
-                
-                // Determine current private reserve based on swap direction
-                let current_private_reserve = if a_to_b {
-                    current_private_reserve_b_amount
-                } else {
-                    current_private_reserve_a_amount
-                };
-                
-                let (commitment, amount_result) = handle_ztoken_swap_output(
-                    ctx.remaining_accounts.to_vec(),
-                    &payer_pubkey,
-                    &token_out_mint,
-                    &POOL_PROGRAM_ID,
-                    transfer_args,
-                    &pool_state_key,
-                    &token_a,
-                    &token_b,
-                    pool_bump,
-                    current_private_reserve,
-                    amount_out,
-                    account_offset,
-                )?;
-                
-                // Store commitment results for later pool state update
-                if let Some(commitment) = commitment {
-                    if let Some(amount) = amount_result {
-                        if a_to_b {
-                            new_private_reserve_b_commitment = Some(commitment);
-                            new_private_reserve_b_amount = Some(amount);
-                        } else {
-                            new_private_reserve_a_commitment = Some(commitment);
-                            new_private_reserve_a_amount = Some(amount);
-                        }
-                    }
-                }
+    // Both tokens are always zTokens - use private transfer CPIs
+    msg!("[swap] Token out is zToken - invoking private_transfer CPI (pool PDA → user)");
+    
+    // Calculate offset: input uses first 7 accounts, output uses next 7
+    let account_offset = 7;
+    
+    // Determine current private reserve based on swap direction
+    let current_private_reserve = if a_to_b {
+        current_private_reserve_b_amount
+    } else {
+        current_private_reserve_a_amount
+    };
+    
+    let (commitment, amount_result) = handle_ztoken_swap_output(
+        ctx.remaining_accounts.to_vec(),
+        &payer_pubkey,
+        &token_out_mint,
+        &POOL_PROGRAM_ID,
+        transfer_args_out,
+        &pool_state_key,
+        &token_a,
+        &token_b,
+        pool_bump,
+        current_private_reserve,
+        amount_out,
+        account_offset,
+    )?;
+    
+    // Store commitment results for later pool state update
+    if let Some(commitment) = commitment {
+        if let Some(amount) = amount_result {
+            if a_to_b {
+                new_private_reserve_b_commitment = Some(commitment);
+                new_private_reserve_b_amount = Some(amount);
+            } else {
+                new_private_reserve_a_commitment = Some(commitment);
+                new_private_reserve_a_amount = Some(amount);
             }
         }
     }
@@ -607,220 +510,8 @@ fn handle_ztoken_swap_output<'info>(
     Ok((commitment, amount_result))
 }
 
-/// Helper function to handle zToken shield output for swap (Public → zToken)
-/// This shields public tokens to create zTokens for the user
-/// 
-/// NOTE: Full shield CPI implementation will be completed in create_pool
-/// For now, we return the commitment from shield_args
-fn handle_ztoken_swap_shield_output<'info>(
-    remaining_accounts: Vec<AccountInfo<'info>>,
-    payer_pubkey: &Pubkey,
-    token_mint: &Pubkey,
-    pool_program_id: &Pubkey,
-    vault_program_id: &Pubkey,
-    token_program_key: &Pubkey,
-    shield_args: ShieldArgs,
-    _pool_state_key: &Pubkey,
-    _amount: u64,
-    account_offset: usize,
-) -> Result<Option<[u8; 32]>> {
-    msg!("[swap] Starting shield CPI for token_mint={}", token_mint);
-    
-    let ra = remaining_accounts.as_slice();
-    require!(ra.len() > account_offset, DexError::InvalidAccount);
-    
-    // Parse zToken pool accounts - includes vault_token_account and depositor_token_account
-    let token_accounts_slice = &ra[account_offset..];
-    let ztoken_accounts = crate::ztoken_cpi::parse_ztoken_accounts(
-        token_accounts_slice,
-        token_mint,
-        pool_program_id,
-        true, // is_shield = true
-    )?;
-    
-    // Find additional accounts needed for shield CPI
-    let mut origin_mint_account: Option<AccountInfo<'info>> = None;
-    let mut vault_program_account: Option<AccountInfo<'info>> = None;
-    let mut token_program_account: Option<AccountInfo<'info>> = None;
-    
-    // Find accounts by matching keys
-    for account in ra.iter() {
-        let key = account.key();
-        
-        if key == *token_mint {
-            origin_mint_account = Some(account.clone());
-        } else if key == *vault_program_id {
-            vault_program_account = Some(account.clone());
-        } else if key == *token_program_key {
-            token_program_account = Some(account.clone());
-        }
-    }
-    
-    // Build account metas and infos for shield instruction (21 accounts)
-    // Same structure as create_pool - see that function for detailed comments
-    let mut account_metas = Vec::new();
-    let mut account_infos: Vec<AccountInfo> = Vec::new();
-    
-    account_metas.push(anchor_lang::solana_program::instruction::AccountMeta::new(
-        ztoken_accounts.pool_state.key(),
-        false,
-    ));
-    account_infos.push(ztoken_accounts.pool_state.clone());
-    
-    account_metas.push(anchor_lang::solana_program::instruction::AccountMeta::new_readonly(
-        ztoken_accounts.hook_config.as_ref().unwrap().key(),
-        false,
-    ));
-    account_infos.push(ztoken_accounts.hook_config.as_ref().unwrap().clone());
-    
-    account_metas.push(anchor_lang::solana_program::instruction::AccountMeta::new(
-        ztoken_accounts.hook_whitelist.as_ref().unwrap().key(),
-        false,
-    ));
-    account_infos.push(ztoken_accounts.hook_whitelist.as_ref().unwrap().clone());
-    
-    account_metas.push(anchor_lang::solana_program::instruction::AccountMeta::new(
-        ztoken_accounts.nullifier_set.key(),
-        false,
-    ));
-    account_infos.push(ztoken_accounts.nullifier_set.clone());
-    
-    account_metas.push(anchor_lang::solana_program::instruction::AccountMeta::new(
-        ztoken_accounts.commitment_tree.key(),
-        false,
-    ));
-    account_infos.push(ztoken_accounts.commitment_tree.clone());
-    
-    account_metas.push(anchor_lang::solana_program::instruction::AccountMeta::new(
-        ztoken_accounts.note_ledger.key(),
-        false,
-    ));
-    account_infos.push(ztoken_accounts.note_ledger.clone());
-    
-    account_metas.push(anchor_lang::solana_program::instruction::AccountMeta::new(
-        ztoken_accounts.vault_state.as_ref().unwrap().key(),
-        false,
-    ));
-    account_infos.push(ztoken_accounts.vault_state.as_ref().unwrap().clone());
-    
-    account_metas.push(anchor_lang::solana_program::instruction::AccountMeta::new(
-        ztoken_accounts.vault_token_account.as_ref().unwrap().key(),
-        false,
-    ));
-    account_infos.push(ztoken_accounts.vault_token_account.as_ref().unwrap().clone());
-    
-    account_metas.push(anchor_lang::solana_program::instruction::AccountMeta::new(
-        ztoken_accounts.depositor_token_account.as_ref().unwrap().key(),
-        false,
-    ));
-    account_infos.push(ztoken_accounts.depositor_token_account.as_ref().unwrap().clone());
-    
-    account_metas.push(anchor_lang::solana_program::instruction::AccountMeta::new_readonly(
-        *pool_program_id,
-        false,
-    ));
-    account_infos.push(ztoken_accounts.pool_state.clone());
-    
-    account_metas.push(anchor_lang::solana_program::instruction::AccountMeta::new_readonly(
-        ztoken_accounts.verifier_program.key(),
-        false,
-    ));
-    account_infos.push(ztoken_accounts.verifier_program.clone());
-    
-    account_metas.push(anchor_lang::solana_program::instruction::AccountMeta::new_readonly(
-        ztoken_accounts.verifying_key.key(),
-        false,
-    ));
-    account_infos.push(ztoken_accounts.verifying_key.clone());
-    
-    account_metas.push(anchor_lang::solana_program::instruction::AccountMeta::new(
-        ztoken_accounts.shield_claim.as_ref().unwrap().key(),
-        false,
-    ));
-    account_infos.push(ztoken_accounts.shield_claim.as_ref().unwrap().clone());
-    
-    let (payer_account, system_program_account, rent_account) =
-        crate::ztoken_cpi::parse_cpi_common_accounts(
-            ra,
-            payer_pubkey,
-        )?;
-    
-    account_metas.push(anchor_lang::solana_program::instruction::AccountMeta::new(
-        payer_account.key(),
-        true,
-    ));
-    account_infos.push(payer_account);
-    
-    let origin_mint_account = origin_mint_account.ok_or(DexError::InvalidAccount)?;
-    account_metas.push(anchor_lang::solana_program::instruction::AccountMeta::new_readonly(
-        origin_mint_account.key(),
-        false,
-    ));
-    account_infos.push(origin_mint_account);
-    
-    account_metas.push(anchor_lang::solana_program::instruction::AccountMeta::new_readonly(
-        ztoken_accounts.mint_mapping.key(),
-        false,
-    ));
-    account_infos.push(ztoken_accounts.mint_mapping.clone());
-    
-    account_metas.push(anchor_lang::solana_program::instruction::AccountMeta::new_readonly(
-        ztoken_accounts.factory_state.as_ref().unwrap().key(),
-        false,
-    ));
-    account_infos.push(ztoken_accounts.factory_state.as_ref().unwrap().clone());
-    
-    let vault_program_account = vault_program_account.unwrap_or_else(|| system_program_account.clone());
-    account_metas.push(anchor_lang::solana_program::instruction::AccountMeta::new_readonly(
-        vault_program_account.key(),
-        false,
-    ));
-    account_infos.push(vault_program_account);
-    
-    let token_program_account = token_program_account.unwrap_or_else(|| system_program_account.clone());
-    account_metas.push(anchor_lang::solana_program::instruction::AccountMeta::new_readonly(
-        token_program_account.key(),
-        false,
-    ));
-    account_infos.push(token_program_account);
-    
-    account_metas.push(anchor_lang::solana_program::instruction::AccountMeta::new_readonly(
-        system_program_account.key(),
-        false,
-    ));
-    account_infos.push(system_program_account);
-    
-    account_metas.push(anchor_lang::solana_program::instruction::AccountMeta::new_readonly(
-        rent_account.key(),
-        false,
-    ));
-    account_infos.push(rent_account);
-    
-    // Build instruction data
-    let mut instruction_data = Vec::new();
-    let shield_discriminator: [u8; 8] = [220, 198, 253, 246, 148, 174, 48, 205];
-    instruction_data.extend_from_slice(&shield_discriminator);
-    
-    let args_data = shield_args.try_to_vec()
-        .map_err(|_| DexError::InvalidProof)?;
-    instruction_data.extend_from_slice(&args_data);
-    
-    let instruction = anchor_lang::solana_program::instruction::Instruction {
-        program_id: *pool_program_id,
-        accounts: account_metas,
-        data: instruction_data,
-    };
-    
-    msg!("[swap] Invoking ptf_pool::shield CPI...");
-    anchor_lang::solana_program::program::invoke(
-        &instruction,
-        &account_infos,
-    )?;
-    
-    msg!("[swap] ✓ shield CPI invoked successfully");
-    
-    Ok(Some(shield_args.amount_commit))
-}
+// Removed: No longer needed - DEX only supports zToken → zToken swaps
+// The handle_ztoken_swap_shield_output function has been removed
 
 // Account struct is defined in lib.rs at crate root for Anchor macro resolution
 

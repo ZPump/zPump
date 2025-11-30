@@ -6,10 +6,14 @@ if (typeof globalThis.Buffer === 'undefined') {
 }
 import {
   AddressLookupTableProgram,
+  AddressLookupTableAccount,
   ComputeBudgetProgram,
   Connection,
   Keypair,
   MessageV0,
+  MessageHeader,
+  MessageCompiledInstruction,
+  MessageAddressTableLookup,
   PublicKey,
   SYSVAR_INSTRUCTIONS_PUBKEY,
   SYSVAR_RENT_PUBKEY,
@@ -62,8 +66,10 @@ import {
   fetchZTokenPoolRoot,
   generateDexShieldProof,
   generateDexTransferProof,
+  generateDexTransferProofSimple,
   proofToShieldArgs,
-  proofToTransferArgs
+  proofToTransferArgs,
+  createEmptyShieldArgs
 } from './dex-ztoken-helpers';
 import poolIdl from '../idl/ptf_pool.json';
 import factoryIdl from '../idl/ptf_factory.json';
@@ -151,6 +157,234 @@ async function waitForSignatureConfirmation(
     }
     await sleep(SIGNATURE_POLL_INTERVAL_MS);
   }
+}
+
+function buildManualMessageV0(
+  payer: PublicKey,
+  instructions: TransactionInstruction[],
+  recentBlockhash: string,
+  lookupTableAccount: AddressLookupTableAccount,
+  allSigners: PublicKey[]
+): MessageV0 {
+  const altAddresses = lookupTableAccount.state.addresses;
+  const altAddressMap = new Map(altAddresses.map((addr: PublicKey, idx: number) => [addr.toBase58(), idx]));
+  
+  // Build staticAccountKeys in correct order: writable signers, readonly signers, writable non-signers, readonly non-signers
+  const accountMetadata = new Map<string, { 
+    pubkey: PublicKey; 
+    isSigner: boolean; 
+    isWritable: boolean; 
+    firstOrder: number;
+  }>();
+  const signerSet = new Set(allSigners.map(s => s.toBase58()));
+  let accountOrderCounter = 0;
+  
+  // Collect accounts from instructions in order
+  for (const ix of instructions) {
+    const programIdStr = ix.programId.toBase58();
+    if (!altAddressMap.has(programIdStr)) {
+      if (!accountMetadata.has(programIdStr)) {
+        accountMetadata.set(programIdStr, {
+          pubkey: ix.programId,
+          isSigner: signerSet.has(programIdStr),
+          isWritable: false,
+          firstOrder: accountOrderCounter++
+        });
+      }
+    }
+    
+    for (const meta of ix.keys) {
+      const addrStr = meta.pubkey.toBase58();
+      if (!altAddressMap.has(addrStr)) {
+        const existing = accountMetadata.get(addrStr);
+        if (existing) {
+          if (meta.isWritable) {
+            existing.isWritable = true;
+          }
+        } else {
+          accountMetadata.set(addrStr, {
+            pubkey: meta.pubkey,
+            isSigner: signerSet.has(addrStr),
+            isWritable: meta.isWritable,
+            firstOrder: accountOrderCounter++
+          });
+        }
+      }
+    }
+  }
+  
+  // Sort accounts into correct categories
+  const writableSigners: Array<{pubkey: PublicKey; order: number}> = [];
+  const readonlySigners: Array<{pubkey: PublicKey; order: number}> = [];
+  const writableNonSigners: Array<{pubkey: PublicKey; order: number}> = [];
+  const readonlyNonSigners: Array<{pubkey: PublicKey; order: number}> = [];
+  
+  for (const [addrStr, meta] of accountMetadata) {
+    if (meta.isSigner) {
+      if (meta.isWritable) {
+        writableSigners.push({ pubkey: meta.pubkey, order: meta.firstOrder });
+      } else {
+        readonlySigners.push({ pubkey: meta.pubkey, order: meta.firstOrder });
+      }
+    } else {
+      if (meta.isWritable) {
+        writableNonSigners.push({ pubkey: meta.pubkey, order: meta.firstOrder });
+      } else {
+        readonlyNonSigners.push({ pubkey: meta.pubkey, order: meta.firstOrder });
+      }
+    }
+  }
+  
+  // Sort each category by first occurrence order
+  writableSigners.sort((a, b) => a.order - b.order);
+  readonlySigners.sort((a, b) => a.order - b.order);
+  writableNonSigners.sort((a, b) => a.order - b.order);
+  readonlyNonSigners.sort((a, b) => a.order - b.order);
+  
+  // Build staticAccountKeys in correct order
+  const staticAccountKeys: PublicKey[] = [
+    ...writableSigners.map(a => a.pubkey),
+    ...readonlySigners.map(a => a.pubkey),
+    ...writableNonSigners.map(a => a.pubkey),
+    ...readonlyNonSigners.map(a => a.pubkey)
+  ];
+  
+  // Build map for quick lookup
+  const staticAccountKeyMap = new Map<string, number>();
+  for (let i = 0; i < staticAccountKeys.length; i++) {
+    staticAccountKeyMap.set(staticAccountKeys[i]!.toBase58(), i);
+  }
+  
+  // Build addressTableLookups with explicit indexes
+  const altWritableIndexes: number[] = [];
+  const altReadonlyIndexes: number[] = [];
+  
+  for (const ix of instructions) {
+    for (const meta of ix.keys) {
+      const addrStr = meta.pubkey.toBase58();
+      if (staticAccountKeyMap.has(addrStr)) continue;
+      
+      const altIdx = altAddressMap.get(addrStr);
+      if (altIdx !== undefined) {
+        if (meta.isWritable && !altWritableIndexes.includes(altIdx)) {
+          altWritableIndexes.push(altIdx);
+        } else if (!meta.isWritable && !altReadonlyIndexes.includes(altIdx)) {
+          altReadonlyIndexes.push(altIdx);
+        }
+      }
+    }
+    
+    // Check program ID
+    const programIdStr = ix.programId.toBase58();
+    if (!staticAccountKeyMap.has(programIdStr)) {
+      const altIdx = altAddressMap.get(programIdStr);
+      if (altIdx !== undefined) {
+        if (!altReadonlyIndexes.includes(altIdx)) {
+          altReadonlyIndexes.push(altIdx);
+        }
+      }
+    }
+  }
+  
+  // Sort indexes
+  altWritableIndexes.sort((a, b) => a - b);
+  altReadonlyIndexes.sort((a, b) => a - b);
+  
+  // Build mapping from lookup table index to final account index
+  const altIndexToAccountIndex = new Map<number, number>();
+  
+  // Map writable indexes
+  for (let i = 0; i < altWritableIndexes.length; i++) {
+    const altIdx = altWritableIndexes[i]!;
+    altIndexToAccountIndex.set(altIdx, staticAccountKeys.length + i);
+  }
+  
+  // Map readonly indexes (after writable)
+  for (let i = 0; i < altReadonlyIndexes.length; i++) {
+    const altIdx = altReadonlyIndexes[i]!;
+    const accountIdx = staticAccountKeys.length + altWritableIndexes.length + i;
+    altIndexToAccountIndex.set(altIdx, accountIdx);
+  }
+  
+  // Build compiled instructions
+  const compiledInstructions: MessageCompiledInstruction[] = [];
+  
+  for (const ix of instructions) {
+    // Find program ID index
+    let programIdIndex: number;
+    const programIdStr = ix.programId.toBase58();
+    if (staticAccountKeyMap.has(programIdStr)) {
+      programIdIndex = staticAccountKeyMap.get(programIdStr)!;
+    } else {
+      const altIdx = altAddressMap.get(programIdStr);
+      if (altIdx === undefined) {
+        throw new Error(`Program ID ${programIdStr} not found in staticAccountKeys or lookup table`);
+      }
+      const accountIndex = altIndexToAccountIndex.get(altIdx);
+      if (accountIndex === undefined) {
+        throw new Error(`Program ID ${programIdStr} lookup table index ${altIdx} not found in AddressTableLookups`);
+      }
+      programIdIndex = accountIndex;
+    }
+    
+    // Build account indexes for this instruction
+    const accountKeyIndexes: number[] = [];
+    for (const meta of ix.keys) {
+      const addrStr = meta.pubkey.toBase58();
+      
+      if (staticAccountKeyMap.has(addrStr)) {
+        const staticIdx = staticAccountKeyMap.get(addrStr)!;
+        accountKeyIndexes.push(staticIdx);
+      } else {
+        const altIdx = altAddressMap.get(addrStr);
+        if (altIdx === undefined) {
+          throw new Error(`Account ${addrStr} not found in staticAccountKeys or lookup table`);
+        }
+        const accountIndex = altIndexToAccountIndex.get(altIdx);
+        if (accountIndex === undefined) {
+          throw new Error(`Account ${addrStr} (ALT idx ${altIdx}) not found in AddressTableLookups`);
+        }
+        accountKeyIndexes.push(accountIndex);
+      }
+    }
+    
+    compiledInstructions.push({
+      programIdIndex,
+      accountKeyIndexes,
+      data: Uint8Array.from(ix.data)
+    });
+  }
+  
+  // Build MessageHeader
+  const numReadonlySignedAccounts = readonlySigners.length;
+  const numReadonlyUnsignedAccounts = readonlyNonSigners.length;
+  
+  const header: MessageHeader = {
+    numRequiredSignatures: allSigners.length,
+    numReadonlySignedAccounts,
+    numReadonlyUnsignedAccounts
+  };
+  
+  // Build AddressTableLookups
+  const addressTableLookups: MessageAddressTableLookup[] = [];
+  if (altWritableIndexes.length > 0 || altReadonlyIndexes.length > 0) {
+    addressTableLookups.push({
+      accountKey: lookupTableAccount.key,
+      writableIndexes: altWritableIndexes,
+      readonlyIndexes: altReadonlyIndexes
+    });
+  }
+  
+  // Construct MessageV0 manually
+  const messageV0 = new MessageV0({
+    header,
+    staticAccountKeys,
+    recentBlockhash,
+    compiledInstructions,
+    addressTableLookups
+  });
+  
+  return messageV0;
 }
 
 interface BaseParams {
@@ -3251,10 +3485,8 @@ export async function isZToken(
 export interface DexPoolState {
   tokenAMint: PublicKey;
   tokenBMint: PublicKey;
-  tokenAIsZtoken: boolean;
-  tokenBIsZtoken: boolean;
-  publicReserveA: bigint;
-  publicReserveB: bigint;
+  // Note: Both tokens are always zTokens in the zToken-only DEX
+  // publicReserveA and publicReserveB removed - only private reserves exist
   privateReserveACommitment: Uint8Array;
   privateReserveBCommitment: Uint8Array;
   lpTokenMint: PublicKey;
@@ -3292,10 +3524,8 @@ export async function getDexPoolState(
   return {
     tokenAMint: new PublicKey(decoded.token_a_mint || decoded.tokenAMint),
     tokenBMint: new PublicKey(decoded.token_b_mint || decoded.tokenBMint),
-    tokenAIsZtoken: decoded.token_a_is_ztoken ?? decoded.tokenAIsZtoken ?? false,
-    tokenBIsZtoken: decoded.token_b_is_ztoken ?? decoded.tokenBIsZtoken ?? false,
-    publicReserveA: BigInt(decoded.public_reserve_a?.toString() || decoded.publicReserveA?.toString() || '0'),
-    publicReserveB: BigInt(decoded.public_reserve_b?.toString() || decoded.publicReserveB?.toString() || '0'),
+    // Note: Both tokens are always zTokens in the zToken-only DEX
+    // publicReserveA and publicReserveB removed - only private reserves exist
     privateReserveACommitment: Buffer.from(decoded.private_reserve_a_commitment || decoded.privateReserveACommitment || Array(32).fill(0)),
     privateReserveBCommitment: Buffer.from(decoded.private_reserve_b_commitment || decoded.privateReserveBCommitment || Array(32).fill(0)),
     lpTokenMint: new PublicKey(decoded.lp_token_mint || decoded.lpTokenMint),
@@ -3315,57 +3545,68 @@ export async function getDexPoolState(
 interface CreateDexPoolParams {
   connection: Connection;
   wallet: WalletContextState;
-  tokenA: string | PublicKey;
-  tokenB: string | PublicKey;
+  tokenA: string | PublicKey; // Must be zToken mint (origin mint)
+  tokenB: string | PublicKey; // Must be zToken mint (origin mint)
   initialAmountA: bigint;
   initialAmountB: bigint;
-  tokenAIsZtoken: boolean;
-  tokenBIsZtoken: boolean;
-  // Optional: Proof client for zToken operations
-  proofClient?: ProofClient;
-  // Optional: User notes for zToken transfers (if adding zToken liquidity)
-  // Note: For create_pool, zToken initial liquidity requires shield proofs
-  zTokenNotesA?: Array<{ noteId: string; spendingKey: string; amount: bigint }>;
-  zTokenNotesB?: Array<{ noteId: string; spendingKey: string; amount: bigint }>;
+  // Required: Proof client for zToken shield operations
+  proofClient: ProofClient;
+  // Required: Shield proofs for both tokens (initial liquidity)
+  // Should be the full result from generateDexShieldProof
+  shieldProofA: { 
+    proof: string; 
+    publicInputs: string[];
+    amountCommit?: Uint8Array; // Optional - will be calculated from publicInputs if not provided
+  };
+  shieldProofB: { 
+    proof: string; 
+    publicInputs: string[];
+    amountCommit?: Uint8Array; // Optional - will be calculated from publicInputs if not provided
+  };
 }
 
 interface AddLiquidityParams {
   connection: Connection;
   wallet: WalletContextState;
-  tokenA: string | PublicKey;
-  tokenB: string | PublicKey;
+  tokenA: string | PublicKey; // Must be zToken mint (origin mint)
+  tokenB: string | PublicKey; // Must be zToken mint (origin mint)
   amountA: bigint;
   amountB: bigint;
   minLpTokens: bigint;
-  // Optional: Proof client for zToken operations
-  proofClient?: ProofClient;
-  // Optional: User notes for zToken transfers (required if adding zToken liquidity)
-  zTokenNotesA?: Array<{ noteId: string; spendingKey: string; amount: bigint }>;
-  zTokenNotesB?: Array<{ noteId: string; spendingKey: string; amount: bigint }>;
+  // Required: Proof client for zToken operations
+  proofClient: ProofClient;
+  // Required: User notes for zToken transfers
+  zTokenNotesA: Array<{ noteId: string; spendingKey: string; amount: bigint }>;
+  zTokenNotesB: Array<{ noteId: string; spendingKey: string; amount: bigint }>;
 }
 
 interface RemoveLiquidityParams {
   connection: Connection;
   wallet: WalletContextState;
-  tokenA: string | PublicKey;
-  tokenB: string | PublicKey;
+  tokenA: string | PublicKey; // Must be zToken mint (origin mint)
+  tokenB: string | PublicKey; // Must be zToken mint (origin mint)
   lpAmount: bigint;
   minAmountA: bigint;
   minAmountB: bigint;
+  // Required: Proof client for zToken operations
+  proofClient: ProofClient;
+  // Required: User notes for zToken transfers (pool PDA → user)
+  zTokenNotesA: Array<{ noteId: string; spendingKey: string; amount: bigint }>;
+  zTokenNotesB: Array<{ noteId: string; spendingKey: string; amount: bigint }>;
 }
 
 interface SwapParams {
   connection: Connection;
   wallet: WalletContextState;
-  tokenA: string | PublicKey;
-  tokenB: string | PublicKey;
+  tokenA: string | PublicKey; // Must be zToken mint (origin mint)
+  tokenB: string | PublicKey; // Must be zToken mint (origin mint)
   amountIn: bigint;
   minAmountOut: bigint;
   aToB: boolean; // true = swap tokenA -> tokenB, false = swap tokenB -> tokenA
-  // Optional: Proof client for zToken operations
-  proofClient?: ProofClient;
-  // Optional: User notes for zToken input (required if input is zToken)
-  zTokenInputNotes?: Array<{ noteId: string; spendingKey: string; amount: bigint }>;
+  // Required: Proof client for zToken operations
+  proofClient: ProofClient;
+  // Required: User notes for zToken input
+  zTokenInputNotes: Array<{ noteId: string; spendingKey: string; amount: bigint }>;
 }
 
 /**
@@ -3376,49 +3617,21 @@ interface SwapParams {
  */
 export async function createDexPool(params: CreateDexPoolParams): Promise<string> {
   assertWallet(params.wallet);
-  const { connection, wallet } = params;
+  if (!params.proofClient) {
+    throw new Error('proofClient is required for zToken-only DEX');
+  }
+  
+  const { connection, wallet, proofClient } = params;
   const payer = wallet.publicKey!;
   
-  const originalTokenA = typeof params.tokenA === 'string' ? new PublicKey(params.tokenA) : params.tokenA;
-  const originalTokenB = typeof params.tokenB === 'string' ? new PublicKey(params.tokenB) : params.tokenB;
-  
-  // SOL HANDLING: Detect if SOL is selected and convert to wSOL mint
-  const originalTokenAIsSOL = isNativeSol(originalTokenA);
-  const originalTokenBIsSOL = isNativeSol(originalTokenB);
-  
-  // Convert SOL to wSOL mint for pool operations
-  let tokenA = originalTokenAIsSOL ? NATIVE_SOL_MINT : originalTokenA;
-  let tokenB = originalTokenBIsSOL ? NATIVE_SOL_MINT : originalTokenB;
-  
-  if (originalTokenAIsSOL) {
-    console.log('[createDexPool] ⚡ Token A is SOL - using wSOL mint for pool');
-  }
-  if (originalTokenBIsSOL) {
-    console.log('[createDexPool] ⚡ Token B is SOL - using wSOL mint for pool');
-  }
+  const tokenA = typeof params.tokenA === 'string' ? new PublicKey(params.tokenA) : params.tokenA;
+  const tokenB = typeof params.tokenB === 'string' ? new PublicKey(params.tokenB) : params.tokenB;
   
   // Ensure canonical order (token_a < token_b)
   const canonicalOrder = tokenA.toBuffer().compare(tokenB.toBuffer()) < 0;
-  const [tokenAMint, tokenBMint, tokenAIsZtoken, tokenBIsZtoken, actualTokenAIsSOL, actualTokenBIsSOL] = canonicalOrder
-      ? [tokenA, tokenB, params.tokenAIsZtoken, params.tokenBIsZtoken, originalTokenAIsSOL, originalTokenBIsSOL]
-      : [tokenB, tokenA, params.tokenBIsZtoken, params.tokenAIsZtoken, originalTokenBIsSOL, originalTokenAIsSOL];
-  
+  const [tokenAMint, tokenBMint] = canonicalOrder ? [tokenA, tokenB] : [tokenB, tokenA];
   const initialAmountA = canonicalOrder ? params.initialAmountA : params.initialAmountB;
   const initialAmountB = canonicalOrder ? params.initialAmountB : params.initialAmountA;
-  
-  // Get wSOL accounts if needed (after canonical ordering)
-  let wsolTokenAccountA: PublicKey | null = null;
-  let wsolTokenAccountB: PublicKey | null = null;
-  
-  if (actualTokenAIsSOL) {
-    wsolTokenAccountA = await getWrappedSolAccount(payer);
-    console.log('[createDexPool] wSOL token account A:', wsolTokenAccountA.toBase58());
-  }
-  
-  if (actualTokenBIsSOL) {
-    wsolTokenAccountB = await getWrappedSolAccount(payer);
-    console.log('[createDexPool] wSOL token account B:', wsolTokenAccountB.toBase58());
-  }
   
   // Derive PDAs
   const poolState = deriveDexPoolState(tokenAMint, tokenBMint);
@@ -3429,138 +3642,57 @@ export async function createDexPool(params: CreateDexPoolParams): Promise<string
     throw new Error('Pool already exists');
   }
   
-  // Get or create LP token mint (we'll need to generate a keypair for it)
+  console.log('[createDexPool] Creating empty pool first (step 1/2), then adding initial liquidity (step 2/2)...');
+  
+  // STEP 1: Create empty pool (0 amounts, empty ShieldArgs) - small transaction that fits
   const lpTokenMint = Keypair.generate();
   
-  // Get or create token accounts
+  // Get user LP token account
   const userLpTokenAccount = await getAssociatedTokenAddress(
     lpTokenMint.publicKey,
     payer,
     false,
-    TOKEN_PROGRAM_ID, // Use TOKEN_PROGRAM_ID to match the LP mint
-    ASSOCIATED_TOKEN_PROGRAM_ID
-  );
-  
-  // For zTokens, we still need valid accounts (even if not used) to satisfy Anchor's mut constraint
-  // We'll create valid token accounts but skip transfers in the instruction
-  // If SOL was detected, use wSOL token accounts directly
-  const userTokenAAccount = (actualTokenAIsSOL && wsolTokenAccountA) 
-    ? wsolTokenAccountA // Use wSOL account if SOL
-    : (tokenAIsZtoken 
-      ? await getAssociatedTokenAddress(
-          tokenAMint,
-          payer,
-          false,
-          TOKEN_PROGRAM_ID,
-          ASSOCIATED_TOKEN_PROGRAM_ID
-        )
-      : await getAssociatedTokenAddress(
-          tokenAMint,
-          payer,
-          false,
-          TOKEN_PROGRAM_ID,
-          ASSOCIATED_TOKEN_PROGRAM_ID
-        ));
-  
-  const poolTokenAAccount = await getAssociatedTokenAddress(
-    tokenAMint, // Will be wSOL mint if SOL was detected
-    poolState,
-    true, // allowOwnerOffCurve - poolState is a PDA
     TOKEN_PROGRAM_ID,
     ASSOCIATED_TOKEN_PROGRAM_ID
   );
   
-  const userTokenBAccount = (actualTokenBIsSOL && wsolTokenAccountB)
-    ? wsolTokenAccountB // Use wSOL account if SOL
-    : (tokenBIsZtoken
-      ? await getAssociatedTokenAddress(
-          tokenBMint,
-          payer,
-          false,
-          TOKEN_PROGRAM_ID,
-          ASSOCIATED_TOKEN_PROGRAM_ID
-        )
-      : await getAssociatedTokenAddress(
-          tokenBMint,
-          payer,
-          false,
-          TOKEN_PROGRAM_ID,
-          ASSOCIATED_TOKEN_PROGRAM_ID
-        ));
+  // Get user token accounts (for depositor_token_account in shield CPI)
+  const userTokenAAccount = await getAssociatedTokenAddress(
+    tokenAMint,
+    payer,
+    false,
+    TOKEN_PROGRAM_ID,
+    ASSOCIATED_TOKEN_PROGRAM_ID
+  );
+  
+  const userTokenBAccount = await getAssociatedTokenAddress(
+    tokenBMint,
+    payer,
+    false,
+    TOKEN_PROGRAM_ID,
+    ASSOCIATED_TOKEN_PROGRAM_ID
+  );
+  
+  // Derive pool token reserve accounts (ATAs of pool_state PDA)
+  // These are required by CreatePool struct but not used for zToken-only pools
+  const poolTokenAAccount = await getAssociatedTokenAddress(
+    tokenAMint,
+    poolState,
+    true, // allowOwnerOffCurve = true for PDA
+    TOKEN_PROGRAM_ID,
+    ASSOCIATED_TOKEN_PROGRAM_ID
+  );
   
   const poolTokenBAccount = await getAssociatedTokenAddress(
-    tokenBMint, // Will be wSOL mint if SOL was detected
+    tokenBMint,
     poolState,
-    true, // allowOwnerOffCurve - poolState is a PDA
+    true, // allowOwnerOffCurve = true for PDA
     TOKEN_PROGRAM_ID,
     ASSOCIATED_TOKEN_PROGRAM_ID
   );
   
   // Build instruction
   const instructions: TransactionInstruction[] = [];
-  
-  // SOL WRAPPING: Always wrap full amount before pool creation if SOL is selected
-  if (actualTokenAIsSOL && wsolTokenAccountA) {
-    console.log('[createDexPool] 🔄 Wrapping SOL to wSOL for token A before pool creation');
-    console.log('[createDexPool] Amount to wrap:', initialAmountA.toString(), 'lamports');
-    const wrapInstructions = await createWrapSolInstructions(
-      wsolTokenAccountA,
-      initialAmountA,
-      payer,
-      connection
-    );
-    instructions.push(...wrapInstructions);
-  }
-  
-  if (actualTokenBIsSOL && wsolTokenAccountB) {
-    console.log('[createDexPool] 🔄 Wrapping SOL to wSOL for token B before pool creation');
-    console.log('[createDexPool] Amount to wrap:', initialAmountB.toString(), 'lamports');
-    const wrapInstructions = await createWrapSolInstructions(
-      wsolTokenAccountB,
-      initialAmountB,
-      payer,
-      connection
-    );
-    instructions.push(...wrapInstructions);
-  }
-  
-  // Create LP token mint account if needed (for public tokens, we'll use Token-2022)
-  // Note: This will be handled in the instruction via CPI, but we need to ensure accounts exist
-  
-  // Check if user token accounts exist, create if needed
-  // Note: Pool token ATAs will be created in a follow-up transaction after poolState exists
-  // If SOL was detected, wSOL account is already handled in wrap instructions above
-  if (!tokenAIsZtoken && !actualTokenAIsSOL) {
-    const userTokenAAccountInfo = await connection.getAccountInfo(userTokenAAccount, 'confirmed');
-    if (!userTokenAAccountInfo) {
-      instructions.push(
-        createAssociatedTokenAccountInstruction(
-          payer,
-          userTokenAAccount,
-          payer,
-          tokenAMint,
-          TOKEN_PROGRAM_ID,
-          ASSOCIATED_TOKEN_PROGRAM_ID
-        )
-      );
-    }
-  }
-  
-  if (!tokenBIsZtoken && !actualTokenBIsSOL) {
-    const userTokenBAccountInfo = await connection.getAccountInfo(userTokenBAccount, 'confirmed');
-    if (!userTokenBAccountInfo) {
-      instructions.push(
-        createAssociatedTokenAccountInstruction(
-          payer,
-          userTokenBAccount,
-          payer,
-          tokenBMint,
-          TOKEN_PROGRAM_ID,
-          ASSOCIATED_TOKEN_PROGRAM_ID
-        )
-      );
-    }
-  }
   
   // Create LP token mint account FIRST (uninitialized - program will initialize it)
   // The program will initialize it with pool_state PDA as mint authority
@@ -3582,28 +3714,19 @@ export async function createDexPool(params: CreateDexPoolParams): Promise<string
   // Note: We don't create the user LP token account ATA here because the mint isn't initialized yet
   // The program will skip minting if the ATA doesn't exist, and we'll handle it in a follow-up transaction
   
-  // Encode create_pool instruction
-  // Convert BigInt to BN for encoding
-  const amountABN = new BN(initialAmountA.toString());
-  const amountBBN = new BN(initialAmountB.toString());
+  // STEP 1: Create empty pool with 0 amounts and empty ShieldArgs (small transaction)
+  console.log('[createDexPool] Step 1/2: Creating empty pool...');
   
-  // Debug: Log amounts to verify
-  if (process.env.DEBUG_DEX === 'true') {
-    console.log('[createDexPool] Encoding amounts:', {
-      initialAmountA: initialAmountA.toString(),
-      initialAmountB: initialAmountB.toString(),
-      amountABN: amountABN.toString(),
-      amountBBN: amountBBN.toString()
-    });
-  }
+  // Use empty ShieldArgs for empty pool creation (program will skip shield CPIs)
+  const emptyShieldArgsA = createEmptyShieldArgs();
+  const emptyShieldArgsB = createEmptyShieldArgs();
   
+  // Encode create_pool instruction with 0 amounts and empty ShieldArgs
   const createPoolData = dexCoder.instruction.encode('create_pool', {
-    initial_amount_a: amountABN,  // Use snake_case to match IDL
-    initial_amount_b: amountBBN,  // Use snake_case to match IDL
-    token_a_is_ztoken: tokenAIsZtoken,  // Use snake_case to match IDL
-    token_b_is_ztoken: tokenBIsZtoken,   // Use snake_case to match IDL
-    shield_args_a: null,  // Optional: null for public tokens, ShieldArgs for zTokens
-    shield_args_b: null   // Optional: null for public tokens, ShieldArgs for zTokens
+    initial_amount_a: new BN(0),
+    initial_amount_b: new BN(0),
+    shield_args_a: emptyShieldArgsA,
+    shield_args_b: emptyShieldArgsB
   });
   
   // Get pool state bump (for PDA derivation)
@@ -3616,105 +3739,29 @@ export async function createDexPool(params: CreateDexPoolParams): Promise<string
     DEX_PROGRAM_ID
   );
   
-  // Build instruction keys
+  // Build instruction keys for empty pool creation (no shield CPIs, so minimal accounts needed)
+  // Account order must match CreatePool struct exactly:
+  // token_a_mint, token_b_mint, pool_state, lp_token_mint, user_lp_token_account,
+  // user_token_a_account, pool_token_a_account, user_token_b_account, pool_token_b_account,
+  // payer, token_program, associated_token_program, system_program, rent
   const instructionKeys: Array<{ pubkey: PublicKey; isSigner: boolean; isWritable: boolean }> = [
     { pubkey: tokenAMint, isSigner: false, isWritable: false },
     { pubkey: tokenBMint, isSigner: false, isWritable: false },
     { pubkey: poolState, isSigner: false, isWritable: true },
-    { pubkey: lpTokenMint.publicKey, isSigner: true, isWritable: true },
+    { pubkey: lpTokenMint.publicKey, isSigner: false, isWritable: true }, // Not a signer in create_pool instruction, only for SystemProgram.createAccount
     { pubkey: userLpTokenAccount, isSigner: false, isWritable: true },
     { pubkey: userTokenAAccount, isSigner: false, isWritable: true },
-    { pubkey: poolTokenAAccount, isSigner: false, isWritable: true },
+    { pubkey: poolTokenAAccount, isSigner: false, isWritable: true }, // Pool's token A reserve (not used for zToken-only, but required by struct)
     { pubkey: userTokenBAccount, isSigner: false, isWritable: true },
-    { pubkey: poolTokenBAccount, isSigner: false, isWritable: true },
+    { pubkey: poolTokenBAccount, isSigner: false, isWritable: true }, // Pool's token B reserve (not used for zToken-only, but required by struct)
     { pubkey: payer, isSigner: true, isWritable: true },
-    { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false }, // Use TOKEN_PROGRAM_ID for regular token transfers
-    { pubkey: ASSOCIATED_TOKEN_PROGRAM_ID, isSigner: false, isWritable: false }, // For creating pool token ATAs
+    { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
+    { pubkey: ASSOCIATED_TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
     { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
     { pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false }
   ];
   
-  // Add zToken pool accounts to remaining_accounts if needed
-  // For shield operations, we need 14 accounts per zToken
-  // TODO: Generate proofs and add ShieldArgs to instruction data when instruction signature is updated
-  if (tokenAIsZtoken || tokenBIsZtoken) {
-    console.info('[createDexPool] Adding zToken pool accounts to remaining_accounts');
-    
-    if (tokenAIsZtoken) {
-      const zTokenAccountsA = getZTokenPoolAccounts(tokenAMint, true); // forShield = true
-      const vaultStateA = deriveVaultState(tokenAMint);
-      const poolStateA = derivePoolState(tokenAMint);
-      
-      // Get vault token account and depositor token account
-      // For shield, we need: vault_token_account, depositor_token_account (user's token account)
-      const vaultTokenAccountA = await getAssociatedTokenAddress(
-        tokenAMint,
-        vaultStateA,
-        true, // allowOwnerOffCurve
-        TOKEN_PROGRAM_ID,
-        ASSOCIATED_TOKEN_PROGRAM_ID
-      );
-      
-      // Add zToken accounts for token A (14 accounts for shield)
-      instructionKeys.push(...zTokenAccountsA.map(pubkey => ({ 
-        pubkey, 
-        isSigner: false, 
-        isWritable: true // Most accounts are writable for shield operations
-      })));
-      
-      // Add vault_token_account and depositor_token_account (user's public token account)
-      instructionKeys.push(
-        { pubkey: vaultTokenAccountA, isSigner: false, isWritable: true },
-        { pubkey: userTokenAAccount, isSigner: false, isWritable: true } // depositor_token_account
-      );
-      
-      console.info(`[createDexPool] Added ${zTokenAccountsA.length + 2} accounts for zToken A shield operation`);
-    }
-    
-    if (tokenBIsZtoken) {
-      const zTokenAccountsB = getZTokenPoolAccounts(tokenBMint, true); // forShield = true
-      const vaultStateB = deriveVaultState(tokenBMint);
-      
-      const vaultTokenAccountB = await getAssociatedTokenAddress(
-        tokenBMint,
-        vaultStateB,
-        true, // allowOwnerOffCurve
-        TOKEN_PROGRAM_ID,
-        ASSOCIATED_TOKEN_PROGRAM_ID
-      );
-      
-      // Add zToken accounts for token B (14 accounts for shield)
-      instructionKeys.push(...zTokenAccountsB.map(pubkey => ({ 
-        pubkey, 
-        isSigner: false, 
-        isWritable: true
-      })));
-      
-      // Add vault_token_account and depositor_token_account
-      instructionKeys.push(
-        { pubkey: vaultTokenAccountB, isSigner: false, isWritable: true },
-        { pubkey: userTokenBAccount, isSigner: false, isWritable: true } // depositor_token_account
-      );
-      
-      console.info(`[createDexPool] Added ${zTokenAccountsB.length + 2} accounts for zToken B shield operation`);
-    }
-    
-    // TODO: Generate shield proofs and add ShieldArgs to instruction data
-    // This requires updating the instruction signature to accept ShieldArgs parameters
-    console.info('[createDexPool] NOTE: Shield proof generation pending - ShieldArgs need to be added to instruction signature');
-    
-    // Add payer, system_program, rent to remaining_accounts
-    // This ensures all AccountInfos have the same lifetime scope, avoiding Rust borrow checker conflicts
-    // Note: payer and system_program are already in instructionKeys, but rent is needed for CPIs
-    // Add them again to remaining_accounts for CPI calls (they'll be deduplicated by Solana runtime)
-    instructionKeys.push(
-      { pubkey: payer, isSigner: true, isWritable: true }, // payer (signer for CPI)
-      { pubkey: SystemProgram.programId, isSigner: false, isWritable: false }, // system_program
-      { pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false } // rent
-    );
-    
-    console.info('[createDexPool] Added payer, system_program, rent to remaining_accounts (unified lifetime scope)');
-  }
+  // Empty pool creation doesn't need zToken accounts (shields are skipped)
   
   instructions.push(
     new TransactionInstruction({
@@ -3724,98 +3771,66 @@ export async function createDexPool(params: CreateDexPoolParams): Promise<string
     })
   );
   
-  // Send transaction
+  // Step 1: Create empty pool (should be small transaction)
+  console.log('[createDexPool] Sending empty pool creation transaction...');
   const latestBlockhash = await connection.getLatestBlockhash('confirmed');
-  const tx = new Transaction().add(...instructions);
-  tx.feePayer = payer;
-  tx.recentBlockhash = latestBlockhash.blockhash;
-  tx.partialSign(lpTokenMint); // Sign the LP mint creation
+  const createPoolTx = new Transaction().add(...instructions);
+  createPoolTx.feePayer = payer;
+  createPoolTx.recentBlockhash = latestBlockhash.blockhash;
   
-  console.log('[createDexPool] Transaction has', instructions.length, 'instructions');
-  instructions.forEach((ix, idx) => {
-    console.log(`[createDexPool] Instruction ${idx}: program=${ix.programId.toBase58()}, keys=${ix.keys.length}, data=${ix.data.length} bytes`);
-    if (ix.keys.length > 0) {
-      console.log(`[createDexPool]   First key: ${ix.keys[0].pubkey.toBase58()} (signer=${ix.keys[0].isSigner}, writable=${ix.keys[0].isWritable})`);
-    }
-  });
+  console.log(`[createDexPool] Empty pool transaction: ${instructions.length} instructions, data=${createPoolData.length} bytes`);
+  console.log(`[createDexPool] Payer: ${payer.toBase58()}, Wallet public key: ${wallet.publicKey?.toBase58()}`);
   
-  const signature = await wallet.sendTransaction(tx, connection, { skipPreflight: false });
+  // Sign with wallet (payer) first - fee payer must be first signer
+  if (!wallet.signTransaction) {
+    throw new Error('Wallet does not support signTransaction');
+  }
+  const signedByWallet = await wallet.signTransaction(createPoolTx);
+  console.log(`[createDexPool] After wallet.signTransaction: ${signedByWallet.signatures.length} signatures`);
   
+  // Verify payer signature is present and first (as fee payer)
+  const payerSignature = signedByWallet.signatures.find(sig => sig.publicKey.equals(payer));
+  if (!payerSignature || payerSignature.signature === null) {
+    console.error(`[createDexPool] ERROR: Payer signature missing! Signatures:`, signedByWallet.signatures.map(s => ({ pubkey: s.publicKey.toBase58(), signed: s.signature !== null })));
+    throw new Error('Payer signature is missing after wallet.signTransaction');
+  }
+  
+  // Then sign with lpTokenMint (for SystemProgram.createAccount instruction)
+  signedByWallet.partialSign(lpTokenMint);
+  console.log(`[createDexPool] After lpTokenMint partialSign: ${signedByWallet.signatures.length} signatures`);
+  
+  const signedTx = signedByWallet;
+  
+  console.log(`[createDexPool] Transaction signed with ${signedTx.signatures.length} signatures`);
+  
+  const createPoolSig = await connection.sendRawTransaction(signedTx.serialize(), { skipPreflight: false });
   await waitForSignatureConfirmation(
     connection,
-    signature,
+    createPoolSig,
     latestBlockhash.blockhash,
     latestBlockhash.lastValidBlockHeight
   );
   
-  // Log success for SOL pool creation
-  if (actualTokenAIsSOL || actualTokenBIsSOL) {
-    console.log('[createDexPool] ✅ Successfully created pool with SOL');
-    if (actualTokenAIsSOL) console.log('[createDexPool] Token A: SOL → wSOL');
-    if (actualTokenBIsSOL) console.log('[createDexPool] Token B: SOL → wSOL');
-    console.log('[createDexPool] Pool creation signature:', signature);
-  }
+  console.log('[createDexPool] ✅ Empty pool created:', createPoolSig);
   
-  // Follow-up transaction 1: Create pool token ATAs (now poolState exists)
-  const followUpInstructions1: TransactionInstruction[] = [];
+  // STEP 2: Add initial liquidity via addDexLiquidity
+  console.log('[createDexPool] Step 2/2: Adding initial liquidity...');
   
-  if (!tokenAIsZtoken) {
-    const poolTokenAAccountInfo = await connection.getAccountInfo(poolTokenAAccount, 'confirmed');
-    if (!poolTokenAAccountInfo) {
-      followUpInstructions1.push(
-        createAssociatedTokenAccountInstruction(
-          payer,
-          poolTokenAAccount,
-          poolState,  // Now poolState PDA exists
-          tokenAMint,
-          TOKEN_PROGRAM_ID,
-          ASSOCIATED_TOKEN_PROGRAM_ID
-        )
-      );
-    }
-  }
+  // Get shield proofs (canonical order) - these were provided for initial liquidity
+  const shieldProofA = canonicalOrder ? params.shieldProofA : params.shieldProofB;
+  const shieldProofB = canonicalOrder ? params.shieldProofB : params.shieldProofA;
   
-  if (!tokenBIsZtoken) {
-    const poolTokenBAccountInfo = await connection.getAccountInfo(poolTokenBAccount, 'confirmed');
-    if (!poolTokenBAccountInfo) {
-      followUpInstructions1.push(
-        createAssociatedTokenAccountInstruction(
-          payer,
-          poolTokenBAccount,
-          poolState,  // Now poolState PDA exists
-          tokenBMint,
-          TOKEN_PROGRAM_ID,
-          ASSOCIATED_TOKEN_PROGRAM_ID
-        )
-      );
-    }
-  }
+  // For initial liquidity, we need to shield tokens to the pool PDA first
+  // Then we can use add_liquidity (but it requires transfer proofs, not shield proofs)
+  // For now, we'll shield tokens separately, then handle liquidity addition
+  // TODO: Implement proper initial liquidity addition
   
-  // Send first follow-up transaction to create pool token ATAs
-  if (followUpInstructions1.length > 0) {
-    const followUpBlockhash1 = await connection.getLatestBlockhash('confirmed');
-    const followUpTx1 = new Transaction().add(...followUpInstructions1);
-    followUpTx1.feePayer = payer;
-    followUpTx1.recentBlockhash = followUpBlockhash1.blockhash;
-    
-    const followUpSignature1 = await wallet.sendTransaction(followUpTx1, connection, { skipPreflight: false });
-    await waitForSignatureConfirmation(
-      connection,
-      followUpSignature1,
-      followUpBlockhash1.blockhash,
-      followUpBlockhash1.lastValidBlockHeight
-    );
-    console.info(`[createDexPool] Pool token ATAs created: ${followUpSignature1}`);
-  }
+  // For now, return the pool creation signature
+  // The user can add liquidity separately via addDexLiquidity after shielding tokens
+  console.log('[createDexPool] ✅ Pool created. Note: Initial liquidity addition not yet implemented - pool is empty.');
+  console.log('[createDexPool] To add liquidity: Shield tokens first, then use addDexLiquidity.');
   
-  // Follow-up transaction 2: Add initial liquidity (transfer tokens to pool and mint initial LP tokens)
-  // This will be handled by add_liquidity instruction, but for now we'll create a simple transfer + mint transaction
-  // For simplicity, we'll use add_liquidity in a separate call, or create a helper function
-  // For now, just return the pool creation signature - user can call add_liquidity separately
-  
-  // TODO: Add initial liquidity transfer + LP mint in follow-up transaction
-  
-  return signature;
+  return createPoolSig;
 }
 
 /**
@@ -3826,49 +3841,28 @@ export async function createDexPool(params: CreateDexPoolParams): Promise<string
  */
 export async function addDexLiquidity(params: AddLiquidityParams): Promise<string> {
   assertWallet(params.wallet);
-  const { connection, wallet } = params;
+  if (!params.proofClient) {
+    throw new Error('proofClient is required for zToken-only DEX');
+  }
+  if (!params.zTokenNotesA || !params.zTokenNotesB) {
+    throw new Error('zTokenNotesA and zTokenNotesB are required for zToken-only DEX');
+  }
+  
+  const { connection, wallet, proofClient } = params;
   const payer = wallet.publicKey!;
   
-  const originalTokenA = typeof params.tokenA === 'string' ? new PublicKey(params.tokenA) : params.tokenA;
-  const originalTokenB = typeof params.tokenB === 'string' ? new PublicKey(params.tokenB) : params.tokenB;
-  
-  // SOL HANDLING: Detect if SOL is selected and convert to wSOL mint
-  const originalTokenAIsSOL = isNativeSol(originalTokenA);
-  const originalTokenBIsSOL = isNativeSol(originalTokenB);
-  
-  // Convert SOL to wSOL mint for pool operations
-  let tokenA = originalTokenAIsSOL ? NATIVE_SOL_MINT : originalTokenA;
-  let tokenB = originalTokenBIsSOL ? NATIVE_SOL_MINT : originalTokenB;
-  
-  if (originalTokenAIsSOL) {
-    console.log('[addDexLiquidity] ⚡ Token A is SOL - using wSOL mint');
-  }
-  if (originalTokenBIsSOL) {
-    console.log('[addDexLiquidity] ⚡ Token B is SOL - using wSOL mint');
-  }
+  const tokenA = typeof params.tokenA === 'string' ? new PublicKey(params.tokenA) : params.tokenA;
+  const tokenB = typeof params.tokenB === 'string' ? new PublicKey(params.tokenB) : params.tokenB;
   
   // Ensure canonical order
   const canonicalOrder = tokenA.toBuffer().compare(tokenB.toBuffer()) < 0;
-  const [tokenAMint, tokenBMint, actualTokenAIsSOL, actualTokenBIsSOL] = canonicalOrder
-    ? [tokenA, tokenB, originalTokenAIsSOL, originalTokenBIsSOL]
-    : [tokenB, tokenA, originalTokenBIsSOL, originalTokenAIsSOL];
-  
+  const [tokenAMint, tokenBMint] = canonicalOrder ? [tokenA, tokenB] : [tokenB, tokenA];
   const amountA = canonicalOrder ? params.amountA : params.amountB;
   const amountB = canonicalOrder ? params.amountB : params.amountA;
   
-  // Get wSOL accounts if needed (after canonical ordering)
-  let wsolTokenAccountA: PublicKey | null = null;
-  let wsolTokenAccountB: PublicKey | null = null;
-  
-  if (actualTokenAIsSOL) {
-    wsolTokenAccountA = await getWrappedSolAccount(payer);
-    console.log('[addDexLiquidity] wSOL token account A:', wsolTokenAccountA.toBase58());
-  }
-  
-  if (actualTokenBIsSOL) {
-    wsolTokenAccountB = await getWrappedSolAccount(payer);
-    console.log('[addDexLiquidity] wSOL token account B:', wsolTokenAccountB.toBase58());
-  }
+  // Get notes in canonical order
+  const zTokenNotesA = canonicalOrder ? params.zTokenNotesA : params.zTokenNotesB;
+  const zTokenNotesB = canonicalOrder ? params.zTokenNotesB : params.zTokenNotesA;
   
   // Get pool state to check if it exists and get LP mint
   const poolState = deriveDexPoolState(tokenAMint, tokenBMint);
@@ -3879,8 +3873,7 @@ export async function addDexLiquidity(params: AddLiquidityParams): Promise<strin
   
   const lpTokenMint = poolStateData.lpTokenMint;
   
-  // Get or create token accounts
-  // First, verify LP mint exists and get the correct token program ID
+  // Get LP mint info
   const lpMintInfo = await connection.getAccountInfo(lpTokenMint, 'confirmed');
   if (!lpMintInfo) {
     throw new Error(`LP token mint does not exist: ${lpTokenMint.toBase58()}. Pool may not have been created properly.`);
@@ -3891,8 +3884,8 @@ export async function addDexLiquidity(params: AddLiquidityParams): Promise<strin
   }
   const lpTokenProgramId = lpMintProgramId.equals(TOKEN_2022_PROGRAM_ID) ? TOKEN_2022_PROGRAM_ID : TOKEN_PROGRAM_ID;
   
-  // Use the correct token program ID to derive user LP token account
-  let userLpTokenAccount = await getAssociatedTokenAddress(
+  // Get user LP token account
+  const userLpTokenAccount = await getAssociatedTokenAddress(
     lpTokenMint,
     payer,
     false,
@@ -3900,39 +3893,19 @@ export async function addDexLiquidity(params: AddLiquidityParams): Promise<strin
     ASSOCIATED_TOKEN_PROGRAM_ID
   );
   
-  // If SOL was detected, use wSOL token account directly, otherwise derive ATA
-  const userTokenAAccount = (actualTokenAIsSOL && wsolTokenAccountA) 
-    ? wsolTokenAccountA // Use wSOL account if SOL
-    : await getAssociatedTokenAddress(
-        tokenAMint,
-        payer,
-        false,
-        TOKEN_PROGRAM_ID,
-        ASSOCIATED_TOKEN_PROGRAM_ID
-      );
-  
-  const poolTokenAAccount = await getAssociatedTokenAddress(
-    tokenAMint, // Will be wSOL mint if SOL was detected
-    poolState,
-    true, // allowOwnerOffCurve - poolState is a PDA
+  // Get user token accounts (for depositor_token_account in transfer CPI)
+  const userTokenAAccount = await getAssociatedTokenAddress(
+    tokenAMint,
+    payer,
+    false,
     TOKEN_PROGRAM_ID,
     ASSOCIATED_TOKEN_PROGRAM_ID
   );
   
-  const userTokenBAccount = (actualTokenBIsSOL && wsolTokenAccountB)
-    ? wsolTokenAccountB // Use wSOL account if SOL
-    : await getAssociatedTokenAddress(
-        tokenBMint,
-        payer,
-        false,
-        TOKEN_PROGRAM_ID,
-        ASSOCIATED_TOKEN_PROGRAM_ID
-      );
-  
-  const poolTokenBAccount = await getAssociatedTokenAddress(
-    tokenBMint, // Will be wSOL mint if SOL was detected
-    poolState,
-    true, // allowOwnerOffCurve - poolState is a PDA
+  const userTokenBAccount = await getAssociatedTokenAddress(
+    tokenBMint,
+    payer,
+    false,
     TOKEN_PROGRAM_ID,
     ASSOCIATED_TOKEN_PROGRAM_ID
   );
@@ -3940,86 +3913,10 @@ export async function addDexLiquidity(params: AddLiquidityParams): Promise<strin
   // Build instruction
   const instructions: TransactionInstruction[] = [];
   
-  // SOL WRAPPING: Always wrap full amount before adding liquidity if SOL is selected
-  if (actualTokenAIsSOL && wsolTokenAccountA) {
-    console.log('[addDexLiquidity] 🔄 Wrapping SOL to wSOL for token A');
-    console.log('[addDexLiquidity] Amount to wrap:', amountA.toString(), 'lamports');
-    const wrapInstructions = await createWrapSolInstructions(
-      wsolTokenAccountA,
-      amountA,
-      payer,
-      connection
-    );
-    instructions.push(...wrapInstructions);
-  }
-  
-  if (actualTokenBIsSOL && wsolTokenAccountB) {
-    console.log('[addDexLiquidity] 🔄 Wrapping SOL to wSOL for token B');
-    console.log('[addDexLiquidity] Amount to wrap:', amountB.toString(), 'lamports');
-    const wrapInstructions = await createWrapSolInstructions(
-      wsolTokenAccountB,
-      amountB,
-      payer,
-      connection
-    );
-    instructions.push(...wrapInstructions);
-  }
-  
-  // Ensure token accounts exist
-  // Note: If SOL was detected, wSOL account is already handled in wrap instructions above
-  // Note: User token accounts should already exist from test setup, but check anyway
-  if (!actualTokenAIsSOL) {
-    const userTokenAAccountInfo = await connection.getAccountInfo(userTokenAAccount, 'confirmed');
-    if (!userTokenAAccountInfo) {
-      console.log(`[addDexLiquidity] Creating user token A account for mint: ${tokenAMint.toBase58()}`);
-      instructions.push(
-        createAssociatedTokenAccountInstruction(
-          payer,
-          userTokenAAccount,
-          payer,
-          tokenAMint,
-          TOKEN_PROGRAM_ID,
-          ASSOCIATED_TOKEN_PROGRAM_ID
-        )
-      );
-    } else {
-      console.log(`[addDexLiquidity] User token A account exists: ${userTokenAAccount.toBase58()}`);
-    }
-  }
-  
-  // Pool token ATAs should already exist from pool creation follow-up transaction
-  // Don't try to create them here - if they don't exist, there's a problem
-  const poolTokenAAccountInfo = await connection.getAccountInfo(poolTokenAAccount, 'confirmed');
-  if (!poolTokenAAccountInfo) {
-    throw new Error(`Pool token A account does not exist. Ensure pool was created properly. Expected: ${poolTokenAAccount.toBase58()}`);
-  }
-  
-  if (!actualTokenBIsSOL) {
-    const userTokenBAccountInfo = await connection.getAccountInfo(userTokenBAccount, 'confirmed');
-    if (!userTokenBAccountInfo) {
-      instructions.push(
-        createAssociatedTokenAccountInstruction(
-          payer,
-          userTokenBAccount,
-          payer,
-          tokenBMint,
-          TOKEN_PROGRAM_ID,
-          ASSOCIATED_TOKEN_PROGRAM_ID
-        )
-      );
-    }
-  }
-  
-  // Pool token B ATA should already exist
-  const poolTokenBAccountInfo = await connection.getAccountInfo(poolTokenBAccount, 'confirmed');
-  if (!poolTokenBAccountInfo) {
-    throw new Error(`Pool token B account does not exist. Ensure pool was created properly. Expected: ${poolTokenBAccount.toBase58()}`);
-  }
-  
-  // Create user LP token account if it doesn't exist (required by program)
+  // Create user LP token account if it doesn't exist
   const userLpAccountInfo = await connection.getAccountInfo(userLpTokenAccount, 'confirmed');
   if (!userLpAccountInfo || userLpAccountInfo.owner.equals(SystemProgram.programId)) {
-    console.log(`[addDexLiquidity] User LP token account does not exist, creating...`);
+    console.log(`[addDexLiquidity] Creating user LP token account...`);
     instructions.push(
       createAssociatedTokenAccountInstruction(
         payer,
@@ -4030,23 +3927,82 @@ export async function addDexLiquidity(params: AddLiquidityParams): Promise<strin
         ASSOCIATED_TOKEN_PROGRAM_ID
       )
     );
-  } else {
-    console.log(`[addDexLiquidity] User LP token account exists: ${userLpTokenAccount.toBase58()}`);
   }
   
-  console.log(`[addDexLiquidity] Total instructions before add_liquidity: ${instructions.length}`);
+  // Generate transfer proofs for both tokens (user → pool PDA)
+  // Select notes that cover the required amounts
+  function selectNotesForAmount(
+    notes: Array<{ noteId: string; spendingKey: string; amount: bigint }>,
+    target: bigint
+  ): Array<{ noteId: string; spendingKey: string; amount: bigint }> {
+    if (!notes.length) {
+      throw new Error('No notes available');
+    }
+    // Sort notes by amount (ascending)
+    const sorted = [...notes].sort((a, b) => {
+      const diff = a.amount - b.amount;
+      return diff > 0n ? 1 : diff < 0n ? -1 : 0;
+    });
+    // Try to find a single note that covers the amount
+    const single = sorted.find(note => note.amount >= target);
+    if (single) {
+      return [single];
+    }
+    // Try to find two notes that cover the amount
+    let bestPair: { total: bigint; notes: Array<{ noteId: string; spendingKey: string; amount: bigint }> } | null = null;
+    for (let i = sorted.length - 1; i >= 0; i--) {
+      for (let j = i - 1; j >= 0; j--) {
+        const total = sorted[i]!.amount + sorted[j]!.amount;
+        if (total >= target) {
+          if (!bestPair || total < bestPair.total) {
+            bestPair = { total, notes: [sorted[i]!, sorted[j]!] };
+          }
+        }
+      }
+    }
+    if (bestPair) {
+      return bestPair.notes;
+    }
+    throw new Error(`Insufficient notes: need ${target}, have ${sorted.reduce((sum, n) => sum + n.amount, 0n)}`);
+  }
+  
+  const selectedNotesA = selectNotesForAmount(zTokenNotesA, amountA);
+  const selectedNotesB = selectNotesForAmount(zTokenNotesB, amountB);
+  
+  const transferProofA = await generateDexTransferProofSimple(
+    proofClient,
+    connection,
+    tokenAMint,
+    selectedNotesA,
+    amountA,
+    poolState, // recipient is pool PDA
+    payer // change goes back to user
+  );
+  
+  const transferProofB = await generateDexTransferProofSimple(
+    proofClient,
+    connection,
+    tokenBMint,
+    selectedNotesB,
+    amountB,
+    poolState, // recipient is pool PDA
+    payer // change goes back to user
+  );
+  
+  // Convert proofs to TransferArgs
+  const transferArgsA = proofToTransferArgs(transferProofA);
+  const transferArgsB = proofToTransferArgs(transferProofB);
   
   // Encode add_liquidity instruction
-  // Use snake_case to match IDL
   const addLiquidityData = dexCoder.instruction.encode('add_liquidity', {
     amount_a: new BN(amountA.toString()),
     amount_b: new BN(amountB.toString()),
     min_lp_tokens: new BN(params.minLpTokens.toString()),
-    transfer_args_a: null,  // Optional: null for public tokens, TransferArgs for zTokens
-    transfer_args_b: null   // Optional: null for public tokens, TransferArgs for zTokens
+    transfer_args_a: transferArgsA,  // Required: TransferArgs for zToken A
+    transfer_args_b: transferArgsB   // Required: TransferArgs for zToken B
   });
   
-  // Build instruction keys
+  // Build instruction keys (both tokens are always zTokens)
   const instructionKeys: Array<{ pubkey: PublicKey; isSigner: boolean; isWritable: boolean }> = [
     { pubkey: poolState, isSigner: false, isWritable: true },
     { pubkey: tokenAMint, isSigner: false, isWritable: false },
@@ -4054,79 +4010,40 @@ export async function addDexLiquidity(params: AddLiquidityParams): Promise<strin
     { pubkey: lpTokenMint, isSigner: false, isWritable: true },
     { pubkey: userLpTokenAccount, isSigner: false, isWritable: true },
     { pubkey: userTokenAAccount, isSigner: false, isWritable: true },
-    { pubkey: poolTokenAAccount, isSigner: false, isWritable: true },
     { pubkey: userTokenBAccount, isSigner: false, isWritable: true },
-    { pubkey: poolTokenBAccount, isSigner: false, isWritable: true },
     { pubkey: payer, isSigner: true, isWritable: true },
     { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
     { pubkey: ASSOCIATED_TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
     { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
-    { pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false } // rent (required by IDL)
+    { pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false }
   ];
   
-  // Add zToken pool accounts to remaining_accounts if needed
-  // For transfer operations, we need 7 accounts per zToken (not shield)
-  // SOLUTION 1: Add payer, system_program, rent to remaining_accounts to avoid lifetime conflicts
-  // This ensures all accounts have the same lifetime scope from remaining_accounts
-  if (poolStateData.tokenAIsZtoken || poolStateData.tokenBIsZtoken) {
-    console.info('[addDexLiquidity] Adding zToken pool accounts to remaining_accounts');
-    
-    if (poolStateData.tokenAIsZtoken) {
-      const zTokenAccountsA = getZTokenPoolAccounts(tokenAMint, false); // forShield = false (transfer)
-      
-      // Add zToken accounts for token A (7 accounts for transfer)
-      instructionKeys.push(...zTokenAccountsA.map(pubkey => ({ 
-        pubkey, 
-        isSigner: false, 
-        isWritable: true // Most accounts are writable for transfer operations
-      })));
-      
-      console.info(`[addDexLiquidity] Added ${zTokenAccountsA.length} accounts for zToken A transfer operation (user → pool PDA)`);
-      
-      // TODO: Generate transfer proof for token A
-      // This requires user notes (zTokenNotesA) and proof generation
-      if (params.zTokenNotesA && params.proofClient) {
-        console.info('[addDexLiquidity] NOTE: Transfer proof generation pending - TransferArgs need to be added to instruction signature');
-        // const transferProof = await generateDexTransferProof(...);
-        // const transferArgs = proofToTransferArgs(transferProof);
-      } else if (poolStateData.tokenAIsZtoken) {
-        console.warn('[addDexLiquidity] zToken A requires notes and proofClient for transfer proof generation');
-      }
-    }
-    
-    if (poolStateData.tokenBIsZtoken) {
-      const zTokenAccountsB = getZTokenPoolAccounts(tokenBMint, false); // forShield = false (transfer)
-      
-      // Add zToken accounts for token B (7 accounts for transfer)
-      instructionKeys.push(...zTokenAccountsB.map(pubkey => ({ 
-        pubkey, 
-        isSigner: false, 
-        isWritable: true
-      })));
-      
-      console.info(`[addDexLiquidity] Added ${zTokenAccountsB.length} accounts for zToken B transfer operation (user → pool PDA)`);
-      
-      // TODO: Generate transfer proof for token B
-      if (params.zTokenNotesB && params.proofClient) {
-        console.info('[addDexLiquidity] NOTE: Transfer proof generation pending - TransferArgs need to be added to instruction signature');
-        // const transferProof = await generateDexTransferProof(...);
-        // const transferArgs = proofToTransferArgs(transferProof);
-      } else if (poolStateData.tokenBIsZtoken) {
-        console.warn('[addDexLiquidity] zToken B requires notes and proofClient for transfer proof generation');
-      }
-    }
-    
-    // SOLUTION 1: Add payer, system_program, rent to remaining_accounts
-    // This ensures all AccountInfos have the same lifetime scope, avoiding Rust borrow checker conflicts
-    // These accounts are shared between token A and B CPIs if both are zTokens
-    instructionKeys.push(
-      { pubkey: payer, isSigner: true, isWritable: true }, // payer (signer for CPI)
-      { pubkey: SystemProgram.programId, isSigner: false, isWritable: false }, // system_program
-      { pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false } // rent
-    );
-    
-    console.info('[addDexLiquidity] Added payer, system_program, rent to remaining_accounts (Solution 1: unified lifetime scope)');
-  }
+  // Add zToken pool accounts to remaining_accounts for transfer CPIs
+  // For transfer operations, we need 7 accounts per zToken
+  console.info('[addDexLiquidity] Adding zToken pool accounts to remaining_accounts');
+  
+  // Token A zToken accounts
+  const zTokenAccountsA = getZTokenPoolAccounts(tokenAMint, false); // forShield = false (transfer)
+  instructionKeys.push(...zTokenAccountsA.map(pubkey => ({ 
+    pubkey, 
+    isSigner: false, 
+    isWritable: true
+  })));
+  
+  // Token B zToken accounts
+  const zTokenAccountsB = getZTokenPoolAccounts(tokenBMint, false); // forShield = false (transfer)
+  instructionKeys.push(...zTokenAccountsB.map(pubkey => ({ 
+    pubkey, 
+    isSigner: false, 
+    isWritable: true
+  })));
+  
+  // Add payer, system_program, rent to remaining_accounts for CPIs
+  instructionKeys.push(
+    { pubkey: payer, isSigner: true, isWritable: true },
+    { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+    { pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false }
+  );
   
   instructions.push(
     new TransactionInstruction({
@@ -4162,7 +4079,14 @@ export async function addDexLiquidity(params: AddLiquidityParams): Promise<strin
  */
 export async function removeDexLiquidity(params: RemoveLiquidityParams): Promise<string> {
   assertWallet(params.wallet);
-  const { connection, wallet } = params;
+  if (!params.proofClient) {
+    throw new Error('proofClient is required for zToken-only DEX');
+  }
+  if (!params.zTokenNotesA || !params.zTokenNotesB) {
+    throw new Error('zTokenNotesA and zTokenNotesB are required for zToken-only DEX');
+  }
+  
+  const { connection, wallet, proofClient } = params;
   const payer = wallet.publicKey!;
   
   const tokenA = typeof params.tokenA === 'string' ? new PublicKey(params.tokenA) : params.tokenA;
@@ -4180,16 +4104,13 @@ export async function removeDexLiquidity(params: RemoveLiquidityParams): Promise
     ? params.minAmountB 
     : params.minAmountA;
   
-  // Detect if tokens are native SOL (wSOL)
-  const actualTokenAIsSOL = isNativeSol(tokenAMint);
-  const actualTokenBIsSOL = isNativeSol(tokenBMint);
-  
-  if (actualTokenAIsSOL) {
-    console.log('[removeDexLiquidity] Token A is native SOL, will use wSOL');
-  }
-  if (actualTokenBIsSOL) {
-    console.log('[removeDexLiquidity] Token B is native SOL, will use wSOL');
-  }
+  // Get notes in canonical order
+  const zTokenNotesA = tokenA.toBuffer().compare(tokenB.toBuffer()) < 0 
+    ? params.zTokenNotesA 
+    : params.zTokenNotesB;
+  const zTokenNotesB = tokenA.toBuffer().compare(tokenB.toBuffer()) < 0 
+    ? params.zTokenNotesB 
+    : params.zTokenNotesA;
   
   // Get pool state
   const poolState = deriveDexPoolState(tokenAMint, tokenBMint);
@@ -4200,7 +4121,7 @@ export async function removeDexLiquidity(params: RemoveLiquidityParams): Promise
   
   const lpTokenMint = poolStateData.lpTokenMint;
   
-  // Get the LP mint's program ID to use the correct token program
+  // Get LP mint info
   const lpMintInfo = await connection.getAccountInfo(lpTokenMint, 'confirmed');
   if (!lpMintInfo) {
     throw new Error(`LP token mint does not exist: ${lpTokenMint.toBase58()}`);
@@ -4219,105 +4140,66 @@ export async function removeDexLiquidity(params: RemoveLiquidityParams): Promise
     ASSOCIATED_TOKEN_PROGRAM_ID
   );
   
-  const poolTokenAAccount = await getAssociatedTokenAddress(
+  const userTokenAAccount = await getAssociatedTokenAddress(
     tokenAMint,
-    poolState,
-    true, // allowOwnerOffCurve - poolState is a PDA
+    payer,
+    false,
     TOKEN_PROGRAM_ID,
     ASSOCIATED_TOKEN_PROGRAM_ID
   );
   
-  const poolTokenBAccount = await getAssociatedTokenAddress(
+  const userTokenBAccount = await getAssociatedTokenAddress(
     tokenBMint,
-    poolState,
-    true, // allowOwnerOffCurve - poolState is a PDA
+    payer,
+    false,
     TOKEN_PROGRAM_ID,
     ASSOCIATED_TOKEN_PROGRAM_ID
   );
-  
-  // Ensure user token accounts exist (for receiving output)
-  // If SOL was detected, use wSOL token account (will receive wSOL from pool)
-  let wsolTokenAccountA: PublicKey | null = null;
-  let wsolTokenAccountB: PublicKey | null = null;
-  
-  if (actualTokenAIsSOL) {
-    wsolTokenAccountA = await getWrappedSolAccount(payer);
-    console.log('[removeDexLiquidity] wSOL token account A:', wsolTokenAccountA.toBase58());
-  }
-  
-  if (actualTokenBIsSOL) {
-    wsolTokenAccountB = await getWrappedSolAccount(payer);
-    console.log('[removeDexLiquidity] wSOL token account B:', wsolTokenAccountB.toBase58());
-  }
-  
-  // If SOL was detected, use wSOL token account directly, otherwise derive ATA
-  const userTokenAAccount = (actualTokenAIsSOL && wsolTokenAccountA)
-    ? wsolTokenAccountA
-    : await getAssociatedTokenAddress(
-        tokenAMint,
-        payer,
-        false,
-        TOKEN_PROGRAM_ID,
-        ASSOCIATED_TOKEN_PROGRAM_ID
-      );
-  
-  const userTokenBAccount = (actualTokenBIsSOL && wsolTokenAccountB)
-    ? wsolTokenAccountB
-    : await getAssociatedTokenAddress(
-        tokenBMint,
-        payer,
-        false,
-        TOKEN_PROGRAM_ID,
-        ASSOCIATED_TOKEN_PROGRAM_ID
-      );
   
   const instructions: TransactionInstruction[] = [];
   
-  // If SOL was detected, wSOL account should already exist (created during pool creation/liquidity addition)
-  // For non-SOL tokens, create ATA if needed
-  if (!actualTokenAIsSOL) {
-    const userTokenAAccountInfo = await connection.getAccountInfo(userTokenAAccount, 'confirmed');
-    if (!userTokenAAccountInfo) {
-      instructions.push(
-        createAssociatedTokenAccountInstruction(
-          payer,
-          userTokenAAccount,
-          payer,
-          tokenAMint,
-          TOKEN_PROGRAM_ID,
-          ASSOCIATED_TOKEN_PROGRAM_ID
-        )
-      );
-    }
+  // Generate transfer proofs for both tokens (pool PDA → user)
+  // Note: For remove_liquidity, the pool PDA transfers zTokens to the user
+  // This requires pool PDA notes which need special handling (TODO: implement pool PDA note fetching)
+  // For now, we'll use empty notes and let the program handle it
+  // TODO: Fetch pool PDA notes from indexer or derive from pool state
+  if (!params.zTokenNotesA || !params.zTokenNotesB || params.zTokenNotesA.length === 0 || params.zTokenNotesB.length === 0) {
+    throw new Error('Pool PDA notes are required for remove_liquidity. This feature is not yet implemented.');
   }
   
-  if (!actualTokenBIsSOL) {
-    const userTokenBAccountInfo = await connection.getAccountInfo(userTokenBAccount, 'confirmed');
-    if (!userTokenBAccountInfo) {
-      instructions.push(
-        createAssociatedTokenAccountInstruction(
-          payer,
-          userTokenBAccount,
-          payer,
-          tokenBMint,
-          TOKEN_PROGRAM_ID,
-          ASSOCIATED_TOKEN_PROGRAM_ID
-        )
-      );
-    }
-  }
+  // For now, we'll use placeholder - pool PDA note handling needs to be implemented
+  const transferProofA = await generateDexTransferProofSimple(
+    proofClient,
+    connection,
+    tokenAMint,
+    params.zTokenNotesA, // Pool PDA notes (placeholder)
+    minAmountA,
+    payer // recipient is user
+  );
+  
+  const transferProofB = await generateDexTransferProofSimple(
+    proofClient,
+    connection,
+    tokenBMint,
+    params.zTokenNotesB, // Pool PDA notes (placeholder)
+    minAmountB,
+    payer // recipient is user
+  );
+  
+  // Convert proofs to TransferArgs
+  const transferArgsA = proofToTransferArgs(transferProofA);
+  const transferArgsB = proofToTransferArgs(transferProofB);
   
   // Encode remove_liquidity instruction
-  // Use snake_case to match IDL
   const removeLiquidityData = dexCoder.instruction.encode('remove_liquidity', {
     lp_amount: new BN(params.lpAmount.toString()),
     min_amount_a: new BN(minAmountA.toString()),
     min_amount_b: new BN(minAmountB.toString()),
-    transfer_args_a: null,  // Optional: null for public tokens, TransferArgs for zTokens
-    transfer_args_b: null   // Optional: null for public tokens, TransferArgs for zTokens
+    transfer_args_a: transferArgsA,  // Required: TransferArgs for zToken A
+    transfer_args_b: transferArgsB   // Required: TransferArgs for zToken B
   });
   
-  // Build instruction keys
+  // Build instruction keys (both tokens are always zTokens)
   const instructionKeys: Array<{ pubkey: PublicKey; isSigner: boolean; isWritable: boolean }> = [
     { pubkey: poolState, isSigner: false, isWritable: true },
     { pubkey: tokenAMint, isSigner: false, isWritable: false },
@@ -4325,56 +4207,39 @@ export async function removeDexLiquidity(params: RemoveLiquidityParams): Promise
     { pubkey: lpTokenMint, isSigner: false, isWritable: true },
     { pubkey: userLpTokenAccount, isSigner: false, isWritable: true },
     { pubkey: userTokenAAccount, isSigner: false, isWritable: true },
-    { pubkey: poolTokenAAccount, isSigner: false, isWritable: true },
     { pubkey: userTokenBAccount, isSigner: false, isWritable: true },
-    { pubkey: poolTokenBAccount, isSigner: false, isWritable: true },
     { pubkey: payer, isSigner: true, isWritable: true },
     { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
     { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
-    { pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false } // rent (required by IDL)
+    { pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false }
   ];
   
-  // Add zToken pool accounts to remaining_accounts if needed
+  // Add zToken pool accounts to remaining_accounts for transfer CPIs
   // For transfer operations (pool PDA → user), we need 7 accounts per zToken
-  if (poolStateData.tokenAIsZtoken || poolStateData.tokenBIsZtoken) {
-    console.info('[removeDexLiquidity] Adding zToken pool accounts to remaining_accounts');
-    
-    if (poolStateData.tokenAIsZtoken) {
-      const zTokenAccountsA = getZTokenPoolAccounts(tokenAMint, false); // forShield = false (transfer)
-      
-      // Add zToken accounts for token A (7 accounts for transfer)
-      instructionKeys.push(...zTokenAccountsA.map(pubkey => ({ 
-        pubkey, 
-        isSigner: false, 
-        isWritable: true
-      })));
-      
-      console.info(`[removeDexLiquidity] Added ${zTokenAccountsA.length} accounts for zToken A transfer operation (pool PDA → user)`);
-    }
-    
-    if (poolStateData.tokenBIsZtoken) {
-      const zTokenAccountsB = getZTokenPoolAccounts(tokenBMint, false); // forShield = false (transfer)
-      
-      // Add zToken accounts for token B (7 accounts for transfer)
-      instructionKeys.push(...zTokenAccountsB.map(pubkey => ({ 
-        pubkey, 
-        isSigner: false, 
-        isWritable: true
-      })));
-      
-      console.info(`[removeDexLiquidity] Added ${zTokenAccountsB.length} accounts for zToken B transfer operation (pool PDA → user)`);
-    }
-    
-    // Add payer, system_program, rent to remaining_accounts
-    // This ensures all AccountInfos have the same lifetime scope, avoiding Rust borrow checker conflicts
-    instructionKeys.push(
-      { pubkey: payer, isSigner: true, isWritable: true }, // payer (signer for CPI)
-      { pubkey: SystemProgram.programId, isSigner: false, isWritable: false }, // system_program
-      { pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false } // rent
-    );
-    
-    console.info('[removeDexLiquidity] Added payer, system_program, rent to remaining_accounts (unified lifetime scope)');
-  }
+  console.info('[removeDexLiquidity] Adding zToken pool accounts to remaining_accounts');
+  
+  // Token A zToken accounts
+  const zTokenAccountsA = getZTokenPoolAccounts(tokenAMint, false); // forShield = false (transfer)
+  instructionKeys.push(...zTokenAccountsA.map(pubkey => ({ 
+    pubkey, 
+    isSigner: false, 
+    isWritable: true
+  })));
+  
+  // Token B zToken accounts
+  const zTokenAccountsB = getZTokenPoolAccounts(tokenBMint, false); // forShield = false (transfer)
+  instructionKeys.push(...zTokenAccountsB.map(pubkey => ({ 
+    pubkey, 
+    isSigner: false, 
+    isWritable: true
+  })));
+  
+  // Add payer, system_program, rent to remaining_accounts for CPIs
+  instructionKeys.push(
+    { pubkey: payer, isSigner: true, isWritable: true },
+    { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+    { pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false }
+  );
   
   instructions.push(
     new TransactionInstruction({
@@ -4399,75 +4264,6 @@ export async function removeDexLiquidity(params: RemoveLiquidityParams): Promise
     latestBlockhash.lastValidBlockHeight
   );
   
-  // SOL UNWRAPPING: Always unwrap wSOL to native SOL after removing liquidity if token is SOL
-  if (actualTokenAIsSOL && wsolTokenAccountA) {
-    console.log('[removeDexLiquidity] 🔄 Unwrapping wSOL to native SOL for token A');
-    
-    try {
-      const unwrapInstruction = createUnwrapSolInstruction(
-        wsolTokenAccountA,
-        payer
-      );
-      
-      const unwrapBlockhash = await connection.getLatestBlockhash('confirmed');
-      const unwrapTransaction = new Transaction().add(unwrapInstruction);
-      unwrapTransaction.feePayer = payer;
-      unwrapTransaction.recentBlockhash = unwrapBlockhash.blockhash;
-      
-      console.log('[removeDexLiquidity] 💰 Unwrapping wSOL A to native SOL');
-      const unwrapSignature = await wallet.sendTransaction(unwrapTransaction, connection, {
-        skipPreflight: false
-      });
-      
-      await waitForSignatureConfirmation(
-        connection,
-        unwrapSignature,
-        unwrapBlockhash.blockhash,
-        unwrapBlockhash.lastValidBlockHeight
-      );
-      
-      console.log('[removeDexLiquidity] ✅ Successfully unwrapped wSOL A to native SOL');
-      console.log('[removeDexLiquidity] Unwrap signature:', unwrapSignature);
-    } catch (unwrapError: any) {
-      console.error('[removeDexLiquidity] ❌ Failed to unwrap wSOL A to SOL:', unwrapError);
-      console.error('[removeDexLiquidity] ⚠️ Liquidity removal succeeded but unwrap failed - user has wSOL instead of SOL');
-    }
-  }
-  
-  if (actualTokenBIsSOL && wsolTokenAccountB) {
-    console.log('[removeDexLiquidity] 🔄 Unwrapping wSOL to native SOL for token B');
-    
-    try {
-      const unwrapInstruction = createUnwrapSolInstruction(
-        wsolTokenAccountB,
-        payer
-      );
-      
-      const unwrapBlockhash = await connection.getLatestBlockhash('confirmed');
-      const unwrapTransaction = new Transaction().add(unwrapInstruction);
-      unwrapTransaction.feePayer = payer;
-      unwrapTransaction.recentBlockhash = unwrapBlockhash.blockhash;
-      
-      console.log('[removeDexLiquidity] 💰 Unwrapping wSOL B to native SOL');
-      const unwrapSignature = await wallet.sendTransaction(unwrapTransaction, connection, {
-        skipPreflight: false
-      });
-      
-      await waitForSignatureConfirmation(
-        connection,
-        unwrapSignature,
-        unwrapBlockhash.blockhash,
-        unwrapBlockhash.lastValidBlockHeight
-      );
-      
-      console.log('[removeDexLiquidity] ✅ Successfully unwrapped wSOL B to native SOL');
-      console.log('[removeDexLiquidity] Unwrap signature:', unwrapSignature);
-    } catch (unwrapError: any) {
-      console.error('[removeDexLiquidity] ❌ Failed to unwrap wSOL B to SOL:', unwrapError);
-      console.error('[removeDexLiquidity] ⚠️ Liquidity removal succeeded but unwrap failed - user has wSOL instead of SOL');
-    }
-  }
-  
   return signature;
 }
 
@@ -4479,49 +4275,25 @@ export async function removeDexLiquidity(params: RemoveLiquidityParams): Promise
  */
 export async function swapDex(params: SwapParams): Promise<string> {
   assertWallet(params.wallet);
-  const { connection, wallet } = params;
+  if (!params.proofClient) {
+    throw new Error('proofClient is required for zToken-only DEX');
+  }
+  if (!params.zTokenInputNotes) {
+    throw new Error('zTokenInputNotes is required for zToken-only DEX');
+  }
+  
+  const { connection, wallet, proofClient } = params;
   const payer = wallet.publicKey!;
   
-  const originalTokenA = typeof params.tokenA === 'string' ? new PublicKey(params.tokenA) : params.tokenA;
-  const originalTokenB = typeof params.tokenB === 'string' ? new PublicKey(params.tokenB) : params.tokenB;
-  
-  // SOL HANDLING: Detect if tokens are SOL (wSOL mint)
-  // Note: In pools, SOL is stored as wSOL (NATIVE_SOL_MINT), so we check for that
-  const originalTokenAIsSOL = isNativeSol(originalTokenA);
-  const originalTokenBIsSOL = isNativeSol(originalTokenB);
-  
-  // Convert SOL to wSOL mint for pool operations (pools use wSOL mint)
-  let tokenA = originalTokenAIsSOL ? NATIVE_SOL_MINT : originalTokenA;
-  let tokenB = originalTokenBIsSOL ? NATIVE_SOL_MINT : originalTokenB;
-  
-  if (originalTokenAIsSOL) {
-    console.log('[swapDex] ⚡ Token A is SOL - using wSOL mint');
-  }
-  if (originalTokenBIsSOL) {
-    console.log('[swapDex] ⚡ Token B is SOL - using wSOL mint');
-  }
+  const tokenA = typeof params.tokenA === 'string' ? new PublicKey(params.tokenA) : params.tokenA;
+  const tokenB = typeof params.tokenB === 'string' ? new PublicKey(params.tokenB) : params.tokenB;
   
   // Ensure canonical order
   const canonicalOrder = tokenA.toBuffer().compare(tokenB.toBuffer()) < 0;
   const [tokenAMint, tokenBMint] = canonicalOrder ? [tokenA, tokenB] : [tokenB, tokenA];
   
   // Determine which direction we're swapping
-  // If params.aToB is true and tokenA < tokenB, we're swapping A -> B
-  // If params.aToB is true and tokenA > tokenB, we're swapping B -> A (so aToB should be false)
   const actualAToB = canonicalOrder === params.aToB;
-  
-  // Determine if input/output are SOL (after canonical ordering)
-  const inputIsOriginalA = (actualAToB && canonicalOrder) || (!actualAToB && !canonicalOrder);
-  const outputIsOriginalA = (actualAToB && !canonicalOrder) || (!actualAToB && canonicalOrder);
-  const tokenInIsSOL = inputIsOriginalA ? originalTokenAIsSOL : originalTokenBIsSOL;
-  const tokenOutIsSOL = outputIsOriginalA ? originalTokenAIsSOL : originalTokenBIsSOL;
-  
-  if (tokenInIsSOL) {
-    console.log('[swapDex] ⚡ Input token is SOL - will wrap to wSOL before swap');
-  }
-  if (tokenOutIsSOL) {
-    console.log('[swapDex] ⚡ Output token is SOL - will unwrap wSOL to SOL after swap');
-  }
   
   // Get pool state
   const poolState = deriveDexPoolState(tokenAMint, tokenBMint);
@@ -4533,57 +4305,20 @@ export async function swapDex(params: SwapParams): Promise<string> {
   // Determine input/output tokens based on swap direction
   const tokenInMint = actualAToB ? tokenAMint : tokenBMint;
   const tokenOutMint = actualAToB ? tokenBMint : tokenAMint;
-  const tokenInIsZtoken = actualAToB ? poolStateData.tokenAIsZtoken : poolStateData.tokenBIsZtoken;
-  const tokenOutIsZtoken = actualAToB ? poolStateData.tokenBIsZtoken : poolStateData.tokenAIsZtoken;
-  
-  // Get wSOL accounts if needed
-  let wsolTokenAccountIn: PublicKey | null = null;
-  let wsolTokenAccountOut: PublicKey | null = null;
-  
-  if (tokenInIsSOL) {
-    wsolTokenAccountIn = await getWrappedSolAccount(payer);
-    console.log('[swapDex] wSOL token account for input:', wsolTokenAccountIn.toBase58());
-  }
-  
-  if (tokenOutIsSOL) {
-    wsolTokenAccountOut = await getWrappedSolAccount(payer);
-    console.log('[swapDex] wSOL token account for output:', wsolTokenAccountOut.toBase58());
-  }
   
   // Get token accounts
-  // If SOL was detected, use wSOL token account directly, otherwise derive ATA
-  const userTokenInAccount = (tokenInIsSOL && wsolTokenAccountIn)
-    ? wsolTokenAccountIn // Use wSOL account if SOL input
-    : await getAssociatedTokenAddress(
-        tokenInMint,
-        payer,
-        false,
-        TOKEN_PROGRAM_ID,
-        ASSOCIATED_TOKEN_PROGRAM_ID
-      );
-  
-  const poolTokenInAccount = await getAssociatedTokenAddress(
-    tokenInMint, // Will be wSOL mint if SOL was detected
-    poolState,
-    true, // allowOwnerOffCurve - poolState is a PDA
+  const userTokenInAccount = await getAssociatedTokenAddress(
+    tokenInMint,
+    payer,
+    false,
     TOKEN_PROGRAM_ID,
     ASSOCIATED_TOKEN_PROGRAM_ID
   );
   
-  const userTokenOutAccount = (tokenOutIsSOL && wsolTokenAccountOut)
-    ? wsolTokenAccountOut // Use wSOL account if SOL output
-    : await getAssociatedTokenAddress(
-        tokenOutMint,
-        payer,
-        false,
-        TOKEN_PROGRAM_ID,
-        ASSOCIATED_TOKEN_PROGRAM_ID
-      );
-  
-  const poolTokenOutAccount = await getAssociatedTokenAddress(
-    tokenOutMint, // Will be wSOL mint if SOL was detected
-    poolState,
-    true, // allowOwnerOffCurve - poolState is a PDA
+  const userTokenOutAccount = await getAssociatedTokenAddress(
+    tokenOutMint,
+    payer,
+    false,
     TOKEN_PROGRAM_ID,
     ASSOCIATED_TOKEN_PROGRAM_ID
   );
@@ -4591,159 +4326,122 @@ export async function swapDex(params: SwapParams): Promise<string> {
   // Build instruction
   const instructions: TransactionInstruction[] = [];
   
-  // SOL WRAPPING: Always wrap full amount before swap if input is SOL
-  if (tokenInIsSOL && wsolTokenAccountIn) {
-    console.log('[swapDex] 🔄 Wrapping SOL to wSOL for input');
-    console.log('[swapDex] Amount to wrap:', params.amountIn.toString(), 'lamports');
-    const wrapInstructions = await createWrapSolInstructions(
-      wsolTokenAccountIn,
-      params.amountIn,
-      payer,
-      connection
-    );
-    instructions.push(...wrapInstructions);
+  // Generate transfer proof for input (user → pool PDA)
+  function selectNotesForAmount(
+    notes: Array<{ noteId: string; spendingKey: string; amount: bigint }>,
+    target: bigint
+  ): Array<{ noteId: string; spendingKey: string; amount: bigint }> {
+    if (!notes.length) {
+      throw new Error('No notes available');
+    }
+    const sorted = [...notes].sort((a, b) => {
+      const diff = a.amount - b.amount;
+      return diff > 0n ? 1 : diff < 0n ? -1 : 0;
+    });
+    const single = sorted.find(note => note.amount >= target);
+    if (single) {
+      return [single];
+    }
+    let bestPair: { total: bigint; notes: Array<{ noteId: string; spendingKey: string; amount: bigint }> } | null = null;
+    for (let i = sorted.length - 1; i >= 0; i--) {
+      for (let j = i - 1; j >= 0; j--) {
+        const total = sorted[i]!.amount + sorted[j]!.amount;
+        if (total >= target) {
+          if (!bestPair || total < bestPair.total) {
+            bestPair = { total, notes: [sorted[i]!, sorted[j]!] };
+          }
+        }
+      }
+    }
+    if (bestPair) {
+      return bestPair.notes;
+    }
+    throw new Error(`Insufficient notes: need ${target}, have ${sorted.reduce((sum, n) => sum + n.amount, 0n)}`);
   }
   
-  // Ensure output token account exists (for public tokens only)
-  // If SOL output, wSOL account should already exist (created during pool creation/liquidity addition)
-  if (!tokenOutIsZtoken && !tokenOutIsSOL) {
-    const userTokenOutAccountInfo = await connection.getAccountInfo(userTokenOutAccount, 'confirmed');
-    if (!userTokenOutAccountInfo) {
-      instructions.push(
-        createAssociatedTokenAccountInstruction(
-          payer,
-          userTokenOutAccount,
-          payer,
-          tokenOutMint,
-          TOKEN_PROGRAM_ID,
-          ASSOCIATED_TOKEN_PROGRAM_ID
-        )
-      );
-    }
-  }
+  const selectedInputNotes = selectNotesForAmount(params.zTokenInputNotes, params.amountIn);
+  
+  const transferProofIn = await generateDexTransferProofSimple(
+    proofClient,
+    connection,
+    tokenInMint,
+    selectedInputNotes,
+    params.amountIn,
+    poolState, // recipient is pool PDA
+    payer // change goes back to user
+  );
+  
+  // Output: pool PDA → user
+  // Note: For zToken → zToken swaps, the pool PDA transfers zTokens to the user
+  // This requires pool PDA private reserves and note commitments, which is complex
+  // For now, we'll need to implement pool PDA note fetching from the commitment tree
+  // TODO: Implement pool PDA note/commitment fetching and proof generation
+  // The pool PDA signs with seeds, so the proof can be generated client-side
+  // but we need to know which commitments the pool has
+  
+  // Placeholder: Generate a transfer proof with empty inputs for now
+  // This will need proper implementation with pool PDA commitment fetching
+  const transferProofOut = await generateDexTransferProofSimple(
+    proofClient,
+    connection,
+    tokenOutMint,
+    [], // Pool PDA notes - TODO: fetch from pool state commitments
+    params.minAmountOut,
+    payer, // recipient is user
+    payer // change goes back to user
+  );
+  
+  // Convert proofs to TransferArgs
+  const transferArgsIn = proofToTransferArgs(transferProofIn);
+  const transferArgsOut = proofToTransferArgs(transferProofOut);
   
   // Encode swap instruction
-  // Use snake_case to match IDL
   const swapData = dexCoder.instruction.encode('swap', {
     amount_in: new BN(params.amountIn.toString()),
     min_amount_out: new BN(params.minAmountOut.toString()),
     a_to_b: actualAToB,
-    transfer_args_in: null,  // Optional: null for public tokens, TransferArgs for zToken input
-    shield_args_out: null,   // Optional: null for public tokens, ShieldArgs for zToken output (Public → zToken)
-    transfer_args_out: null  // Optional: null for public tokens, TransferArgs for zToken output (zToken → zToken)
+    transfer_args_in: transferArgsIn,  // Required: TransferArgs for zToken input
+    transfer_args_out: transferArgsOut // Required: TransferArgs for zToken output
   });
   
-  // Build instruction keys
+  // Build instruction keys (both tokens are always zTokens)
   const instructionKeys: Array<{ pubkey: PublicKey; isSigner: boolean; isWritable: boolean }> = [
     { pubkey: poolState, isSigner: false, isWritable: true },
     { pubkey: tokenAMint, isSigner: false, isWritable: false },
     { pubkey: tokenBMint, isSigner: false, isWritable: false },
     { pubkey: userTokenInAccount, isSigner: false, isWritable: true },
-    { pubkey: poolTokenInAccount, isSigner: false, isWritable: true },
     { pubkey: userTokenOutAccount, isSigner: false, isWritable: true },
-    { pubkey: poolTokenOutAccount, isSigner: false, isWritable: true },
     { pubkey: payer, isSigner: true, isWritable: true },
     { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
     { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
-    { pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false } // rent (required by IDL)
+    { pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false }
   ];
   
-  // Add zToken pool accounts to remaining_accounts if needed
-  // Swap types:
-  // 1. Public → Public: No zToken accounts needed ✅
-  // 2. Public → zToken: Shield accounts for output (14 accounts)
-  // 3. zToken → Public: Transfer accounts for input (7 accounts)
-  // 4. zToken → zToken: Transfer accounts for input (7) + Transfer accounts for output (7)
+  // Add zToken pool accounts to remaining_accounts for transfer CPIs
+  // Input: user → pool PDA (7 accounts)
+  console.info('[swapDex] Adding zToken pool accounts for input transfer (user → pool PDA)');
+  const zTokenAccountsIn = getZTokenPoolAccounts(tokenInMint, false); // forShield = false (transfer)
+  instructionKeys.push(...zTokenAccountsIn.map(pubkey => ({ 
+    pubkey, 
+    isSigner: false, 
+    isWritable: true
+  })));
   
-  let accountsOffset = 0;
+  // Output: pool PDA → user (7 accounts)
+  console.info('[swapDex] Adding zToken pool accounts for output transfer (pool PDA → user)');
+  const zTokenAccountsOut = getZTokenPoolAccounts(tokenOutMint, false); // forShield = false (transfer)
+  instructionKeys.push(...zTokenAccountsOut.map(pubkey => ({ 
+    pubkey, 
+    isSigner: false, 
+    isWritable: true
+  })));
   
-  // Handle zToken input (transfer from user to pool PDA)
-  if (tokenInIsZtoken) {
-    console.info('[swapDex] Token in is zToken - adding transfer accounts (user → pool PDA)');
-    const zTokenAccountsIn = getZTokenPoolAccounts(tokenInMint, false); // forShield = false (transfer)
-    
-    instructionKeys.push(...zTokenAccountsIn.map(pubkey => ({ 
-      pubkey, 
-      isSigner: false, 
-      isWritable: true
-    })));
-    
-    accountsOffset += zTokenAccountsIn.length;
-    console.info(`[swapDex] Added ${zTokenAccountsIn.length} accounts for zToken input transfer`);
-    
-    // TODO: Generate transfer proof for input
-    if (params.zTokenInputNotes && params.proofClient) {
-      console.info('[swapDex] NOTE: Transfer proof generation pending - TransferArgs need to be added to instruction signature');
-    } else if (tokenInIsZtoken) {
-      console.warn('[swapDex] zToken input requires notes and proofClient for transfer proof generation');
-    }
-  }
-  
-  // Handle zToken output
-  if (tokenOutIsZtoken) {
-    if (!tokenInIsZtoken) {
-      // Public → zToken: Shield output (14 accounts)
-      console.info('[swapDex] Token out is zToken (Public → zToken) - adding shield accounts');
-      const zTokenAccountsOut = getZTokenPoolAccounts(tokenOutMint, true); // forShield = true
-      
-      instructionKeys.push(...zTokenAccountsOut.map(pubkey => ({ 
-        pubkey, 
-        isSigner: false, 
-        isWritable: true
-      })));
-      
-      // Add vault_token_account and depositor_token_account (pool's public token account)
-      const vaultStateOut = deriveVaultState(tokenOutMint);
-      const vaultTokenAccountOut = await getAssociatedTokenAddress(
-        tokenOutMint,
-        vaultStateOut,
-        true,
-        TOKEN_PROGRAM_ID,
-        ASSOCIATED_TOKEN_PROGRAM_ID
-      );
-      
-      instructionKeys.push(
-        { pubkey: vaultTokenAccountOut, isSigner: false, isWritable: true },
-        { pubkey: poolTokenOutAccount, isSigner: false, isWritable: true } // depositor_token_account (pool's public token account)
-      );
-      
-      console.info(`[swapDex] Added ${zTokenAccountsOut.length + 2} accounts for zToken output shield`);
-      
-      // TODO: Generate shield proof for output
-      if (params.proofClient) {
-        console.info('[swapDex] NOTE: Shield proof generation pending - ShieldArgs need to be added to instruction signature');
-      }
-    } else {
-      // zToken → zToken: Transfer output (pool PDA → user) (7 accounts)
-      console.info('[swapDex] Token out is zToken (zToken → zToken) - adding transfer accounts (pool PDA → user)');
-      const zTokenAccountsOut = getZTokenPoolAccounts(tokenOutMint, false); // forShield = false (transfer)
-      
-      instructionKeys.push(...zTokenAccountsOut.map(pubkey => ({ 
-        pubkey, 
-        isSigner: false, 
-        isWritable: true
-      })));
-      
-      console.info(`[swapDex] Added ${zTokenAccountsOut.length} accounts for zToken output transfer`);
-      
-      // TODO: Generate transfer proof for output (pool PDA is sender)
-      if (params.proofClient) {
-        console.info('[swapDex] NOTE: Transfer proof generation pending - TransferArgs need to be added to instruction signature');
-      }
-    }
-  }
-  
-  // Add payer, system_program, rent to remaining_accounts if zToken accounts were added
-  // This ensures all AccountInfos have the same lifetime scope, avoiding Rust borrow checker conflicts
-  if (tokenInIsZtoken || tokenOutIsZtoken) {
-    instructionKeys.push(
-      { pubkey: payer, isSigner: true, isWritable: true }, // payer (signer for CPI)
-      { pubkey: SystemProgram.programId, isSigner: false, isWritable: false }, // system_program
-      { pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false } // rent
-    );
-    
-    console.info('[swapDex] Added payer, system_program, rent to remaining_accounts (unified lifetime scope)');
-  }
+  // Add payer, system_program, rent to remaining_accounts for CPIs
+  instructionKeys.push(
+    { pubkey: payer, isSigner: true, isWritable: true },
+    { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+    { pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false }
+  );
   
   instructions.push(
     new TransactionInstruction({
@@ -4767,45 +4465,6 @@ export async function swapDex(params: SwapParams): Promise<string> {
     latestBlockhash.blockhash,
     latestBlockhash.lastValidBlockHeight
   );
-  
-  // SOL UNWRAPPING: Always unwrap wSOL to native SOL after swap if output is SOL
-  if (tokenOutIsSOL && wsolTokenAccountOut) {
-    console.log('[swapDex] 🔄 Unwrapping wSOL to native SOL after swap');
-    
-    try {
-      const unwrapInstruction = createUnwrapSolInstruction(
-        wsolTokenAccountOut,
-        payer // Owner who will receive native SOL
-      );
-      
-      const unwrapBlockhash = await connection.getLatestBlockhash('confirmed');
-      const unwrapTransaction = new Transaction().add(unwrapInstruction);
-      unwrapTransaction.feePayer = payer;
-      unwrapTransaction.recentBlockhash = unwrapBlockhash.blockhash;
-      
-      console.log('[swapDex] 💰 Unwrapping wSOL to native SOL');
-      const unwrapSignature = await wallet.sendTransaction(unwrapTransaction, connection, {
-        skipPreflight: false
-      });
-      
-      await waitForSignatureConfirmation(
-        connection,
-        unwrapSignature,
-        unwrapBlockhash.blockhash,
-        unwrapBlockhash.lastValidBlockHeight
-      );
-      
-      console.log('[swapDex] ✅ Successfully unwrapped wSOL to native SOL');
-      console.log('[swapDex] ✅ Complete flow: SOL → wSOL → swap → wSOL → SOL');
-      console.log('[swapDex] Unwrap signature:', unwrapSignature);
-      
-      return unwrapSignature; // Return unwrap signature as it's the final transaction
-    } catch (unwrapError: any) {
-      console.error('[swapDex] ❌ Failed to unwrap wSOL to SOL:', unwrapError);
-      console.error('[swapDex] ⚠️ Swap succeeded but unwrap failed - user has wSOL instead of SOL');
-      // Don't throw - swap succeeded, just unwrap failed
-    }
-  }
   
   return signature;
 }

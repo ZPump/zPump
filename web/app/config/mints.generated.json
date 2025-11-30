@@ -1,1 +1,26 @@
-[]
+[
+  {
+    "symbol": "DEXT2",
+    "decimals": 6,
+    "originMint": "CHhkkanu2PSDjpemZRod6yaP3EkX8HuPToLTH37Cy4LP",
+    "poolId": "Djt276YsviW3C9w8vXLaS2H5Q6abxqCWncRPmAnuaWv2",
+    "zTokenMint": "4Yrjx5JipnAV9eBfzjHhrXRLBdfbHLnFThBZzKp6Nhd3",
+    "features": {
+      "zTokenEnabled": true,
+      "wrappedTransfers": false
+    },
+    "lookupTable": "6fMFgZox159cUMcM2gdjsWhEyGdHhYHwQaca4ZtjV4Lb"
+  },
+  {
+    "symbol": "DXT1",
+    "decimals": 6,
+    "originMint": "C6kJMeiRpyhAvBKMMJwB4oBTd1pBbbDKHHor9FCAxrMn",
+    "poolId": "DNp8wx8pv5yGgDRz9AaK4L4J2zjCs1WGaQ4U68X5zsfU",
+    "zTokenMint": "2UbCnU74CM4xy7DQJjuSfSC26c6ZXkeohikGSJ2yM7qs",
+    "features": {
+      "zTokenEnabled": true,
+      "wrappedTransfers": false
+    },
+    "lookupTable": "14VM4ycwKsvSF3EtRLE8pUtxY5UVb36ay22Tfw3ndmBL"
+  }
+]
