@@ -1012,22 +1012,7 @@ export async function wrap(params: WrapParams): Promise<string> {
     wsolTokenAccount = await getWrappedSolAccount(wallet.publicKey);
     console.log('[wrap] wSOL token account:', wsolTokenAccount.toBase58());
     
-    // Check current wSOL balance and SOL balance
-    const currentWSolBalance = await getWrappedSolBalance(connection, wallet.publicKey);
-    const currentSolBalance = await connection.getBalance(wallet.publicKey);
-    const amountInLamports = params.amount;
-    
-    console.log('[wrap] Balance check - SOL:', currentSolBalance, 'lamports, wSOL:', currentWSolBalance.toString(), 'lamports, Required:', amountInLamports.toString());
-    
-    // Check if we need to wrap more SOL
-    const balanceCheck = await checkWrappedSolBalance(connection, wallet.publicKey, amountInLamports);
-    
-    if (!balanceCheck.hasEnough) {
-      console.log('[wrap] Need to wrap', balanceCheck.needsWrap.toString(), 'lamports of SOL to wSOL');
-      // We'll add wrap instructions before the shield instruction
-    } else {
-      console.log('[wrap] Sufficient wSOL balance available, no wrapping needed');
-    }
+    // Always wrap the full amount (no need to check existing wSOL balance)
   }
   
   // Use actualShieldMint for all pool/account derivations (will be wSOL mint if SOL was detected)
@@ -1241,29 +1226,18 @@ export async function wrap(params: WrapParams): Promise<string> {
     }
   }
 
-  // SOL WRAPPING: Add wrap instructions BEFORE shield if shielding SOL
+  // SOL WRAPPING: Always wrap the full amount needed (don't check existing wSOL balance)
   if (isShieldingSOL && wsolTokenAccount) {
-    console.log('[wrap] 🔄 Adding SOL wrap instructions to transaction');
-    const balanceCheck = await checkWrappedSolBalance(connection, wallet.publicKey, amount);
-    
-    if (!balanceCheck.hasEnough) {
-      const wrapAmount = balanceCheck.needsWrap;
-      const existingWSol = balanceCheck.currentBalance;
-      console.log('[wrap] Existing wSOL balance:', existingWSol.toString(), 'lamports');
-      console.log('[wrap] Required:', amount.toString(), 'lamports');
-      console.log('[wrap] 💰 Wrapping', wrapAmount.toString(), 'additional lamports of SOL to wSOL (using existing', existingWSol.toString(), 'first)');
-      const wrapInstructions = await createWrapSolInstructions(
-        wsolTokenAccount,
-        wrapAmount,
-        wallet.publicKey,
-        connection
-      );
-      instructions.push(...wrapInstructions);
-      console.log('[wrap] ✅ Added', wrapInstructions.length, 'wrap instructions');
-    } else {
-      console.log('[wrap] ✅ Sufficient wSOL balance available - using existing wSOL, no wrapping needed');
-      console.log('[wrap] Using', balanceCheck.currentBalance.toString(), 'lamports from existing wSOL balance');
-    }
+    console.log('[wrap] 🔄 Wrapping SOL to wSOL before shielding');
+    console.log('[wrap] Amount to wrap:', amount.toString(), 'lamports');
+    const wrapInstructions = await createWrapSolInstructions(
+      wsolTokenAccount,
+      amount,
+      wallet.publicKey,
+      connection
+    );
+    instructions.push(...wrapInstructions);
+    console.log('[wrap] ✅ Added', wrapInstructions.length, 'wrap instructions');
   }
 
   // Ensure vault token account exists (required for shield)
@@ -2591,43 +2565,36 @@ export async function unwrap(params: UnwrapParams): Promise<string> {
     console.log('[unwrap] 🔄 Unshielding to SOL complete, now unwrapping wSOL to native SOL');
     
     try {
-      // Check if wSOL account has balance before unwrapping
-      const wsolBalance = await getWrappedSolBalance(connection, destinationKey);
-      console.log('[unwrap] wSOL balance after unshield:', wsolBalance.toString(), 'lamports');
+      // Always unwrap wSOL to native SOL after unshield
+      // Create unwrap instruction
+      const unwrapInstruction = createUnwrapSolInstruction(
+        wsolTokenAccountForUnwrap,
+        destinationKey // Owner who will receive native SOL
+      );
       
-      if (wsolBalance > 0n) {
-        // Create unwrap instruction
-        const unwrapInstruction = createUnwrapSolInstruction(
-          wsolTokenAccountForUnwrap,
-          destinationKey // Owner who will receive native SOL
-        );
-        
-        // Send unwrap transaction
-        const unwrapBlockhash = await connection.getLatestBlockhash('confirmed');
-        const unwrapTransaction = new Transaction().add(unwrapInstruction);
-        unwrapTransaction.feePayer = wallet.publicKey;
-        unwrapTransaction.recentBlockhash = unwrapBlockhash.blockhash;
-        
-        console.log('[unwrap] 💰 Sending unwrap transaction to convert wSOL to native SOL');
-        const unwrapSignature = await wallet.sendTransaction(unwrapTransaction, connection, {
-          skipPreflight: false
-        });
-        
-        await waitForSignatureConfirmation(
-          connection,
-          unwrapSignature,
-          unwrapBlockhash.blockhash,
-          unwrapBlockhash.lastValidBlockHeight
-        );
-        
-        console.log('[unwrap] ✅ Successfully unwrapped wSOL to native SOL');
-        console.log('[unwrap] ✅ Complete flow: zSOL → wSOL → SOL');
-        console.log('[unwrap] Unwrap signature:', unwrapSignature);
-        
-        return unwrapSignature; // Return unwrap signature as it's the final transaction
-      } else {
-        console.warn('[unwrap] ⚠️ wSOL balance is 0, skipping unwrap');
-      }
+      // Send unwrap transaction
+      const unwrapBlockhash = await connection.getLatestBlockhash('confirmed');
+      const unwrapTransaction = new Transaction().add(unwrapInstruction);
+      unwrapTransaction.feePayer = wallet.publicKey;
+      unwrapTransaction.recentBlockhash = unwrapBlockhash.blockhash;
+      
+      console.log('[unwrap] 💰 Unwrapping wSOL to native SOL');
+      const unwrapSignature = await wallet.sendTransaction(unwrapTransaction, connection, {
+        skipPreflight: false
+      });
+      
+      await waitForSignatureConfirmation(
+        connection,
+        unwrapSignature,
+        unwrapBlockhash.blockhash,
+        unwrapBlockhash.lastValidBlockHeight
+      );
+      
+      console.log('[unwrap] ✅ Successfully unwrapped wSOL to native SOL');
+      console.log('[unwrap] ✅ Complete flow: zSOL → wSOL → SOL');
+      console.log('[unwrap] Unwrap signature:', unwrapSignature);
+      
+      return unwrapSignature; // Return unwrap signature as it's the final transaction
     } catch (unwrapError: any) {
       console.error('[unwrap] ❌ Failed to unwrap wSOL to SOL:', unwrapError);
       console.error('[unwrap] ⚠️ Unshield succeeded but unwrap failed - user has wSOL instead of SOL');
@@ -3532,41 +3499,29 @@ export async function createDexPool(params: CreateDexPoolParams): Promise<string
   // Build instruction
   const instructions: TransactionInstruction[] = [];
   
-  // SOL WRAPPING: Add wrap instructions BEFORE pool creation if SOL is selected
+  // SOL WRAPPING: Always wrap full amount before pool creation if SOL is selected
   if (actualTokenAIsSOL && wsolTokenAccountA) {
     console.log('[createDexPool] 🔄 Wrapping SOL to wSOL for token A before pool creation');
-    const balanceCheck = await checkWrappedSolBalance(connection, payer, initialAmountA);
-    if (!balanceCheck.hasEnough) {
-      const wrapAmount = balanceCheck.needsWrap;
-      console.log('[createDexPool] 💰 Wrapping', wrapAmount.toString(), 'lamports of SOL to wSOL for token A');
-      const wrapInstructions = await createWrapSolInstructions(
-        wsolTokenAccountA,
-        wrapAmount,
-        payer,
-        connection
-      );
-      instructions.push(...wrapInstructions);
-    } else {
-      console.log('[createDexPool] ✅ Sufficient wSOL balance for token A, no wrapping needed');
-    }
+    console.log('[createDexPool] Amount to wrap:', initialAmountA.toString(), 'lamports');
+    const wrapInstructions = await createWrapSolInstructions(
+      wsolTokenAccountA,
+      initialAmountA,
+      payer,
+      connection
+    );
+    instructions.push(...wrapInstructions);
   }
   
   if (actualTokenBIsSOL && wsolTokenAccountB) {
     console.log('[createDexPool] 🔄 Wrapping SOL to wSOL for token B before pool creation');
-    const balanceCheck = await checkWrappedSolBalance(connection, payer, initialAmountB);
-    if (!balanceCheck.hasEnough) {
-      const wrapAmount = balanceCheck.needsWrap;
-      console.log('[createDexPool] 💰 Wrapping', wrapAmount.toString(), 'lamports of SOL to wSOL for token B');
-      const wrapInstructions = await createWrapSolInstructions(
-        wsolTokenAccountB,
-        wrapAmount,
-        payer,
-        connection
-      );
-      instructions.push(...wrapInstructions);
-    } else {
-      console.log('[createDexPool] ✅ Sufficient wSOL balance for token B, no wrapping needed');
-    }
+    console.log('[createDexPool] Amount to wrap:', initialAmountB.toString(), 'lamports');
+    const wrapInstructions = await createWrapSolInstructions(
+      wsolTokenAccountB,
+      initialAmountB,
+      payer,
+      connection
+    );
+    instructions.push(...wrapInstructions);
   }
   
   // Create LP token mint account if needed (for public tokens, we'll use Token-2022)
@@ -3985,44 +3940,29 @@ export async function addDexLiquidity(params: AddLiquidityParams): Promise<strin
   // Build instruction
   const instructions: TransactionInstruction[] = [];
   
-  // SOL WRAPPING: Add wrap instructions BEFORE add liquidity if SOL is selected
-  // Use existing wSOL balance first, then wrap only what's needed
+  // SOL WRAPPING: Always wrap full amount before adding liquidity if SOL is selected
   if (actualTokenAIsSOL && wsolTokenAccountA) {
-    console.log('[addDexLiquidity] 🔄 Checking wSOL balance for token A - will use existing wSOL first');
-    const balanceCheck = await checkWrappedSolBalance(connection, payer, amountA);
-    if (!balanceCheck.hasEnough) {
-      const wrapAmount = balanceCheck.needsWrap;
-      console.log('[addDexLiquidity] Existing wSOL A balance:', balanceCheck.currentBalance.toString(), 'lamports');
-      console.log('[addDexLiquidity] 💰 Wrapping', wrapAmount.toString(), 'additional lamports of SOL to wSOL for token A');
-      const wrapInstructions = await createWrapSolInstructions(
-        wsolTokenAccountA,
-        wrapAmount,
-        payer,
-        connection
-      );
-      instructions.push(...wrapInstructions);
-    } else {
-      console.log('[addDexLiquidity] ✅ Sufficient wSOL A balance - using existing wSOL');
-    }
+    console.log('[addDexLiquidity] 🔄 Wrapping SOL to wSOL for token A');
+    console.log('[addDexLiquidity] Amount to wrap:', amountA.toString(), 'lamports');
+    const wrapInstructions = await createWrapSolInstructions(
+      wsolTokenAccountA,
+      amountA,
+      payer,
+      connection
+    );
+    instructions.push(...wrapInstructions);
   }
   
   if (actualTokenBIsSOL && wsolTokenAccountB) {
-    console.log('[addDexLiquidity] 🔄 Checking wSOL balance for token B - will use existing wSOL first');
-    const balanceCheck = await checkWrappedSolBalance(connection, payer, amountB);
-    if (!balanceCheck.hasEnough) {
-      const wrapAmount = balanceCheck.needsWrap;
-      console.log('[addDexLiquidity] Existing wSOL B balance:', balanceCheck.currentBalance.toString(), 'lamports');
-      console.log('[addDexLiquidity] 💰 Wrapping', wrapAmount.toString(), 'additional lamports of SOL to wSOL for token B');
-      const wrapInstructions = await createWrapSolInstructions(
-        wsolTokenAccountB,
-        wrapAmount,
-        payer,
-        connection
-      );
-      instructions.push(...wrapInstructions);
-    } else {
-      console.log('[addDexLiquidity] ✅ Sufficient wSOL B balance - using existing wSOL');
-    }
+    console.log('[addDexLiquidity] 🔄 Wrapping SOL to wSOL for token B');
+    console.log('[addDexLiquidity] Amount to wrap:', amountB.toString(), 'lamports');
+    const wrapInstructions = await createWrapSolInstructions(
+      wsolTokenAccountB,
+      amountB,
+      payer,
+      connection
+    );
+    instructions.push(...wrapInstructions);
   }
   
   // Ensure token accounts exist
@@ -4459,94 +4399,72 @@ export async function removeDexLiquidity(params: RemoveLiquidityParams): Promise
     latestBlockhash.lastValidBlockHeight
   );
   
-  // SOL UNWRAPPING: If removing SOL liquidity, unwrap wSOL to native SOL after removal
+  // SOL UNWRAPPING: Always unwrap wSOL to native SOL after removing liquidity if token is SOL
   if (actualTokenAIsSOL && wsolTokenAccountA) {
-    console.log('[removeDexLiquidity] 🔄 Removing SOL liquidity complete, now unwrapping wSOL to native SOL for token A');
+    console.log('[removeDexLiquidity] 🔄 Unwrapping wSOL to native SOL for token A');
     
     try {
-      // Check if wSOL account has balance before unwrapping
-      const wsolBalance = await getWrappedSolBalance(connection, payer);
-      console.log('[removeDexLiquidity] wSOL A balance after removal:', wsolBalance.toString(), 'lamports');
+      const unwrapInstruction = createUnwrapSolInstruction(
+        wsolTokenAccountA,
+        payer
+      );
       
-      if (wsolBalance > 0n) {
-        // Create unwrap instruction
-        const unwrapInstruction = createUnwrapSolInstruction(
-          wsolTokenAccountA,
-          payer // Owner who will receive native SOL
-        );
-        
-        // Send unwrap transaction
-        const unwrapBlockhash = await connection.getLatestBlockhash('confirmed');
-        const unwrapTransaction = new Transaction().add(unwrapInstruction);
-        unwrapTransaction.feePayer = payer;
-        unwrapTransaction.recentBlockhash = unwrapBlockhash.blockhash;
-        
-        console.log('[removeDexLiquidity] 💰 Sending unwrap transaction to convert wSOL to native SOL for token A');
-        const unwrapSignature = await wallet.sendTransaction(unwrapTransaction, connection, {
-          skipPreflight: false
-        });
-        
-        await waitForSignatureConfirmation(
-          connection,
-          unwrapSignature,
-          unwrapBlockhash.blockhash,
-          unwrapBlockhash.lastValidBlockHeight
-        );
-        
-        console.log('[removeDexLiquidity] ✅ Successfully unwrapped wSOL to native SOL for token A');
-        console.log('[removeDexLiquidity] Unwrap signature:', unwrapSignature);
-      } else {
-        console.log('[removeDexLiquidity] ⚠️ wSOL A balance is 0, skipping unwrap');
-      }
+      const unwrapBlockhash = await connection.getLatestBlockhash('confirmed');
+      const unwrapTransaction = new Transaction().add(unwrapInstruction);
+      unwrapTransaction.feePayer = payer;
+      unwrapTransaction.recentBlockhash = unwrapBlockhash.blockhash;
+      
+      console.log('[removeDexLiquidity] 💰 Unwrapping wSOL A to native SOL');
+      const unwrapSignature = await wallet.sendTransaction(unwrapTransaction, connection, {
+        skipPreflight: false
+      });
+      
+      await waitForSignatureConfirmation(
+        connection,
+        unwrapSignature,
+        unwrapBlockhash.blockhash,
+        unwrapBlockhash.lastValidBlockHeight
+      );
+      
+      console.log('[removeDexLiquidity] ✅ Successfully unwrapped wSOL A to native SOL');
+      console.log('[removeDexLiquidity] Unwrap signature:', unwrapSignature);
     } catch (unwrapError: any) {
       console.error('[removeDexLiquidity] ❌ Failed to unwrap wSOL A to SOL:', unwrapError);
       console.error('[removeDexLiquidity] ⚠️ Liquidity removal succeeded but unwrap failed - user has wSOL instead of SOL');
-      // Don't throw - liquidity removal succeeded, just unwrap failed
     }
   }
   
   if (actualTokenBIsSOL && wsolTokenAccountB) {
-    console.log('[removeDexLiquidity] 🔄 Removing SOL liquidity complete, now unwrapping wSOL to native SOL for token B');
+    console.log('[removeDexLiquidity] 🔄 Unwrapping wSOL to native SOL for token B');
     
     try {
-      // Check if wSOL account has balance before unwrapping
-      const wsolBalance = await getWrappedSolBalance(connection, payer);
-      console.log('[removeDexLiquidity] wSOL B balance after removal:', wsolBalance.toString(), 'lamports');
+      const unwrapInstruction = createUnwrapSolInstruction(
+        wsolTokenAccountB,
+        payer
+      );
       
-      if (wsolBalance > 0n) {
-        // Create unwrap instruction
-        const unwrapInstruction = createUnwrapSolInstruction(
-          wsolTokenAccountB,
-          payer // Owner who will receive native SOL
-        );
-        
-        // Send unwrap transaction
-        const unwrapBlockhash = await connection.getLatestBlockhash('confirmed');
-        const unwrapTransaction = new Transaction().add(unwrapInstruction);
-        unwrapTransaction.feePayer = payer;
-        unwrapTransaction.recentBlockhash = unwrapBlockhash.blockhash;
-        
-        console.log('[removeDexLiquidity] 💰 Sending unwrap transaction to convert wSOL to native SOL for token B');
-        const unwrapSignature = await wallet.sendTransaction(unwrapTransaction, connection, {
-          skipPreflight: false
-        });
-        
-        await waitForSignatureConfirmation(
-          connection,
-          unwrapSignature,
-          unwrapBlockhash.blockhash,
-          unwrapBlockhash.lastValidBlockHeight
-        );
-        
-        console.log('[removeDexLiquidity] ✅ Successfully unwrapped wSOL to native SOL for token B');
-        console.log('[removeDexLiquidity] Unwrap signature:', unwrapSignature);
-      } else {
-        console.log('[removeDexLiquidity] ⚠️ wSOL B balance is 0, skipping unwrap');
-      }
+      const unwrapBlockhash = await connection.getLatestBlockhash('confirmed');
+      const unwrapTransaction = new Transaction().add(unwrapInstruction);
+      unwrapTransaction.feePayer = payer;
+      unwrapTransaction.recentBlockhash = unwrapBlockhash.blockhash;
+      
+      console.log('[removeDexLiquidity] 💰 Unwrapping wSOL B to native SOL');
+      const unwrapSignature = await wallet.sendTransaction(unwrapTransaction, connection, {
+        skipPreflight: false
+      });
+      
+      await waitForSignatureConfirmation(
+        connection,
+        unwrapSignature,
+        unwrapBlockhash.blockhash,
+        unwrapBlockhash.lastValidBlockHeight
+      );
+      
+      console.log('[removeDexLiquidity] ✅ Successfully unwrapped wSOL B to native SOL');
+      console.log('[removeDexLiquidity] Unwrap signature:', unwrapSignature);
     } catch (unwrapError: any) {
       console.error('[removeDexLiquidity] ❌ Failed to unwrap wSOL B to SOL:', unwrapError);
       console.error('[removeDexLiquidity] ⚠️ Liquidity removal succeeded but unwrap failed - user has wSOL instead of SOL');
-      // Don't throw - liquidity removal succeeded, just unwrap failed
     }
   }
   
@@ -4673,25 +4591,17 @@ export async function swapDex(params: SwapParams): Promise<string> {
   // Build instruction
   const instructions: TransactionInstruction[] = [];
   
-  // SOL WRAPPING: Add wrap instructions BEFORE swap if input is SOL
-  // Use existing wSOL balance first, then wrap only what's needed
+  // SOL WRAPPING: Always wrap full amount before swap if input is SOL
   if (tokenInIsSOL && wsolTokenAccountIn) {
-    console.log('[swapDex] 🔄 Checking wSOL balance for input - will use existing wSOL first');
-    const balanceCheck = await checkWrappedSolBalance(connection, payer, params.amountIn);
-    if (!balanceCheck.hasEnough) {
-      const wrapAmount = balanceCheck.needsWrap;
-      console.log('[swapDex] Existing wSOL input balance:', balanceCheck.currentBalance.toString(), 'lamports');
-      console.log('[swapDex] 💰 Wrapping', wrapAmount.toString(), 'additional lamports of SOL to wSOL for input');
-      const wrapInstructions = await createWrapSolInstructions(
-        wsolTokenAccountIn,
-        wrapAmount,
-        payer,
-        connection
-      );
-      instructions.push(...wrapInstructions);
-    } else {
-      console.log('[swapDex] ✅ Sufficient wSOL input balance - using existing wSOL');
-    }
+    console.log('[swapDex] 🔄 Wrapping SOL to wSOL for input');
+    console.log('[swapDex] Amount to wrap:', params.amountIn.toString(), 'lamports');
+    const wrapInstructions = await createWrapSolInstructions(
+      wsolTokenAccountIn,
+      params.amountIn,
+      payer,
+      connection
+    );
+    instructions.push(...wrapInstructions);
   }
   
   // Ensure output token account exists (for public tokens only)
@@ -4858,53 +4768,42 @@ export async function swapDex(params: SwapParams): Promise<string> {
     latestBlockhash.lastValidBlockHeight
   );
   
-  // SOL UNWRAPPING: If output is SOL, unwrap wSOL to native SOL after swap
+  // SOL UNWRAPPING: Always unwrap wSOL to native SOL after swap if output is SOL
   if (tokenOutIsSOL && wsolTokenAccountOut) {
-    console.log('[swapDex] 🔄 Swap complete, now unwrapping wSOL to native SOL for output');
+    console.log('[swapDex] 🔄 Unwrapping wSOL to native SOL after swap');
     
     try {
-      // Check if wSOL account has balance before unwrapping
-      const wsolBalance = await getWrappedSolBalance(connection, payer);
-      console.log('[swapDex] wSOL output balance after swap:', wsolBalance.toString(), 'lamports');
+      const unwrapInstruction = createUnwrapSolInstruction(
+        wsolTokenAccountOut,
+        payer // Owner who will receive native SOL
+      );
       
-      if (wsolBalance > 0n) {
-        // Create unwrap instruction
-        const unwrapInstruction = createUnwrapSolInstruction(
-          wsolTokenAccountOut,
-          payer // Owner who will receive native SOL
-        );
-        
-        // Send unwrap transaction
-        const unwrapBlockhash = await connection.getLatestBlockhash('confirmed');
-        const unwrapTransaction = new Transaction().add(unwrapInstruction);
-        unwrapTransaction.feePayer = payer;
-        unwrapTransaction.recentBlockhash = unwrapBlockhash.blockhash;
-        
-        console.log('[swapDex] 💰 Sending unwrap transaction to convert wSOL to native SOL');
-        const unwrapSignature = await wallet.sendTransaction(unwrapTransaction, connection, {
-          skipPreflight: false
-        });
-        
-        await waitForSignatureConfirmation(
-          connection,
-          unwrapSignature,
-          unwrapBlockhash.blockhash,
-          unwrapBlockhash.lastValidBlockHeight
-        );
-        
-        console.log('[swapDex] ✅ Successfully unwrapped wSOL to native SOL');
-        console.log('[swapDex] ✅ Complete flow: SOL → wSOL → swap → wSOL → SOL');
-        console.log('[swapDex] Unwrap signature:', unwrapSignature);
-        
-        return unwrapSignature; // Return unwrap signature as it's the final transaction
-      } else {
-        console.log('[swapDex] ⚠️ wSOL output balance is 0, skipping unwrap');
-      }
+      const unwrapBlockhash = await connection.getLatestBlockhash('confirmed');
+      const unwrapTransaction = new Transaction().add(unwrapInstruction);
+      unwrapTransaction.feePayer = payer;
+      unwrapTransaction.recentBlockhash = unwrapBlockhash.blockhash;
+      
+      console.log('[swapDex] 💰 Unwrapping wSOL to native SOL');
+      const unwrapSignature = await wallet.sendTransaction(unwrapTransaction, connection, {
+        skipPreflight: false
+      });
+      
+      await waitForSignatureConfirmation(
+        connection,
+        unwrapSignature,
+        unwrapBlockhash.blockhash,
+        unwrapBlockhash.lastValidBlockHeight
+      );
+      
+      console.log('[swapDex] ✅ Successfully unwrapped wSOL to native SOL');
+      console.log('[swapDex] ✅ Complete flow: SOL → wSOL → swap → wSOL → SOL');
+      console.log('[swapDex] Unwrap signature:', unwrapSignature);
+      
+      return unwrapSignature; // Return unwrap signature as it's the final transaction
     } catch (unwrapError: any) {
       console.error('[swapDex] ❌ Failed to unwrap wSOL to SOL:', unwrapError);
       console.error('[swapDex] ⚠️ Swap succeeded but unwrap failed - user has wSOL instead of SOL');
       // Don't throw - swap succeeded, just unwrap failed
-      // User will have wSOL instead of SOL, but the swap was successful
     }
   }
   
