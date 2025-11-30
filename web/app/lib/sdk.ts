@@ -76,6 +76,15 @@ import {
   createRevokeInstruction,
   createInitializeMint2Instruction
 } from '@solana/spl-token';
+import {
+  NATIVE_SOL_MINT,
+  isNativeSol,
+  getWrappedSolAccount,
+  createWrapSolInstructions,
+  createUnwrapSolInstruction,
+  getWrappedSolBalance,
+  checkWrappedSolBalance
+} from './solWrapping';
 
 const DEFAULT_SIGNATURE_TIMEOUT_MS = 60_000;
 const SIGNATURE_POLL_INTERVAL_MS = 500;
@@ -974,21 +983,59 @@ export async function wrap(params: WrapParams): Promise<string> {
   const connection = params.connection;
   // lookupTableAuthority removed - addresses are now derived programmatically
 
-  const originMintKey = new PublicKey(params.originMint);
+  let originMintKey = new PublicKey(params.originMint);
+  
+  // SOL HANDLING: Detect if user is trying to shield native SOL
+  // If so, we need to wrap it to wSOL first, then shield the wSOL
+  const isShieldingSOL = isNativeSol(originMintKey);
+  let wsolTokenAccount: PublicKey | null = null;
+  let actualShieldMint: PublicKey = originMintKey;
+  
+  if (isShieldingSOL) {
+    console.log('[wrap] SOL detected - will wrap to wSOL before shielding');
+    console.log('[wrap] Native SOL mint:', originMintKey.toBase58());
+    
+    // Use wSOL mint for the actual shield operation
+    actualShieldMint = NATIVE_SOL_MINT;
+    console.log('[wrap] Using wSOL mint for shield:', actualShieldMint.toBase58());
+    
+    // Get or create wSOL token account
+    wsolTokenAccount = await getWrappedSolAccount(wallet.publicKey);
+    console.log('[wrap] wSOL token account:', wsolTokenAccount.toBase58());
+    
+    // Check current wSOL balance and SOL balance
+    const currentWSolBalance = await getWrappedSolBalance(connection, wallet.publicKey);
+    const currentSolBalance = await connection.getBalance(wallet.publicKey);
+    const amountInLamports = params.amount;
+    
+    console.log('[wrap] Balance check - SOL:', currentSolBalance, 'lamports, wSOL:', currentWSolBalance.toString(), 'lamports, Required:', amountInLamports.toString());
+    
+    // Check if we need to wrap more SOL
+    const balanceCheck = await checkWrappedSolBalance(connection, wallet.publicKey, amountInLamports);
+    
+    if (!balanceCheck.hasEnough) {
+      console.log('[wrap] Need to wrap', balanceCheck.needsWrap.toString(), 'lamports of SOL to wSOL');
+      // We'll add wrap instructions before the shield instruction
+    } else {
+      console.log('[wrap] Sufficient wSOL balance available, no wrapping needed');
+    }
+  }
+  
+  // Use actualShieldMint for all pool/account derivations (will be wSOL mint if SOL was detected)
   const poolState = new PublicKey(params.poolId);
-  const commitmentTreeKey = deriveCommitmentTree(originMintKey);
-  const nullifierSet = deriveNullifierSet(originMintKey);
-  const noteLedger = deriveNoteLedger(originMintKey);
-  const hookConfig = deriveHookConfig(originMintKey);
-  const hookWhitelist = deriveHookWhitelist(originMintKey);
-  const vaultState = deriveVaultState(originMintKey);
+  const commitmentTreeKey = deriveCommitmentTree(actualShieldMint);
+  const nullifierSet = deriveNullifierSet(actualShieldMint);
+  const noteLedger = deriveNoteLedger(actualShieldMint);
+  const hookConfig = deriveHookConfig(actualShieldMint);
+  const hookWhitelist = deriveHookWhitelist(actualShieldMint);
+  const vaultState = deriveVaultState(actualShieldMint);
   const verifyingKey = deriveVerifyingKey();
   const shieldClaim = deriveShieldClaim(poolState);
   const factoryState = deriveFactoryState(); // Needed for lazy initialization
   const twinMintKey = params.twinMint ? new PublicKey(params.twinMint) : null;
   const { key: mintMappingKey, decoded: mintMapping } = await fetchMintMappingAccount(
     connection,
-    originMintKey
+    actualShieldMint // Use actualShieldMint (wSOL if SOL was detected)
   );
   ensureMintActive(mintMapping);
   
@@ -1130,7 +1177,8 @@ export async function wrap(params: WrapParams): Promise<string> {
   const amountCommitmentBytes = await poseidonHashMany([amount, blinding]);
 
   // Determine which token program the mint uses
-  const mintAccount = await connection.getAccountInfo(originMintKey, 'confirmed');
+  // Check the actual shield mint (wSOL if SOL, otherwise original mint)
+  const mintAccount = await connection.getAccountInfo(actualShieldMint, 'confirmed');
   if (!mintAccount) {
     throw new Error('Mint account not found');
   }
@@ -1138,20 +1186,25 @@ export async function wrap(params: WrapParams): Promise<string> {
     ? TOKEN_2022_PROGRAM_ID 
     : TOKEN_PROGRAM_ID;
 
+  // If shielding SOL, use wSOL mint and wSOL token account for deposit
   const vaultTokenAccount = await getAssociatedTokenAddress(
-    originMintKey,
+    actualShieldMint, // Use actualShieldMint (wSOL mint if SOL)
     vaultState,
     true,
     tokenProgramId,
     ASSOCIATED_TOKEN_PROGRAM_ID
   );
-  const depositorTokenAccount = await getAssociatedTokenAddress(
-    originMintKey,
-    wallet.publicKey,
-    false,
-    tokenProgramId,
-    ASSOCIATED_TOKEN_PROGRAM_ID
-  );
+  
+  // If shielding SOL, use wSOL token account directly, otherwise derive ATA
+  const depositorTokenAccount = (isShieldingSOL && wsolTokenAccount) 
+    ? wsolTokenAccount 
+    : await getAssociatedTokenAddress(
+        actualShieldMint,
+        wallet.publicKey,
+        false,
+        tokenProgramId,
+        ASSOCIATED_TOKEN_PROGRAM_ID
+      );
 
   const instructions: TransactionInstruction[] = [];
   const computeLimitEnv =
@@ -1179,6 +1232,31 @@ export async function wrap(params: WrapParams): Promise<string> {
     }
   }
 
+  // SOL WRAPPING: Add wrap instructions BEFORE shield if shielding SOL
+  if (isShieldingSOL && wsolTokenAccount) {
+    console.log('[wrap] 🔄 Adding SOL wrap instructions to transaction');
+    const balanceCheck = await checkWrappedSolBalance(connection, wallet.publicKey, amount);
+    
+    if (!balanceCheck.hasEnough) {
+      const wrapAmount = balanceCheck.needsWrap;
+      const existingWSol = balanceCheck.currentBalance;
+      console.log('[wrap] Existing wSOL balance:', existingWSol.toString(), 'lamports');
+      console.log('[wrap] Required:', amount.toString(), 'lamports');
+      console.log('[wrap] 💰 Wrapping', wrapAmount.toString(), 'additional lamports of SOL to wSOL (using existing', existingWSol.toString(), 'first)');
+      const wrapInstructions = await createWrapSolInstructions(
+        wsolTokenAccount,
+        wrapAmount,
+        wallet.publicKey,
+        connection
+      );
+      instructions.push(...wrapInstructions);
+      console.log('[wrap] ✅ Added', wrapInstructions.length, 'wrap instructions');
+    } else {
+      console.log('[wrap] ✅ Sufficient wSOL balance available - using existing wSOL, no wrapping needed');
+      console.log('[wrap] Using', balanceCheck.currentBalance.toString(), 'lamports from existing wSOL balance');
+    }
+  }
+
   // Ensure vault token account exists (required for shield)
   const vaultTokenAccountInfo = await connection.getAccountInfo(vaultTokenAccount, 'confirmed');
   if (!vaultTokenAccountInfo) {
@@ -1188,25 +1266,29 @@ export async function wrap(params: WrapParams): Promise<string> {
         wallet.publicKey!,
         vaultTokenAccount,
         vaultState,
-        originMintKey,
+        actualShieldMint, // Use actualShieldMint (wSOL if SOL)
         tokenProgramId,
         ASSOCIATED_TOKEN_PROGRAM_ID
       )
     );
   }
   
-  const depositorInfo = await connection.getAccountInfo(depositorTokenAccount);
-  if (!depositorInfo) {
-    instructions.push(
-      createAssociatedTokenAccountInstruction(
-        wallet.publicKey,
-        depositorTokenAccount,
-        wallet.publicKey,
-        originMintKey,
-        tokenProgramId,
-        ASSOCIATED_TOKEN_PROGRAM_ID
-      )
-    );
+  // If shielding SOL, depositor account is wSOL account which should already exist or be created by wrap instructions
+  // For non-SOL, create depositor account if needed
+  if (!isShieldingSOL) {
+    const depositorInfo = await connection.getAccountInfo(depositorTokenAccount);
+    if (!depositorInfo) {
+      instructions.push(
+        createAssociatedTokenAccountInstruction(
+          wallet.publicKey,
+          depositorTokenAccount,
+          wallet.publicKey,
+          actualShieldMint,
+          tokenProgramId,
+          ASSOCIATED_TOKEN_PROGRAM_ID
+        )
+      );
+    }
   }
 
   const decodedProof = decodeProofPayload(params.proof);
@@ -1304,7 +1386,7 @@ export async function wrap(params: WrapParams): Promise<string> {
     { pubkey: verifyingKey, isSigner: false, isWritable: false },
     { pubkey: shieldClaim, isSigner: false, isWritable: true },
     { pubkey: wallet.publicKey, isSigner: true, isWritable: true },
-    { pubkey: originMintKey, isSigner: false, isWritable: false },
+    { pubkey: actualShieldMint, isSigner: false, isWritable: false }, // Use actualShieldMint (wSOL if SOL)
     { pubkey: mintMappingKey, isSigner: false, isWritable: false },
     { pubkey: factoryState, isSigner: false, isWritable: false }, // Needed for program validation
     { pubkey: VAULT_PROGRAM_ID, isSigner: false, isWritable: false },
@@ -1996,6 +2078,12 @@ export async function wrap(params: WrapParams): Promise<string> {
     console.info('[wrap] Shield claim successfully deactivated after finalization');
   }
 
+  // Log success for SOL shielding
+  if (isShieldingSOL) {
+    console.log('[wrap] ✅ Successfully shielded SOL → wSOL → zSOL');
+    console.log('[wrap] Transaction signature:', invariantSignature || shieldSignature);
+  }
+
   return invariantSignature || shieldSignature;
 }
 
@@ -2177,9 +2265,28 @@ export async function unwrap(params: UnwrapParams): Promise<string> {
   }
 
   const destinationMint = redeemToTwin ? twinMintKey! : originMintKey;
+  
+  // SOL HANDLING: Detect if unshielding to native SOL (wSOL)
+  // If so, we'll need to unwrap wSOL to native SOL after unshield
+  const isUnshieldingToSOL = isNativeSol(destinationMint);
+  let wsolTokenAccountForUnwrap: PublicKey | null = null;
+  
+  if (isUnshieldingToSOL) {
+    console.log('[unwrap] ⚡ SOL destination detected - will unwrap wSOL to SOL after unshield');
+    console.log('[unwrap] Destination is native SOL mint (wSOL)');
+    
+    // Get wSOL token account (destination account will receive wSOL from unshield)
+    wsolTokenAccountForUnwrap = destinationKey.equals(wallet.publicKey)
+      ? await getWrappedSolAccount(destinationKey) // If destination is wallet, use wallet's wSOL account
+      : await getWrappedSolAccount(destinationKey); // Otherwise use destination's wSOL account
+    
+    console.log('[unwrap] wSOL token account for unwrap:', wsolTokenAccountForUnwrap.toBase58());
+    console.log('[unwrap] Destination wallet:', destinationKey.toBase58());
+  }
+  
   const destinationTokenProgram = redeemToTwin ? TOKEN_2022_PROGRAM_ID : originTokenProgram;
   const destinationTokenAccount = await getAssociatedTokenAddress(
-    destinationMint,
+    destinationMint, // Will be wSOL mint if unshielding to SOL
     destinationKey,
     false,
     destinationTokenProgram,
@@ -2469,6 +2576,56 @@ export async function unwrap(params: UnwrapParams): Promise<string> {
     blockhash.blockhash,
     blockhash.lastValidBlockHeight
   );
+  
+  // SOL UNWRAPPING: If unshielding to SOL, unwrap wSOL to native SOL
+  if (isUnshieldingToSOL && wsolTokenAccountForUnwrap) {
+    console.log('[unwrap] 🔄 Unshielding to SOL complete, now unwrapping wSOL to native SOL');
+    
+    try {
+      // Check if wSOL account has balance before unwrapping
+      const wsolBalance = await getWrappedSolBalance(connection, destinationKey);
+      console.log('[unwrap] wSOL balance after unshield:', wsolBalance.toString(), 'lamports');
+      
+      if (wsolBalance > 0n) {
+        // Create unwrap instruction
+        const unwrapInstruction = createUnwrapSolInstruction(
+          wsolTokenAccountForUnwrap,
+          destinationKey // Owner who will receive native SOL
+        );
+        
+        // Send unwrap transaction
+        const unwrapBlockhash = await connection.getLatestBlockhash('confirmed');
+        const unwrapTransaction = new Transaction().add(unwrapInstruction);
+        unwrapTransaction.feePayer = wallet.publicKey;
+        unwrapTransaction.recentBlockhash = unwrapBlockhash.blockhash;
+        
+        console.log('[unwrap] 💰 Sending unwrap transaction to convert wSOL to native SOL');
+        const unwrapSignature = await wallet.sendTransaction(unwrapTransaction, connection, {
+          skipPreflight: false
+        });
+        
+        await waitForSignatureConfirmation(
+          connection,
+          unwrapSignature,
+          unwrapBlockhash.blockhash,
+          unwrapBlockhash.lastValidBlockHeight
+        );
+        
+        console.log('[unwrap] ✅ Successfully unwrapped wSOL to native SOL');
+        console.log('[unwrap] ✅ Complete flow: zSOL → wSOL → SOL');
+        console.log('[unwrap] Unwrap signature:', unwrapSignature);
+        
+        return unwrapSignature; // Return unwrap signature as it's the final transaction
+      } else {
+        console.warn('[unwrap] ⚠️ wSOL balance is 0, skipping unwrap');
+      }
+    } catch (unwrapError: any) {
+      console.error('[unwrap] ❌ Failed to unwrap wSOL to SOL:', unwrapError);
+      console.error('[unwrap] ⚠️ Unshield succeeded but unwrap failed - user has wSOL instead of SOL');
+      // Don't throw - unshield succeeded, just unwrap failed
+      // User will have wSOL instead of SOL, but the unshield was successful
+    }
+  }
   
   return signature;
 }
@@ -3246,21 +3403,46 @@ export async function createDexPool(params: CreateDexPoolParams): Promise<string
   const { connection, wallet } = params;
   const payer = wallet.publicKey!;
   
-  const tokenA = typeof params.tokenA === 'string' ? new PublicKey(params.tokenA) : params.tokenA;
-  const tokenB = typeof params.tokenB === 'string' ? new PublicKey(params.tokenB) : params.tokenB;
+  const originalTokenA = typeof params.tokenA === 'string' ? new PublicKey(params.tokenA) : params.tokenA;
+  const originalTokenB = typeof params.tokenB === 'string' ? new PublicKey(params.tokenB) : params.tokenB;
+  
+  // SOL HANDLING: Detect if SOL is selected and convert to wSOL mint
+  const originalTokenAIsSOL = isNativeSol(originalTokenA);
+  const originalTokenBIsSOL = isNativeSol(originalTokenB);
+  
+  // Convert SOL to wSOL mint for pool operations
+  let tokenA = originalTokenAIsSOL ? NATIVE_SOL_MINT : originalTokenA;
+  let tokenB = originalTokenBIsSOL ? NATIVE_SOL_MINT : originalTokenB;
+  
+  if (originalTokenAIsSOL) {
+    console.log('[createDexPool] ⚡ Token A is SOL - using wSOL mint for pool');
+  }
+  if (originalTokenBIsSOL) {
+    console.log('[createDexPool] ⚡ Token B is SOL - using wSOL mint for pool');
+  }
   
   // Ensure canonical order (token_a < token_b)
-  const [tokenAMint, tokenBMint, tokenAIsZtoken, tokenBIsZtoken] = 
-    tokenA.toBuffer().compare(tokenB.toBuffer()) < 0
-      ? [tokenA, tokenB, params.tokenAIsZtoken, params.tokenBIsZtoken]
-      : [tokenB, tokenA, params.tokenBIsZtoken, params.tokenAIsZtoken];
+  const canonicalOrder = tokenA.toBuffer().compare(tokenB.toBuffer()) < 0;
+  const [tokenAMint, tokenBMint, tokenAIsZtoken, tokenBIsZtoken, actualTokenAIsSOL, actualTokenBIsSOL] = canonicalOrder
+      ? [tokenA, tokenB, params.tokenAIsZtoken, params.tokenBIsZtoken, originalTokenAIsSOL, originalTokenBIsSOL]
+      : [tokenB, tokenA, params.tokenBIsZtoken, params.tokenAIsZtoken, originalTokenBIsSOL, originalTokenAIsSOL];
   
-  const initialAmountA = tokenA.toBuffer().compare(tokenB.toBuffer()) < 0 
-    ? params.initialAmountA 
-    : params.initialAmountB;
-  const initialAmountB = tokenA.toBuffer().compare(tokenB.toBuffer()) < 0 
-    ? params.initialAmountB 
-    : params.initialAmountA;
+  const initialAmountA = canonicalOrder ? params.initialAmountA : params.initialAmountB;
+  const initialAmountB = canonicalOrder ? params.initialAmountB : params.initialAmountA;
+  
+  // Get wSOL accounts if needed (after canonical ordering)
+  let wsolTokenAccountA: PublicKey | null = null;
+  let wsolTokenAccountB: PublicKey | null = null;
+  
+  if (actualTokenAIsSOL) {
+    wsolTokenAccountA = await getWrappedSolAccount(payer);
+    console.log('[createDexPool] wSOL token account A:', wsolTokenAccountA.toBase58());
+  }
+  
+  if (actualTokenBIsSOL) {
+    wsolTokenAccountB = await getWrappedSolAccount(payer);
+    console.log('[createDexPool] wSOL token account B:', wsolTokenAccountB.toBase58());
+  }
   
   // Derive PDAs
   const poolState = deriveDexPoolState(tokenAMint, tokenBMint);
@@ -3285,79 +3467,106 @@ export async function createDexPool(params: CreateDexPoolParams): Promise<string
   
   // For zTokens, we still need valid accounts (even if not used) to satisfy Anchor's mut constraint
   // We'll create valid token accounts but skip transfers in the instruction
-  const userTokenAAccount = tokenAIsZtoken 
-    ? await getAssociatedTokenAddress(
-        tokenAMint,
-        payer,
-        false,
-        TOKEN_PROGRAM_ID,
-        ASSOCIATED_TOKEN_PROGRAM_ID
-      )
-    : await getAssociatedTokenAddress(
-        tokenAMint,
-        payer,
-        false,
-        TOKEN_PROGRAM_ID,
-        ASSOCIATED_TOKEN_PROGRAM_ID
-      );
+  // If SOL was detected, use wSOL token accounts directly
+  const userTokenAAccount = (actualTokenAIsSOL && wsolTokenAccountA) 
+    ? wsolTokenAccountA // Use wSOL account if SOL
+    : (tokenAIsZtoken 
+      ? await getAssociatedTokenAddress(
+          tokenAMint,
+          payer,
+          false,
+          TOKEN_PROGRAM_ID,
+          ASSOCIATED_TOKEN_PROGRAM_ID
+        )
+      : await getAssociatedTokenAddress(
+          tokenAMint,
+          payer,
+          false,
+          TOKEN_PROGRAM_ID,
+          ASSOCIATED_TOKEN_PROGRAM_ID
+        ));
   
-  const poolTokenAAccount = tokenAIsZtoken
-    ? await getAssociatedTokenAddress(
-        tokenAMint,
-        poolState,
-        true, // allowOwnerOffCurve - poolState is a PDA
-        TOKEN_PROGRAM_ID,
-        ASSOCIATED_TOKEN_PROGRAM_ID
-      )
-    : await getAssociatedTokenAddress(
-        tokenAMint,
-        poolState,
-        true, // allowOwnerOffCurve - poolState is a PDA
-        TOKEN_PROGRAM_ID,
-        ASSOCIATED_TOKEN_PROGRAM_ID
-      );
+  const poolTokenAAccount = await getAssociatedTokenAddress(
+    tokenAMint, // Will be wSOL mint if SOL was detected
+    poolState,
+    true, // allowOwnerOffCurve - poolState is a PDA
+    TOKEN_PROGRAM_ID,
+    ASSOCIATED_TOKEN_PROGRAM_ID
+  );
   
-  const userTokenBAccount = tokenBIsZtoken
-    ? await getAssociatedTokenAddress(
-        tokenBMint,
-        payer,
-        false,
-        TOKEN_PROGRAM_ID,
-        ASSOCIATED_TOKEN_PROGRAM_ID
-      )
-    : await getAssociatedTokenAddress(
-        tokenBMint,
-        payer,
-        false,
-        TOKEN_PROGRAM_ID,
-        ASSOCIATED_TOKEN_PROGRAM_ID
-      );
+  const userTokenBAccount = (actualTokenBIsSOL && wsolTokenAccountB)
+    ? wsolTokenAccountB // Use wSOL account if SOL
+    : (tokenBIsZtoken
+      ? await getAssociatedTokenAddress(
+          tokenBMint,
+          payer,
+          false,
+          TOKEN_PROGRAM_ID,
+          ASSOCIATED_TOKEN_PROGRAM_ID
+        )
+      : await getAssociatedTokenAddress(
+          tokenBMint,
+          payer,
+          false,
+          TOKEN_PROGRAM_ID,
+          ASSOCIATED_TOKEN_PROGRAM_ID
+        ));
   
-  const poolTokenBAccount = tokenBIsZtoken
-    ? await getAssociatedTokenAddress(
-        tokenBMint,
-        poolState,
-        true, // allowOwnerOffCurve - poolState is a PDA
-        TOKEN_PROGRAM_ID,
-        ASSOCIATED_TOKEN_PROGRAM_ID
-      )
-    : await getAssociatedTokenAddress(
-        tokenBMint,
-        poolState,
-        true, // allowOwnerOffCurve - poolState is a PDA
-        TOKEN_PROGRAM_ID,
-        ASSOCIATED_TOKEN_PROGRAM_ID
-      );
+  const poolTokenBAccount = await getAssociatedTokenAddress(
+    tokenBMint, // Will be wSOL mint if SOL was detected
+    poolState,
+    true, // allowOwnerOffCurve - poolState is a PDA
+    TOKEN_PROGRAM_ID,
+    ASSOCIATED_TOKEN_PROGRAM_ID
+  );
   
   // Build instruction
   const instructions: TransactionInstruction[] = [];
+  
+  // SOL WRAPPING: Add wrap instructions BEFORE pool creation if SOL is selected
+  if (actualTokenAIsSOL && wsolTokenAccountA) {
+    console.log('[createDexPool] 🔄 Wrapping SOL to wSOL for token A before pool creation');
+    const balanceCheck = await checkWrappedSolBalance(connection, payer, initialAmountA);
+    if (!balanceCheck.hasEnough) {
+      const wrapAmount = balanceCheck.needsWrap;
+      console.log('[createDexPool] 💰 Wrapping', wrapAmount.toString(), 'lamports of SOL to wSOL for token A');
+      const wrapInstructions = await createWrapSolInstructions(
+        wsolTokenAccountA,
+        wrapAmount,
+        payer,
+        connection
+      );
+      instructions.push(...wrapInstructions);
+    } else {
+      console.log('[createDexPool] ✅ Sufficient wSOL balance for token A, no wrapping needed');
+    }
+  }
+  
+  if (actualTokenBIsSOL && wsolTokenAccountB) {
+    console.log('[createDexPool] 🔄 Wrapping SOL to wSOL for token B before pool creation');
+    const balanceCheck = await checkWrappedSolBalance(connection, payer, initialAmountB);
+    if (!balanceCheck.hasEnough) {
+      const wrapAmount = balanceCheck.needsWrap;
+      console.log('[createDexPool] 💰 Wrapping', wrapAmount.toString(), 'lamports of SOL to wSOL for token B');
+      const wrapInstructions = await createWrapSolInstructions(
+        wsolTokenAccountB,
+        wrapAmount,
+        payer,
+        connection
+      );
+      instructions.push(...wrapInstructions);
+    } else {
+      console.log('[createDexPool] ✅ Sufficient wSOL balance for token B, no wrapping needed');
+    }
+  }
   
   // Create LP token mint account if needed (for public tokens, we'll use Token-2022)
   // Note: This will be handled in the instruction via CPI, but we need to ensure accounts exist
   
   // Check if user token accounts exist, create if needed
   // Note: Pool token ATAs will be created in a follow-up transaction after poolState exists
-  if (!tokenAIsZtoken) {
+  // If SOL was detected, wSOL account is already handled in wrap instructions above
+  if (!tokenAIsZtoken && !actualTokenAIsSOL) {
     const userTokenAAccountInfo = await connection.getAccountInfo(userTokenAAccount, 'confirmed');
     if (!userTokenAAccountInfo) {
       instructions.push(
@@ -3373,7 +3582,7 @@ export async function createDexPool(params: CreateDexPoolParams): Promise<string
     }
   }
   
-  if (!tokenBIsZtoken) {
+  if (!tokenBIsZtoken && !actualTokenBIsSOL) {
     const userTokenBAccountInfo = await connection.getAccountInfo(userTokenBAccount, 'confirmed');
     if (!userTokenBAccountInfo) {
       instructions.push(
@@ -3575,6 +3784,14 @@ export async function createDexPool(params: CreateDexPoolParams): Promise<string
     latestBlockhash.lastValidBlockHeight
   );
   
+  // Log success for SOL pool creation
+  if (actualTokenAIsSOL || actualTokenBIsSOL) {
+    console.log('[createDexPool] ✅ Successfully created pool with SOL');
+    if (actualTokenAIsSOL) console.log('[createDexPool] Token A: SOL → wSOL');
+    if (actualTokenBIsSOL) console.log('[createDexPool] Token B: SOL → wSOL');
+    console.log('[createDexPool] Pool creation signature:', signature);
+  }
+  
   // Follow-up transaction 1: Create pool token ATAs (now poolState exists)
   const followUpInstructions1: TransactionInstruction[] = [];
   
@@ -3648,20 +3865,46 @@ export async function addDexLiquidity(params: AddLiquidityParams): Promise<strin
   const { connection, wallet } = params;
   const payer = wallet.publicKey!;
   
-  const tokenA = typeof params.tokenA === 'string' ? new PublicKey(params.tokenA) : params.tokenA;
-  const tokenB = typeof params.tokenB === 'string' ? new PublicKey(params.tokenB) : params.tokenB;
+  const originalTokenA = typeof params.tokenA === 'string' ? new PublicKey(params.tokenA) : params.tokenA;
+  const originalTokenB = typeof params.tokenB === 'string' ? new PublicKey(params.tokenB) : params.tokenB;
+  
+  // SOL HANDLING: Detect if SOL is selected and convert to wSOL mint
+  const originalTokenAIsSOL = isNativeSol(originalTokenA);
+  const originalTokenBIsSOL = isNativeSol(originalTokenB);
+  
+  // Convert SOL to wSOL mint for pool operations
+  let tokenA = originalTokenAIsSOL ? NATIVE_SOL_MINT : originalTokenA;
+  let tokenB = originalTokenBIsSOL ? NATIVE_SOL_MINT : originalTokenB;
+  
+  if (originalTokenAIsSOL) {
+    console.log('[addDexLiquidity] ⚡ Token A is SOL - using wSOL mint');
+  }
+  if (originalTokenBIsSOL) {
+    console.log('[addDexLiquidity] ⚡ Token B is SOL - using wSOL mint');
+  }
   
   // Ensure canonical order
-  const [tokenAMint, tokenBMint] = tokenA.toBuffer().compare(tokenB.toBuffer()) < 0
-    ? [tokenA, tokenB]
-    : [tokenB, tokenA];
+  const canonicalOrder = tokenA.toBuffer().compare(tokenB.toBuffer()) < 0;
+  const [tokenAMint, tokenBMint, actualTokenAIsSOL, actualTokenBIsSOL] = canonicalOrder
+    ? [tokenA, tokenB, originalTokenAIsSOL, originalTokenBIsSOL]
+    : [tokenB, tokenA, originalTokenBIsSOL, originalTokenAIsSOL];
   
-  const amountA = tokenA.toBuffer().compare(tokenB.toBuffer()) < 0 
-    ? params.amountA 
-    : params.amountB;
-  const amountB = tokenA.toBuffer().compare(tokenB.toBuffer()) < 0 
-    ? params.amountB 
-    : params.amountA;
+  const amountA = canonicalOrder ? params.amountA : params.amountB;
+  const amountB = canonicalOrder ? params.amountB : params.amountA;
+  
+  // Get wSOL accounts if needed (after canonical ordering)
+  let wsolTokenAccountA: PublicKey | null = null;
+  let wsolTokenAccountB: PublicKey | null = null;
+  
+  if (actualTokenAIsSOL) {
+    wsolTokenAccountA = await getWrappedSolAccount(payer);
+    console.log('[addDexLiquidity] wSOL token account A:', wsolTokenAccountA.toBase58());
+  }
+  
+  if (actualTokenBIsSOL) {
+    wsolTokenAccountB = await getWrappedSolAccount(payer);
+    console.log('[addDexLiquidity] wSOL token account B:', wsolTokenAccountB.toBase58());
+  }
   
   // Get pool state to check if it exists and get LP mint
   const poolState = deriveDexPoolState(tokenAMint, tokenBMint);
@@ -3693,32 +3936,37 @@ export async function addDexLiquidity(params: AddLiquidityParams): Promise<strin
     ASSOCIATED_TOKEN_PROGRAM_ID
   );
   
-  const userTokenAAccount = await getAssociatedTokenAddress(
-    tokenAMint,
-    payer,
-    false,
-    TOKEN_PROGRAM_ID,
-    ASSOCIATED_TOKEN_PROGRAM_ID
-  );
+  // If SOL was detected, use wSOL token account directly, otherwise derive ATA
+  const userTokenAAccount = (actualTokenAIsSOL && wsolTokenAccountA) 
+    ? wsolTokenAccountA // Use wSOL account if SOL
+    : await getAssociatedTokenAddress(
+        tokenAMint,
+        payer,
+        false,
+        TOKEN_PROGRAM_ID,
+        ASSOCIATED_TOKEN_PROGRAM_ID
+      );
   
   const poolTokenAAccount = await getAssociatedTokenAddress(
-    tokenAMint,
+    tokenAMint, // Will be wSOL mint if SOL was detected
     poolState,
     true, // allowOwnerOffCurve - poolState is a PDA
     TOKEN_PROGRAM_ID,
     ASSOCIATED_TOKEN_PROGRAM_ID
   );
   
-  const userTokenBAccount = await getAssociatedTokenAddress(
-    tokenBMint,
-    payer,
-    false,
-    TOKEN_PROGRAM_ID,
-    ASSOCIATED_TOKEN_PROGRAM_ID
-  );
+  const userTokenBAccount = (actualTokenBIsSOL && wsolTokenAccountB)
+    ? wsolTokenAccountB // Use wSOL account if SOL
+    : await getAssociatedTokenAddress(
+        tokenBMint,
+        payer,
+        false,
+        TOKEN_PROGRAM_ID,
+        ASSOCIATED_TOKEN_PROGRAM_ID
+      );
   
   const poolTokenBAccount = await getAssociatedTokenAddress(
-    tokenBMint,
+    tokenBMint, // Will be wSOL mint if SOL was detected
     poolState,
     true, // allowOwnerOffCurve - poolState is a PDA
     TOKEN_PROGRAM_ID,
@@ -3728,23 +3976,66 @@ export async function addDexLiquidity(params: AddLiquidityParams): Promise<strin
   // Build instruction
   const instructions: TransactionInstruction[] = [];
   
+  // SOL WRAPPING: Add wrap instructions BEFORE add liquidity if SOL is selected
+  // Use existing wSOL balance first, then wrap only what's needed
+  if (actualTokenAIsSOL && wsolTokenAccountA) {
+    console.log('[addDexLiquidity] 🔄 Checking wSOL balance for token A - will use existing wSOL first');
+    const balanceCheck = await checkWrappedSolBalance(connection, payer, amountA);
+    if (!balanceCheck.hasEnough) {
+      const wrapAmount = balanceCheck.needsWrap;
+      console.log('[addDexLiquidity] Existing wSOL A balance:', balanceCheck.currentBalance.toString(), 'lamports');
+      console.log('[addDexLiquidity] 💰 Wrapping', wrapAmount.toString(), 'additional lamports of SOL to wSOL for token A');
+      const wrapInstructions = await createWrapSolInstructions(
+        wsolTokenAccountA,
+        wrapAmount,
+        payer,
+        connection
+      );
+      instructions.push(...wrapInstructions);
+    } else {
+      console.log('[addDexLiquidity] ✅ Sufficient wSOL A balance - using existing wSOL');
+    }
+  }
+  
+  if (actualTokenBIsSOL && wsolTokenAccountB) {
+    console.log('[addDexLiquidity] 🔄 Checking wSOL balance for token B - will use existing wSOL first');
+    const balanceCheck = await checkWrappedSolBalance(connection, payer, amountB);
+    if (!balanceCheck.hasEnough) {
+      const wrapAmount = balanceCheck.needsWrap;
+      console.log('[addDexLiquidity] Existing wSOL B balance:', balanceCheck.currentBalance.toString(), 'lamports');
+      console.log('[addDexLiquidity] 💰 Wrapping', wrapAmount.toString(), 'additional lamports of SOL to wSOL for token B');
+      const wrapInstructions = await createWrapSolInstructions(
+        wsolTokenAccountB,
+        wrapAmount,
+        payer,
+        connection
+      );
+      instructions.push(...wrapInstructions);
+    } else {
+      console.log('[addDexLiquidity] ✅ Sufficient wSOL B balance - using existing wSOL');
+    }
+  }
+  
   // Ensure token accounts exist
+  // Note: If SOL was detected, wSOL account is already handled in wrap instructions above
   // Note: User token accounts should already exist from test setup, but check anyway
-  const userTokenAAccountInfo = await connection.getAccountInfo(userTokenAAccount, 'confirmed');
-  if (!userTokenAAccountInfo) {
-    console.log(`[addDexLiquidity] Creating user token A account for mint: ${tokenAMint.toBase58()}`);
-    instructions.push(
-      createAssociatedTokenAccountInstruction(
-        payer,
-        userTokenAAccount,
-        payer,
-        tokenAMint,
-        TOKEN_PROGRAM_ID,
-        ASSOCIATED_TOKEN_PROGRAM_ID
-      )
-    );
-  } else {
-    console.log(`[addDexLiquidity] User token A account exists: ${userTokenAAccount.toBase58()}`);
+  if (!actualTokenAIsSOL) {
+    const userTokenAAccountInfo = await connection.getAccountInfo(userTokenAAccount, 'confirmed');
+    if (!userTokenAAccountInfo) {
+      console.log(`[addDexLiquidity] Creating user token A account for mint: ${tokenAMint.toBase58()}`);
+      instructions.push(
+        createAssociatedTokenAccountInstruction(
+          payer,
+          userTokenAAccount,
+          payer,
+          tokenAMint,
+          TOKEN_PROGRAM_ID,
+          ASSOCIATED_TOKEN_PROGRAM_ID
+        )
+      );
+    } else {
+      console.log(`[addDexLiquidity] User token A account exists: ${userTokenAAccount.toBase58()}`);
+    }
   }
   
   // Pool token ATAs should already exist from pool creation follow-up transaction
@@ -3754,8 +4045,9 @@ export async function addDexLiquidity(params: AddLiquidityParams): Promise<strin
     throw new Error(`Pool token A account does not exist. Ensure pool was created properly. Expected: ${poolTokenAAccount.toBase58()}`);
   }
   
-  const userTokenBAccountInfo = await connection.getAccountInfo(userTokenBAccount, 'confirmed');
-  if (!userTokenBAccountInfo) {
+  if (!actualTokenBIsSOL) {
+    const userTokenBAccountInfo = await connection.getAccountInfo(userTokenBAccount, 'confirmed');
+    if (!userTokenBAccountInfo) {
     instructions.push(
       createAssociatedTokenAccountInstruction(
         payer,
@@ -3999,34 +4291,75 @@ export async function removeDexLiquidity(params: RemoveLiquidityParams): Promise
   );
   
   // Ensure user token accounts exist (for receiving output)
-  const instructions: TransactionInstruction[] = [];
+  // If SOL was detected, use wSOL token account (will receive wSOL from pool)
+  let wsolTokenAccountA: PublicKey | null = null;
+  let wsolTokenAccountB: PublicKey | null = null;
   
-  const userTokenAAccountInfo = await connection.getAccountInfo(userTokenAAccount, 'confirmed');
-  if (!userTokenAAccountInfo) {
-    instructions.push(
-      createAssociatedTokenAccountInstruction(
-        payer,
-        userTokenAAccount,
-        payer,
-        tokenAMint,
-        TOKEN_PROGRAM_ID,
-        ASSOCIATED_TOKEN_PROGRAM_ID
-      )
-    );
+  if (actualTokenAIsSOL) {
+    wsolTokenAccountA = await getWrappedSolAccount(payer);
+    console.log('[removeDexLiquidity] wSOL token account A:', wsolTokenAccountA.toBase58());
   }
   
-  const userTokenBAccountInfo = await connection.getAccountInfo(userTokenBAccount, 'confirmed');
-  if (!userTokenBAccountInfo) {
-    instructions.push(
-      createAssociatedTokenAccountInstruction(
+  if (actualTokenBIsSOL) {
+    wsolTokenAccountB = await getWrappedSolAccount(payer);
+    console.log('[removeDexLiquidity] wSOL token account B:', wsolTokenAccountB.toBase58());
+  }
+  
+  // If SOL was detected, use wSOL token account directly, otherwise derive ATA
+  const userTokenAAccount = (actualTokenAIsSOL && wsolTokenAccountA)
+    ? wsolTokenAccountA
+    : await getAssociatedTokenAddress(
+        tokenAMint,
         payer,
-        userTokenBAccount,
-        payer,
-        tokenBMint,
+        false,
         TOKEN_PROGRAM_ID,
         ASSOCIATED_TOKEN_PROGRAM_ID
-      )
-    );
+      );
+  
+  const userTokenBAccount = (actualTokenBIsSOL && wsolTokenAccountB)
+    ? wsolTokenAccountB
+    : await getAssociatedTokenAddress(
+        tokenBMint,
+        payer,
+        false,
+        TOKEN_PROGRAM_ID,
+        ASSOCIATED_TOKEN_PROGRAM_ID
+      );
+  
+  const instructions: TransactionInstruction[] = [];
+  
+  // If SOL was detected, wSOL account should already exist (created during pool creation/liquidity addition)
+  // For non-SOL tokens, create ATA if needed
+  if (!actualTokenAIsSOL) {
+    const userTokenAAccountInfo = await connection.getAccountInfo(userTokenAAccount, 'confirmed');
+    if (!userTokenAAccountInfo) {
+      instructions.push(
+        createAssociatedTokenAccountInstruction(
+          payer,
+          userTokenAAccount,
+          payer,
+          tokenAMint,
+          TOKEN_PROGRAM_ID,
+          ASSOCIATED_TOKEN_PROGRAM_ID
+        )
+      );
+    }
+  }
+  
+  if (!actualTokenBIsSOL) {
+    const userTokenBAccountInfo = await connection.getAccountInfo(userTokenBAccount, 'confirmed');
+    if (!userTokenBAccountInfo) {
+      instructions.push(
+        createAssociatedTokenAccountInstruction(
+          payer,
+          userTokenBAccount,
+          payer,
+          tokenBMint,
+          TOKEN_PROGRAM_ID,
+          ASSOCIATED_TOKEN_PROGRAM_ID
+        )
+      );
+    }
   }
   
   // Encode remove_liquidity instruction
@@ -4121,6 +4454,97 @@ export async function removeDexLiquidity(params: RemoveLiquidityParams): Promise
     latestBlockhash.lastValidBlockHeight
   );
   
+  // SOL UNWRAPPING: If removing SOL liquidity, unwrap wSOL to native SOL after removal
+  if (actualTokenAIsSOL && wsolTokenAccountA) {
+    console.log('[removeDexLiquidity] 🔄 Removing SOL liquidity complete, now unwrapping wSOL to native SOL for token A');
+    
+    try {
+      // Check if wSOL account has balance before unwrapping
+      const wsolBalance = await getWrappedSolBalance(connection, payer);
+      console.log('[removeDexLiquidity] wSOL A balance after removal:', wsolBalance.toString(), 'lamports');
+      
+      if (wsolBalance > 0n) {
+        // Create unwrap instruction
+        const unwrapInstruction = createUnwrapSolInstruction(
+          wsolTokenAccountA,
+          payer // Owner who will receive native SOL
+        );
+        
+        // Send unwrap transaction
+        const unwrapBlockhash = await connection.getLatestBlockhash('confirmed');
+        const unwrapTransaction = new Transaction().add(unwrapInstruction);
+        unwrapTransaction.feePayer = payer;
+        unwrapTransaction.recentBlockhash = unwrapBlockhash.blockhash;
+        
+        console.log('[removeDexLiquidity] 💰 Sending unwrap transaction to convert wSOL to native SOL for token A');
+        const unwrapSignature = await wallet.sendTransaction(unwrapTransaction, connection, {
+          skipPreflight: false
+        });
+        
+        await waitForSignatureConfirmation(
+          connection,
+          unwrapSignature,
+          unwrapBlockhash.blockhash,
+          unwrapBlockhash.lastValidBlockHeight
+        );
+        
+        console.log('[removeDexLiquidity] ✅ Successfully unwrapped wSOL to native SOL for token A');
+        console.log('[removeDexLiquidity] Unwrap signature:', unwrapSignature);
+      } else {
+        console.log('[removeDexLiquidity] ⚠️ wSOL A balance is 0, skipping unwrap');
+      }
+    } catch (unwrapError: any) {
+      console.error('[removeDexLiquidity] ❌ Failed to unwrap wSOL A to SOL:', unwrapError);
+      console.error('[removeDexLiquidity] ⚠️ Liquidity removal succeeded but unwrap failed - user has wSOL instead of SOL');
+      // Don't throw - liquidity removal succeeded, just unwrap failed
+    }
+  }
+  
+  if (actualTokenBIsSOL && wsolTokenAccountB) {
+    console.log('[removeDexLiquidity] 🔄 Removing SOL liquidity complete, now unwrapping wSOL to native SOL for token B');
+    
+    try {
+      // Check if wSOL account has balance before unwrapping
+      const wsolBalance = await getWrappedSolBalance(connection, payer);
+      console.log('[removeDexLiquidity] wSOL B balance after removal:', wsolBalance.toString(), 'lamports');
+      
+      if (wsolBalance > 0n) {
+        // Create unwrap instruction
+        const unwrapInstruction = createUnwrapSolInstruction(
+          wsolTokenAccountB,
+          payer // Owner who will receive native SOL
+        );
+        
+        // Send unwrap transaction
+        const unwrapBlockhash = await connection.getLatestBlockhash('confirmed');
+        const unwrapTransaction = new Transaction().add(unwrapInstruction);
+        unwrapTransaction.feePayer = payer;
+        unwrapTransaction.recentBlockhash = unwrapBlockhash.blockhash;
+        
+        console.log('[removeDexLiquidity] 💰 Sending unwrap transaction to convert wSOL to native SOL for token B');
+        const unwrapSignature = await wallet.sendTransaction(unwrapTransaction, connection, {
+          skipPreflight: false
+        });
+        
+        await waitForSignatureConfirmation(
+          connection,
+          unwrapSignature,
+          unwrapBlockhash.blockhash,
+          unwrapBlockhash.lastValidBlockHeight
+        );
+        
+        console.log('[removeDexLiquidity] ✅ Successfully unwrapped wSOL to native SOL for token B');
+        console.log('[removeDexLiquidity] Unwrap signature:', unwrapSignature);
+      } else {
+        console.log('[removeDexLiquidity] ⚠️ wSOL B balance is 0, skipping unwrap');
+      }
+    } catch (unwrapError: any) {
+      console.error('[removeDexLiquidity] ❌ Failed to unwrap wSOL B to SOL:', unwrapError);
+      console.error('[removeDexLiquidity] ⚠️ Liquidity removal succeeded but unwrap failed - user has wSOL instead of SOL');
+      // Don't throw - liquidity removal succeeded, just unwrap failed
+    }
+  }
+  
   return signature;
 }
 
@@ -4135,18 +4559,46 @@ export async function swapDex(params: SwapParams): Promise<string> {
   const { connection, wallet } = params;
   const payer = wallet.publicKey!;
   
-  const tokenA = typeof params.tokenA === 'string' ? new PublicKey(params.tokenA) : params.tokenA;
-  const tokenB = typeof params.tokenB === 'string' ? new PublicKey(params.tokenB) : params.tokenB;
+  const originalTokenA = typeof params.tokenA === 'string' ? new PublicKey(params.tokenA) : params.tokenA;
+  const originalTokenB = typeof params.tokenB === 'string' ? new PublicKey(params.tokenB) : params.tokenB;
+  
+  // SOL HANDLING: Detect if tokens are SOL (wSOL mint)
+  // Note: In pools, SOL is stored as wSOL (NATIVE_SOL_MINT), so we check for that
+  const originalTokenAIsSOL = isNativeSol(originalTokenA);
+  const originalTokenBIsSOL = isNativeSol(originalTokenB);
+  
+  // Convert SOL to wSOL mint for pool operations (pools use wSOL mint)
+  let tokenA = originalTokenAIsSOL ? NATIVE_SOL_MINT : originalTokenA;
+  let tokenB = originalTokenBIsSOL ? NATIVE_SOL_MINT : originalTokenB;
+  
+  if (originalTokenAIsSOL) {
+    console.log('[swapDex] ⚡ Token A is SOL - using wSOL mint');
+  }
+  if (originalTokenBIsSOL) {
+    console.log('[swapDex] ⚡ Token B is SOL - using wSOL mint');
+  }
   
   // Ensure canonical order
-  const [tokenAMint, tokenBMint] = tokenA.toBuffer().compare(tokenB.toBuffer()) < 0
-    ? [tokenA, tokenB]
-    : [tokenB, tokenA];
+  const canonicalOrder = tokenA.toBuffer().compare(tokenB.toBuffer()) < 0;
+  const [tokenAMint, tokenBMint] = canonicalOrder ? [tokenA, tokenB] : [tokenB, tokenA];
   
   // Determine which direction we're swapping
   // If params.aToB is true and tokenA < tokenB, we're swapping A -> B
   // If params.aToB is true and tokenA > tokenB, we're swapping B -> A (so aToB should be false)
-  const actualAToB = (tokenA.toBuffer().compare(tokenB.toBuffer()) < 0) === params.aToB;
+  const actualAToB = canonicalOrder === params.aToB;
+  
+  // Determine if input/output are SOL (after canonical ordering)
+  const inputIsOriginalA = (actualAToB && canonicalOrder) || (!actualAToB && !canonicalOrder);
+  const outputIsOriginalA = (actualAToB && !canonicalOrder) || (!actualAToB && canonicalOrder);
+  const tokenInIsSOL = inputIsOriginalA ? originalTokenAIsSOL : originalTokenBIsSOL;
+  const tokenOutIsSOL = outputIsOriginalA ? originalTokenAIsSOL : originalTokenBIsSOL;
+  
+  if (tokenInIsSOL) {
+    console.log('[swapDex] ⚡ Input token is SOL - will wrap to wSOL before swap');
+  }
+  if (tokenOutIsSOL) {
+    console.log('[swapDex] ⚡ Output token is SOL - will unwrap wSOL to SOL after swap');
+  }
   
   // Get pool state
   const poolState = deriveDexPoolState(tokenAMint, tokenBMint);
@@ -4161,33 +4613,52 @@ export async function swapDex(params: SwapParams): Promise<string> {
   const tokenInIsZtoken = actualAToB ? poolStateData.tokenAIsZtoken : poolStateData.tokenBIsZtoken;
   const tokenOutIsZtoken = actualAToB ? poolStateData.tokenBIsZtoken : poolStateData.tokenAIsZtoken;
   
+  // Get wSOL accounts if needed
+  let wsolTokenAccountIn: PublicKey | null = null;
+  let wsolTokenAccountOut: PublicKey | null = null;
+  
+  if (tokenInIsSOL) {
+    wsolTokenAccountIn = await getWrappedSolAccount(payer);
+    console.log('[swapDex] wSOL token account for input:', wsolTokenAccountIn.toBase58());
+  }
+  
+  if (tokenOutIsSOL) {
+    wsolTokenAccountOut = await getWrappedSolAccount(payer);
+    console.log('[swapDex] wSOL token account for output:', wsolTokenAccountOut.toBase58());
+  }
+  
   // Get token accounts
-  const userTokenInAccount = await getAssociatedTokenAddress(
-    tokenInMint,
-    payer,
-    false,
-    TOKEN_PROGRAM_ID,
-    ASSOCIATED_TOKEN_PROGRAM_ID
-  );
+  // If SOL was detected, use wSOL token account directly, otherwise derive ATA
+  const userTokenInAccount = (tokenInIsSOL && wsolTokenAccountIn)
+    ? wsolTokenAccountIn // Use wSOL account if SOL input
+    : await getAssociatedTokenAddress(
+        tokenInMint,
+        payer,
+        false,
+        TOKEN_PROGRAM_ID,
+        ASSOCIATED_TOKEN_PROGRAM_ID
+      );
   
   const poolTokenInAccount = await getAssociatedTokenAddress(
-    tokenInMint,
+    tokenInMint, // Will be wSOL mint if SOL was detected
     poolState,
     true, // allowOwnerOffCurve - poolState is a PDA
     TOKEN_PROGRAM_ID,
     ASSOCIATED_TOKEN_PROGRAM_ID
   );
   
-  const userTokenOutAccount = await getAssociatedTokenAddress(
-    tokenOutMint,
-    payer,
-    false,
-    TOKEN_PROGRAM_ID,
-    ASSOCIATED_TOKEN_PROGRAM_ID
-  );
+  const userTokenOutAccount = (tokenOutIsSOL && wsolTokenAccountOut)
+    ? wsolTokenAccountOut // Use wSOL account if SOL output
+    : await getAssociatedTokenAddress(
+        tokenOutMint,
+        payer,
+        false,
+        TOKEN_PROGRAM_ID,
+        ASSOCIATED_TOKEN_PROGRAM_ID
+      );
   
   const poolTokenOutAccount = await getAssociatedTokenAddress(
-    tokenOutMint,
+    tokenOutMint, // Will be wSOL mint if SOL was detected
     poolState,
     true, // allowOwnerOffCurve - poolState is a PDA
     TOKEN_PROGRAM_ID,
@@ -4197,8 +4668,30 @@ export async function swapDex(params: SwapParams): Promise<string> {
   // Build instruction
   const instructions: TransactionInstruction[] = [];
   
+  // SOL WRAPPING: Add wrap instructions BEFORE swap if input is SOL
+  // Use existing wSOL balance first, then wrap only what's needed
+  if (tokenInIsSOL && wsolTokenAccountIn) {
+    console.log('[swapDex] 🔄 Checking wSOL balance for input - will use existing wSOL first');
+    const balanceCheck = await checkWrappedSolBalance(connection, payer, params.amountIn);
+    if (!balanceCheck.hasEnough) {
+      const wrapAmount = balanceCheck.needsWrap;
+      console.log('[swapDex] Existing wSOL input balance:', balanceCheck.currentBalance.toString(), 'lamports');
+      console.log('[swapDex] 💰 Wrapping', wrapAmount.toString(), 'additional lamports of SOL to wSOL for input');
+      const wrapInstructions = await createWrapSolInstructions(
+        wsolTokenAccountIn,
+        wrapAmount,
+        payer,
+        connection
+      );
+      instructions.push(...wrapInstructions);
+    } else {
+      console.log('[swapDex] ✅ Sufficient wSOL input balance - using existing wSOL');
+    }
+  }
+  
   // Ensure output token account exists (for public tokens only)
-  if (!tokenOutIsZtoken) {
+  // If SOL output, wSOL account should already exist (created during pool creation/liquidity addition)
+  if (!tokenOutIsZtoken && !tokenOutIsSOL) {
     const userTokenOutAccountInfo = await connection.getAccountInfo(userTokenOutAccount, 'confirmed');
     if (!userTokenOutAccountInfo) {
       instructions.push(
@@ -4359,6 +4852,56 @@ export async function swapDex(params: SwapParams): Promise<string> {
     latestBlockhash.blockhash,
     latestBlockhash.lastValidBlockHeight
   );
+  
+  // SOL UNWRAPPING: If output is SOL, unwrap wSOL to native SOL after swap
+  if (tokenOutIsSOL && wsolTokenAccountOut) {
+    console.log('[swapDex] 🔄 Swap complete, now unwrapping wSOL to native SOL for output');
+    
+    try {
+      // Check if wSOL account has balance before unwrapping
+      const wsolBalance = await getWrappedSolBalance(connection, payer);
+      console.log('[swapDex] wSOL output balance after swap:', wsolBalance.toString(), 'lamports');
+      
+      if (wsolBalance > 0n) {
+        // Create unwrap instruction
+        const unwrapInstruction = createUnwrapSolInstruction(
+          wsolTokenAccountOut,
+          payer // Owner who will receive native SOL
+        );
+        
+        // Send unwrap transaction
+        const unwrapBlockhash = await connection.getLatestBlockhash('confirmed');
+        const unwrapTransaction = new Transaction().add(unwrapInstruction);
+        unwrapTransaction.feePayer = payer;
+        unwrapTransaction.recentBlockhash = unwrapBlockhash.blockhash;
+        
+        console.log('[swapDex] 💰 Sending unwrap transaction to convert wSOL to native SOL');
+        const unwrapSignature = await wallet.sendTransaction(unwrapTransaction, connection, {
+          skipPreflight: false
+        });
+        
+        await waitForSignatureConfirmation(
+          connection,
+          unwrapSignature,
+          unwrapBlockhash.blockhash,
+          unwrapBlockhash.lastValidBlockHeight
+        );
+        
+        console.log('[swapDex] ✅ Successfully unwrapped wSOL to native SOL');
+        console.log('[swapDex] ✅ Complete flow: SOL → wSOL → swap → wSOL → SOL');
+        console.log('[swapDex] Unwrap signature:', unwrapSignature);
+        
+        return unwrapSignature; // Return unwrap signature as it's the final transaction
+      } else {
+        console.log('[swapDex] ⚠️ wSOL output balance is 0, skipping unwrap');
+      }
+    } catch (unwrapError: any) {
+      console.error('[swapDex] ❌ Failed to unwrap wSOL to SOL:', unwrapError);
+      console.error('[swapDex] ⚠️ Swap succeeded but unwrap failed - user has wSOL instead of SOL');
+      // Don't throw - swap succeeded, just unwrap failed
+      // User will have wSOL instead of SOL, but the swap was successful
+    }
+  }
   
   return signature;
 }

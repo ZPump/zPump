@@ -49,6 +49,11 @@ import {
   getTokenMetadata,
   MINT_STATUS
 } from '../../lib/sdk';
+import {
+  NATIVE_SOL_MINT,
+  isNativeSol,
+  getWrappedSolBalance
+} from '../../lib/solWrapping';
 import { IndexerClient, IndexerNote } from '../../lib/indexerClient';
 import { getCachedRoots, setCachedRoots, getCachedNullifiers, setCachedNullifiers } from '../../lib/indexerCache';
 import { poseidonHashMany } from '../../lib/onchain/poseidon';
@@ -429,6 +434,36 @@ export function ConvertForm() {
     const buildOptions = async (publicBalances: Map<string, bigint>, privateBalances: Map<string, bigint>, mintsToUse: Map<string, { symbol: string; decimals: number; name?: string; image?: string }> = customMints, metadataMap: Record<string, { name: string; symbol: string; image?: string }> = currentMetadataMap, zTokenToOriginMap: Map<string, { originMint: string; decimals: number; symbol: string }> = new Map()) => {
       const walletConnected = Boolean(walletKey);
       const options: TokenOption[] = [];
+      
+      // Add SOL as first option (if user owns SOL)
+      if (walletKey) {
+        try {
+          const nativeSolBalance = await connection.getBalance(walletKey);
+          const wsolBalance = await getWrappedSolBalance(connection, walletKey);
+          const totalSolBalance = nativeSolBalance + wsolBalance;
+          
+          if (totalSolBalance > 0n || true) { // Always show SOL option, even with 0 balance
+            const solDisplay = formatBaseUnitsToUi(totalSolBalance, 9); // SOL has 9 decimals
+            options.push({
+              originMint: NATIVE_SOL_MINT.toBase58(),
+              variant: 'public',
+              label: `SOL (SOL) — ${solDisplay}`,
+              balance: totalSolBalance,
+              displayBalance: solDisplay,
+              symbol: 'SOL',
+              name: 'Solana',
+              decimals: 9,
+              disabled: !walletConnected,
+              zTokenMint: undefined,
+              isFrozen: false,
+              isOwned: totalSolBalance > 0n
+            });
+            console.log('[convert-form] Added SOL option', { balance: totalSolBalance.toString(), native: nativeSolBalance.toString(), wsol: wsolBalance.toString() });
+          }
+        } catch (error) {
+          console.warn('[convert-form] Failed to fetch SOL balance:', error);
+        }
+      }
       
       // Add custom mints (pasted mints and auto-detected wallet tokens)
       mintsToUse.forEach((customMint, mintAddress) => {

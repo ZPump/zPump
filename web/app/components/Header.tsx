@@ -25,6 +25,9 @@ export function Header() {
           <Link as={NextLink} href="/convert" _hover={{ color: 'brand.200' }}>
             Convert
           </Link>
+          <Link as={NextLink} href="/dex" _hover={{ color: 'brand.200' }}>
+            DEX
+          </Link>
           <Link as={NextLink} href="/mint-ztoken" _hover={{ color: 'brand.200' }}>
             Mint Token
           </Link>
@@ -56,6 +59,9 @@ export function Header() {
           </Link>
           <Link as={NextLink} href="/convert" _hover={{ color: 'brand.200' }}>
             Convert
+          </Link>
+          <Link as={NextLink} href="/dex" _hover={{ color: 'brand.200' }}>
+            DEX
           </Link>
           <Link as={NextLink} href="/mint-ztoken" _hover={{ color: 'brand.200' }}>
             Mint Token

@@ -80,6 +80,7 @@ import { useLocalWallet } from './LocalWalletContext';
 import { formatBaseUnitsToUi } from '../../lib/format';
 import { IndexerClient } from '../../lib/indexerClient';
 import { useMintCatalog } from '../providers/MintCatalogProvider';
+import { getWrappedSolBalance, NATIVE_SOL_MINT } from '../../lib/solWrapping';
 import {
   fetchWalletActivity,
   subscribeToWalletActivity,
@@ -361,6 +362,8 @@ function WalletDrawerContent({ disclosure }: { disclosure: ReturnType<typeof use
   const [activityLog, setActivityLog] = useState<WalletActivityEntry[]>([]);
   const [solBalance, setSolBalance] = useState<number>(0);
   const [solLamports, setSolLamports] = useState<number>(0);
+  const [wsolBalance, setWsolBalance] = useState<number>(0);
+  const [wsolLamports, setWsolLamports] = useState<bigint>(0n);
   const [loadingBalances, setLoadingBalances] = useBoolean(false);
   const [loadingTransactions, setLoadingTransactions] = useBoolean(false);
   const [tokenMetadata, setTokenMetadata] = useState<Record<string, { name: string; symbol: string; image?: string }>>({});
@@ -613,19 +616,23 @@ function WalletDrawerContent({ disclosure }: { disclosure: ReturnType<typeof use
       }
 
       try {
-        const [lamports, tokenAccountsLegacy, tokenAccounts2022] = await Promise.all([
+        const [lamports, wsolLamports, tokenAccountsLegacy, tokenAccounts2022] = await Promise.all([
           connection.getBalance(publicKey),
+          getWrappedSolBalance(connection, publicKey),
           connection.getParsedTokenAccountsByOwner(publicKey, { programId: TOKEN_PROGRAM_ID }),
           connection.getParsedTokenAccountsByOwner(publicKey, { programId: TOKEN_2022_PROGRAM_ID })
         ]);
 
-        console.info('[wallet drawer] refreshed SOL balance', {
+        console.info('[wallet drawer] refreshed SOL and wSOL balances', {
           account: activeAccount.publicKey,
-          lamports,
+          solLamports: lamports,
+          wsolLamports: wsolLamports.toString(),
           endpoint: connection.rpcEndpoint
         });
         setSolLamports(lamports);
         setSolBalance(lamports / LAMPORTS_PER_SOL);
+        setWsolLamports(wsolLamports);
+        setWsolBalance(Number(wsolLamports) / LAMPORTS_PER_SOL);
 
         const combinedAccounts = [
           ...tokenAccountsLegacy.value.map((entry) => ({ entry, program: 'token' as const })),
@@ -650,7 +657,7 @@ function WalletDrawerContent({ disclosure }: { disclosure: ReturnType<typeof use
               program
             };
           })
-          .filter((entry) => entry.amount > 0);
+          .filter((entry) => entry.amount > 0 && entry.mint !== NATIVE_SOL_MINT.toBase58()); // Filter out wSOL - we show it separately
 
         setBalances(rows);
         
@@ -1259,8 +1266,42 @@ function WalletDrawerContent({ disclosure }: { disclosure: ReturnType<typeof use
                         Send
                       </Button>
                     </Flex>
+                    {wsolBalance > 0 && (
+                      <Flex align="center" justify="space-between" gap={4} wrap="wrap">
+                        <Stack spacing={1}>
+                          <Text color="whiteAlpha.700" fontSize="sm">
+                            wSOL (Wrapped SOL)
+                          </Text>
+                          <Text fontSize="2xl" fontWeight="semibold">
+                            {wsolBalance.toLocaleString()}
+                          </Text>
+                        </Stack>
+                        <Button
+                          size="sm"
+                          colorScheme="brand"
+                          variant="outline"
+                          onClick={() =>
+                            openSendDialog({
+                              kind: 'spl',
+                              mint: NATIVE_SOL_MINT.toBase58(),
+                              symbol: 'wSOL',
+                              decimals: 9,
+                              availableDisplay: `${wsolBalance.toLocaleString()} wSOL`,
+                              availableUiAmount: wsolBalance.toString(),
+                              availableAmount: wsolLamports,
+                              isPrivate: false
+                            })
+                          }
+                          isDisabled={!activeAccount}
+                        >
+                          Send
+                        </Button>
+                      </Flex>
+                    )}
                     <SimpleGrid columns={1} spacing={3}>
-                      {balances.map((token) => {
+                      {balances
+                        .filter((token) => token.mint !== NATIVE_SOL_MINT.toBase58()) // Filter out wSOL - we show it separately
+                        .map((token) => {
                         const metadata = tokenMetadata[token.mint];
                         const displayName = metadata?.name ?? token.symbol;
                         const displaySymbol = metadata?.symbol ?? token.symbol;
