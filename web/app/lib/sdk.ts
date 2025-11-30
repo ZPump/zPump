@@ -4048,16 +4048,17 @@ export async function addDexLiquidity(params: AddLiquidityParams): Promise<strin
   if (!actualTokenBIsSOL) {
     const userTokenBAccountInfo = await connection.getAccountInfo(userTokenBAccount, 'confirmed');
     if (!userTokenBAccountInfo) {
-    instructions.push(
-      createAssociatedTokenAccountInstruction(
-        payer,
-        userTokenBAccount,
-        payer,
-        tokenBMint,
-        TOKEN_PROGRAM_ID,
-        ASSOCIATED_TOKEN_PROGRAM_ID
-      )
-    );
+      instructions.push(
+        createAssociatedTokenAccountInstruction(
+          payer,
+          userTokenBAccount,
+          payer,
+          tokenBMint,
+          TOKEN_PROGRAM_ID,
+          ASSOCIATED_TOKEN_PROGRAM_ID
+        )
+      );
+    }
   }
   
   // Pool token B ATA should already exist
@@ -4230,6 +4231,17 @@ export async function removeDexLiquidity(params: RemoveLiquidityParams): Promise
     ? params.minAmountB 
     : params.minAmountA;
   
+  // Detect if tokens are native SOL (wSOL)
+  const actualTokenAIsSOL = isNativeSol(tokenAMint);
+  const actualTokenBIsSOL = isNativeSol(tokenBMint);
+  
+  if (actualTokenAIsSOL) {
+    console.log('[removeDexLiquidity] Token A is native SOL, will use wSOL');
+  }
+  if (actualTokenBIsSOL) {
+    console.log('[removeDexLiquidity] Token B is native SOL, will use wSOL');
+  }
+  
   // Get pool state
   const poolState = deriveDexPoolState(tokenAMint, tokenBMint);
   const poolStateData = await getDexPoolState(connection, tokenAMint, tokenBMint);
@@ -4258,26 +4270,10 @@ export async function removeDexLiquidity(params: RemoveLiquidityParams): Promise
     ASSOCIATED_TOKEN_PROGRAM_ID
   );
   
-  const userTokenAAccount = await getAssociatedTokenAddress(
-    tokenAMint,
-    payer,
-    false,
-    TOKEN_PROGRAM_ID,
-    ASSOCIATED_TOKEN_PROGRAM_ID
-  );
-  
   const poolTokenAAccount = await getAssociatedTokenAddress(
     tokenAMint,
     poolState,
     true, // allowOwnerOffCurve - poolState is a PDA
-    TOKEN_PROGRAM_ID,
-    ASSOCIATED_TOKEN_PROGRAM_ID
-  );
-  
-  const userTokenBAccount = await getAssociatedTokenAddress(
-    tokenBMint,
-    payer,
-    false,
     TOKEN_PROGRAM_ID,
     ASSOCIATED_TOKEN_PROGRAM_ID
   );

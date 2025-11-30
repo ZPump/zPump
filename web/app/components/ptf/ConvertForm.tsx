@@ -440,7 +440,7 @@ export function ConvertForm() {
         try {
           const nativeSolBalance = await connection.getBalance(walletKey);
           const wsolBalance = await getWrappedSolBalance(connection, walletKey);
-          const totalSolBalance = nativeSolBalance + wsolBalance;
+          const totalSolBalance = BigInt(nativeSolBalance) + wsolBalance;
           
           if (totalSolBalance > 0n || true) { // Always show SOL option, even with 0 balance
             const solDisplay = formatBaseUnitsToUi(totalSolBalance, 9); // SOL has 9 decimals
