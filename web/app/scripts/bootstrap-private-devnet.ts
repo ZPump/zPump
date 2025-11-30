@@ -25,6 +25,7 @@ import {
   createInitializeMintInstruction,
   createMintToInstruction,
   getAssociatedTokenAddress,
+  NATIVE_MINT,
   TOKEN_2022_PROGRAM_ID,
   TOKEN_PROGRAM_ID
 } from '@solana/spl-token';
@@ -1567,6 +1568,64 @@ export async function bootstrapPrivateDevnet() {
   const raw = await fs.readFile(mintsPath, 'utf8');
   const mintCatalog = JSON.parse(raw) as GeneratedMint[];
   const updated: GeneratedMint[] = [];
+
+  // Ensure wSOL (native SOL mint) is registered
+  const wsolMintMapping = PublicKey.findProgramAddressSync(
+    [Buffer.from('map'), NATIVE_MINT.toBuffer()],
+    PROGRAM_IDS.factory
+  )[0];
+  
+  const wsolMappingInfo = await ctx.provider.connection.getAccountInfo(wsolMintMapping, 'confirmed');
+  const wsolAlreadyRegistered = wsolMappingInfo && wsolMappingInfo.owner.equals(PROGRAM_IDS.factory);
+  
+  if (!wsolAlreadyRegistered) {
+    console.log('[bootstrap] Registering wSOL (native SOL mint) in factory...');
+    try {
+      // Get wSOL mint info to verify decimals
+      const wsolMintInfo = await ctx.provider.connection.getAccountInfo(NATIVE_MINT, 'confirmed');
+      if (!wsolMintInfo) {
+        console.warn('[bootstrap] wSOL mint account not found on-chain, skipping registration');
+      } else {
+        // wSOL has 9 decimals
+        const wsolDecimals = 9;
+        const factoryState = PublicKey.findProgramAddressSync(
+          [Buffer.from('factory'), PROGRAM_IDS.factory.toBuffer()],
+          PROGRAM_IDS.factory
+        )[0];
+        
+        await sendInstruction(
+          ctx,
+          ctx.idls.factory,
+          ctx.coders.factory,
+          PROGRAM_IDS.factory,
+          'register_mint',
+          {
+            factory_state: factoryState,
+            authority: ctx.payer.publicKey,
+            mint_mapping: wsolMintMapping,
+            origin_mint: NATIVE_MINT,
+            payer: ctx.payer.publicKey,
+            ptkn_mint: null,
+            token_program: TOKEN_PROGRAM_ID,
+            rent: SYSVAR_RENT_PUBKEY,
+            system_program: SystemProgram.programId
+          },
+          {
+            decimals: wsolDecimals,
+            enable_ptkn: false,
+            feature_flags: null,
+            fee_bps_override: null
+          }
+        );
+        console.log('[bootstrap] ✓ Registered wSOL in factory');
+      }
+    } catch (error) {
+      console.warn('[bootstrap] Failed to register wSOL:', (error as Error).message);
+      // Continue with other mints even if wSOL registration fails
+    }
+  } else {
+    console.log('[bootstrap] wSOL already registered in factory');
+  }
 
   for (const entry of mintCatalog) {
     const refreshed = await ensureMint(ctx, entry, shieldVerifyingKey);

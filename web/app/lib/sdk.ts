@@ -349,7 +349,15 @@ export async function fetchMintMappingAccount(
   const key = deriveMintMapping(originMint);
   const account = await connection.getAccountInfo(key, 'confirmed');
   if (!account) {
-    throw new Error('Mint mapping account missing on chain');
+    // Check if this is wSOL (native SOL mint) and provide a helpful error message
+    if (isNativeSol(originMint)) {
+      throw new Error(
+        'wSOL (Wrapped SOL) mint mapping is not registered in the mint catalog. ' +
+        'Please register wSOL by running the bootstrap script or contact the administrator. ' +
+        'The native SOL mint address is: So11111111111111111111111111111111111111112'
+      );
+    }
+    throw new Error(`Mint mapping account missing on chain for mint: ${originMint.toBase58()}`);
   }
   
   // Decode MintMapping account
