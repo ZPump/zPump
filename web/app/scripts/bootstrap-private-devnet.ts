@@ -1593,23 +1593,28 @@ export async function bootstrapPrivateDevnet() {
           PROGRAM_IDS.factory
         )[0];
         
+        // Register wSOL just like any other SPL token
+        // wSOL is owned by TOKEN_PROGRAM_ID (standard token program)
+        // Since enable_ptkn is false, token_program is not needed (it's optional)
+        // The factory validates the mint owner directly in the instruction
+        const registerAccounts: Record<string, PublicKey> = {
+          factory_state: factoryState,
+          authority: ctx.payer.publicKey,
+          mint_mapping: wsolMintMapping,
+          origin_mint: NATIVE_MINT,
+          payer: ctx.payer.publicKey,
+          rent: SYSVAR_RENT_PUBKEY,
+          system_program: SystemProgram.programId
+          // token_program is optional and only needed for ptkn mint creation
+        };
+        
         await sendInstruction(
           ctx,
           ctx.idls.factory,
           ctx.coders.factory,
           PROGRAM_IDS.factory,
           'register_mint',
-          {
-            factory_state: factoryState,
-            authority: ctx.payer.publicKey,
-            mint_mapping: wsolMintMapping,
-            origin_mint: NATIVE_MINT,
-            payer: ctx.payer.publicKey,
-            ptkn_mint: null,
-            token_program: TOKEN_PROGRAM_ID,
-            rent: SYSVAR_RENT_PUBKEY,
-            system_program: SystemProgram.programId
-          },
+          registerAccounts,
           {
             decimals: wsolDecimals,
             enable_ptkn: false,
