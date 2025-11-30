@@ -22,5 +22,701 @@
       "wrappedTransfers": false
     },
     "lookupTable": "14VM4ycwKsvSF3EtRLE8pUtxY5UVb36ay22Tfw3ndmBL"
+  },
+  {
+    "symbol": "DXA633",
+    "decimals": 6,
+    "originMint": "DpVVBEzxDXuHkE68a1h7ky3MTuzcKuEDCyFosfykPVPz",
+    "poolId": "FMCrzBTvZwUDMwggazupe476ksq9Hw1NqiCv5DgTWNMD",
+    "zTokenMint": "EzMTCysZXdjjHDurUcbw3DrgBLDV3SS6TgZach9LiYVo",
+    "features": {
+      "zTokenEnabled": true,
+      "wrappedTransfers": false
+    },
+    "lookupTable": "4ewZDSA1agkBBPPh7cNcCu6LLmrbfxwsmjyJEqQ36DiU"
+  },
+  {
+    "symbol": "DXB633",
+    "decimals": 6,
+    "originMint": "7w4Ws8kn8jBkNd5MPkeWVS2zSANpgwvot6MWyGcMTHaG",
+    "poolId": "5mc617ZtEc4P8n1Yq3yXbBPEEcBf9VeuovvThxbYB3db",
+    "zTokenMint": "Hbvn35JWNgnp7BXbq4G9wrAmsx6NdhzuuJmYc64BtRSw",
+    "features": {
+      "zTokenEnabled": true,
+      "wrappedTransfers": false
+    },
+    "lookupTable": "Ewtyiy3Hjf2EzkcMKQJLfdocb7e863P965TppXBPH6Zy"
+  },
+  {
+    "symbol": "DXA071",
+    "decimals": 6,
+    "originMint": "3Z1m66fSzkTBBBi3Ryoi2Ki2JEGU91ZkbGviAkf9AbK5",
+    "poolId": "FDqkg7Zdh56pwApR4EosXj9URhYCt6euBnwpafm6msxj",
+    "zTokenMint": "4v4hbTQkQ2ZVuhopuD8k1PV3W76i4C31JzzmBHDJSuYF",
+    "features": {
+      "zTokenEnabled": true,
+      "wrappedTransfers": false
+    },
+    "lookupTable": "HnPq9YQCnwtfV16dJUhQozu12XgnPz6JrdxXeGgdSu6D"
+  },
+  {
+    "symbol": "DXB071",
+    "decimals": 6,
+    "originMint": "3pMoFt57JSNefCGXeW2RhwDvApw1ZGZfEH4SR8pYQhuy",
+    "poolId": "68UBfXmoncr4VhACGu2vkcjNZ7KUQzSFUM5m3ppp9xqz",
+    "zTokenMint": "BUraWA6bYjHw69Gvfmcc1yk3xNZnM5uigz7wd7d6Zo5j",
+    "features": {
+      "zTokenEnabled": true,
+      "wrappedTransfers": false
+    },
+    "lookupTable": "D96AcPV5XSBX7m5hLFg3mRjiBTWcUvH2UspdthADeoHh"
+  },
+  {
+    "symbol": "DXA646",
+    "decimals": 6,
+    "originMint": "H7iBfSevZpLRg7nudMwYdZ26w4uRhjZCBvvKbL3DWJ4N",
+    "poolId": "etbm1zJQ8j4gYd1wFkXpxr1UcmBW6jjLtWQbuC9LWhZ",
+    "zTokenMint": "5fneeeciXGk8AbEdCgNJqi6Ktz6RSgmiyxpy8ykLkR8z",
+    "features": {
+      "zTokenEnabled": true,
+      "wrappedTransfers": false
+    },
+    "lookupTable": "9trAAun78ECDwJbx1qGLqhuJBgMu2TbKkWJhaisqi75f"
+  },
+  {
+    "symbol": "DXB646",
+    "decimals": 6,
+    "originMint": "AmHhwjjvyn5d4qSKvhPxZvF5k345mTQ4v3FxaB3tR1pD",
+    "poolId": "ET2CPPW49PK8ywqxo1NceMffTvoR3ze9Nrr6edysKMs",
+    "zTokenMint": "BqE9wU9EmogaFAmQUSSTS6BEhemVHZPm7R3ijQq8gvUo",
+    "features": {
+      "zTokenEnabled": true,
+      "wrappedTransfers": false
+    },
+    "lookupTable": "8ob2utUNvDrjaCCJdkULe9agK23JkVynk9v1UZuMPitb"
+  },
+  {
+    "symbol": "DXA164",
+    "decimals": 6,
+    "originMint": "6xWoomoaix5Xn3Upn5B8VhJiWfYPk5vacxgghAb2UbSP",
+    "poolId": "B1Po2Ngq8hh6mt4daVxFvL5GfEsWJsgW18n3FsiyggVH",
+    "zTokenMint": "DJYHrjoAe4A2Bu6e9vtvACXMMWDTYuryUtL3EFTYAbW",
+    "features": {
+      "zTokenEnabled": true,
+      "wrappedTransfers": false
+    },
+    "lookupTable": "5U9Y2YYT1xhJHmQznBzeaDAYQV63u73rLKuSxPNPeydj"
+  },
+  {
+    "symbol": "DXB164",
+    "decimals": 6,
+    "originMint": "5srqpBnLH5ViwDSmftiH916fDV9rAeF7a54i9x4gc4GF",
+    "poolId": "Cx3uAB23SPqHXUNf2KUqTuUeLPZRHg5GekPpEXnoLW9e",
+    "zTokenMint": "3HNjLk2JCpWqXCd7kjHLHy34AGpAgp3deBM5rLgzWCPZ",
+    "features": {
+      "zTokenEnabled": true,
+      "wrappedTransfers": false
+    },
+    "lookupTable": "6xyPsV2LV1aU6vA3YCm2FUGMXEzYH5RKxuBa4JqVxAU1"
+  },
+  {
+    "symbol": "DXA685",
+    "decimals": 6,
+    "originMint": "9YjeGniTiv9Qk4CktemPFGmm7XVeWQgv75bbKgaLXbp6",
+    "poolId": "AmLg34EJKrBEQDQLF969SG7yPZzUUNbkDD1XyHbXTpfT",
+    "zTokenMint": "CGN2k17Qqmk4aMFGSi7q9UerTeb3LQtBsCfVgCLQmvzB",
+    "features": {
+      "zTokenEnabled": true,
+      "wrappedTransfers": false
+    },
+    "lookupTable": "EwycmUJY7FZpvGxtPmwLPkcDEdyozctxbcdiC8E7j8Sh"
+  },
+  {
+    "symbol": "DXB685",
+    "decimals": 6,
+    "originMint": "43uc89G3k3k8bs2ysNxKrxFzAzTNTv1LQw3rPjMHV1Es",
+    "poolId": "Cipc7Hg8buRPb36E8dH4T9LPg7LWQVsoB2BnMTUuyT9C",
+    "zTokenMint": "A7tF6b7tHdLwKosfqaP2CkoSY5jaPB91YQBg5EBRaaJf",
+    "features": {
+      "zTokenEnabled": true,
+      "wrappedTransfers": false
+    },
+    "lookupTable": "EE7CVRKyuPkDsYWKAynqoSuy65URSDejpcA3oGU1oZQJ"
+  },
+  {
+    "symbol": "DXA208",
+    "decimals": 6,
+    "originMint": "ATzvpfBNphJXyw8r1yQ5skcF9BvmhnLkR8Aw1yaW3Qwa",
+    "poolId": "7WXEJPAVX3Qo7HFmZN5yTpbbew6MWobPu96ouCXNPeyG",
+    "zTokenMint": "DfKazuakmXxpySGGAhLo1oXqwfY9B2zV1mAGLuaBEWvC",
+    "features": {
+      "zTokenEnabled": true,
+      "wrappedTransfers": false
+    },
+    "lookupTable": "9v8Z89a56LdigECedq7adhWqEjmKDjmXYZerthoR6tjw"
+  },
+  {
+    "symbol": "DXB208",
+    "decimals": 6,
+    "originMint": "9U94nQbazZqnQdoqVfETmSoarDx4ZwB5S2Nchikmckxh",
+    "poolId": "BoXoMg4ti1o819MDCL1bKyiKxs56LDJs3o4ChVKtUkQV",
+    "zTokenMint": "GWDDC2roX7SwdPpxGN1hiPJFWeeHvgrEzWTihxy1wrXa",
+    "features": {
+      "zTokenEnabled": true,
+      "wrappedTransfers": false
+    },
+    "lookupTable": "DrwrrMnc4SpPPtiKo36Z6M4QBQUoDZrDevPxxYWYjWRP"
+  },
+  {
+    "symbol": "DXA425",
+    "decimals": 6,
+    "originMint": "FhrermLkENBuLdkv7gudG8CG4uMQJyiREJKtkom3dUrq",
+    "poolId": "AY1i2Q8Fxi7BFPGs9ioTV5mh5zUovpxgYp8LdhvDms7Z",
+    "zTokenMint": "Xq2V86Asrc6dPifs4VPUgqLnt72aXnzrSaxx8RvNETc",
+    "features": {
+      "zTokenEnabled": true,
+      "wrappedTransfers": false
+    },
+    "lookupTable": "FXzsAG1qbMvHaPKs1spzntedVbrS6SeF6rVkCayXwg3n"
+  },
+  {
+    "symbol": "DXB425",
+    "decimals": 6,
+    "originMint": "ETbfQeUyUoGM5XMurjZSDehNkiQhUtMeGcpca8w2Wt8z",
+    "poolId": "CvkwHatQuwtLD4GMzEzkg7RgGQjZgy7nUCBbYsUSHtsh",
+    "zTokenMint": "3sE6e2bD1CamA3yVzPqa5WdKCZqoTrU5PA1XWSoo1MUe",
+    "features": {
+      "zTokenEnabled": true,
+      "wrappedTransfers": false
+    },
+    "lookupTable": "AivZwvGtVBVZ9dsNxsV2En6bet9Zrp6adeCYFf3c2ivK"
+  },
+  {
+    "symbol": "DXA367",
+    "decimals": 6,
+    "originMint": "32Cu2Qf7UzqQ5NFYmmYT8Qrff26x13kmQEe9kXQqcCgg",
+    "poolId": "9cuesrUos4RKCz97SQexzucFiTGqCuVJWjNrcHwx2CeD",
+    "zTokenMint": "CFTzoCTyCWStW8DdpqvsYS1hiV1Edqm9DgFRDeYqhqq7",
+    "features": {
+      "zTokenEnabled": true,
+      "wrappedTransfers": false
+    },
+    "lookupTable": "HcNZyXZ9mb7uVoRtStYLrHP5YBBEAuU12ZiQQaSucuFv"
+  },
+  {
+    "symbol": "DXB367",
+    "decimals": 6,
+    "originMint": "GKpBtLXNpbcDemcF7wmFKf9PpqWkXkAz8H9pbJZXds6P",
+    "poolId": "EeKyVzntc4fAZqcHTymp49Jx5wpEoo9RzjcBwjw31deu",
+    "zTokenMint": "DbCzsun8ygFQGY8Y2PYhs9gvYNFdoNHxDgHhk3XAGTSH",
+    "features": {
+      "zTokenEnabled": true,
+      "wrappedTransfers": false
+    },
+    "lookupTable": "ABq9V5cbNT2GZz1gotuWKd7916ryRZ3Zxn8Nk1b54btW"
+  },
+  {
+    "symbol": "DXA138",
+    "decimals": 6,
+    "originMint": "DeG7ovDEiWNE1APvX7ewR8hEhS4FuyQKZrH4r4KCU7Jw",
+    "poolId": "H6j6EPv4Fifrmu3AhMjZj42F3YqurD6uKRn5UXzRS67r",
+    "zTokenMint": "E94iAys8iDJgi24ZnAKjrXYbdznESye2aGh4KJWCPY8e",
+    "features": {
+      "zTokenEnabled": true,
+      "wrappedTransfers": false
+    },
+    "lookupTable": "91kMMJXuw7HyGae8DuaCmYn6n5fFvGw1iAUpX8DnesCH"
+  },
+  {
+    "symbol": "DXB138",
+    "decimals": 6,
+    "originMint": "EhQQcNunrFsfDqFPomtnMFTs2eN18EDRDxpX23nyhCpk",
+    "poolId": "D81D56owKK757V6cvRXZyJbnWD6r2TFbgyFL7XzmRHSK",
+    "zTokenMint": "4u4HjRTk8CbvE36tf3sDgomWfPFSnwd7U8r1pTQ1gtJD",
+    "features": {
+      "zTokenEnabled": true,
+      "wrappedTransfers": false
+    },
+    "lookupTable": "8rFypGYASy41ALFkdM5M2iEeeauKMSj9knDtRTbC9C9S"
+  },
+  {
+    "symbol": "DXA266",
+    "decimals": 6,
+    "originMint": "F8ZPrPUMJ1VNmtKvhzMdHJDwyH4gjjS7yjPsGRvawJA8",
+    "poolId": "8JjsrKZjhVJWAnDVBS76bkmC5siJe6Kqsex39g4hZkjb",
+    "zTokenMint": "3sSHfxyKBKLsASYsJQ4J83RCFFnieRX9RZmdV1Utu22c",
+    "features": {
+      "zTokenEnabled": true,
+      "wrappedTransfers": false
+    },
+    "lookupTable": "DfFLTSqYRXeAum83hku5HG62ffEseF7EQCohjcMDR2W4"
+  },
+  {
+    "symbol": "DXB266",
+    "decimals": 6,
+    "originMint": "C5scKNpDjoqQzUq7w2vuDYnQ3ttKETD4KsRzxTAzbCfR",
+    "poolId": "2rGFwJfiCxnMJugQpsjP5hcjsMSom2Luy3MKfshVyYW1",
+    "zTokenMint": "G2jbD7AeMkiCavpD6jzyDgCE1JyyJkFJHT7xGCPrDzr",
+    "features": {
+      "zTokenEnabled": true,
+      "wrappedTransfers": false
+    },
+    "lookupTable": "5XVRVxkFNvgXYW2CezK9fNDjkzrTVAg9kc1Gq9HUrCrC"
+  },
+  {
+    "symbol": "DXA298",
+    "decimals": 6,
+    "originMint": "HZwKiKW3X22dGZB13178KbxH2kiVkKozNukqwe8VPqGX",
+    "poolId": "EC85CRbsa6BjR5G47gJK2kLgAe6HcZLRT9aBGf3PbwRr",
+    "zTokenMint": "7USimtVJ92DZUKH1ShS4H6YHnHFLs1hNW5dSDbMXUHrf",
+    "features": {
+      "zTokenEnabled": true,
+      "wrappedTransfers": false
+    },
+    "lookupTable": "8desYPWY6xyvuP1PHpyxzBZoPBwfNXhDA2sKjFMyZs3A"
+  },
+  {
+    "symbol": "DXB298",
+    "decimals": 6,
+    "originMint": "4HwFM5UD3kSmWPiD9KdmPPwNxXtFj1eQbPSBp1Wkybdb",
+    "poolId": "GPVfEtPA6goMRNFZWivJi6xFaF5AwNzX5U7zQE4RcHGv",
+    "zTokenMint": "6XVzAQjRCn53BwLh5myoAzuxY5RrnNMPpZEoWGAjg5eN",
+    "features": {
+      "zTokenEnabled": true,
+      "wrappedTransfers": false
+    },
+    "lookupTable": "89SDjqbA4Nz3S5oC7qfcHUUN47vtiCEoLoa78VfYHjSc"
+  },
+  {
+    "symbol": "DXA154",
+    "decimals": 6,
+    "originMint": "8rG61752YhvnYYyRUNg8CPLJE9Cu31Cka1wanq2a8dLA",
+    "poolId": "9vcceQ3JeJF9A5eNJxPCvRTmH4gyvxSku2zMPT8oqdHP",
+    "zTokenMint": "HTvWobfC4E1nFezyXcRqoncPo8XpfoZvhye4EmZ4d392",
+    "features": {
+      "zTokenEnabled": true,
+      "wrappedTransfers": false
+    },
+    "lookupTable": "F3gpCekD7EksByuvz7or26obzxxGb6Xayugzp3M2kaNm"
+  },
+  {
+    "symbol": "DXB154",
+    "decimals": 6,
+    "originMint": "BxtCsGAcsahpmPqrooN29qM7G9puN6RVVnfEn67F7WEA",
+    "poolId": "EgKFyE92NRpaKwtBuq3xzWRkN83nnkt7n3GT89BS1qzj",
+    "zTokenMint": "4JL3FU39zUsPdBPALLo4pAocvBR71yeiy5Ef5V81Anoo",
+    "features": {
+      "zTokenEnabled": true,
+      "wrappedTransfers": false
+    },
+    "lookupTable": "J22ASccib9imUWzKDSa56Gsh5KmmeCVhHfkXKtdDBScu"
+  },
+  {
+    "symbol": "DXA079",
+    "decimals": 6,
+    "originMint": "6vjQCS61Njj6M6VGmkEZd4dU8V5oppN2VU7jZuaVjJbK",
+    "poolId": "BNBRya8yma5LS52SCZt7stMeTnUs9abccNvaxskcggNw",
+    "zTokenMint": "Grbpm44cJBe4QgUTjEg8V4ZZKfYnR8S5NFvPdujcGy9r",
+    "features": {
+      "zTokenEnabled": true,
+      "wrappedTransfers": false
+    },
+    "lookupTable": "HnNSsS2rcxg4q1vCTEgXpBjLgyshaynVqrwDorS8uDAD"
+  },
+  {
+    "symbol": "DXB079",
+    "decimals": 6,
+    "originMint": "cYeWdT4BncwXRgxLcMSbXK2DnynjBymLhBvFYg49e2f",
+    "poolId": "4pc1MGomPnFAqkZeyKSmUXQpz9rGyvBkB6mfa1og3RV7",
+    "zTokenMint": "89cjgAVEeCYGj4LZsCLEBchC7CSCyHx8a8zJsKULQBZw",
+    "features": {
+      "zTokenEnabled": true,
+      "wrappedTransfers": false
+    },
+    "lookupTable": "JDeGywDsYwhwdoamMje3pFJEsr54XSoXem3EqDGAjiZG"
+  },
+  {
+    "symbol": "DXA754",
+    "decimals": 6,
+    "originMint": "7fFkhvCbYhQw5zBEWoBQhLDKtTzNkeW9DKtYLVsKSJFy",
+    "poolId": "EY11wtpZYM1gCDA8NRVP6M6HjKTbaaVat6o2wK1E6G4K",
+    "zTokenMint": "94c2oVZbFJusK2BGAqxXjL6qsrQgp4JbEqM87pLAn2bf",
+    "features": {
+      "zTokenEnabled": true,
+      "wrappedTransfers": false
+    },
+    "lookupTable": "AXBa62B1XosZvyhfTeTbuTzxhYEMtbjdYs8NJckKtdM9"
+  },
+  {
+    "symbol": "DXB754",
+    "decimals": 6,
+    "originMint": "4UCDVDGHzpRcRPf9RyQsvKa97vaM1UjZ6gsBFMYdxDdD",
+    "poolId": "EwWtR5Nz9EL4G1hAwJQikWf7ReL1mZTme7zubEErtwQn",
+    "zTokenMint": "6ZZD5VaHpChqG15F5UN4RWoJ1Gpo6XQqimVhU39Xxknt",
+    "features": {
+      "zTokenEnabled": true,
+      "wrappedTransfers": false
+    },
+    "lookupTable": "4p1pHfjvmm7MsKmNnrVv7PHDcmSZuQY4ayeJH94jSv5C"
+  },
+  {
+    "symbol": "DXA951",
+    "decimals": 6,
+    "originMint": "8ky9CtiDiqx2JKoJ18Wc6pYeBz3vNdnmpJTTG9S8AUTC",
+    "poolId": "FWtXMWDJ6FFLHknAGWXaVHzauWzmg4xqLvyMZyUAHixj",
+    "zTokenMint": "BD7fVRE8xUykim2gz5a5WCpC2Hoeqzt9oD5UXHySUgdb",
+    "features": {
+      "zTokenEnabled": true,
+      "wrappedTransfers": false
+    },
+    "lookupTable": "6VjRbusNRpGiZuvnLY6gMndn6HHYCtFLXMDhREW44LUk"
+  },
+  {
+    "symbol": "DXB951",
+    "decimals": 6,
+    "originMint": "4UNLnPLZpnQ5YQc57BBn3PQJgriu7KgBmAJApK1w9Sdc",
+    "poolId": "7o2x4kQ7vxvuQqQQoeYyjNNAV988HL9xoDat437xpRgC",
+    "zTokenMint": "F7KXkp5dSQtk5zWEK4nwKKkvA4FVuFdFzdtVzqhbX15R",
+    "features": {
+      "zTokenEnabled": true,
+      "wrappedTransfers": false
+    },
+    "lookupTable": "5g3JHW4srGvV3tBGzLAoDYPhss7NrSmQpGwit5QjXV8A"
+  },
+  {
+    "symbol": "DXA101",
+    "decimals": 6,
+    "originMint": "5HjELdx2zbbdWAECUP9iamg9ufSu5ExuXcpctfxt17Ej",
+    "poolId": "79UVds4FLqeWio3NaLVUfpYcztTom9Kp58jvLqcto2K",
+    "zTokenMint": "5EMmaJbcUUVNpCjWSSfyihSTWxk1qjV9ahoMFGac8Hfz",
+    "features": {
+      "zTokenEnabled": true,
+      "wrappedTransfers": false
+    },
+    "lookupTable": "2FEkREzM3jnypEWaqcWSHoFVXLqjch3fME1Ha8QVDASK"
+  },
+  {
+    "symbol": "DXB101",
+    "decimals": 6,
+    "originMint": "81o4KWgUXV78TvUs5MxXBCpKK9xQaySLqReG9WhvtkXr",
+    "poolId": "AdMToh4mGbRoZmZuFpTEsoWZANdHZu9CFi8tyJgLzbTb",
+    "zTokenMint": "FGGvxyxzjPNyyjanhv3Erfth3a9KECqbs9EA9Cuy78bd",
+    "features": {
+      "zTokenEnabled": true,
+      "wrappedTransfers": false
+    },
+    "lookupTable": "1YNNqGUUwR6n1QYndR4n4YqHgT17MNTf9tzaW5KWpFF"
+  },
+  {
+    "symbol": "DXA077",
+    "decimals": 6,
+    "originMint": "98bGC2hE2iCWSjxKM6Vn4PNa5hiSZen9dhBymk8vMH83",
+    "poolId": "Tk8PwqGZoSF5oQGppUb1182GJG6YtY89LZWy6uv6n9D",
+    "zTokenMint": "EAtmt15Br2MkQnYKmyFee1Urjsot6oEJVSWqnu4E88qz",
+    "features": {
+      "zTokenEnabled": true,
+      "wrappedTransfers": false
+    },
+    "lookupTable": "82p8RHdQuQrJihorY3dyJgkurXipE2uu7igryBcKhD7z"
+  },
+  {
+    "symbol": "DXB077",
+    "decimals": 6,
+    "originMint": "3Rpix1AUSRZNjAeuMP7RbmPRtSzxM5cAi1mmZUuAhRcB",
+    "poolId": "9zYzYETzyxrQSPZRin73XkeTXtEUdLDZzhXrsEgbHW38",
+    "zTokenMint": "3EMEX27T51vsj3fNvUwCgpeBctQSYnDeP8iMkfQSp1wX",
+    "features": {
+      "zTokenEnabled": true,
+      "wrappedTransfers": false
+    },
+    "lookupTable": "GjAAyTx2vf9YGLGV71huDckDrYFLPAw86SLMp2Z5LfDR"
+  },
+  {
+    "symbol": "DXA771",
+    "decimals": 6,
+    "originMint": "cxajTcGRSuoLnVFEvYeqsV27hzdHeA1JKaTV8fZjKRt",
+    "poolId": "J6Uba25rbHA5judY5ZAccj9H8MHmwNoVs6TX3hFToRmj",
+    "zTokenMint": "7v7TU6DvVP1veqqLW4yvjYpDyeyZN5fgfCCeLRykMFdj",
+    "features": {
+      "zTokenEnabled": true,
+      "wrappedTransfers": false
+    },
+    "lookupTable": "HgcPjKPZtWo2XxHLSyzFhb4Sd6suiyqet1EdpcSVvVyj"
+  },
+  {
+    "symbol": "DXB771",
+    "decimals": 6,
+    "originMint": "HbKCLqweSwwe3b1uDTUykSXfCpLUHLE4MLLH3ckBYGW5",
+    "poolId": "69pbh7Ay4vDFKMyzC3G7PrVPcHzpJZtMdTe7T2ALo5Rm",
+    "zTokenMint": "41jDgU2GmRgghTpqtKBvAFqQe8WRg462Y3bzs4ZeTsod",
+    "features": {
+      "zTokenEnabled": true,
+      "wrappedTransfers": false
+    },
+    "lookupTable": "4hMEHSeKi5iDzjxZgkepuXsCVWZgX1aYHuoYZnot9v6v"
+  },
+  {
+    "symbol": "DXA822",
+    "decimals": 6,
+    "originMint": "Aw3neaFZsSuBs1wUmV3sue66Uoyxm7CARdRLi5ZJ6tBM",
+    "poolId": "AhpTenvqmJqpKk1bdFT5aD3WBu8ghSAaryfnzfuiwA1i",
+    "zTokenMint": "TKgfFvs5m9PyyxqMYWHzyQvYXeL7tTin5i3AhyccGjp",
+    "features": {
+      "zTokenEnabled": true,
+      "wrappedTransfers": false
+    },
+    "lookupTable": "8Tk7FKkXeS3oKVetrExMAXpxBKzQibd65DkpAeANoWuj"
+  },
+  {
+    "symbol": "DXB822",
+    "decimals": 6,
+    "originMint": "C8E8Jkf26Cpbs5qRbxWDeJLpedouaRmDevQ8RWANoHai",
+    "poolId": "6ifryDVtaUpHtEQL2EhnuuDsc1j6iR58D8HVPEsaGWaZ",
+    "zTokenMint": "7VBVfQ3vpDCj3Kimoh2kX57DmcJpK3jLGgTtc9AnTER9",
+    "features": {
+      "zTokenEnabled": true,
+      "wrappedTransfers": false
+    },
+    "lookupTable": "53b6hUeLmVXGP2sBx29zwBKroMqdYp8mKzahe9uwzYmU"
+  },
+  {
+    "symbol": "DXA431",
+    "decimals": 6,
+    "originMint": "EFW1LbxNwenkEZWxyPaUGHWKq2eNmCZNPtvZGrH7Rimd",
+    "poolId": "2pdpB9EAiCW8c3zCm7KViX4Kbf8wm4nurd4DNZmCKvgz",
+    "zTokenMint": "CgkYPbfQXpc5QRxpaaM4xVeKsEtfqcmKriEqWueZ4Vkc",
+    "features": {
+      "zTokenEnabled": true,
+      "wrappedTransfers": false
+    },
+    "lookupTable": "CSTJUas9LUvNA1NmBfupq1QK5LS5mM5RfAhzpJYVqcKX"
+  },
+  {
+    "symbol": "DXB431",
+    "decimals": 6,
+    "originMint": "BtT8MwqdPS5iPo4K1DHYCknXUyUeg5zgP7PYVN9eqedb",
+    "poolId": "6vnYH3CiDteTixtRV6YTh7vGNeW3U4TeGcuydhXrw7zb",
+    "zTokenMint": "Fas8WBEbEhXc8LZzRXLsdfiHTscqPdWhEXn3ruewR3MW",
+    "features": {
+      "zTokenEnabled": true,
+      "wrappedTransfers": false
+    },
+    "lookupTable": "61BsrEnDYYLqv1n8grwjokXeFFEZ1WhmChrpUgDpwXP1"
+  },
+  {
+    "symbol": "DXA941",
+    "decimals": 6,
+    "originMint": "AQRcTu46SoWsCMfnZPJua27S9uLRfnKx23pAjWML5PkP",
+    "poolId": "Vw7U3Tnw4HH2JjLpYMispGvD7okvDbfiQE6VMntf5J3",
+    "zTokenMint": "HiyUBmwUifVsWFefQkdZJgmByR9diJiLtcZnNU9F1yoN",
+    "features": {
+      "zTokenEnabled": true,
+      "wrappedTransfers": false
+    },
+    "lookupTable": "EZFK64hFTsPSyU7pHCtv67SUuF7wP7mQ2ZvZmNP54orn"
+  },
+  {
+    "symbol": "DXB941",
+    "decimals": 6,
+    "originMint": "8MZKTqf6PQTBMX5BUA6LJrXaX8B5oEtRyPxAFtRaUpha",
+    "poolId": "4GeN3xTUWC6xgv8SLfNqhPBdwMjLQ6kwvDHdz2BeQBUY",
+    "zTokenMint": "7N3haoBoUoyx2E9EiE43MYhBK69rXiLR5ro8dKr1Gnov",
+    "features": {
+      "zTokenEnabled": true,
+      "wrappedTransfers": false
+    },
+    "lookupTable": "5ULLH3THU6SdHDTDPrKBXGfqEgcYunTxAkHW2Sz8RzFx"
+  },
+  {
+    "symbol": "DXA290",
+    "decimals": 6,
+    "originMint": "BpTdt5C8PA9DyNmzXqqTq5EACBwJDa66jcdNSq5NdN16",
+    "poolId": "8WaTgDggUpR5x14pGuRAuUHexrQUut3h2GPXafVsPyRC",
+    "zTokenMint": "6KSoWwXJTK5JeGB1NGMm4CkhXV3LXWnX4TrXdEVLy7Yw",
+    "features": {
+      "zTokenEnabled": true,
+      "wrappedTransfers": false
+    },
+    "lookupTable": "2DXbSYmuub4BZir9Hxjrk3XUQWPeos4PEvo6YPEh514w"
+  },
+  {
+    "symbol": "DXB290",
+    "decimals": 6,
+    "originMint": "BhaDo9TYonYobw16BE9bxTHu8H1iHEtL9gLXWtVrmAEA",
+    "poolId": "HJMremg259zF1wTzjJ9N5fCX3ZmeskqYePbKvbirQGmo",
+    "zTokenMint": "7tXPRMKhqjE5rUZFTujBu1fweA1sqsbkhJWwPGd5awCr",
+    "features": {
+      "zTokenEnabled": true,
+      "wrappedTransfers": false
+    },
+    "lookupTable": "FT2cJyi7L4Zhff3SUx9pnATrpeqAUZ5tZ4CmcrRYbFN4"
+  },
+  {
+    "symbol": "DXA876",
+    "decimals": 6,
+    "originMint": "GSpyQzcvQ42eX75Y7zDyf7wcTKhqLangNLzxiC5PoVUb",
+    "poolId": "7tBQYDybo1PZAuEbxxLhRKgCtVvfD1P84KQWMDgHr8eA",
+    "zTokenMint": "63d9UT7c5KS9kqfsajYRRTw7rP8jbzoxW21ALjm9tqTK",
+    "features": {
+      "zTokenEnabled": true,
+      "wrappedTransfers": false
+    },
+    "lookupTable": "8rMk9TZNT6va3yxxaHRRsKvSzFGcZ5Ja66n3GaDFgLE7"
+  },
+  {
+    "symbol": "DXB876",
+    "decimals": 6,
+    "originMint": "ANmFPPCtJXAnWGyR5QasuAXkh8AfaoVSL5qUswjWUaKU",
+    "poolId": "FN8gjV4W4wLS1xK5VfUimX6GfSXedD1oLPsLNrZvJHLX",
+    "zTokenMint": "DQndWmrocJGUo1zR75gDCga44H1ubE2pLNqPcjeiZU1k",
+    "features": {
+      "zTokenEnabled": true,
+      "wrappedTransfers": false
+    },
+    "lookupTable": "2bZtTVWGcc4a3iLaJjTkadbnbYgqhDpJj6YZxBLUHTy3"
+  },
+  {
+    "symbol": "DXA689",
+    "decimals": 6,
+    "originMint": "DtRsWHGoTCD9fq1aZmMv2ZHrBn4zrjx8MBeY4ibXyF78",
+    "poolId": "521C2zFRNfmy2zbkR8VisxTo7rNJccZRg98QqF9JJBrV",
+    "zTokenMint": "H45q72ntT2mCPatRWZ4KEuj8Np4i4hwqBzASYG5P1GGh",
+    "features": {
+      "zTokenEnabled": true,
+      "wrappedTransfers": false
+    },
+    "lookupTable": "Gt3ADpbkZnwQJebVozg2B5Dyc7dqGaLejbz8pJfbcNKY"
+  },
+  {
+    "symbol": "DXB689",
+    "decimals": 6,
+    "originMint": "Hm1LRCVk7AmqvAGu8y59z3MVCHVNJzXF5rnZDtp5YoGU",
+    "poolId": "2ETqjheb1QFokDBqKyFSvDRW1dbCpWDHDjsvHWYKkCkf",
+    "zTokenMint": "9gz1PE9L9grDHLptgmsuephrS2naDuG12LU9Jj9RKpgc",
+    "features": {
+      "zTokenEnabled": true,
+      "wrappedTransfers": false
+    },
+    "lookupTable": "Hs69XLyNuGTUDQxGaF5FTu9KpN5o9ALryL2treWiJT7J"
+  },
+  {
+    "symbol": "DXA345",
+    "decimals": 6,
+    "originMint": "9rxHUS9pTXZGjGcT64Ng6Ebdp2nSd68joFNjDbU2TwCm",
+    "poolId": "2FHgDqbWUZh5N28XCcuU4cGnuUJMFetfzWqSQx9qFwjW",
+    "zTokenMint": "5MDYnGm41Nn6h8y6s1bn7AMYEAGMs6DKzZNgwfLCRCz9",
+    "features": {
+      "zTokenEnabled": true,
+      "wrappedTransfers": false
+    },
+    "lookupTable": "6ZMpnZJgLei92yTNgH1Cjc26Q6PBFFkfxPzsuZGph12G"
+  },
+  {
+    "symbol": "DXB345",
+    "decimals": 6,
+    "originMint": "7GVpDz6Sw5DEzjnr81S58WZuU4f9WFUC4tWjt8tWjQib",
+    "poolId": "3XLmbFDtVqBce2faqvxtyYef5irMUoimgjsD5CdiBDvG",
+    "zTokenMint": "3u4WAENYmgSCNabwQsubEZQB3AKD6aRnQB9BGTaxyPrJ",
+    "features": {
+      "zTokenEnabled": true,
+      "wrappedTransfers": false
+    },
+    "lookupTable": "3wdrUNnXvCKj9fn1PeAdYYTTtBpb6HLpnT1QYbcjZ6YS"
+  },
+  {
+    "symbol": "DXA786",
+    "decimals": 6,
+    "originMint": "3YwgRzbdGLeR622qHg8rnZcSaFZTRcEp5iU7Fu29VuwW",
+    "poolId": "5Ri1ns9tLh1uiEkd5Kr8PPdrmGWnkaPn5ZJ5A4tn86bv",
+    "zTokenMint": "67K6CcPYMLWDgqW8NgTsWJkRWUgPfv4fjsK4sPFX1CkY",
+    "features": {
+      "zTokenEnabled": true,
+      "wrappedTransfers": false
+    },
+    "lookupTable": "28nHRoFMSNdzd7wxS7kCyCavzawcF6qfocn9DuJu5Lnv"
+  },
+  {
+    "symbol": "DXB786",
+    "decimals": 6,
+    "originMint": "DQXES192435rDnuEtnuAbDUwCr956JvBJYh1dWyFQynN",
+    "poolId": "BBQpLtYT3fd8CbY4rVcX2CdoUSNb6Z9oeb7fCUXUTU7w",
+    "zTokenMint": "DfkRb8yMau6Hkoy3WQgEovS3kXK3o1jGHiUy7X9E9MQk",
+    "features": {
+      "zTokenEnabled": true,
+      "wrappedTransfers": false
+    },
+    "lookupTable": "A6SmCGdGKdH7UFMAPHei9Dpkc8hofGHYSQHpzDnkRufW"
+  },
+  {
+    "symbol": "DXA676",
+    "decimals": 6,
+    "originMint": "DH4pWJHLL92J2DvUTKuyJLVrTRSztmmQ366iueP7PyAf",
+    "poolId": "EMFHdNmMTqphDQvhR2aU9buBQF7SxMUxH1ZtUhnYGVzh",
+    "zTokenMint": "EMVcRgsvfxRCBny4oEEhUgBJDDAjL1xN6vc1WjgpXuXP",
+    "features": {
+      "zTokenEnabled": true,
+      "wrappedTransfers": false
+    },
+    "lookupTable": "HxLTfpgQtoK8G9TCmmu333zrcL7jds5oZeJwnZjKk4dS"
+  },
+  {
+    "symbol": "DXB676",
+    "decimals": 6,
+    "originMint": "BqzjbSMB5xMM6b9C6LYCjJMqDgELbVsqf3XLQkx5oWvA",
+    "poolId": "66Aymq6yvfY9wdaGEqsj7ybhHXCveqyVbaCd19nDPTPQ",
+    "zTokenMint": "HAnJaZrWKhZouK56w4Gzmt7QEpbrZ1XBmN7omFms9eWz",
+    "features": {
+      "zTokenEnabled": true,
+      "wrappedTransfers": false
+    },
+    "lookupTable": "EiZkKrVMacyLjzdnFSkB6nszcdCPdkVWnaV7VFauKuvs"
+  },
+  {
+    "symbol": "DXA508",
+    "decimals": 6,
+    "originMint": "CEXaWg7FbGREptzx4EXEMKiCXj6Kyt5HMMt8YM4LBWaX",
+    "poolId": "3UvD5YWmrUM9ecJh9H77jmp743VmbkMws9zy3GdxrRvb",
+    "zTokenMint": "CBtcAk4Fj6XaYT3wwdWgHoeDVigHyKaXrk7eetTLLfFB",
+    "features": {
+      "zTokenEnabled": true,
+      "wrappedTransfers": false
+    },
+    "lookupTable": "7bQRvXTAxNhShwBYdx7s2j1rU3KVcvF5tSHaRABorSCp"
+  },
+  {
+    "symbol": "DXB508",
+    "decimals": 6,
+    "originMint": "Dt5ecyYHUEDfNBf5iKWT4obG1DTegVA5acfziCM2WNpQ",
+    "poolId": "HCvzQVZDLyciL3dVp1eygXo2MxTMV3BHyGtjBCHgTSAH",
+    "zTokenMint": "FyMxsMc5pXXsvcGDE3jHVa3KMwJz6fMQjEuTb8JaLa6x",
+    "features": {
+      "zTokenEnabled": true,
+      "wrappedTransfers": false
+    },
+    "lookupTable": "9EZHF8EN5NB6CbYFC1nMbPcFqAFBbPEoc5kosKXzJXQK"
+  },
+  {
+    "symbol": "DXA977",
+    "decimals": 6,
+    "originMint": "7FNgZkFaduFsMtHra5bARAKxPEAi8JQwYWnMTCRZMCcn",
+    "poolId": "2H8m2KibkL27VRhdzfmcWiZ8dS5b3gXRajF9g7f16xT3",
+    "zTokenMint": "5XUb9xbz75MHjts4bcVZNpuRxHFvSmzsjrQzQTfAAhoK",
+    "features": {
+      "zTokenEnabled": true,
+      "wrappedTransfers": false
+    },
+    "lookupTable": "DTyit2hkxS68F52Czg12cpkueGALqFkdcvyXRarX7ULd"
+  },
+  {
+    "symbol": "DXB977",
+    "decimals": 6,
+    "originMint": "BLDuzmtMvzcvEVKfN5EpytUyLg2LoLhsW8yrfdmtfbH6",
+    "poolId": "2wnB8JXeRCBRE1wGJeUdo7vHigfJrsgHBiEmGeWcXiBa",
+    "zTokenMint": "HsWo6s1e4fC9btaREANyaQdgrjweLcarboUsqk9wsit3",
+    "features": {
+      "zTokenEnabled": true,
+      "wrappedTransfers": false
+    },
+    "lookupTable": "6r5SGgVaXSFhbfBCc9w5FzgZcpVoKNSLYWQLpZ4xCnsK"
   }
 ]

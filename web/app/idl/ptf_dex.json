@@ -110,20 +110,16 @@
         {
           "name": "transfer_args_a",
           "type": {
-            "option": {
-              "defined": {
-                "name": "TransferArgs"
-              }
+            "defined": {
+              "name": "TransferArgs"
             }
           }
         },
         {
           "name": "transfer_args_b",
           "type": {
-            "option": {
-              "defined": {
-                "name": "TransferArgs"
-              }
+            "defined": {
+              "name": "TransferArgs"
             }
           }
         }
@@ -419,20 +415,16 @@
         {
           "name": "transfer_args_a",
           "type": {
-            "option": {
-              "defined": {
-                "name": "TransferArgs"
-              }
+            "defined": {
+              "name": "TransferArgs"
             }
           }
         },
         {
           "name": "transfer_args_b",
           "type": {
-            "option": {
-              "defined": {
-                "name": "TransferArgs"
-              }
+            "defined": {
+              "name": "TransferArgs"
             }
           }
         }
@@ -531,30 +523,16 @@
         {
           "name": "transfer_args_in",
           "type": {
-            "option": {
-              "defined": {
-                "name": "TransferArgs"
-              }
-            }
-          }
-        },
-        {
-          "name": "shield_args_out",
-          "type": {
-            "option": {
-              "defined": {
-                "name": "ShieldArgs"
-              }
+            "defined": {
+              "name": "TransferArgs"
             }
           }
         },
         {
           "name": "transfer_args_out",
           "type": {
-            "option": {
-              "defined": {
-                "name": "TransferArgs"
-              }
+            "defined": {
+              "name": "TransferArgs"
             }
           }
         }

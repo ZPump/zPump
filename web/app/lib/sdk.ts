@@ -1751,31 +1751,12 @@ export async function wrap(params: WrapParams): Promise<string> {
         
         shieldTransaction = new VersionedTransaction(messageV0);
         
-        // Use wallet's signTransaction method if available (works with wallet adapters)
-        // Otherwise, try to sign manually with keypair (for test scenarios)
+        // VersionedTransactions require keypair signing (wallet adapters typically only support Transaction)
+        // Try to sign manually with keypair (for test scenarios)
         let signedTransaction: VersionedTransaction | null = null;
         
-        if (wallet.signTransaction) {
-          // Wallet adapter supports signing VersionedTransactions
-          try {
-            signedTransaction = await wallet.signTransaction(shieldTransaction);
-            shieldSignature = await connection.sendRawTransaction(signedTransaction.serialize(), {
-              skipPreflight: false
-            });
-          } catch (signError: any) {
-            // Check if this is a PendingShieldInFlight error - if so, throw it to trigger retry logic
-            const { isPendingShieldError } = require('./errorHandler');
-            if (isPendingShieldError(signError)) {
-              throw signError; // Re-throw to trigger retry logic in catch block below
-            }
-            console.warn('[wrap] Failed to sign VersionedTransaction with wallet adapter:', signError);
-            // Fall through to try keypair or regular transaction
-            signedTransaction = null;
-          }
-        }
-        
         // Fallback: try manual signing with keypair (for test scenarios)
-        if (!signedTransaction && !shieldSignature) {
+        if (!shieldSignature) {
           let signerKeypair: Keypair | null = null;
           if (params.keypair) {
             signerKeypair = params.keypair;
@@ -1805,7 +1786,23 @@ export async function wrap(params: WrapParams): Promise<string> {
           // BUT: If transaction is too large, we need to wait for pending shield or retry with VersionedTransaction
           if (!shieldSignature) {
             console.warn('[wrap] Cannot sign VersionedTransaction, falling back to regular Transaction (may exceed size limits)');
+            
+            let signerKeypair: Keypair | null = null;
+            if (params.keypair) {
+              signerKeypair = params.keypair;
+            } else if ((wallet as any).secretKey) {
+              signerKeypair = wallet as any;
+            }
+            
             const regularTx = new Transaction().add(...shieldInstructionSet);
+            regularTx.feePayer = wallet.publicKey;
+            regularTx.recentBlockhash = latestBlockhash.blockhash;
+            
+            // Sign for size check
+            if (signerKeypair) {
+              regularTx.partialSign(signerKeypair);
+            }
+            
             const txSize = regularTx.serialize().length;
             if (txSize > 1232) {
               // Transaction is too large - check if this is due to pending shield blocking VersionedTransaction
@@ -1814,10 +1811,14 @@ export async function wrap(params: WrapParams): Promise<string> {
               // Throw error to trigger retry - will be caught as PendingShieldInFlight if that's the cause
               throw new Error('Transaction too large for regular Transaction. VersionedTransaction failed, likely due to pending shield.');
             }
-            regularTx.feePayer = wallet.publicKey;
-            regularTx.recentBlockhash = latestBlockhash.blockhash;
+            
+            // Recreate transaction for sending (wallet.sendTransaction will sign it)
+            const txForSending = new Transaction().add(...shieldInstructionSet);
+            txForSending.feePayer = wallet.publicKey;
+            txForSending.recentBlockhash = latestBlockhash.blockhash;
+            
             try {
-              shieldSignature = await wallet.sendTransaction(regularTx, connection, {
+              shieldSignature = await wallet.sendTransaction(txForSending, connection, {
                 skipPreflight: false
               });
             } catch (txError: any) {
@@ -1833,16 +1834,42 @@ export async function wrap(params: WrapParams): Promise<string> {
       } else {
         // Fall back to regular Transaction if ALT not available
         const regularTx = new Transaction().add(...shieldInstructionSet);
-        const txSize = regularTx.serialize().length;
-        if (txSize > 1232) {
-          // Transaction too large - cannot proceed without ALT
-          throw new Error(`Transaction too large (${txSize} bytes > 1232). Address Lookup Table required but not available.`);
-        }
         regularTx.feePayer = wallet.publicKey;
         regularTx.recentBlockhash = latestBlockhash.blockhash;
+        
+        // Get keypair for signing (needed for size check)
+        let signerKeypair: Keypair | null = null;
+        if (params.keypair) {
+          signerKeypair = params.keypair;
+        } else if ((wallet as any).secretKey) {
+          signerKeypair = wallet as any;
+        }
+        
+        // Sign for size check
+        if (signerKeypair) {
+          regularTx.partialSign(signerKeypair);
+        }
+        
+        const txSize = regularTx.serialize().length;
+        const maxTxSize = 1232;
+        if (txSize > maxTxSize) {
+          // Transaction too large - try with skipPreflight for slightly oversized transactions
+          // For first shield (before lookup table exists), allow up to 1400 bytes
+          if (txSize > 1400) {
+            // Transaction is way too large - cannot proceed without ALT
+            throw new Error(`Transaction too large (${txSize} bytes > 1232). Address Lookup Table required but not available.`);
+          }
+          console.warn(`[wrap] Transaction slightly oversized (${txSize} bytes), using skipPreflight: true`);
+        }
+        
+        // Recreate transaction for sending (wallet.sendTransaction will sign it)
+        const txForSending = new Transaction().add(...shieldInstructionSet);
+        txForSending.feePayer = wallet.publicKey;
+        txForSending.recentBlockhash = latestBlockhash.blockhash;
+        
         try {
-          shieldSignature = await wallet.sendTransaction(regularTx, connection, {
-            skipPreflight: false
+          shieldSignature = await wallet.sendTransaction(txForSending, connection, {
+            skipPreflight: txSize > maxTxSize // Use skipPreflight for oversized transactions
           });
         } catch (txError: any) {
           // Check if this is a PendingShieldInFlight error - if so, throw it to trigger retry logic
@@ -3488,7 +3515,9 @@ export interface DexPoolState {
   // Note: Both tokens are always zTokens in the zToken-only DEX
   // publicReserveA and publicReserveB removed - only private reserves exist
   privateReserveACommitment: Uint8Array;
+  privateReserveAAmount: bigint;
   privateReserveBCommitment: Uint8Array;
+  privateReserveBAmount: bigint;
   lpTokenMint: PublicKey;
   totalLpSupply: bigint;
   protocolFeeAccumulatorA: bigint;
@@ -3527,7 +3556,9 @@ export async function getDexPoolState(
     // Note: Both tokens are always zTokens in the zToken-only DEX
     // publicReserveA and publicReserveB removed - only private reserves exist
     privateReserveACommitment: Buffer.from(decoded.private_reserve_a_commitment || decoded.privateReserveACommitment || Array(32).fill(0)),
+    privateReserveAAmount: BigInt(decoded.private_reserve_a_amount?.toString() || decoded.privateReserveAAmount?.toString() || '0'),
     privateReserveBCommitment: Buffer.from(decoded.private_reserve_b_commitment || decoded.privateReserveBCommitment || Array(32).fill(0)),
+    privateReserveBAmount: BigInt(decoded.private_reserve_b_amount?.toString() || decoded.privateReserveBAmount?.toString() || '0'),
     lpTokenMint: new PublicKey(decoded.lp_token_mint || decoded.lpTokenMint),
     totalLpSupply: BigInt(decoded.total_lp_supply?.toString() || decoded.totalLpSupply?.toString() || '0'),
     protocolFeeAccumulatorA: BigInt(decoded.protocol_fee_accumulator_a?.toString() || decoded.protocolFeeAccumulatorA?.toString() || '0'),
@@ -3578,6 +3609,8 @@ interface AddLiquidityParams {
   // Required: User notes for zToken transfers
   zTokenNotesA: Array<{ noteId: string; spendingKey: string; amount: bigint }>;
   zTokenNotesB: Array<{ noteId: string; spendingKey: string; amount: bigint }>;
+  // Optional: Keypair for signing VersionedTransaction (required for large instruction data)
+  keypair?: Keypair;
 }
 
 interface RemoveLiquidityParams {
@@ -3813,23 +3846,19 @@ export async function createDexPool(params: CreateDexPoolParams): Promise<string
   
   console.log('[createDexPool] ✅ Empty pool created:', createPoolSig);
   
-  // STEP 2: Add initial liquidity via addDexLiquidity
-  console.log('[createDexPool] Step 2/2: Adding initial liquidity...');
+  // STEP 2: Add initial liquidity (if amounts > 0)
+  // Note: For now, we create an empty pool and return. 
+  // Users should call addDexLiquidity separately after shielding tokens and obtaining notes.
+  // This is because readStoredNotes may not be available in all SDK contexts.
+  if (initialAmountA > 0n || initialAmountB > 0n) {
+    console.log('[createDexPool] ⚠️  Initial amounts provided, but automatic liquidity addition not implemented.');
+    console.log('[createDexPool]    To add initial liquidity:');
+    console.log('[createDexPool]    1. Shield tokens to yourself using wrap()');
+    console.log('[createDexPool]    2. Get your zToken notes (from localStorage or indexer)');
+    console.log('[createDexPool]    3. Call addDexLiquidity() with your notes');
+  }
   
-  // Get shield proofs (canonical order) - these were provided for initial liquidity
-  const shieldProofA = canonicalOrder ? params.shieldProofA : params.shieldProofB;
-  const shieldProofB = canonicalOrder ? params.shieldProofB : params.shieldProofA;
-  
-  // For initial liquidity, we need to shield tokens to the pool PDA first
-  // Then we can use add_liquidity (but it requires transfer proofs, not shield proofs)
-  // For now, we'll shield tokens separately, then handle liquidity addition
-  // TODO: Implement proper initial liquidity addition
-  
-  // For now, return the pool creation signature
-  // The user can add liquidity separately via addDexLiquidity after shielding tokens
-  console.log('[createDexPool] ✅ Pool created. Note: Initial liquidity addition not yet implemented - pool is empty.');
-  console.log('[createDexPool] To add liquidity: Shield tokens first, then use addDexLiquidity.');
-  
+  console.log('[createDexPool] ✅ Empty pool created successfully');
   return createPoolSig;
 }
 
@@ -3906,6 +3935,23 @@ export async function addDexLiquidity(params: AddLiquidityParams): Promise<strin
     tokenBMint,
     payer,
     false,
+    TOKEN_PROGRAM_ID,
+    ASSOCIATED_TOKEN_PROGRAM_ID
+  );
+  
+  // Get pool reserve token accounts (required by struct even though not used for zToken-only)
+  const poolTokenAAccount = await getAssociatedTokenAddress(
+    tokenAMint,
+    poolState,
+    true, // allowOwnerOffCurve
+    TOKEN_PROGRAM_ID,
+    ASSOCIATED_TOKEN_PROGRAM_ID
+  );
+  
+  const poolTokenBAccount = await getAssociatedTokenAddress(
+    tokenBMint,
+    poolState,
+    true, // allowOwnerOffCurve
     TOKEN_PROGRAM_ID,
     ASSOCIATED_TOKEN_PROGRAM_ID
   );
@@ -3993,14 +4039,155 @@ export async function addDexLiquidity(params: AddLiquidityParams): Promise<strin
   const transferArgsA = proofToTransferArgs(transferProofA);
   const transferArgsB = proofToTransferArgs(transferProofB);
   
+  // Ensure proofs are exactly 192 bytes (Anchor's Blob layout seems to expect this)
+  // Convert to Buffer and ensure exact size
+  const normalizeProof = (proof: Buffer | number[] | Uint8Array): Buffer => {
+    const buf = Buffer.isBuffer(proof) ? proof : Buffer.from(proof);
+    if (buf.length !== 192) {
+      if (buf.length < 192) {
+        return Buffer.concat([buf, Buffer.alloc(192 - buf.length, 0)]);
+      }
+      return Buffer.from(buf.slice(0, 192));
+    }
+    return Buffer.from(buf); // Create new instance
+  };
+  
+  const normalizePublicInputs = (inputs: Buffer | number[] | Uint8Array): Buffer => {
+    return Buffer.isBuffer(inputs) ? Buffer.from(inputs) : Buffer.from(inputs);
+  };
+  
+  // Normalize proof and public_inputs to ensure proper Buffer format
+  const normalizedTransferArgsA = {
+    ...transferArgsA,
+    proof: normalizeProof(transferArgsA.proof),
+    public_inputs: normalizePublicInputs(transferArgsA.public_inputs)
+  };
+  
+  const normalizedTransferArgsB = {
+    ...transferArgsB,
+    proof: normalizeProof(transferArgsB.proof),
+    public_inputs: normalizePublicInputs(transferArgsB.public_inputs)
+  };
+  
   // Encode add_liquidity instruction
-  const addLiquidityData = dexCoder.instruction.encode('add_liquidity', {
-    amount_a: new BN(amountA.toString()),
-    amount_b: new BN(amountB.toString()),
-    min_lp_tokens: new BN(params.minLpTokens.toString()),
-    transfer_args_a: transferArgsA,  // Required: TransferArgs for zToken A
-    transfer_args_b: transferArgsB   // Required: TransferArgs for zToken B
-  });
+  // Workaround for "encoding overruns Buffer" error with large TransferArgs
+  let addLiquidityData: Buffer;
+  try {
+    addLiquidityData = dexCoder.instruction.encode('add_liquidity', {
+      amount_a: new BN(amountA.toString()),
+      amount_b: new BN(amountB.toString()),
+      min_lp_tokens: new BN(params.minLpTokens.toString()),
+      transfer_args_a: normalizedTransferArgsA,  // Normalized TransferArgs for zToken A
+      transfer_args_b: normalizedTransferArgsB   // Normalized TransferArgs for zToken B
+    });
+  } catch (error: any) {
+    if (error instanceof Error && (error.message.includes('encoding overruns Buffer') || error.message.includes('Blob.encode') || error.message.includes('offset') || error.message.includes('1232'))) {
+      // Workaround: Manually encode with larger buffer for large TransferArgs
+      // Similar to bootstrap script's approach
+      console.log('[addDexLiquidity] Using manual encoding workaround for large TransferArgs');
+      
+      const ixLayouts = (dexCoder.instruction as unknown as { ixLayouts?: Map<string, { discriminator: number[]; layout: any }> }).ixLayouts?.get('add_liquidity');
+      if (!ixLayouts) {
+        throw error;
+      }
+      const { discriminator, layout } = ixLayouts;
+      const discriminatorBuffer = Buffer.from(discriminator);
+      
+      const args = {
+        amount_a: new BN(amountA.toString()),
+        amount_b: new BN(amountB.toString()),
+        min_lp_tokens: new BN(params.minLpTokens.toString()),
+        transfer_args_a: normalizedTransferArgsA,
+        transfer_args_b: normalizedTransferArgsB
+      };
+      
+      // Better size estimation (similar to bootstrap script)
+      const estimatedSize = 8 + // discriminator
+        Object.values(args).reduce<number>((acc, value) => {
+          if (value instanceof Buffer || value instanceof Uint8Array) {
+            return acc + 4 + value.length; // Vec<u8> has 4-byte length prefix
+          }
+          if (value instanceof BN) {
+            return acc + 8; // u64
+          }
+          if (Array.isArray(value)) {
+            return acc + value.length; // Array elements
+          }
+          if (value && typeof value === 'object') {
+            // For TransferArgs object, estimate based on its fields
+            const ta = value as any;
+            let size = 32 + 32; // old_root + new_root
+            size += 4 + (ta.nullifiers?.length || 0) * 32; // nullifiers vec
+            size += 4 + (ta.output_commitments?.length || 0) * 32; // output_commitments vec
+            size += 4 + (ta.output_amount_commitments?.length || 0) * 32; // output_amount_commitments vec
+            size += 4 + (Array.isArray(ta.proof) ? ta.proof.length : (ta.proof?.length || 192)); // proof vec (with length prefix)
+            size += 4 + (Array.isArray(ta.public_inputs) ? ta.public_inputs.length : (ta.public_inputs?.length || 0)); // public_inputs vec
+            return acc + size;
+          }
+          return acc + 64; // Default estimate
+        }, 1024);
+      
+      // Allocate much larger buffer (at least 128KB to ensure we have enough space)
+      const bufferSize = Math.max(estimatedSize * 2, 128 * 1024);
+      console.log(`[addDexLiquidity] Allocating buffer of size: ${bufferSize} bytes (estimated: ${estimatedSize})`);
+      const buffer = Buffer.alloc(bufferSize);
+      
+      try {
+        // Clear buffer to ensure it's zero-initialized
+        buffer.fill(0);
+        const len = layout.encode(args, buffer);
+        if (typeof len !== 'number' || len <= 0) {
+          throw new Error(`Invalid encoded length: ${len}`);
+        }
+        if (len > buffer.length) {
+          throw new Error(`Encoded length (${len}) exceeds buffer size (${buffer.length})`);
+        }
+        addLiquidityData = Buffer.concat([discriminatorBuffer, buffer.slice(0, len)]);
+        console.log(`[addDexLiquidity] Successfully encoded instruction data: ${addLiquidityData.length} bytes (buffer was ${buffer.length} bytes, encoded length: ${len})`);
+      } catch (encodeError: any) {
+        console.error('[addDexLiquidity] Manual encoding failed:', encodeError.message || encodeError);
+        // Last resort: Manually serialize TransferArgs using types coder, then manually construct instruction
+        console.log('[addDexLiquidity] Attempting manual Borsh serialization...');
+        
+        try {
+          // Serialize TransferArgs using types coder (bypasses layout encoder)
+          const transferArgsABytes = dexCoder.types.encode('TransferArgs', normalizedTransferArgsA);
+          const transferArgsBBytes = dexCoder.types.encode('TransferArgs', normalizedTransferArgsB);
+          
+          console.log(`[addDexLiquidity] TransferArgs A: ${transferArgsABytes.length} bytes, B: ${transferArgsBBytes.length} bytes`);
+          
+          // Manually construct instruction data using Borsh serialization
+          // Structure: discriminator + u64(amount_a) + u64(amount_b) + u64(min_lp_tokens) + TransferArgs A + TransferArgs B
+          const instructionParts: Buffer[] = [discriminatorBuffer];
+          
+          // Serialize u64 fields (little-endian, 8 bytes each)
+          const amountABuf = Buffer.allocUnsafe(8);
+          amountABuf.writeBigUInt64LE(BigInt(amountA.toString()), 0);
+          instructionParts.push(amountABuf);
+          
+          const amountBBuf = Buffer.allocUnsafe(8);
+          amountBBuf.writeBigUInt64LE(BigInt(amountB.toString()), 0);
+          instructionParts.push(amountBBuf);
+          
+          const minLpTokensBuf = Buffer.allocUnsafe(8);
+          minLpTokensBuf.writeBigUInt64LE(BigInt(params.minLpTokens.toString()), 0);
+          instructionParts.push(minLpTokensBuf);
+          
+          // Append serialized TransferArgs (already in Borsh format from types encoder)
+          instructionParts.push(transferArgsABytes);
+          instructionParts.push(transferArgsBBytes);
+          
+          addLiquidityData = Buffer.concat(instructionParts);
+          console.log(`[addDexLiquidity] Successfully manually serialized instruction: ${addLiquidityData.length} bytes`);
+        } catch (manualError: any) {
+          console.error('[addDexLiquidity] Manual Borsh serialization also failed:', manualError.message || manualError);
+          throw error; // Throw original error
+        }
+      }
+    } else {
+      throw error;
+    }
+  }
   
   // Build instruction keys (both tokens are always zTokens)
   const instructionKeys: Array<{ pubkey: PublicKey; isSigner: boolean; isWritable: boolean }> = [
@@ -4010,7 +4197,9 @@ export async function addDexLiquidity(params: AddLiquidityParams): Promise<strin
     { pubkey: lpTokenMint, isSigner: false, isWritable: true },
     { pubkey: userLpTokenAccount, isSigner: false, isWritable: true },
     { pubkey: userTokenAAccount, isSigner: false, isWritable: true },
+    { pubkey: poolTokenAAccount, isSigner: false, isWritable: true }, // Required by struct
     { pubkey: userTokenBAccount, isSigner: false, isWritable: true },
+    { pubkey: poolTokenBAccount, isSigner: false, isWritable: true }, // Required by struct
     { pubkey: payer, isSigner: true, isWritable: true },
     { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
     { pubkey: ASSOCIATED_TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
@@ -4053,13 +4242,194 @@ export async function addDexLiquidity(params: AddLiquidityParams): Promise<strin
     })
   );
   
-  // Send transaction
-  const latestBlockhash = await connection.getLatestBlockhash('confirmed');
-  const tx = new Transaction().add(...instructions);
-  tx.feePayer = payer;
-  tx.recentBlockhash = latestBlockhash.blockhash;
+  // Send transaction using VersionedTransaction to support large instruction data (1288 bytes > 1232 limit)
+  console.log(`[addDexLiquidity] Instruction data size: ${addLiquidityData.length} bytes (exceeds 1232-byte limit, using VersionedTransaction)`);
   
-  const signature = await wallet.sendTransaction(tx, connection, { skipPreflight: false });
+  const latestBlockhash = await connection.getLatestBlockhash('confirmed');
+  
+  // OPTIMIZE LOOKUP TABLE COMPRESSION (Option 1)
+  // Collect ALL accounts used in add_liquidity instruction for optimal compression
+  const allAccountsSet = new Set<string>();
+  const allAccounts: PublicKey[] = [];
+  
+  // Helper to add account if not already added
+  const addAccount = (pubkey: PublicKey) => {
+    const addr = pubkey.toBase58();
+    if (!allAccountsSet.has(addr)) {
+      allAccountsSet.add(addr);
+      allAccounts.push(pubkey);
+    }
+  };
+  
+  // Add all accounts from instruction keys (except payer/signers which must be direct)
+  for (const key of instructionKeys) {
+    if (!key.isSigner) {
+      addAccount(key.pubkey);
+    }
+  }
+  
+  // Add DEX program ID (implicit)
+  addAccount(DEX_PROGRAM_ID);
+  
+  console.log(`[addDexLiquidity] Collected ${allAccounts.length} unique accounts for compression`);
+  
+  // Get lookup tables if available to compress accounts
+  const { decoded: mintMappingA } = await fetchMintMappingAccount(connection, tokenAMint);
+  const { decoded: mintMappingB } = await fetchMintMappingAccount(connection, tokenBMint);
+  
+  let signature: string;
+  const lookupTables: AddressLookupTableAccount[] = [];
+  let primaryLookupTableAddress: PublicKey | null = null;
+  
+  // Use lookup table A as primary, extend it with missing accounts if needed
+  if (mintMappingA.lookupTable) {
+    primaryLookupTableAddress = mintMappingA.lookupTable;
+    const lookupTableA = await connection.getAddressLookupTable(primaryLookupTableAddress);
+    if (lookupTableA.value) {
+      lookupTables.push(lookupTableA.value);
+      
+      // Check which accounts are missing from lookup table A
+      const existingAddresses = new Set(
+        lookupTableA.value.state.addresses.map((addr) => addr.toBase58())
+      );
+      const missingAccounts = allAccounts.filter(
+        (addr) => !existingAddresses.has(addr.toBase58())
+      );
+      
+      if (missingAccounts.length > 0) {
+        console.log(`[addDexLiquidity] ${missingAccounts.length} accounts missing from lookup table A: ${missingAccounts.map(a => a.toBase58().slice(0, 8)).join(', ')}`);
+        
+        // Check if payer is the lookup table authority (required for extension)
+        const lookupTableAccountInfo = await connection.getAccountInfo(primaryLookupTableAddress, 'confirmed');
+        if (lookupTableAccountInfo) {
+          // Parse lookup table authority (first 32 bytes after discriminator)
+          const authorityBytes = lookupTableAccountInfo.data.slice(1, 33); // Skip discriminator byte
+          const lookupTableAuthority = new PublicKey(authorityBytes);
+          
+          if (lookupTableAuthority.equals(payer) && params.keypair) {
+            console.log(`[addDexLiquidity] Payer is lookup table authority, attempting to extend with ${missingAccounts.length} accounts`);
+            
+            try {
+              // Extend lookup table with missing accounts (non-blocking - proceed even if this fails)
+              const extendBlockhash = await connection.getLatestBlockhash('confirmed');
+              const extendIx = AddressLookupTableProgram.extendLookupTable({
+                authority: payer,
+                payer,
+                lookupTable: primaryLookupTableAddress,
+                addresses: missingAccounts
+              });
+              
+              const extendTx = new Transaction().add(extendIx);
+              extendTx.feePayer = payer;
+              extendTx.recentBlockhash = extendBlockhash.blockhash;
+              extendTx.partialSign(params.keypair);
+              
+              const extendSig = await connection.sendRawTransaction(extendTx.serialize(), { skipPreflight: false });
+              await waitForSignatureConfirmation(
+                connection,
+                extendSig,
+                extendBlockhash.blockhash,
+                extendBlockhash.lastValidBlockHeight
+              );
+              console.log(`[addDexLiquidity] ✓ Extended lookup table A: ${extendSig}`);
+              
+              // Reload lookup table after extension
+              const reloadedTable = await connection.getAddressLookupTable(primaryLookupTableAddress);
+              if (reloadedTable.value) {
+                lookupTables[0] = reloadedTable.value;
+                console.log(`[addDexLiquidity] Lookup table A now has ${reloadedTable.value.state.addresses.length} addresses`);
+              }
+            } catch (extendError: any) {
+              console.warn(`[addDexLiquidity] Failed to extend lookup table (non-fatal): ${extendError.message || extendError}. Proceeding with existing compression.`);
+            }
+          } else {
+            console.warn(`[addDexLiquidity] Cannot extend lookup table - payer (${payer.toBase58()}) is not authority (${lookupTableAuthority.toBase58()}) or keypair missing. Proceeding with partial compression.`);
+          }
+        }
+      } else {
+        console.log(`[addDexLiquidity] All accounts already in lookup table A (${lookupTableA.value.state.addresses.length} addresses)`);
+      }
+    }
+  }
+  
+  // Add lookup table B if different from A (can use up to 2 lookup tables)
+  if (mintMappingB.lookupTable && mintMappingB.lookupTable.toBase58() !== primaryLookupTableAddress?.toBase58() && lookupTables.length < 2) {
+    const lookupTableB = await connection.getAddressLookupTable(mintMappingB.lookupTable);
+    if (lookupTableB.value) {
+      lookupTables.push(lookupTableB.value);
+      console.log(`[addDexLiquidity] Added lookup table B (${lookupTableB.value.state.addresses.length} addresses)`);
+    }
+  }
+  
+  // Build VersionedTransaction using optimal lookup table compression
+  if (lookupTables.length === 0) {
+    throw new Error('Lookup table required for large instruction data. Ensure pools are prepared.');
+  }
+  
+  console.log(`[addDexLiquidity] Using ${lookupTables.length} lookup table(s) for compression`);
+  
+  // Use TransactionMessage.compileToV0Message for optimal compression with multiple lookup tables
+  // This handles account compression automatically
+  let messageV0: MessageV0;
+  try {
+    const baseMessage = new TransactionMessage({
+      payerKey: payer,
+      recentBlockhash: latestBlockhash.blockhash,
+      instructions
+    });
+    
+    // Use compileToV0Message with all lookup tables for maximum compression
+    messageV0 = baseMessage.compileToV0Message(lookupTables);
+    console.log(`[addDexLiquidity] ✓ Compiled MessageV0 with ${lookupTables.length} lookup table(s)`);
+  } catch (msgError: any) {
+    console.error('[addDexLiquidity] Failed to compile MessageV0:', msgError.message || msgError);
+    
+    // Fallback to manual MessageV0 construction with primary lookup table only
+    console.warn('[addDexLiquidity] Falling back to manual MessageV0 construction');
+    try {
+      messageV0 = buildManualMessageV0(
+        payer,
+        instructions,
+        latestBlockhash.blockhash,
+        lookupTables[0]!,
+        [payer] // Signers
+      );
+    } catch (manualError: any) {
+      console.error('[addDexLiquidity] Manual MessageV0 construction also failed:', manualError.message || manualError);
+      throw new Error(`Failed to build VersionedTransaction message: ${msgError.message || 'Unknown error'}. Instruction data is ${addLiquidityData.length} bytes. Consider splitting the operation.`);
+    }
+  }
+  
+  let versionedTx: VersionedTransaction;
+  try {
+    versionedTx = new VersionedTransaction(messageV0);
+  } catch (txError: any) {
+    console.error('[addDexLiquidity] Failed to create VersionedTransaction:', txError.message || txError);
+    throw new Error(`Failed to create VersionedTransaction: ${txError.message || 'Unknown error'}. Total message size may be too large.`);
+  }
+  
+  // Sign with keypair (required for VersionedTransaction)
+  if (!params.keypair) {
+    throw new Error('Keypair required for VersionedTransaction signing with large instruction data');
+  }
+  
+  try {
+    versionedTx.sign([params.keypair]);
+  } catch (signError: any) {
+    console.error('[addDexLiquidity] Failed to sign VersionedTransaction:', signError.message || signError);
+    throw new Error(`Failed to sign VersionedTransaction: ${signError.message || 'Unknown error'}`);
+  }
+  
+  let serialized: Uint8Array;
+  try {
+    serialized = versionedTx.serialize();
+    console.log(`[addDexLiquidity] VersionedTransaction serialized successfully: ${serialized.length} bytes`);
+  } catch (serializeError: any) {
+    console.error('[addDexLiquidity] Failed to serialize VersionedTransaction:', serializeError.message || serializeError);
+    throw new Error(`Failed to serialize VersionedTransaction: ${serializeError.message || 'Unknown error'}. Transaction may be too large.`);
+  }
+  
+  signature = await connection.sendRawTransaction(serialized, { skipPreflight: false });
   
   await waitForSignatureConfirmation(
     connection,

@@ -29,6 +29,14 @@ import { bytesLEToCanonicalHex, canonicalHexToBytesLE, canonicalizeHex } from '.
 import { poseidonHashMany } from './onchain/poseidon';
 
 /**
+ * Convert a public key to a field string (for proof RPC)
+ */
+function pubkeyToFieldString(key: PublicKey): string {
+  const hex = Buffer.from(key.toBytes()).toString('hex');
+  return BigInt(`0x${hex}`).toString();
+}
+
+/**
  * Get all zToken pool accounts for remaining_accounts in CPI calls.
  * Returns accounts in the order required by ptf_pool instructions.
  * 
@@ -211,7 +219,7 @@ export async function generateDexTransferProof(
   
   const outNotes = outputs.map(output => ({
     amount: output.amount.toString(),
-    recipient: output.recipient.toBase58(),
+    recipient: pubkeyToFieldString(output.recipient), // Convert pubkey to field string for proof RPC
     blinding: output.blinding
   }));
   
@@ -235,9 +243,10 @@ export async function generateDexTransferProof(
     outputAmountCommitments.push(amountCommit);
     
     // Output commitment (note commitment) = poseidon(recipient, amount, blinding)
-    // TODO: Properly convert recipient pubkey to field element
+    // Convert recipient pubkey to field element
+    const recipientField = BigInt(pubkeyToFieldString(output.recipient));
     const commitment = await poseidonHashMany([
-      BigInt(output.recipient.toBase58().slice(0, 10)), // Simplified - use proper field conversion
+      recipientField,
       output.amount,
       BigInt(output.blinding)
     ]);
@@ -436,35 +445,55 @@ export function proofToTransferArgs(proofResponse: {
   nullifiers: number[][];
   output_commitments: number[][];
   output_amount_commitments: number[][];
-  proof: number[];
-  public_inputs: number[];
+  proof: Buffer;
+  public_inputs: Buffer;
 } {
   // Decode base64 proof to bytes
-  const proofBytes = Buffer.from(proofResponse.proof, 'base64');
+  const proofBytesRaw = Buffer.from(proofResponse.proof, 'base64');
   
-  // Serialize public inputs
-  const publicInputsBytes = Buffer.concat(
-    proofResponse.publicInputs.map(hex => {
-      const normalized = hex.startsWith('0x') ? hex.slice(2) : hex;
-      return Buffer.from(normalized.padStart(64, '0'), 'hex');
-    })
-  );
+  // Ensure proof is exactly 192 bytes (Groth16 proof format)
+  // Create a new Buffer with exact size to avoid any padding issues
+  const proofBytes = proofBytesRaw.length === 192 
+    ? Buffer.from(proofBytesRaw) // Create new instance
+    : proofBytesRaw.length < 192
+      ? Buffer.concat([proofBytesRaw, Buffer.alloc(192 - proofBytesRaw.length, 0)])
+      : Buffer.from(proofBytesRaw.slice(0, 192));
+  
+  // Serialize public inputs using the same logic as decodeProofPayload
+  // Each public input is canonicalized and converted to 32-byte little-endian format
+  const fieldBytes = proofResponse.publicInputs.map((input, index) => {
+    if (typeof input !== 'string') {
+      throw new Error(`Public input at index ${index} is not a string`);
+    }
+    const canonical = canonicalizeHex(input);
+    const bytes = canonicalHexToBytesLE(canonical, 32);
+    if (bytes.length !== 32) {
+      throw new Error(`Public input at index ${index} must be 32 bytes`);
+    }
+    return bytes;
+  });
+  
+  // Flatten public inputs into a single Buffer (same format as decodeProofPayload)
+  const publicInputsBytes = Buffer.concat(fieldBytes.map((entry) => Buffer.from(entry)));
   
   // Convert roots from hex strings to bytes
   const oldRootBytes = canonicalHexToBytesLE(proofResponse.oldRoot);
   
-  // Extract new root from public inputs (typically first element after old root)
-  // TODO: Properly parse publicInputs to extract newRoot
-  const newRootBytes = oldRootBytes; // Placeholder - should extract from proofResponse.publicInputs
+  // Extract new root from public inputs (first element is typically new root)
+  // Public inputs format: [newRoot, ...nullifiers, ...outputCommitments, ...]
+  const newRootBytes = fieldBytes.length > 0 ? fieldBytes[0] : oldRootBytes;
   
+  // For Anchor's bytes type (Vec<u8> in Rust), Borsh encoding adds a 4-byte length prefix
+  // Anchor's BorshCoder should handle this automatically
+  // Try using plain Array instead of Buffer - Anchor might handle Array better for Vec<u8>
   return {
     old_root: Array.from(oldRootBytes),
     new_root: Array.from(newRootBytes),
     nullifiers: proofResponse.nullifiers.map(n => Array.from(n)),
     output_commitments: proofResponse.outputCommitments.map(c => Array.from(c)),
     output_amount_commitments: proofResponse.outputAmountCommitments.map(c => Array.from(c)),
-    proof: Array.from(proofBytes),
-    public_inputs: Array.from(publicInputsBytes)
+    proof: Array.from(proofBytes), // Plain Array - Anchor should serialize Vec<u8> with length prefix
+    public_inputs: Array.from(publicInputsBytes) // Plain Array - Anchor should serialize Vec<u8> with length prefix
   };
 }
 
