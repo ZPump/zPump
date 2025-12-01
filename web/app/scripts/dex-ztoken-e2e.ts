@@ -364,8 +364,7 @@ async function main() {
     await preparePool({
       connection,
       wallet: userAdapter,
-      originMint: tokenAMint.toBase58(),
-      proofClient
+      originMint: tokenAMint.toBase58()
     });
     console.info('[step-2.5] ✓ Pool A prepared');
   } catch (error: any) {
@@ -376,8 +375,7 @@ async function main() {
     await preparePool({
       connection,
       wallet: userAdapter,
-      originMint: tokenBMint.toBase58(),
-      proofClient
+      originMint: tokenBMint.toBase58()
     });
     console.info('[step-2.5] ✓ Pool B prepared');
   } catch (error: any) {

@@ -2114,6 +2114,544 @@ pub mod ptf_pool {
             &args.transfer,
         )
     }
+
+    // Batch private transfer for 2 transfers (solves DEX add_liquidity transaction size issue)
+    // Uses remaining_accounts for second pool's accounts
+    pub fn batch_private_transfer(
+        ctx: Context<BatchPrivateTransfer>, 
+        args: BatchTransferArgs
+    ) -> Result<()> {
+        require!(
+            args.transfers.len() == 2,
+            PoolError::InvalidPublicInputs
+        );
+        
+        msg!("batch_private_transfer: processing {} transfers", args.transfers.len());
+        
+        // Validate batch proof once for all transfers
+        let pool_state_0 = ctx.accounts.pool_state_0.load()?;
+        let verifier_program = &ctx.accounts.verifier_program;
+        let verifying_key = &ctx.accounts.verifying_key;
+        
+        require_keys_eq!(
+            verifier_program.key(),
+            pool_state_0.verifier_program,
+            PoolError::VerifierMismatch,
+        );
+        require_keys_eq!(
+            verifying_key.key(),
+            pool_state_0.verifying_key,
+            PoolError::VerifierMismatch,
+        );
+        require!(
+            verifying_key.verifying_key_id == pool_state_0.verifying_key_id,
+            PoolError::VerifierMismatch,
+        );
+        require!(
+            verifying_key.hash == pool_state_0.verifying_key_hash,
+            PoolError::VerifyingKeyHashMismatch,
+        );
+        require!(
+            pool_state_0
+                .features
+                .contains(FeatureFlags::from(FEATURE_PRIVATE_TRANSFER_ENABLED)),
+            PoolError::FeatureDisabled,
+        );
+        
+        // CRITICAL: Sanitize batch proof and public inputs
+        InputSanitizer::sanitize_proof(&args.proof, MAX_PROOF_SIZE)?;
+        InputSanitizer::sanitize_public_inputs(&args.public_inputs, MAX_PUBLIC_INPUTS_SIZE)?;
+        
+        // Verify batch proof once
+        let cpi_accounts = ptf_verifier_groth16::cpi::accounts::VerifyGroth16 {
+            verifier_state: verifying_key.to_account_info(),
+        };
+        let cpi_ctx = CpiContext::new(verifier_program.to_account_info(), cpi_accounts);
+        ptf_verifier_groth16::cpi::verify_groth16(
+            cpi_ctx,
+            pool_state_0.verifying_key_id,
+            args.proof.clone(),
+            args.public_inputs.clone(),
+        )?;
+        
+        msg!("batch_private_transfer: batch proof verified successfully");
+        
+        // Parse batch public inputs to extract individual transfer data
+        // Batch circuit structure: [old_root_0, new_root_0, nullifier_0_0, nullifier_1_0, output_commitment_0_0, output_commitment_1_0, mint_id_0, pool_id_0,
+        //                           old_root_1, new_root_1, nullifier_0_1, nullifier_1_1, output_commitment_0_1, output_commitment_1_1, mint_id_1, pool_id_1]
+        // Total: 16 field elements (8 per transfer × 2 transfers)
+        let batch_fields = parse_field_elements(&args.public_inputs)?;
+        require!(
+            batch_fields.len() == 16,
+            PoolError::InvalidPublicInputs
+        );
+        
+        // Extract transfer 0 data from batch public inputs (first 8 fields)
+        let transfer_0_data = BatchTransferData {
+            old_root: batch_fields[0],
+            new_root: batch_fields[1],
+            nullifiers: vec![batch_fields[2], batch_fields[3]],
+            output_commitments: vec![batch_fields[4], batch_fields[5]],
+            mint_id: batch_fields[6],
+            pool_id: batch_fields[7],
+        };
+        
+        // Extract transfer 1 data from batch public inputs (next 8 fields)
+        let transfer_1_data = BatchTransferData {
+            old_root: batch_fields[8],
+            new_root: batch_fields[9],
+            nullifiers: vec![batch_fields[10], batch_fields[11]],
+            output_commitments: vec![batch_fields[12], batch_fields[13]],
+            mint_id: batch_fields[14],
+            pool_id: batch_fields[15],
+        };
+        
+        // Validate transfers match batch public inputs
+        validate_batch_transfer_match(&args.transfers[0], &transfer_0_data, &pool_state_0.origin_mint, &ctx.accounts.pool_state_0.key())?;
+        
+        // Parse second pool accounts from remaining_accounts
+        // Expected order: pool_state_1, nullifier_set_1, commitment_tree_1, note_ledger_1, mint_mapping_1
+        require!(
+            ctx.remaining_accounts.len() >= 5,
+            PoolError::InvalidAccountOwner
+        );
+        
+        let pool_state_1_info = &ctx.remaining_accounts[0];
+        let nullifier_set_1_info = &ctx.remaining_accounts[1];
+        let commitment_tree_1_info = &ctx.remaining_accounts[2];
+        let note_ledger_1_info = &ctx.remaining_accounts[3];
+        let mint_mapping_1_info = &ctx.remaining_accounts[4];
+        
+        // Derive expected addresses for second pool from transfer_1_data.mint_id
+        let origin_mint_1 = field_bytes_to_pubkey(&transfer_1_data.mint_id)?;
+        let pool_addresses_1 = ptf_common::addresses::PoolAddresses::derive_all(
+            &origin_mint_1,
+            ctx.program_id,
+        );
+        let (expected_mint_mapping_1, _) = AddressDeriver::derive_mint_mapping(
+            &origin_mint_1,
+            &ptf_factory::ID,
+        );
+        
+        // Validate second pool accounts match expected PDAs
+        require_keys_eq!(
+            pool_state_1_info.key(),
+            pool_addresses_1.pool_state,
+            PoolError::OriginMintMismatch,
+        );
+        require_keys_eq!(
+            nullifier_set_1_info.key(),
+            pool_addresses_1.nullifier_set,
+            PoolError::NullifierSetMismatch,
+        );
+        require_keys_eq!(
+            commitment_tree_1_info.key(),
+            pool_addresses_1.commitment_tree,
+            PoolError::CommitmentTreeMismatch,
+        );
+        require_keys_eq!(
+            note_ledger_1_info.key(),
+            pool_addresses_1.note_ledger,
+            PoolError::NoteLedgerMismatch,
+        );
+        require_keys_eq!(
+            mint_mapping_1_info.key(),
+            expected_mint_mapping_1,
+            PoolError::OriginMintMismatch,
+        );
+        
+        // Load second pool state to validate pool_id matches
+        // SAFETY: AccountInfo from remaining_accounts has a different lifetime, but we validate it before use
+        // The account data is valid for the duration of the instruction execution
+        let pool_state_1_loader: AccountLoader<PoolState> = unsafe {
+            let info: &AccountInfo = std::mem::transmute(pool_state_1_info);
+            AccountLoader::try_from(info)?
+        };
+        let pool_state_1 = pool_state_1_loader.load()?;
+        require_keys_eq!(
+            pool_state_1.origin_mint,
+            origin_mint_1,
+            PoolError::OriginMintMismatch,
+        );
+        
+        // Validate transfer 1 matches batch public inputs
+        validate_batch_transfer_match(&args.transfers[1], &transfer_1_data, &origin_mint_1, &pool_state_1_info.key())?;
+        
+        ensure_mint_active(mint_mapping_1_info)?;
+        
+        // Execute both transfers atomically (all succeed or all fail)
+        // Start with transfer 0
+        msg!("batch_private_transfer: executing transfer 0");
+        execute_batch_transfer(
+            &ctx.accounts.pool_state_0,
+            &mut ctx.accounts.nullifier_set_0,
+            &ctx.accounts.payer.to_account_info(),
+            &ctx.accounts.system_program.to_account_info(),
+            &ctx.accounts.commitment_tree_0,
+            &ctx.accounts.note_ledger_0,
+            &transfer_0_data,
+            &args.transfers[0],
+        )?;
+        
+        msg!("batch_private_transfer: executing transfer 1");
+        // Then transfer 1 (using parsed accounts)
+        // SAFETY: AccountInfo from remaining_accounts has a different lifetime, but we validate it before use
+        let mut nullifier_set_1 = unsafe {
+            let info: &AccountInfo = std::mem::transmute(nullifier_set_1_info);
+            Account::<NullifierSet>::try_from(info)?
+        };
+        let commitment_tree_1_loader: AccountLoader<CommitmentTree> = unsafe {
+            let info: &AccountInfo = std::mem::transmute(commitment_tree_1_info);
+            AccountLoader::try_from(info)?
+        };
+        let note_ledger_1_loader: AccountLoader<NoteLedger> = unsafe {
+            let info: &AccountInfo = std::mem::transmute(note_ledger_1_info);
+            AccountLoader::try_from(info)?
+        };
+        
+        execute_batch_transfer(
+            &pool_state_1_loader,
+            &mut nullifier_set_1,
+            &ctx.accounts.payer.to_account_info(),
+            &ctx.accounts.system_program.to_account_info(),
+            &commitment_tree_1_loader,
+            &note_ledger_1_loader,
+            &transfer_1_data,
+            &args.transfers[1],
+        )?;
+        
+        msg!("batch_private_transfer: both transfers executed successfully");
+        Ok(())
+    }
+
+    // Batch private transfer from for 2 transfers (with approvals)
+    // Uses remaining_accounts for second pool's accounts and allowances
+    pub fn batch_transfer_from(
+        ctx: Context<BatchTransferFrom>,
+        args: BatchTransferFromArgs
+    ) -> Result<()> {
+        require!(
+            args.batch_transfer.transfers.len() == 2,
+            PoolError::InvalidPublicInputs
+        );
+        require!(
+            args.allowances.len() == 2,
+            PoolError::InvalidPublicInputs
+        );
+        
+        msg!("batch_transfer_from: processing {} transfers with allowances", args.batch_transfer.transfers.len());
+        
+        // Parse remaining accounts for second pool and allowances
+        // Expected order: pool_state_1, nullifier_set_1, commitment_tree_1, note_ledger_1, mint_mapping_1, allowance_1, allowance_owner_1
+        require!(
+            ctx.remaining_accounts.len() >= 7,
+            PoolError::InvalidAccountOwner
+        );
+        
+        // SAFETY: AccountInfo from remaining_accounts has a different lifetime, but we validate it before use
+        // We use unsafe to extend the lifetime for the duration of the instruction
+        let pool_state_1_info: &AccountInfo = unsafe { std::mem::transmute(&ctx.remaining_accounts[0]) };
+        let nullifier_set_1_info: &AccountInfo = unsafe { std::mem::transmute(&ctx.remaining_accounts[1]) };
+        let commitment_tree_1_info: &AccountInfo = unsafe { std::mem::transmute(&ctx.remaining_accounts[2]) };
+        let note_ledger_1_info: &AccountInfo = unsafe { std::mem::transmute(&ctx.remaining_accounts[3]) };
+        let mint_mapping_1_info: &AccountInfo = unsafe { std::mem::transmute(&ctx.remaining_accounts[4]) };
+        let allowance_1_info: &AccountInfo = unsafe { std::mem::transmute(&ctx.remaining_accounts[5]) };
+        let allowance_owner_1_info: &AccountInfo = unsafe { std::mem::transmute(&ctx.remaining_accounts[6]) };
+        
+        // Validate batch proof once for all transfers
+        let pool_state_0 = ctx.accounts.pool_state_0.load()?;
+        let verifier_program = &ctx.accounts.verifier_program;
+        let verifying_key = &ctx.accounts.verifying_key;
+        
+        require_keys_eq!(
+            verifier_program.key(),
+            pool_state_0.verifier_program,
+            PoolError::VerifierMismatch,
+        );
+        require_keys_eq!(
+            verifying_key.key(),
+            pool_state_0.verifying_key,
+            PoolError::VerifierMismatch,
+        );
+        require!(
+            verifying_key.verifying_key_id == pool_state_0.verifying_key_id,
+            PoolError::VerifierMismatch,
+        );
+        require!(
+            verifying_key.hash == pool_state_0.verifying_key_hash,
+            PoolError::VerifyingKeyHashMismatch,
+        );
+        require!(
+            pool_state_0
+                .features
+                .contains(FeatureFlags::from(FEATURE_PRIVATE_TRANSFER_ENABLED)),
+            PoolError::FeatureDisabled,
+        );
+        
+        // CRITICAL: Sanitize batch proof and public inputs
+        InputSanitizer::sanitize_proof(&args.batch_transfer.proof, MAX_PROOF_SIZE)?;
+        InputSanitizer::sanitize_public_inputs(&args.batch_transfer.public_inputs, MAX_PUBLIC_INPUTS_SIZE)?;
+        
+        // Verify batch proof once
+        let cpi_accounts = ptf_verifier_groth16::cpi::accounts::VerifyGroth16 {
+            verifier_state: verifying_key.to_account_info(),
+        };
+        let cpi_ctx = CpiContext::new(verifier_program.to_account_info(), cpi_accounts);
+        ptf_verifier_groth16::cpi::verify_groth16(
+            cpi_ctx,
+            pool_state_0.verifying_key_id,
+            args.batch_transfer.proof.clone(),
+            args.batch_transfer.public_inputs.clone(),
+        )?;
+        
+        msg!("batch_transfer_from: batch proof verified successfully");
+        
+        // Parse batch public inputs to extract individual transfer data
+        let batch_fields = parse_field_elements(&args.batch_transfer.public_inputs)?;
+        require!(
+            batch_fields.len() == 16,
+            PoolError::InvalidPublicInputs
+        );
+        
+        // Extract transfer 0 data
+        let transfer_0_data = BatchTransferData {
+            old_root: batch_fields[0],
+            new_root: batch_fields[1],
+            nullifiers: vec![batch_fields[2], batch_fields[3]],
+            output_commitments: vec![batch_fields[4], batch_fields[5]],
+            mint_id: batch_fields[6],
+            pool_id: batch_fields[7],
+        };
+        
+        // Extract transfer 1 data
+        let transfer_1_data = BatchTransferData {
+            old_root: batch_fields[8],
+            new_root: batch_fields[9],
+            nullifiers: vec![batch_fields[10], batch_fields[11]],
+            output_commitments: vec![batch_fields[12], batch_fields[13]],
+            mint_id: batch_fields[14],
+            pool_id: batch_fields[15],
+        };
+        
+        // Validate transfers match batch public inputs
+        validate_batch_transfer_match(&args.batch_transfer.transfers[0], &transfer_0_data, &pool_state_0.origin_mint, &ctx.accounts.pool_state_0.key())?;
+        
+        // Derive expected addresses for second pool
+        let origin_mint_1 = field_bytes_to_pubkey(&transfer_1_data.mint_id)?;
+        let pool_addresses_1 = ptf_common::addresses::PoolAddresses::derive_all(
+            &origin_mint_1,
+            ctx.program_id,
+        );
+        let (expected_mint_mapping_1, _) = AddressDeriver::derive_mint_mapping(
+            &origin_mint_1,
+            &ptf_factory::ID,
+        );
+        
+        // Validate second pool accounts match expected PDAs
+        require_keys_eq!(
+            pool_state_1_info.key(),
+            pool_addresses_1.pool_state,
+            PoolError::OriginMintMismatch,
+        );
+        require_keys_eq!(
+            nullifier_set_1_info.key(),
+            pool_addresses_1.nullifier_set,
+            PoolError::NullifierSetMismatch,
+        );
+        require_keys_eq!(
+            commitment_tree_1_info.key(),
+            pool_addresses_1.commitment_tree,
+            PoolError::CommitmentTreeMismatch,
+        );
+        require_keys_eq!(
+            note_ledger_1_info.key(),
+            pool_addresses_1.note_ledger,
+            PoolError::NoteLedgerMismatch,
+        );
+        require_keys_eq!(
+            mint_mapping_1_info.key(),
+            expected_mint_mapping_1,
+            PoolError::OriginMintMismatch,
+        );
+        
+        // Load second pool state
+        // SAFETY: AccountInfo from remaining_accounts has a different lifetime, but we validate it before use
+        let pool_state_1_loader: AccountLoader<PoolState> = unsafe {
+            let info: &AccountInfo = std::mem::transmute(pool_state_1_info);
+            AccountLoader::try_from(info)?
+        };
+        let pool_state_1 = pool_state_1_loader.load()?;
+        require_keys_eq!(
+            pool_state_1.origin_mint,
+            origin_mint_1,
+            PoolError::OriginMintMismatch,
+        );
+        
+        // Validate transfer 1 matches batch public inputs
+        validate_batch_transfer_match(&args.batch_transfer.transfers[1], &transfer_1_data, &origin_mint_1, &pool_state_1_info.key())?;
+        
+        ensure_mint_active(mint_mapping_1_info)?;
+        
+        // CRITICAL: Validate and decrement ALL allowances BEFORE executing any transfer
+        // This ensures atomicity - if any allowance is insufficient, entire transaction reverts
+        let clock = Clock::get()?;
+        
+        // Validate allowance 0
+        {
+            let allowance = &mut ctx.accounts.allowance_0;
+            let allowance_info = &args.allowances[0];
+            
+            require_keys_eq!(
+                allowance.pool,
+                ctx.accounts.pool_state_0.key(),
+                PoolError::AllowancePoolMismatch
+            );
+            require_keys_eq!(
+                allowance.owner,
+                ctx.accounts.allowance_owner_0.key(),
+                PoolError::AllowanceOwnerMismatch
+            );
+            require_keys_eq!(
+                allowance.spender,
+                ctx.accounts.spender.key(),
+                PoolError::AllowanceSpenderMismatch
+            );
+            require_keys_eq!(allowance.mint, pool_state_0.origin_mint, PoolError::AllowanceMintMismatch);
+            
+            // Check expiration
+            if let Some(expires_at) = allowance.expires_at {
+                require!(
+                    clock.unix_timestamp < expires_at,
+                    PoolError::AllowanceExpired
+                );
+            }
+            
+            require!(allowance_info.allowance_amount > 0, PoolError::AllowanceAmountInvalid);
+            require!(allowance_info.spend_amount > 0, PoolError::AllowanceAmountInvalid);
+            require!(
+                allowance_info.spend_amount <= allowance_info.allowance_amount,
+                PoolError::AllowanceInsufficient
+            );
+            require!(
+                allowance.amount >= allowance_info.spend_amount,
+                PoolError::AllowanceInsufficient
+            );
+            
+            // Decrement allowance (atomic - happens before any transfer)
+            allowance.amount = allowance
+                .amount
+                .checked_sub(allowance_info.spend_amount)
+                .ok_or(PoolError::AllowanceInsufficient)?;
+            allowance.updated_at = clock.unix_timestamp;
+            emit!(PTFAllowanceUpdated {
+                mint: allowance.mint,
+                owner: allowance.owner,
+                spender: allowance.spender,
+                amount: allowance.amount,
+            });
+        }
+        
+        // Validate allowance 1
+        {
+            let mut allowance_1 = Account::<AllowanceAccount>::try_from(allowance_1_info)?;
+            let allowance_info = &args.allowances[1];
+            
+            require_keys_eq!(
+                allowance_1.pool,
+                pool_state_1_info.key(),
+                PoolError::AllowancePoolMismatch
+            );
+            require_keys_eq!(
+                allowance_1.owner,
+                allowance_owner_1_info.key(),
+                PoolError::AllowanceOwnerMismatch
+            );
+            require_keys_eq!(
+                allowance_1.spender,
+                ctx.accounts.spender.key(),
+                PoolError::AllowanceSpenderMismatch
+            );
+            require_keys_eq!(allowance_1.mint, pool_state_1.origin_mint, PoolError::AllowanceMintMismatch);
+            
+            // Check expiration
+            if let Some(expires_at) = allowance_1.expires_at {
+                require!(
+                    clock.unix_timestamp < expires_at,
+                    PoolError::AllowanceExpired
+                );
+            }
+            
+            require!(allowance_info.allowance_amount > 0, PoolError::AllowanceAmountInvalid);
+            require!(allowance_info.spend_amount > 0, PoolError::AllowanceAmountInvalid);
+            require!(
+                allowance_info.spend_amount <= allowance_info.allowance_amount,
+                PoolError::AllowanceInsufficient
+            );
+            require!(
+                allowance_1.amount >= allowance_info.spend_amount,
+                PoolError::AllowanceInsufficient
+            );
+            
+            // Decrement allowance (atomic - happens before any transfer)
+            allowance_1.amount = allowance_1
+                .amount
+                .checked_sub(allowance_info.spend_amount)
+                .ok_or(PoolError::AllowanceInsufficient)?;
+            allowance_1.updated_at = clock.unix_timestamp;
+            emit!(PTFAllowanceUpdated {
+                mint: allowance_1.mint,
+                owner: allowance_1.owner,
+                spender: allowance_1.spender,
+                amount: allowance_1.amount,
+            });
+        }
+        
+        msg!("batch_transfer_from: all allowances validated and decremented");
+        
+        // Execute both transfers atomically (all succeed or all fail)
+        // Start with transfer 0
+        msg!("batch_transfer_from: executing transfer 0");
+        execute_batch_transfer(
+            &ctx.accounts.pool_state_0,
+            &mut ctx.accounts.nullifier_set_0,
+            &ctx.accounts.spender.to_account_info(),
+            &ctx.accounts.system_program.to_account_info(),
+            &ctx.accounts.commitment_tree_0,
+            &ctx.accounts.note_ledger_0,
+            &transfer_0_data,
+            &args.batch_transfer.transfers[0],
+        )?;
+        
+        msg!("batch_transfer_from: executing transfer 1");
+        // Then transfer 1
+        // SAFETY: AccountInfo from remaining_accounts has a different lifetime, but we validate it before use
+        let mut nullifier_set_1 = unsafe {
+            let info: &AccountInfo = std::mem::transmute(nullifier_set_1_info);
+            Account::<NullifierSet>::try_from(info)?
+        };
+        let commitment_tree_1_loader: AccountLoader<CommitmentTree> = unsafe {
+            let info: &AccountInfo = std::mem::transmute(commitment_tree_1_info);
+            AccountLoader::try_from(info)?
+        };
+        let note_ledger_1_loader: AccountLoader<NoteLedger> = unsafe {
+            let info: &AccountInfo = std::mem::transmute(note_ledger_1_info);
+            AccountLoader::try_from(info)?
+        };
+        
+        execute_batch_transfer(
+            &pool_state_1_loader,
+            &mut nullifier_set_1,
+            &ctx.accounts.spender.to_account_info(),
+            &ctx.accounts.system_program.to_account_info(),
+            &commitment_tree_1_loader,
+            &note_ledger_1_loader,
+            &transfer_1_data,
+            &args.batch_transfer.transfers[1],
+        )?;
+        
+        msg!("batch_transfer_from: both transfers executed successfully");
+        Ok(())
+    }
 }
 
 fn execute_private_transfer<'info>(
@@ -2236,6 +2774,187 @@ fn execute_private_transfer<'info>(
         outputs: args.output_commitments.clone(),
         root: new_root,
     });
+    Ok(())
+}
+
+// Helper function to convert field bytes to Pubkey (reverse of pubkey_to_field_bytes)
+fn field_bytes_to_pubkey(bytes: &[u8; 32]) -> Result<Pubkey> {
+    // Field bytes are little-endian, need to reverse to get Pubkey bytes
+    let mut pubkey_bytes = *bytes;
+    pubkey_bytes.reverse();
+    Pubkey::try_from(pubkey_bytes.as_slice())
+        .map_err(|_| PoolError::InvalidPublicInputs.into())
+}
+
+// Validate that TransferArgs matches BatchTransferData from batch public inputs
+fn validate_batch_transfer_match(
+    transfer_args: &TransferArgs,
+    batch_data: &BatchTransferData,
+    expected_mint: &Pubkey,
+    expected_pool: &Pubkey,
+) -> Result<()> {
+    // Validate roots match
+    require!(
+        transfer_args.old_root == batch_data.old_root,
+        PoolError::PublicInputMismatch
+    );
+    require!(
+        transfer_args.new_root == batch_data.new_root,
+        PoolError::PublicInputMismatch
+    );
+    
+    // Validate nullifiers match (exactly 2 for batch circuit)
+    require!(
+        transfer_args.nullifiers.len() == 2 && batch_data.nullifiers.len() == 2,
+        PoolError::InvalidPublicInputs
+    );
+    require!(
+        transfer_args.nullifiers[0] == batch_data.nullifiers[0],
+        PoolError::PublicInputMismatch
+    );
+    require!(
+        transfer_args.nullifiers[1] == batch_data.nullifiers[1],
+        PoolError::PublicInputMismatch
+    );
+    
+    // Validate output commitments match
+    // OPTIMIZATION: Allow 1 output in TransferArgs when second output is zero (saves 64 bytes per transfer)
+    // Batch circuit always outputs 2 commitments in public inputs, but we can optimize TransferArgs
+    // The batch proof already validates both outputs are correct, so we trust batch_data for the second
+    require!(
+        batch_data.output_commitments.len() == 2,
+        PoolError::InvalidPublicInputs
+    );
+    require!(
+        transfer_args.output_commitments.len() == 1 || transfer_args.output_commitments.len() == 2,
+        PoolError::InvalidPublicInputs
+    );
+    
+    // First output must always match
+    require!(
+        transfer_args.output_commitments[0] == batch_data.output_commitments[0],
+        PoolError::PublicInputMismatch
+    );
+    
+    // If TransferArgs has 2 outputs, both must match
+    // If TransferArgs has 1 output, we'll reconstruct the second from batch_data (optimization)
+    if transfer_args.output_commitments.len() == 2 {
+        require!(
+            transfer_args.output_commitments[1] == batch_data.output_commitments[1],
+            PoolError::PublicInputMismatch
+        );
+    }
+    // If TransferArgs has 1 output, we accept it (second will be reconstructed from batch_data)
+    
+    // Validate mint and pool match
+    let mint_from_field = field_bytes_to_pubkey(&batch_data.mint_id)?;
+    let pool_from_field = field_bytes_to_pubkey(&batch_data.pool_id)?;
+    
+    require_keys_eq!(
+        mint_from_field,
+        *expected_mint,
+        PoolError::OriginMintMismatch
+    );
+    require_keys_eq!(
+        pool_from_field,
+        *expected_pool,
+        PoolError::OriginMintMismatch
+    );
+    
+    Ok(())
+}
+
+// Execute a single transfer from batch (without proof verification - already done)
+fn execute_batch_transfer<'info>(
+    pool_loader: &AccountLoader<'info, PoolState>,
+    nullifier_set: &mut Account<'info, NullifierSet>,
+    payer: &AccountInfo<'info>,
+    system_program: &AccountInfo<'info>,
+    commitment_tree_loader: &AccountLoader<'info, CommitmentTree>,
+    note_ledger_loader: &AccountLoader<'info, NoteLedger>,
+    batch_data: &BatchTransferData,
+    transfer_args: &TransferArgs,
+) -> Result<()> {
+    let mut pool_state = pool_loader.load_mut()?;
+    
+    // Validate root
+    require!(
+        pool_state.is_known_root(&batch_data.old_root),
+        PoolError::UnknownRoot,
+    );
+    
+    // Validate root matches commitment tree
+    {
+        let commitment_tree = commitment_tree_loader.load()?;
+        pool_state.validate_root_strict(&commitment_tree.current_root, &batch_data.old_root)?;
+    }
+    
+    // Process nullifiers
+    for nullifier in &batch_data.nullifiers {
+        NullifierSet::insert_with_validation(nullifier_set, payer, system_program, *nullifier, &pool_loader.key())
+            .map_err(|_| PoolError::NullifierReuse)?;
+        emit!(PTFNullifierUsed {
+            mint: pool_state.origin_mint,
+            nullifier: *nullifier,
+        });
+    }
+    
+    require!(
+        transfer_args.output_commitments.len() == transfer_args.output_amount_commitments.len(),
+        PoolError::OutputSetMismatch,
+    );
+    
+    // OPTIMIZATION: If TransferArgs has 1 output but batch_data has 2 (with second zero),
+    // reconstruct the full set from batch_data. This saves 64 bytes per transfer in instruction data.
+    let commitments_to_append: Vec<[u8; 32]> = if transfer_args.output_commitments.len() == 1 && batch_data.output_commitments.len() == 2 {
+        // Use TransferArgs first output + batch_data second output (which should be zero)
+        vec![transfer_args.output_commitments[0], batch_data.output_commitments[1]]
+    } else {
+        transfer_args.output_commitments.clone()
+    };
+    
+    let amounts_to_append: Vec<[u8; 32]> = if transfer_args.output_amount_commitments.len() == 1 && batch_data.output_commitments.len() == 2 {
+        // Reconstruct: first from TransferArgs, second is zero (all zeros for zero amount commitment)
+        vec![transfer_args.output_amount_commitments[0], [0u8; 32]]
+    } else {
+        transfer_args.output_amount_commitments.clone()
+    };
+    
+    require!(
+        commitments_to_append.len() == amounts_to_append.len(),
+        PoolError::OutputSetMismatch,
+    );
+    require!(
+        commitments_to_append.len() == 2,
+        PoolError::InvalidPublicInputs
+    );
+    
+    // Append commitments to tree
+    let (computed_new_root, _output_indices) = {
+        let mut commitment_tree = commitment_tree_loader.load_mut()?;
+        commitment_tree.append_many(
+            commitments_to_append.as_slice(),
+            amounts_to_append.as_slice(),
+        )?
+    };
+    
+    // Use computed root (which includes outputs) as the actual state
+    let new_root = computed_new_root;
+    pool_state.push_root(new_root)?;
+    
+    {
+        let mut note_ledger = note_ledger_loader.load_mut()?;
+        // Use reconstructed amounts (includes both outputs, even if second was optimized away)
+        note_ledger.record_transfer(&batch_data.nullifiers, amounts_to_append.as_slice())?;
+    }
+    
+    emit!(PTFTransferred {
+        mint: pool_state.origin_mint,
+        inputs: batch_data.nullifiers.clone(),
+        outputs: commitments_to_append.clone(), // Use reconstructed commitments
+        root: new_root,
+    });
+    
     Ok(())
 }
 
@@ -3854,6 +4573,134 @@ pub struct PrivateTransfer<'info> {
     pub rent: Sysvar<'info, Rent>,
 }
 
+// Batch private transfer account context - supports exactly 2 transfers
+// First pool accounts are explicit, second pool accounts via remaining_accounts
+// This matches the batch_transfer circuit which supports 2 transfers
+#[derive(Accounts)]
+pub struct BatchPrivateTransfer<'info> {
+    // First transfer accounts (explicit)
+    #[account(
+        mut,
+        seeds = [seeds::POOL, pool_state_0.load()?.origin_mint.as_ref()],
+        bump
+    )]
+    pub pool_state_0: AccountLoader<'info, PoolState>,
+    #[account(
+        mut,
+        seeds = [seeds::NULLIFIERS, pool_state_0.load()?.origin_mint.as_ref()],
+        bump = nullifier_set_0.bump
+    )]
+    pub nullifier_set_0: Account<'info, NullifierSet>,
+    #[account(
+        mut,
+        seeds = [seeds::TREE, pool_state_0.load()?.origin_mint.as_ref()],
+        bump = commitment_tree_0.load()?.bump,
+        constraint = commitment_tree_0.load()?.pool == pool_state_0.key() @ PoolError::CommitmentTreeMismatch
+    )]
+    pub commitment_tree_0: AccountLoader<'info, CommitmentTree>,
+    #[account(
+        mut,
+        seeds = [seeds::NOTES, pool_state_0.load()?.origin_mint.as_ref()],
+        bump = pool_state_0.load()?.note_ledger_bump,
+        constraint = note_ledger_0.key() == pool_state_0.load()?.note_ledger @ PoolError::NoteLedgerMismatch,
+        constraint = note_ledger_0.load()?.pool == pool_state_0.key() @ PoolError::NoteLedgerMismatch,
+    )]
+    pub note_ledger_0: AccountLoader<'info, NoteLedger>,
+    /// CHECK: Validated in instruction via ensure_mint_active
+    #[account(
+        seeds = [seeds::MINT_MAPPING, pool_state_0.load()?.origin_mint.as_ref()],
+        bump,
+        seeds::program = ptf_factory::ID,
+    )]
+    pub mint_mapping_0: UncheckedAccount<'info>,
+    
+    // Shared accounts (verifier_program and verifying_key are shared across all transfers)
+    pub verifier_program: Program<'info, PtfVerifierGroth16>,
+    #[account(
+        address = pool_state_0.load()?.verifying_key,
+        constraint = verifying_key.hash == pool_state_0.load()?.verifying_key_hash @ PoolError::VerifyingKeyHashMismatch,
+    )]
+    pub verifying_key: Account<'info, VerifyingKeyAccount>,
+    
+    #[account(mut)]
+    pub payer: Signer<'info>,
+    pub system_program: Program<'info, System>,
+    pub rent: Sysvar<'info, Rent>,
+    
+    // Note: Second pool accounts are passed via ctx.remaining_accounts in the instruction
+    // Expected order: pool_state_1, nullifier_set_1, commitment_tree_1, note_ledger_1, mint_mapping_1
+}
+
+#[derive(Accounts)]
+pub struct BatchTransferFrom<'info> {
+    // First transfer accounts (explicit)
+    #[account(
+        mut,
+        seeds = [seeds::POOL, pool_state_0.load()?.origin_mint.as_ref()],
+        bump
+    )]
+    pub pool_state_0: AccountLoader<'info, PoolState>,
+    #[account(
+        mut,
+        seeds = [seeds::NULLIFIERS, pool_state_0.load()?.origin_mint.as_ref()],
+        bump = nullifier_set_0.bump
+    )]
+    pub nullifier_set_0: Account<'info, NullifierSet>,
+    #[account(
+        mut,
+        seeds = [seeds::TREE, pool_state_0.load()?.origin_mint.as_ref()],
+        bump = commitment_tree_0.load()?.bump,
+        constraint = commitment_tree_0.load()?.pool == pool_state_0.key() @ PoolError::CommitmentTreeMismatch
+    )]
+    pub commitment_tree_0: AccountLoader<'info, CommitmentTree>,
+    #[account(
+        mut,
+        seeds = [seeds::NOTES, pool_state_0.load()?.origin_mint.as_ref()],
+        bump = pool_state_0.load()?.note_ledger_bump,
+        constraint = note_ledger_0.key() == pool_state_0.load()?.note_ledger @ PoolError::NoteLedgerMismatch,
+        constraint = note_ledger_0.load()?.pool == pool_state_0.key() @ PoolError::NoteLedgerMismatch,
+    )]
+    pub note_ledger_0: AccountLoader<'info, NoteLedger>,
+    /// CHECK: Validated in instruction via ensure_mint_active
+    #[account(
+        seeds = [seeds::MINT_MAPPING, pool_state_0.load()?.origin_mint.as_ref()],
+        bump,
+        seeds::program = ptf_factory::ID,
+    )]
+    pub mint_mapping_0: UncheckedAccount<'info>,
+    
+    // First transfer allowance account
+    #[account(
+        mut,
+        seeds = [
+            seeds::ALLOWANCE,
+            pool_state_0.key().as_ref(),
+            allowance_owner_0.key().as_ref(),
+            spender.key().as_ref()
+        ],
+        bump
+    )]
+    pub allowance_0: Account<'info, AllowanceAccount>,
+    /// CHECK: Allowance owner (validated in instruction)
+    pub allowance_owner_0: UncheckedAccount<'info>,
+    
+    // Shared accounts (verifier_program and verifying_key are shared across all transfers)
+    pub verifier_program: Program<'info, PtfVerifierGroth16>,
+    #[account(
+        address = pool_state_0.load()?.verifying_key,
+        constraint = verifying_key.hash == pool_state_0.load()?.verifying_key_hash @ PoolError::VerifyingKeyHashMismatch,
+    )]
+    pub verifying_key: Account<'info, VerifyingKeyAccount>,
+    
+    #[account(mut)]
+    pub spender: Signer<'info>,
+    pub system_program: Program<'info, System>,
+    pub rent: Sysvar<'info, Rent>,
+    
+    // Note: Second pool accounts are passed via ctx.remaining_accounts in the instruction
+    // Expected order: pool_state_1, nullifier_set_1, commitment_tree_1, note_ledger_1, mint_mapping_1, allowance_1, allowance_owner_1
+}
+
 #[derive(AnchorSerialize, AnchorDeserialize, Clone)]
 pub struct ShieldArgs {
     pub amount_commit: [u8; 32],
@@ -3908,6 +4755,35 @@ pub struct TransferFromArgs {
     // CRITICAL FIX: Actual spend amount from the transfer (sum of outputs to others, excluding change)
     // This must match allowance_amount to prevent bypass attacks
     pub spend_amount: u64,
+}
+
+#[derive(AnchorSerialize, AnchorDeserialize, Clone)]
+pub struct BatchTransferArgs {
+    pub transfers: Vec<TransferArgs>,  // 2-10 transfers
+    pub proof: Vec<u8>,
+    pub public_inputs: Vec<u8>,
+}
+
+#[derive(AnchorSerialize, AnchorDeserialize, Clone)]
+pub struct BatchTransferFromArgs {
+    pub batch_transfer: BatchTransferArgs,
+    pub allowances: Vec<TransferFromAllowanceInfo>,  // One per transfer (2 transfers)
+}
+
+#[derive(AnchorSerialize, AnchorDeserialize, Clone)]
+pub struct TransferFromAllowanceInfo {
+    pub allowance_amount: u64,
+    pub spend_amount: u64,
+}
+
+// Helper struct to hold parsed batch transfer data from public inputs
+struct BatchTransferData {
+    old_root: [u8; 32],
+    new_root: [u8; 32],
+    nullifiers: Vec<[u8; 32]>,
+    output_commitments: Vec<[u8; 32]>,
+    mint_id: [u8; 32],
+    pool_id: [u8; 32],
 }
 
 #[derive(Accounts)]

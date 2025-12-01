@@ -15,7 +15,7 @@ async function main() {
   console.log('[test-add-liquidity-compression] Testing Option 1: Lookup Table Compression');
   
   const connection = new Connection(RPC_URL, 'confirmed');
-  const proofClient = new ProofClient(PROOF_URL);
+  const proofClient = new ProofClient({ baseUrl: PROOF_URL });
   
   // Use existing keys or generate new ones
   // For testing, you can provide existing token mints and pools
@@ -40,7 +40,7 @@ async function main() {
   try {
     const signature = await addDexLiquidity({
       connection,
-      wallet: userAdapter,
+      wallet: userAdapter as any,
       tokenA: tokenA.toBase58(),
       tokenB: tokenB.toBase58(),
       amountA: 1000000n,

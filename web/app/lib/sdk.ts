@@ -67,6 +67,9 @@ import {
   generateDexShieldProof,
   generateDexTransferProof,
   generateDexTransferProofSimple,
+  generateBatchTransferProof,
+  generateBatchTransferFromProof,
+  generateBatchLiquidityProof,
   proofToShieldArgs,
   proofToTransferArgs,
   createEmptyShieldArgs
@@ -433,6 +436,22 @@ interface TransferFromParams extends TransferParams {
   // CRITICAL FIX: Actual spend amount (sum of outputs to others, excluding change back to spender)
   // This must match allowanceAmount to prevent bypass attacks
   spendAmount: bigint | number | string;
+}
+
+interface BatchTransferParams {
+  connection: Connection;
+  wallet: WalletContextState;
+  transfers: Array<{
+    originMint: string;
+    poolId: string;
+    proof: ProofResponse;
+    nullifiers: readonly string[];
+    outputCommitments: readonly string[];
+    outputAmountCommitments: readonly string[];
+  }>;
+  batchProof: ProofResponse; // Combined batch proof
+  batchPublicInputs: string[]; // Combined public inputs from batch proof (16 field elements for 2 transfers)
+  keypair?: Keypair; // Optional keypair for signing VersionedTransaction
 }
 
 interface MintNativeZTokenParams {
@@ -1751,11 +1770,20 @@ export async function wrap(params: WrapParams): Promise<string> {
         
         shieldTransaction = new VersionedTransaction(messageV0);
         
-        // VersionedTransactions require keypair signing (wallet adapters typically only support Transaction)
-        // Try to sign manually with keypair (for test scenarios)
-        let signedTransaction: VersionedTransaction | null = null;
+        // Try to sign VersionedTransaction with wallet adapter first
+        if (wallet.signTransaction) {
+          try {
+            const signedVersionedTx = await wallet.signTransaction(shieldTransaction);
+            shieldSignature = await connection.sendRawTransaction(signedVersionedTx.serialize(), {
+              skipPreflight: false
+            });
+          } catch (signError: any) {
+            console.warn('[wrap] Failed to sign VersionedTransaction with wallet adapter:', signError);
+            // Fall through to try keypair or regular Transaction
+          }
+        }
         
-        // Fallback: try manual signing with keypair (for test scenarios)
+        // If wallet adapter signing failed, try manual signing with keypair (for test scenarios)
         if (!shieldSignature) {
           let signerKeypair: Keypair | null = null;
           if (params.keypair) {
@@ -1778,11 +1806,11 @@ export async function wrap(params: WrapParams): Promise<string> {
                 throw keypairError; // Re-throw to trigger retry logic in catch block below
               }
               console.warn('[wrap] Failed to send signed VersionedTransaction:', keypairError);
-              signedTransaction = null;
             }
           }
-          
-          // Can't sign VersionedTransaction - fall back to regular Transaction
+        }
+        
+        // Can't sign VersionedTransaction - fall back to regular Transaction
           // BUT: If transaction is too large, we need to wait for pending shield or retry with VersionedTransaction
           if (!shieldSignature) {
             console.warn('[wrap] Cannot sign VersionedTransaction, falling back to regular Transaction (may exceed size limits)');
@@ -1830,7 +1858,6 @@ export async function wrap(params: WrapParams): Promise<string> {
               throw txError; // Re-throw other errors
             }
           }
-        }
       } else {
         // Fall back to regular Transaction if ALT not available
         const regularTx = new Transaction().add(...shieldInstructionSet);
@@ -2985,6 +3012,480 @@ export async function transfer(params: TransferParams): Promise<string> {
   return signature;
 }
 
+export async function batchTransfer(params: BatchTransferParams): Promise<string> {
+  assertWallet(params.wallet);
+  const wallet = params.wallet;
+  const connection = params.connection;
+  const payer = wallet.publicKey;
+  
+  if (params.transfers.length < 2 || params.transfers.length > 10) {
+    throw new Error('Batch transfer requires 2-10 transfers');
+  }
+  
+  // For now, support exactly 2 transfers (matches circuit)
+  if (params.transfers.length !== 2) {
+    throw new Error('Currently only 2 transfers are supported (circuit limitation)');
+  }
+  
+  // Validate all transfers have matching commitment counts
+  for (const transfer of params.transfers) {
+    if (transfer.outputCommitments.length !== transfer.outputAmountCommitments.length) {
+      throw new Error(`Transfer ${transfer.originMint}: Output commitment set mismatch`);
+    }
+  }
+  
+  // Derive accounts for first pool (explicit in instruction)
+  const originMint0 = new PublicKey(params.transfers[0]!.originMint);
+  const poolState0Key = new PublicKey(params.transfers[0]!.poolId);
+  const commitmentTree0Key = deriveCommitmentTree(originMint0);
+  const nullifierSet0Key = deriveNullifierSet(originMint0);
+  const noteLedger0Key = deriveNoteLedger(originMint0);
+  const { key: mintMapping0Key, decoded: mintMapping0 } = await fetchMintMappingAccount(
+    connection,
+    originMint0
+  );
+  ensureMintActive(mintMapping0);
+  
+  // Derive accounts for second pool (via remaining_accounts)
+  const originMint1 = new PublicKey(params.transfers[1]!.originMint);
+  const poolState1Key = new PublicKey(params.transfers[1]!.poolId);
+  const commitmentTree1Key = deriveCommitmentTree(originMint1);
+  const nullifierSet1Key = deriveNullifierSet(originMint1);
+  const noteLedger1Key = deriveNoteLedger(originMint1);
+  const { key: mintMapping1Key, decoded: mintMapping1 } = await fetchMintMappingAccount(
+    connection,
+    originMint1
+  );
+  ensureMintActive(mintMapping1);
+  
+  const verifyingKey = deriveVerifyingKey();
+  
+  // Extract roots from batch public inputs
+  // Batch structure: [old_root_0, new_root_0, nullifier_0_0, nullifier_1_0, output_commitment_0_0, output_commitment_1_0, mint_id_0, pool_id_0,
+  //                   old_root_1, new_root_1, nullifier_0_1, nullifier_1_1, output_commitment_0_1, output_commitment_1_1, mint_id_1, pool_id_1]
+  if (params.batchPublicInputs.length !== 16) {
+    throw new Error(`Invalid batch public inputs length: expected 16, got ${params.batchPublicInputs.length}`);
+  }
+  
+  const oldRoot0Bytes = canonicalHexToBytesLE(canonicalizeHex(params.batchPublicInputs[0]!));
+  const newRoot0Bytes = canonicalHexToBytesLE(canonicalizeHex(params.batchPublicInputs[1]!));
+  const oldRoot1Bytes = canonicalHexToBytesLE(canonicalizeHex(params.batchPublicInputs[8]!));
+  const newRoot1Bytes = canonicalHexToBytesLE(canonicalizeHex(params.batchPublicInputs[9]!));
+  
+  // OPTIMIZATION: Only include 1 output in TransferArgs when second output is zero (saves 64 bytes per transfer)
+  // Check if second output_amount_commitment is all zeros (indicates zero output)
+  const isSecondOutputZero0 = params.transfers[0]!.outputAmountCommitments.length >= 2 && 
+    Buffer.from(canonicalHexToBytesLE(canonicalizeHex(params.transfers[0]!.outputAmountCommitments[1]!))).every(b => b === 0);
+  const isSecondOutputZero1 = params.transfers[1]!.outputAmountCommitments.length >= 2 && 
+    Buffer.from(canonicalHexToBytesLE(canonicalizeHex(params.transfers[1]!.outputAmountCommitments[1]!))).every(b => b === 0);
+  
+  // Optimize output arrays - only include first output if second is zero
+  const outputCommitments0 = isSecondOutputZero0 
+    ? params.transfers[0]!.outputCommitments.slice(0, 1)
+    : params.transfers[0]!.outputCommitments;
+  const outputAmountCommitments0 = isSecondOutputZero0
+    ? params.transfers[0]!.outputAmountCommitments.slice(0, 1)
+    : params.transfers[0]!.outputAmountCommitments;
+    
+  const outputCommitments1 = isSecondOutputZero1
+    ? params.transfers[1]!.outputCommitments.slice(0, 1)
+    : params.transfers[1]!.outputCommitments;
+  const outputAmountCommitments1 = isSecondOutputZero1
+    ? params.transfers[1]!.outputAmountCommitments.slice(0, 1)
+    : params.transfers[1]!.outputAmountCommitments;
+  
+  if (isSecondOutputZero0) {
+    console.log(`[batchTransfer] Transfer 0: Optimizing away zero second output (saves 64 bytes)`);
+  }
+  if (isSecondOutputZero1) {
+    console.log(`[batchTransfer] Transfer 1: Optimizing away zero second output (saves 64 bytes)`);
+  }
+  
+  // Create TransferArgs for each transfer
+  const transferArgs0 = {
+    old_root: Array.from(oldRoot0Bytes),
+    new_root: Array.from(newRoot0Bytes),
+    nullifiers: encodeFieldVector(params.transfers[0]!.nullifiers, 'nullifiers'),
+    output_commitments: encodeFieldVector(outputCommitments0, 'output_commitments'),
+    output_amount_commitments: encodeFieldVector(outputAmountCommitments0, 'output_amount_commitments'),
+    proof: [], // Empty Vec<u8> - batch proof used instead (program ignores this field in batch mode, saves 192 bytes)
+    public_inputs: [] // Empty Vec<u8> - batch public inputs used instead (program ignores this field in batch mode, saves 64 bytes)
+  };
+  
+  const transferArgs1 = {
+    old_root: Array.from(oldRoot1Bytes),
+    new_root: Array.from(newRoot1Bytes),
+    nullifiers: encodeFieldVector(params.transfers[1]!.nullifiers, 'nullifiers'),
+    output_commitments: encodeFieldVector(outputCommitments1, 'output_commitments'),
+    output_amount_commitments: encodeFieldVector(outputAmountCommitments1, 'output_amount_commitments'),
+    proof: [], // Empty Vec<u8> - batch proof used instead (program ignores this field in batch mode, saves 192 bytes)
+    public_inputs: [] // Empty Vec<u8> - batch public inputs used instead (program ignores this field in batch mode, saves 64 bytes)
+  };
+  
+  // Create BatchTransferArgs
+  // Convert batch proof to Buffer
+  const batchProofBytes = Buffer.from(params.batchProof.proof, 'base64');
+  
+  // Serialize batch public inputs (16 field elements = 16 × 32 = 512 bytes)
+  const batchPublicInputsBytes = Buffer.concat(
+    params.batchPublicInputs.map(input => canonicalHexToBytesLE(canonicalizeHex(input)))
+  );
+  
+  const batchTransferArgs = {
+    transfers: [transferArgs0, transferArgs1],
+    proof: Array.from(batchProofBytes), // Array format for Anchor Vec<u8>
+    public_inputs: Array.from(batchPublicInputsBytes) // Array format for Anchor Vec<u8>
+  };
+  
+  const instructions: TransactionInstruction[] = [];
+  
+  // Add compute budget
+  const computeLimitEnv =
+    process.env.BATCH_TRANSFER_COMPUTE_UNIT_LIMIT ??
+    process.env.TRANSFER_COMPUTE_UNIT_LIMIT ??
+    process.env.NEXT_PUBLIC_WRAP_COMPUTE_UNIT_LIMIT;
+  const resolvedLimit = (() => {
+    if (computeLimitEnv !== undefined) {
+      const parsed = Number(computeLimitEnv);
+      if (!Number.isNaN(parsed)) {
+        return Math.max(parsed, 0);
+      }
+    }
+    return 1_200_000; // Higher limit for batch operations
+  })();
+  if (resolvedLimit > 0) {
+    instructions.push(ComputeBudgetProgram.setComputeUnitLimit({ units: resolvedLimit }));
+  }
+  
+  // Build batch_private_transfer instruction
+  // Account order: pool_state_0, nullifier_set_0, commitment_tree_0, note_ledger_0, mint_mapping_0,
+  //                verifier_program, verifying_key, payer, system_program, rent,
+  //                remaining_accounts: pool_state_1, nullifier_set_1, commitment_tree_1, note_ledger_1, mint_mapping_1
+  const instructionKeys = [
+    { pubkey: poolState0Key, isSigner: false, isWritable: true },
+    { pubkey: nullifierSet0Key, isSigner: false, isWritable: true },
+    { pubkey: commitmentTree0Key, isSigner: false, isWritable: true },
+    { pubkey: noteLedger0Key, isSigner: false, isWritable: true },
+    { pubkey: mintMapping0Key, isSigner: false, isWritable: false },
+    { pubkey: VERIFIER_PROGRAM_ID, isSigner: false, isWritable: false },
+    { pubkey: verifyingKey, isSigner: false, isWritable: false },
+    { pubkey: payer, isSigner: true, isWritable: true },
+    { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+    { pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false }
+  ];
+  
+  // Add second pool accounts as remaining_accounts
+  instructionKeys.push(
+    { pubkey: poolState1Key, isSigner: false, isWritable: true },
+    { pubkey: nullifierSet1Key, isSigner: false, isWritable: true },
+    { pubkey: commitmentTree1Key, isSigner: false, isWritable: true },
+    { pubkey: noteLedger1Key, isSigner: false, isWritable: true },
+    { pubkey: mintMapping1Key, isSigner: false, isWritable: false }
+  );
+  
+  // Encode instruction data - use full manual Borsh serialization to support empty Vec<u8>
+  let instructionData: Buffer;
+  try {
+    instructionData = poolCoder.instruction.encode('batch_private_transfer', { args: batchTransferArgs });
+  } catch (encodeError: any) {
+    // Fallback to full manual Borsh serialization (bypasses Anchor encoder completely)
+    console.warn('[batchTransfer] Anchor encoding failed, using full manual Borsh serialization:', encodeError.message);
+    
+    // Get discriminator for batch_private_transfer instruction
+    const ixLayouts = (poolCoder.instruction as unknown as { ixLayouts?: Map<string, { discriminator: number[]; layout: any }> }).ixLayouts?.get('batch_private_transfer');
+    if (!ixLayouts) {
+      throw new Error('batch_private_transfer instruction layout not found in IDL');
+    }
+    const { discriminator } = ixLayouts;
+    const discriminatorBuffer = Buffer.from(discriminator);
+    
+    // Manually serialize BatchTransferArgs using Borsh format
+    // Structure: Vec<TransferArgs> + Vec<u8> (proof) + Vec<u8> (public_inputs)
+    const parts: Buffer[] = [];
+    
+    // 1. Serialize transfers: Vec<TransferArgs> (length prefix + items)
+    const transfersLength = Buffer.allocUnsafe(4);
+    transfersLength.writeUInt32LE(batchTransferArgs.transfers.length, 0);
+    parts.push(transfersLength);
+    
+    // Serialize each TransferArgs
+    for (const transfer of batchTransferArgs.transfers) {
+      // old_root: [u8; 32]
+      parts.push(Buffer.from(transfer.old_root));
+      
+      // new_root: [u8; 32]
+      parts.push(Buffer.from(transfer.new_root));
+      
+      // nullifiers: Vec<[u8; 32]>
+      const nullifiersLength = Buffer.allocUnsafe(4);
+      nullifiersLength.writeUInt32LE(transfer.nullifiers.length, 0);
+      parts.push(nullifiersLength);
+      for (const nullifier of transfer.nullifiers) {
+        parts.push(Buffer.from(nullifier));
+      }
+      
+      // output_commitments: Vec<[u8; 32]>
+      const outputCommitmentsLength = Buffer.allocUnsafe(4);
+      outputCommitmentsLength.writeUInt32LE(transfer.output_commitments.length, 0);
+      parts.push(outputCommitmentsLength);
+      for (const commitment of transfer.output_commitments) {
+        parts.push(Buffer.from(commitment));
+      }
+      
+      // output_amount_commitments: Vec<[u8; 32]>
+      const outputAmountCommitmentsLength = Buffer.allocUnsafe(4);
+      outputAmountCommitmentsLength.writeUInt32LE(transfer.output_amount_commitments.length, 0);
+      parts.push(outputAmountCommitmentsLength);
+      for (const amountCommitment of transfer.output_amount_commitments) {
+        parts.push(Buffer.from(amountCommitment));
+      }
+      
+      // proof: Vec<u8> (dummy - can be empty)
+      const proofLength = Buffer.allocUnsafe(4);
+      proofLength.writeUInt32LE(transfer.proof.length, 0);
+      parts.push(proofLength);
+      if (transfer.proof.length > 0) {
+        parts.push(Buffer.from(transfer.proof));
+      }
+      
+      // public_inputs: Vec<u8> (dummy - can be empty)
+      const publicInputsLength = Buffer.allocUnsafe(4);
+      publicInputsLength.writeUInt32LE(transfer.public_inputs.length, 0);
+      parts.push(publicInputsLength);
+      if (transfer.public_inputs.length > 0) {
+        parts.push(Buffer.from(transfer.public_inputs));
+      }
+    }
+    
+    // 2. Serialize batch proof: Vec<u8>
+    const batchProofLength = Buffer.allocUnsafe(4);
+    batchProofLength.writeUInt32LE(batchTransferArgs.proof.length, 0);
+    parts.push(batchProofLength);
+    parts.push(Buffer.from(batchTransferArgs.proof));
+    
+    // 3. Serialize batch public_inputs: Vec<u8>
+    const batchPublicInputsLength = Buffer.allocUnsafe(4);
+    batchPublicInputsLength.writeUInt32LE(batchTransferArgs.public_inputs.length, 0);
+    parts.push(batchPublicInputsLength);
+    parts.push(Buffer.from(batchTransferArgs.public_inputs));
+    
+    // Combine all parts
+    const batchTransferArgsBytes = Buffer.concat(parts);
+    console.log(`[batchTransfer] Manually serialized BatchTransferArgs: ${batchTransferArgsBytes.length} bytes`);
+    
+    // Construct instruction data: discriminator + BatchTransferArgs
+    instructionData = Buffer.concat([discriminatorBuffer, batchTransferArgsBytes]);
+    console.log(`[batchTransfer] Successfully manually serialized instruction: ${instructionData.length} bytes`);
+  }
+  
+  instructions.push(
+    new TransactionInstruction({
+      programId: POOL_PROGRAM_ID,
+      keys: instructionKeys,
+      data: instructionData
+    })
+  );
+  
+  // Use VersionedTransaction with lookup tables for account compression
+  const latestBlockhash = await connection.getLatestBlockhash('confirmed');
+  
+  // Collect all accounts for lookup table compression
+  const allAccountsSet = new Set<string>();
+  const allAccounts: PublicKey[] = [];
+  
+  const addAccount = (pubkey: PublicKey) => {
+    const addr = pubkey.toBase58();
+    if (!allAccountsSet.has(addr)) {
+      allAccountsSet.add(addr);
+      allAccounts.push(pubkey);
+    }
+  };
+  
+  // Add all accounts from instruction keys (except signers which must be direct)
+  for (const key of instructionKeys) {
+    if (!key.isSigner) {
+      addAccount(key.pubkey);
+    }
+  }
+  
+  // Add pool program ID
+  addAccount(POOL_PROGRAM_ID);
+  
+  console.log(`[batchTransfer] Collected ${allAccounts.length} unique accounts for compression`);
+  
+  // Get lookup tables from mint mappings (reuse already fetched mint mappings)
+  // mintMapping0 and mintMapping1 are already fetched above
+  
+  const lookupTables: AddressLookupTableAccount[] = [];
+  let primaryLookupTableAddress: PublicKey | null = null;
+  
+  // Use lookup table from first mint as primary
+  if (mintMapping0.lookupTable) {
+    primaryLookupTableAddress = mintMapping0.lookupTable;
+    const lookupTable0 = await connection.getAddressLookupTable(primaryLookupTableAddress);
+    if (lookupTable0.value) {
+      lookupTables.push(lookupTable0.value);
+      
+      // Check for missing accounts and extend if authorized
+      const existingAddresses = new Set(
+        lookupTable0.value.state.addresses.map((addr) => addr.toBase58())
+      );
+      const missingAccounts = allAccounts.filter(
+        (addr) => !existingAddresses.has(addr.toBase58())
+      );
+      
+      if (missingAccounts.length > 0 && params.keypair) {
+        const lookupTableAccountInfo = await connection.getAccountInfo(primaryLookupTableAddress, 'confirmed');
+        if (lookupTableAccountInfo) {
+          const authorityBytes = lookupTableAccountInfo.data.slice(1, 33);
+          const lookupTableAuthority = new PublicKey(authorityBytes);
+          
+          if (lookupTableAuthority.equals(payer)) {
+            try {
+              const extendIx = AddressLookupTableProgram.extendLookupTable({
+                authority: payer,
+                payer,
+                lookupTable: primaryLookupTableAddress,
+                addresses: missingAccounts
+              });
+              
+              const extendTx = new Transaction().add(extendIx);
+              extendTx.feePayer = payer;
+              extendTx.recentBlockhash = latestBlockhash.blockhash;
+              extendTx.partialSign(params.keypair);
+              
+              await connection.sendRawTransaction(extendTx.serialize(), {
+                skipPreflight: true,
+                maxRetries: 0
+              });
+              console.log(`[batchTransfer] Extended lookup table with ${missingAccounts.length} accounts`);
+            } catch (extendError: any) {
+              console.warn(`[batchTransfer] Failed to extend lookup table (non-fatal):`, extendError.message);
+            }
+          }
+        }
+      }
+    }
+  }
+  
+  // Add second mint's lookup table if different
+  if (mintMapping1.lookupTable && primaryLookupTableAddress && !mintMapping1.lookupTable.equals(primaryLookupTableAddress)) {
+    const lookupTable1 = await connection.getAddressLookupTable(mintMapping1.lookupTable);
+    if (lookupTable1.value && lookupTables.length < 2) {
+      lookupTables.push(lookupTable1.value);
+      console.log(`[batchTransfer] Added lookup table from mint 1 (${lookupTable1.value.state.addresses.length} addresses)`);
+    }
+  }
+  
+  // Require lookup tables for large instruction data (like addDexLiquidity)
+  if (lookupTables.length === 0) {
+    throw new Error('Lookup table required for batch transfer. Ensure pools are prepared with preparePool().');
+  }
+  
+  console.log(`[batchTransfer] Using ${lookupTables.length} lookup table(s) for compression`);
+  
+  // Build VersionedTransaction with lookup tables
+  let messageV0: MessageV0;
+  try {
+    const baseMessage = new TransactionMessage({
+      payerKey: payer,
+      recentBlockhash: latestBlockhash.blockhash,
+      instructions
+    });
+    
+    // Use compileToV0Message with lookup tables for optimal compression
+    messageV0 = baseMessage.compileToV0Message(lookupTables);
+    console.log(`[batchTransfer] ✓ Compiled MessageV0 with ${lookupTables.length} lookup table(s)`);
+  } catch (compileError: any) {
+    console.error(`[batchTransfer] compileToV0Message failed:`, compileError.message || compileError);
+    
+    // If lookup table exists, try manual construction as fallback
+    if (lookupTables.length > 0) {
+      console.warn(`[batchTransfer] Falling back to manual MessageV0 construction`);
+      try {
+        messageV0 = buildManualMessageV0(
+          payer,
+          instructions,
+          latestBlockhash.blockhash,
+          lookupTables[0]!,
+          [payer]
+        );
+      } catch (manualError: any) {
+        console.error('[batchTransfer] Manual MessageV0 construction also failed:', manualError.message || manualError);
+        throw new Error(`Failed to build VersionedTransaction message: ${compileError.message || 'Unknown error'}. Instruction data is ${instructionData.length} bytes. Transaction may be too large.`);
+      }
+    } else {
+      throw new Error(`Failed to build VersionedTransaction: ${compileError.message || 'Unknown error'}. Lookup tables required.`);
+    }
+  }
+  
+  let versionedTx: VersionedTransaction;
+  try {
+    versionedTx = new VersionedTransaction(messageV0);
+  } catch (txError: any) {
+    console.error('[batchTransfer] Failed to create VersionedTransaction:', txError.message || txError);
+    throw new Error(`Failed to create VersionedTransaction: ${txError.message || 'Unknown error'}. Message may be too large.`);
+  }
+  
+  // Sign with keypair (required for VersionedTransaction)
+  if (!params.keypair) {
+    throw new Error('Keypair required for batchTransfer with VersionedTransaction');
+  }
+  
+  // Pre-check: If instruction data is already at or near the limit, warn early
+  if (instructionData.length >= 1275) {
+    console.warn(`[batchTransfer] ⚠️  Instruction data is very large (${instructionData.length} bytes), close to 1280-byte limit`);
+  }
+  
+  try {
+    versionedTx.sign([params.keypair]);
+  } catch (signError: any) {
+    // Check if error is related to transaction size
+    if (signError.message?.includes('overruns') || signError.message?.includes('too large') || signError.message?.includes('Uint8Array')) {
+      // Try to serialize to get actual size (if possible)
+      let actualSize = instructionData.length;
+      try {
+        const testSerialized = versionedTx.serialize();
+        actualSize = testSerialized.length;
+      } catch {
+        // Can't serialize, use instruction data size as estimate
+      }
+      throw new Error(`Transaction too large to serialize. Instruction data: ${instructionData.length} bytes. Estimated total transaction size: ~${actualSize} bytes. The V0 transaction limit is 1280 bytes total (including headers and metadata). Instruction data must be reduced.`);
+    }
+    throw signError;
+  }
+  
+  // Check transaction size after successful signing
+  const serialized = versionedTx.serialize();
+  console.log(`[batchTransfer] Transaction size: ${serialized.length} bytes`);
+  console.log(`[batchTransfer] Instruction data size: ${instructionData.length} bytes`);
+  console.log(`[batchTransfer] Solana V0 limit: 1280 bytes`);
+  
+  if (serialized.length > 1280) {
+    console.error(`[batchTransfer] ❌ TRANSACTION TOO LARGE! Exceeds limit by ${serialized.length - 1280} bytes`);
+    throw new Error(`Transaction too large: ${serialized.length} > 1280 bytes. Instruction data (${instructionData.length} bytes) plus transaction overhead exceeds limit. Need to reduce instruction data size.`);
+  } else if (serialized.length > 1232) {
+    console.warn(`[batchTransfer] ⚠️  Transaction exceeds legacy limit (${serialized.length} > 1232), but within V0 limit (${serialized.length} <= 1280)`);
+  } else {
+    console.log(`[batchTransfer] ✓ Transaction size OK (${serialized.length} <= 1232)`);
+  }
+  
+  // Send transaction
+  const signature = await connection.sendRawTransaction(serialized, {
+    skipPreflight: false,
+    maxRetries: 3
+  });
+  
+  await waitForSignatureConfirmation(
+    connection,
+    signature,
+    latestBlockhash.blockhash,
+    latestBlockhash.lastValidBlockHeight
+  );
+  
+  return signature;
+}
+
 export async function transferFrom(params: TransferFromParams): Promise<string> {
   assertWallet(params.wallet);
   const wallet = params.wallet;
@@ -3130,6 +3631,176 @@ export async function transferFrom(params: TransferFromParams): Promise<string> 
   return signature;
 }
 
+interface BatchTransferFromParams {
+  connection: Connection;
+  wallet: WalletContextState;
+  proofClient: ProofClient; // Required to generate individual proofs
+  transfers: Array<{
+    originMint: string;
+    poolId: string;
+    allowanceOwner: string;
+    allowanceAmount: bigint;
+    spendAmount: bigint;
+    notes: Array<{
+      noteId: string;
+      spendingKey: string;
+      amount: bigint;
+    }>;
+    outputs: Array<{
+      amount: bigint;
+      recipient: PublicKey;
+      blinding: string;
+    }>;
+  }>;
+  keypair?: Keypair; // Optional keypair for signing
+}
+
+export async function batchTransferFrom(params: BatchTransferFromParams): Promise<string> {
+  assertWallet(params.wallet);
+  const wallet = params.wallet;
+  const connection = params.connection;
+  const spender = wallet.publicKey;
+  if (!spender) {
+    throw new Error('Wallet public key missing');
+  }
+  
+  if (params.transfers.length < 2 || params.transfers.length > 10) {
+    throw new Error('Batch transferFrom requires 2-10 transfers');
+  }
+  
+  // For now, support exactly 2 transfers
+  if (params.transfers.length !== 2) {
+    throw new Error('Currently only 2 transfers are supported');
+  }
+  
+  // Validate all transfers
+  for (const transfer of params.transfers) {
+    if (transfer.spendAmount > transfer.allowanceAmount) {
+      throw new Error(`Transfer ${transfer.originMint}: Spend amount exceeds allowance amount`);
+    }
+    if (transfer.spendAmount <= 0n) {
+      throw new Error(`Transfer ${transfer.originMint}: Spend amount must be positive`);
+    }
+  }
+  
+  const instructions: TransactionInstruction[] = [];
+  
+  // Add compute budget (shared for both instructions)
+  const computeLimitEnv =
+    process.env.BATCH_TRANSFER_FROM_COMPUTE_UNIT_LIMIT ??
+    process.env.BATCH_TRANSFER_COMPUTE_UNIT_LIMIT ??
+    process.env.TRANSFER_COMPUTE_UNIT_LIMIT ??
+    process.env.NEXT_PUBLIC_WRAP_COMPUTE_UNIT_LIMIT;
+  const resolvedLimit = (() => {
+    if (computeLimitEnv !== undefined) {
+      const parsed = Number(computeLimitEnv);
+      if (!Number.isNaN(parsed)) {
+        return Math.max(parsed, 0);
+      }
+    }
+    return 600_000; // Per instruction
+  })();
+  if (resolvedLimit > 0) {
+    instructions.push(ComputeBudgetProgram.setComputeUnitLimit({ units: resolvedLimit * 2 })); // Total for both
+  }
+  
+  // Generate individual proofs for each transfer and create transferFrom instructions
+  const transferFromPromises = params.transfers.map(async (transfer) => {
+    const originMint = new PublicKey(transfer.originMint);
+    const poolStateKey = new PublicKey(transfer.poolId);
+    
+    // Generate individual transfer proof
+    const transferProof = await generateDexTransferProof(
+      params.proofClient,
+      connection,
+      originMint,
+      transfer.notes,
+      transfer.outputs
+    );
+    
+    // Convert proof to transfer args format
+    const transferArgsData = proofToTransferArgs({
+      proof: transferProof.proof,
+      publicInputs: transferProof.publicInputs,
+      oldRoot: transferProof.oldRoot,
+      nullifiers: transferProof.nullifiers,
+      outputCommitments: transferProof.outputCommitments,
+      outputAmountCommitments: transferProof.outputAmountCommitments
+    });
+    
+    // Derive accounts
+    const commitmentTreeKey = deriveCommitmentTree(originMint);
+    const nullifierSetKey = deriveNullifierSet(originMint);
+    const noteLedgerKey = deriveNoteLedger(originMint);
+    const { key: mintMappingKey, decoded: mintMapping } = await fetchMintMappingAccount(
+      connection,
+      originMint
+    );
+    ensureMintActive(mintMapping);
+    
+    const allowanceOwner = new PublicKey(transfer.allowanceOwner);
+    const allowanceKey = deriveAllowanceAccount(poolStateKey, allowanceOwner, spender);
+    const verifyingKey = deriveVerifyingKey();
+    
+    // Build TransferArgs
+    const transferArgs = {
+      old_root: transferArgsData.old_root,
+      new_root: transferArgsData.new_root,
+      nullifiers: transferArgsData.nullifiers,
+      output_commitments: transferArgsData.output_commitments,
+      output_amount_commitments: transferArgsData.output_amount_commitments,
+      proof: transferArgsData.proof,
+      public_inputs: transferArgsData.public_inputs
+    };
+    
+    const transferFromArgs = {
+      transfer: transferArgs,
+      allowance_amount: new BN(transfer.allowanceAmount.toString()),
+      spend_amount: new BN(transfer.spendAmount.toString())
+    };
+    
+    return new TransactionInstruction({
+      programId: POOL_PROGRAM_ID,
+      keys: [
+        { pubkey: poolStateKey, isSigner: false, isWritable: true },
+        { pubkey: nullifierSetKey, isSigner: false, isWritable: true },
+        { pubkey: commitmentTreeKey, isSigner: false, isWritable: true },
+        { pubkey: noteLedgerKey, isSigner: false, isWritable: true },
+        { pubkey: VERIFIER_PROGRAM_ID, isSigner: false, isWritable: false },
+        { pubkey: verifyingKey, isSigner: false, isWritable: false },
+        { pubkey: mintMappingKey, isSigner: false, isWritable: false },
+        { pubkey: allowanceKey, isSigner: false, isWritable: true },
+        { pubkey: allowanceOwner, isSigner: false, isWritable: false },
+        { pubkey: spender, isSigner: true, isWritable: false },
+        { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+        { pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false }
+      ],
+      data: poolCoder.instruction.encode('transfer_from', { args: transferFromArgs })
+    });
+  });
+  
+  // Wait for all proof generations and instruction building
+  const transferFromInstructions = await Promise.all(transferFromPromises);
+  instructions.push(...transferFromInstructions);
+  
+  // Use standard Transaction (not VersionedTransaction) since instructions are now smaller
+  const latestBlockhash = await connection.getLatestBlockhash('confirmed');
+  const tx = new Transaction().add(...instructions);
+  tx.feePayer = spender;
+  tx.recentBlockhash = latestBlockhash.blockhash;
+  
+  const signature = await wallet.sendTransaction(tx, connection, { skipPreflight: false });
+  
+  await waitForSignatureConfirmation(
+    connection,
+    signature,
+    latestBlockhash.blockhash,
+    latestBlockhash.lastValidBlockHeight
+  );
+  
+  return signature;
+}
+
 export async function approveSplToken(params: ApproveSplTokenParams): Promise<string> {
   assertWallet(params.wallet);
   const wallet = params.wallet;
@@ -3191,6 +3862,69 @@ export async function revokeSplTokenApproval(params: RevokeSplTokenParams): Prom
     latestBlockhash.blockhash,
     latestBlockhash.lastValidBlockHeight
   );
+  return signature;
+}
+
+interface ApproveAllowanceParams {
+  connection: Connection;
+  wallet: WalletContextState;
+  originMint: string;
+  spender: string;
+  amount: bigint | number | string;
+  expiresAt?: number | null; // Optional expiration timestamp
+}
+
+export async function approveAllowance(params: ApproveAllowanceParams): Promise<string> {
+  assertWallet(params.wallet);
+  const wallet = params.wallet;
+  const connection = params.connection;
+  const owner = wallet.publicKey;
+  
+  const originMintKey = new PublicKey(params.originMint);
+  const spenderKey = new PublicKey(params.spender);
+  const poolStateKey = derivePoolState(originMintKey);
+  const allowanceKey = deriveAllowanceAccount(poolStateKey, owner, spenderKey);
+  const { key: mintMappingKey } = await fetchMintMappingAccount(connection, originMintKey);
+  
+  const amount = BigInt(params.amount);
+  const expiresAt = params.expiresAt !== undefined ? (params.expiresAt === null ? null : params.expiresAt) : null;
+  
+  const instructions: TransactionInstruction[] = [];
+  
+  instructions.push(
+    new TransactionInstruction({
+      programId: POOL_PROGRAM_ID,
+      keys: [
+        { pubkey: poolStateKey, isSigner: false, isWritable: true },
+        { pubkey: allowanceKey, isSigner: false, isWritable: true },
+        { pubkey: owner, isSigner: true, isWritable: true },
+        { pubkey: spenderKey, isSigner: false, isWritable: false },
+        { pubkey: originMintKey, isSigner: false, isWritable: false },
+        { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+        { pubkey: mintMappingKey, isSigner: false, isWritable: false }
+      ],
+      data: poolCoder.instruction.encode('approve_allowance', {
+        args: {
+          amount: new BN(amount.toString()),
+          expires_at: expiresAt === null ? null : expiresAt
+        }
+      })
+    })
+  );
+  
+  const latestBlockhash = await connection.getLatestBlockhash('confirmed');
+  const tx = new Transaction().add(...instructions);
+  tx.feePayer = owner;
+  tx.recentBlockhash = latestBlockhash.blockhash;
+  const signature = await wallet.sendTransaction(tx, connection, { skipPreflight: false });
+  
+  await waitForSignatureConfirmation(
+    connection,
+    signature,
+    latestBlockhash.blockhash,
+    latestBlockhash.lastValidBlockHeight
+  );
+  
   return signature;
 }
 
@@ -3527,6 +4261,11 @@ export interface DexPoolState {
   createdAt: bigint;
   bump: number;
 }
+
+/**
+ * Re-export deriveDexPoolState for convenience
+ */
+export { deriveDexPoolState };
 
 /**
  * Get DEX pool state.
@@ -4015,70 +4754,74 @@ export async function addDexLiquidity(params: AddLiquidityParams): Promise<strin
   const selectedNotesA = selectNotesForAmount(zTokenNotesA, amountA);
   const selectedNotesB = selectNotesForAmount(zTokenNotesB, amountB);
   
-  const transferProofA = await generateDexTransferProofSimple(
+  // Generate batch transfer proof for both tokens atomically
+  console.log('[addDexLiquidity] Generating batch transfer proof for token A and token B...');
+  const batchProof = await generateBatchLiquidityProof(
     proofClient,
     connection,
     tokenAMint,
-    selectedNotesA,
-    amountA,
-    poolState, // recipient is pool PDA
-    payer // change goes back to user
-  );
-  
-  const transferProofB = await generateDexTransferProofSimple(
-    proofClient,
-    connection,
     tokenBMint,
+    selectedNotesA,
     selectedNotesB,
+    amountA,
     amountB,
-    poolState, // recipient is pool PDA
+    poolState, // recipient is pool PDA for both transfers
     payer // change goes back to user
   );
   
-  // Convert proofs to TransferArgs
-  const transferArgsA = proofToTransferArgs(transferProofA);
-  const transferArgsB = proofToTransferArgs(transferProofB);
+  console.log('[addDexLiquidity] Batch proof generated successfully');
   
-  // Ensure proofs are exactly 192 bytes (Anchor's Blob layout seems to expect this)
-  // Convert to Buffer and ensure exact size
-  const normalizeProof = (proof: Buffer | number[] | Uint8Array): Buffer => {
-    const buf = Buffer.isBuffer(proof) ? proof : Buffer.from(proof);
-    if (buf.length !== 192) {
-      if (buf.length < 192) {
-        return Buffer.concat([buf, Buffer.alloc(192 - buf.length, 0)]);
-      }
-      return Buffer.from(buf.slice(0, 192));
-    }
-    return Buffer.from(buf); // Create new instance
+  // Convert batch proof to BatchTransferArgs format
+  // Extract individual transfer data from batch proof results
+  const transferDataA = batchProof.transfers[0];
+  const transferDataB = batchProof.transfers[1];
+  
+  if (!transferDataA || !transferDataB) {
+    throw new Error('Batch proof must contain exactly 2 transfers');
+  }
+  
+  // Build TransferArgs for each transfer from batch proof data
+  const transferArgsA = {
+    old_root: Array.from(canonicalHexToBytesLE(canonicalizeHex(transferDataA.oldRoot))),
+    new_root: Array.from(canonicalHexToBytesLE(canonicalizeHex(transferDataA.newRoot))),
+    nullifiers: transferDataA.nullifiers.map(n => Array.from(n)),
+    output_commitments: transferDataA.outputCommitments.map(c => Array.from(c)),
+    output_amount_commitments: transferDataA.outputAmountCommitments.map(c => Array.from(c)),
+    proof: [], // Empty Vec<u8> - batch proof used instead (program ignores this field in batch mode, saves 192 bytes)
+    public_inputs: [] // Empty Vec<u8> - batch public inputs used instead (program ignores this field in batch mode, saves 64 bytes)
   };
   
-  const normalizePublicInputs = (inputs: Buffer | number[] | Uint8Array): Buffer => {
-    return Buffer.isBuffer(inputs) ? Buffer.from(inputs) : Buffer.from(inputs);
+  const transferArgsB = {
+    old_root: Array.from(canonicalHexToBytesLE(canonicalizeHex(transferDataB.oldRoot))),
+    new_root: Array.from(canonicalHexToBytesLE(canonicalizeHex(transferDataB.newRoot))),
+    nullifiers: transferDataB.nullifiers.map(n => Array.from(n)),
+    output_commitments: transferDataB.outputCommitments.map(c => Array.from(c)),
+    output_amount_commitments: transferDataB.outputAmountCommitments.map(c => Array.from(c)),
+    proof: [], // Empty Vec<u8> - batch proof used instead (program ignores this field in batch mode, saves 192 bytes)
+    public_inputs: [] // Empty Vec<u8> - batch public inputs used instead (program ignores this field in batch mode, saves 64 bytes)
   };
   
-  // Normalize proof and public_inputs to ensure proper Buffer format
-  const normalizedTransferArgsA = {
-    ...transferArgsA,
-    proof: normalizeProof(transferArgsA.proof),
-    public_inputs: normalizePublicInputs(transferArgsA.public_inputs)
+  // Create BatchTransferArgs with batch proof and combined public inputs
+  const batchProofBytes = Buffer.from(batchProof.proof, 'base64');
+  const batchPublicInputsBytes = Buffer.concat(
+    batchProof.publicInputs.map(input => canonicalHexToBytesLE(canonicalizeHex(input)))
+  );
+  
+  const batchTransferArgs = {
+    transfers: [transferArgsA, transferArgsB],
+    proof: Array.from(batchProofBytes),
+    public_inputs: Array.from(batchPublicInputsBytes)
   };
   
-  const normalizedTransferArgsB = {
-    ...transferArgsB,
-    proof: normalizeProof(transferArgsB.proof),
-    public_inputs: normalizePublicInputs(transferArgsB.public_inputs)
-  };
-  
-  // Encode add_liquidity instruction
-  // Workaround for "encoding overruns Buffer" error with large TransferArgs
+  // Encode add_liquidity instruction with BatchTransferArgs
+  // This uses a single batch proof instead of two separate proofs, reducing transaction size
   let addLiquidityData: Buffer;
   try {
     addLiquidityData = dexCoder.instruction.encode('add_liquidity', {
       amount_a: new BN(amountA.toString()),
       amount_b: new BN(amountB.toString()),
       min_lp_tokens: new BN(params.minLpTokens.toString()),
-      transfer_args_a: normalizedTransferArgsA,  // Normalized TransferArgs for zToken A
-      transfer_args_b: normalizedTransferArgsB   // Normalized TransferArgs for zToken B
+      batch_transfer_args: batchTransferArgs  // BatchTransferArgs with single batch proof
     });
   } catch (error: any) {
     if (error instanceof Error && (error.message.includes('encoding overruns Buffer') || error.message.includes('Blob.encode') || error.message.includes('offset') || error.message.includes('1232'))) {
@@ -4097,11 +4840,10 @@ export async function addDexLiquidity(params: AddLiquidityParams): Promise<strin
         amount_a: new BN(amountA.toString()),
         amount_b: new BN(amountB.toString()),
         min_lp_tokens: new BN(params.minLpTokens.toString()),
-        transfer_args_a: normalizedTransferArgsA,
-        transfer_args_b: normalizedTransferArgsB
+        batch_transfer_args: batchTransferArgs
       };
       
-      // Better size estimation (similar to bootstrap script)
+          // Better size estimation (similar to bootstrap script)
       const estimatedSize = 8 + // discriminator
         Object.values(args).reduce<number>((acc, value) => {
           if (value instanceof Buffer || value instanceof Uint8Array) {
@@ -4114,14 +4856,23 @@ export async function addDexLiquidity(params: AddLiquidityParams): Promise<strin
             return acc + value.length; // Array elements
           }
           if (value && typeof value === 'object') {
-            // For TransferArgs object, estimate based on its fields
-            const ta = value as any;
-            let size = 32 + 32; // old_root + new_root
-            size += 4 + (ta.nullifiers?.length || 0) * 32; // nullifiers vec
-            size += 4 + (ta.output_commitments?.length || 0) * 32; // output_commitments vec
-            size += 4 + (ta.output_amount_commitments?.length || 0) * 32; // output_amount_commitments vec
-            size += 4 + (Array.isArray(ta.proof) ? ta.proof.length : (ta.proof?.length || 192)); // proof vec (with length prefix)
-            size += 4 + (Array.isArray(ta.public_inputs) ? ta.public_inputs.length : (ta.public_inputs?.length || 0)); // public_inputs vec
+            // For BatchTransferArgs object, estimate based on its fields
+            const bta = value as any;
+            let size = 4; // transfers vec length prefix
+            // Estimate size for each transfer (TransferArgs)
+            if (Array.isArray(bta.transfers)) {
+              for (const ta of bta.transfers) {
+                size += 32 + 32; // old_root + new_root
+                size += 4 + (ta.nullifiers?.length || 0) * 32; // nullifiers vec
+                size += 4 + (ta.output_commitments?.length || 0) * 32; // output_commitments vec
+                size += 4 + (ta.output_amount_commitments?.length || 0) * 32; // output_amount_commitments vec
+                size += 4 + (Array.isArray(ta.proof) ? ta.proof.length : (ta.proof?.length || 192)); // proof vec (dummy, batch proof used)
+                size += 4 + (Array.isArray(ta.public_inputs) ? ta.public_inputs.length : (ta.public_inputs?.length || 0)); // public_inputs vec (dummy, batch used)
+              }
+            }
+            // Batch proof and public_inputs
+            size += 4 + (Array.isArray(bta.proof) ? bta.proof.length : (bta.proof?.length || 192)); // proof vec
+            size += 4 + (Array.isArray(bta.public_inputs) ? bta.public_inputs.length : (bta.public_inputs?.length || 512)); // public_inputs vec (16 field elements * 32 bytes)
             return acc + size;
           }
           return acc + 64; // Default estimate
@@ -4146,18 +4897,17 @@ export async function addDexLiquidity(params: AddLiquidityParams): Promise<strin
         console.log(`[addDexLiquidity] Successfully encoded instruction data: ${addLiquidityData.length} bytes (buffer was ${buffer.length} bytes, encoded length: ${len})`);
       } catch (encodeError: any) {
         console.error('[addDexLiquidity] Manual encoding failed:', encodeError.message || encodeError);
-        // Last resort: Manually serialize TransferArgs using types coder, then manually construct instruction
+        // Last resort: Manually serialize BatchTransferArgs using types coder, then manually construct instruction
         console.log('[addDexLiquidity] Attempting manual Borsh serialization...');
         
         try {
-          // Serialize TransferArgs using types coder (bypasses layout encoder)
-          const transferArgsABytes = dexCoder.types.encode('TransferArgs', normalizedTransferArgsA);
-          const transferArgsBBytes = dexCoder.types.encode('TransferArgs', normalizedTransferArgsB);
+          // Serialize BatchTransferArgs using types coder (bypasses layout encoder)
+          const batchTransferArgsBytes = dexCoder.types.encode('BatchTransferArgs', batchTransferArgs);
           
-          console.log(`[addDexLiquidity] TransferArgs A: ${transferArgsABytes.length} bytes, B: ${transferArgsBBytes.length} bytes`);
+          console.log(`[addDexLiquidity] BatchTransferArgs: ${batchTransferArgsBytes.length} bytes`);
           
           // Manually construct instruction data using Borsh serialization
-          // Structure: discriminator + u64(amount_a) + u64(amount_b) + u64(min_lp_tokens) + TransferArgs A + TransferArgs B
+          // Structure: discriminator + u64(amount_a) + u64(amount_b) + u64(min_lp_tokens) + BatchTransferArgs
           const instructionParts: Buffer[] = [discriminatorBuffer];
           
           // Serialize u64 fields (little-endian, 8 bytes each)
@@ -4173,9 +4923,8 @@ export async function addDexLiquidity(params: AddLiquidityParams): Promise<strin
           minLpTokensBuf.writeBigUInt64LE(BigInt(params.minLpTokens.toString()), 0);
           instructionParts.push(minLpTokensBuf);
           
-          // Append serialized TransferArgs (already in Borsh format from types encoder)
-          instructionParts.push(transferArgsABytes);
-          instructionParts.push(transferArgsBBytes);
+          // Append serialized BatchTransferArgs (already in Borsh format from types encoder)
+          instructionParts.push(batchTransferArgsBytes);
           
           addLiquidityData = Buffer.concat(instructionParts);
           console.log(`[addDexLiquidity] Successfully manually serialized instruction: ${addLiquidityData.length} bytes`);
@@ -4207,11 +4956,12 @@ export async function addDexLiquidity(params: AddLiquidityParams): Promise<strin
     { pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false }
   ];
   
-  // Add zToken pool accounts to remaining_accounts for transfer CPIs
-  // For transfer operations, we need 7 accounts per zToken
-  console.info('[addDexLiquidity] Adding zToken pool accounts to remaining_accounts');
+  // Add zToken pool accounts to remaining_accounts for batch_private_transfer CPI
+  // The helper function parse_ztoken_accounts searches by PDA, so order doesn't strictly matter,
+  // but we'll pass accounts in a logical order: first pool (7), second pool (7), then common (3)
+  console.info('[addDexLiquidity] Adding zToken pool accounts to remaining_accounts for batch transfer');
   
-  // Token A zToken accounts
+  // Token A zToken accounts (first pool - 7 accounts total)
   const zTokenAccountsA = getZTokenPoolAccounts(tokenAMint, false); // forShield = false (transfer)
   instructionKeys.push(...zTokenAccountsA.map(pubkey => ({ 
     pubkey, 
@@ -4219,15 +4969,17 @@ export async function addDexLiquidity(params: AddLiquidityParams): Promise<strin
     isWritable: true
   })));
   
-  // Token B zToken accounts
-  const zTokenAccountsB = getZTokenPoolAccounts(tokenBMint, false); // forShield = false (transfer)
+  // Token B zToken accounts (second pool - 7 accounts total)
+  const zTokenAccountsB = getZTokenPoolAccounts(tokenBMint, false);
   instructionKeys.push(...zTokenAccountsB.map(pubkey => ({ 
     pubkey, 
     isSigner: false, 
     isWritable: true
   })));
   
-  // Add payer, system_program, rent to remaining_accounts for CPIs
+  // Common accounts (payer, system_program, rent) - these are already in explicit accounts
+  // but need to be in remaining_accounts for the CPI to find them
+  // Note: payer is already in explicit accounts, but parse_cpi_common_accounts will find it in remaining_accounts
   instructionKeys.push(
     { pubkey: payer, isSigner: true, isWritable: true },
     { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },

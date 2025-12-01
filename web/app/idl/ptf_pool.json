@@ -946,6 +946,417 @@
       ]
     },
     {
+      "name": "batch_private_transfer",
+      "discriminator": [
+        73,
+        250,
+        31,
+        131,
+        52,
+        51,
+        52,
+        84
+      ],
+      "accounts": [
+        {
+          "name": "pool_state_0",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  111,
+                  111,
+                  108
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "pool_state_0"
+              }
+            ]
+          }
+        },
+        {
+          "name": "nullifier_set_0",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  110,
+                  117,
+                  108,
+                  108,
+                  115
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "pool_state_0"
+              }
+            ]
+          }
+        },
+        {
+          "name": "commitment_tree_0",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  114,
+                  101,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "pool_state_0"
+              }
+            ]
+          }
+        },
+        {
+          "name": "note_ledger_0",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  110,
+                  111,
+                  116,
+                  101,
+                  115
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "pool_state_0"
+              }
+            ]
+          }
+        },
+        {
+          "name": "mint_mapping_0",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  109,
+                  97,
+                  112
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "pool_state_0"
+              }
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                8,
+                9,
+                97,
+                7,
+                43,
+                189,
+                65,
+                208,
+                219,
+                145,
+                192,
+                86,
+                163,
+                5,
+                194,
+                142,
+                247,
+                67,
+                90,
+                120,
+                114,
+                17,
+                184,
+                157,
+                65,
+                38,
+                80,
+                58,
+                51,
+                0,
+                78,
+                132
+              ]
+            }
+          }
+        },
+        {
+          "name": "verifier_program",
+          "address": "3aCv39mCRFH9BGJskfXqwQoWzW1ULq2yXEbEwGgKtLgg"
+        },
+        {
+          "name": "verifying_key"
+        },
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        },
+        {
+          "name": "rent",
+          "address": "SysvarRent111111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "args",
+          "type": {
+            "defined": {
+              "name": "BatchTransferArgs"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "batch_transfer_from",
+      "discriminator": [
+        226,
+        192,
+        222,
+        204,
+        235,
+        155,
+        134,
+        22
+      ],
+      "accounts": [
+        {
+          "name": "pool_state_0",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  111,
+                  111,
+                  108
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "pool_state_0"
+              }
+            ]
+          }
+        },
+        {
+          "name": "nullifier_set_0",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  110,
+                  117,
+                  108,
+                  108,
+                  115
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "pool_state_0"
+              }
+            ]
+          }
+        },
+        {
+          "name": "commitment_tree_0",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  114,
+                  101,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "pool_state_0"
+              }
+            ]
+          }
+        },
+        {
+          "name": "note_ledger_0",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  110,
+                  111,
+                  116,
+                  101,
+                  115
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "pool_state_0"
+              }
+            ]
+          }
+        },
+        {
+          "name": "mint_mapping_0",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  109,
+                  97,
+                  112
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "pool_state_0"
+              }
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                8,
+                9,
+                97,
+                7,
+                43,
+                189,
+                65,
+                208,
+                219,
+                145,
+                192,
+                86,
+                163,
+                5,
+                194,
+                142,
+                247,
+                67,
+                90,
+                120,
+                114,
+                17,
+                184,
+                157,
+                65,
+                38,
+                80,
+                58,
+                51,
+                0,
+                78,
+                132
+              ]
+            }
+          }
+        },
+        {
+          "name": "allowance_0",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  97,
+                  108,
+                  108,
+                  111,
+                  119,
+                  97,
+                  110,
+                  99,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "pool_state_0"
+              },
+              {
+                "kind": "account",
+                "path": "allowance_owner_0"
+              },
+              {
+                "kind": "account",
+                "path": "spender"
+              }
+            ]
+          }
+        },
+        {
+          "name": "allowance_owner_0"
+        },
+        {
+          "name": "verifier_program",
+          "address": "3aCv39mCRFH9BGJskfXqwQoWzW1ULq2yXEbEwGgKtLgg"
+        },
+        {
+          "name": "verifying_key"
+        },
+        {
+          "name": "spender",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        },
+        {
+          "name": "rent",
+          "address": "SysvarRent111111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "args",
+          "type": {
+            "defined": {
+              "name": "BatchTransferFromArgs"
+            }
+          }
+        }
+      ]
+    },
+    {
       "name": "propose_authority_change",
       "docs": [
         "Propose an authority change with timelock",
@@ -5650,6 +6061,74 @@
               }
             }
           },
+          {
+            "name": "allowance_amount",
+            "type": "u64"
+          },
+          {
+            "name": "spend_amount",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "BatchTransferArgs",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "transfers",
+            "type": {
+              "vec": {
+                "defined": {
+                  "name": "TransferArgs"
+                }
+              }
+            }
+          },
+          {
+            "name": "proof",
+            "type": "bytes"
+          },
+          {
+            "name": "public_inputs",
+            "type": "bytes"
+          }
+        ]
+      }
+    },
+    {
+      "name": "BatchTransferFromArgs",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "batch_transfer",
+            "type": {
+              "defined": {
+                "name": "BatchTransferArgs"
+              }
+            }
+          },
+          {
+            "name": "allowances",
+            "type": {
+              "vec": {
+                "defined": {
+                  "name": "TransferFromAllowanceInfo"
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "TransferFromAllowanceInfo",
+      "type": {
+        "kind": "struct",
+        "fields": [
           {
             "name": "allowance_amount",
             "type": "u64"

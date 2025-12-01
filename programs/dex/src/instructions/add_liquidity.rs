@@ -9,7 +9,7 @@ use spl_associated_token_account_client::{
 
 use crate::errors::DexError;
 use crate::state::DEX_POOL_SEED;
-use crate::ztoken_cpi::{TransferArgs, extract_pool_commitment};
+use crate::ztoken_cpi::{BatchTransferArgs, TransferArgs, extract_pool_commitment, invoke_batch_transfer_for_add_liquidity};
 use ptf_pool::ID as POOL_PROGRAM_ID;
 
 pub fn add_liquidity(
@@ -17,8 +17,7 @@ pub fn add_liquidity(
     amount_a: u64,
     amount_b: u64,
     min_lp_tokens: u64,
-    transfer_args_a: TransferArgs,
-    transfer_args_b: TransferArgs,
+    batch_transfer_args: BatchTransferArgs,
 ) -> Result<()> {
     // Validate amounts
     require!(amount_a > 0, DexError::InvalidAmount);
@@ -103,20 +102,26 @@ pub fn add_liquidity(
     drop(pool_state);
     
     // ====================================================================
-    // ZTOKEN HANDLING: Add liquidity with zToken (token A)
+    // ZTOKEN HANDLING: Add liquidity with batch transfer (token A + token B)
     // ====================================================================
-    // Both tokens are always zTokens - use private transfer CPIs
-    msg!("[add_liquidity] Token A is zToken - invoking private_transfer CPI (user → pool PDA)");
-    let (commitment_a, amount_a_result) = handle_ztoken_liquidity(
-        ctx.remaining_accounts.to_vec(),
-        &payer_pubkey,
+    // Both tokens are always zTokens - use batch_private_transfer CPI for atomic transfer
+    msg!("[add_liquidity] Using batch_private_transfer CPI for atomic zToken transfers (user → pool PDA)");
+    require!(
+        batch_transfer_args.transfers.len() == 2,
+        DexError::InvalidAccount
+    );
+    
+    let ((commitment_a, amount_a_result), (commitment_b, amount_b_result)) = invoke_batch_transfer_for_add_liquidity(
+        ctx.remaining_accounts,
         &token_a,
-        &POOL_PROGRAM_ID,
-        transfer_args_a,
+        &token_b,
+        batch_transfer_args,
+        &payer_pubkey,
         &pool_state_key,
         current_private_reserve_a_amount,
+        current_private_reserve_b_amount,
         amount_a,
-        0,
+        amount_b,
     )?;
     
     // Store commitment results for later pool state update
@@ -127,26 +132,6 @@ pub fn add_liquidity(
         }
     }
     
-    // ====================================================================
-    // ZTOKEN HANDLING: Add liquidity with zToken (token B)
-    // ====================================================================
-    msg!("[add_liquidity] Token B is zToken - invoking private_transfer CPI (user → pool PDA)");
-    
-    // Token A uses first 7 accounts, Token B uses next 7
-    let account_offset = 7;
-    let (commitment_b, amount_b_result) = handle_ztoken_liquidity(
-        ctx.remaining_accounts.to_vec(),
-        &payer_pubkey,
-        &token_b,
-        &POOL_PROGRAM_ID,
-        transfer_args_b,
-        &pool_state_key,
-        current_private_reserve_b_amount,
-        amount_b,
-        account_offset,
-    )?;
-    
-    // Store commitment results for later pool state update
     if let Some(commitment) = commitment_b {
         if let Some(amount) = amount_b_result {
             new_private_reserve_b_commitment = Some(commitment);

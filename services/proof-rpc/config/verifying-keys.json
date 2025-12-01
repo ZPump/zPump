@@ -22,5 +22,21 @@
     "binary": "../../circuits/keys/transfer.vk.bin",
     "wasm": "../../circuits/wasm/transfer.wasm",
     "zkey": "../../circuits/keys/transfer.zkey"
+  },
+  {
+    "circuit": "batch_transfer",
+    "version": "v1",
+    "path": "../../circuits/keys/batch_transfer.json",
+    "binary": "../../circuits/keys/batch_transfer.vk.bin",
+    "wasm": "../../circuits/wasm/batch_transfer.wasm",
+    "zkey": "../../circuits/keys/batch_transfer.zkey"
+  },
+  {
+    "circuit": "batch_transfer_from",
+    "version": "v1",
+    "path": "../../circuits/keys/batch_transfer_from.json",
+    "binary": "../../circuits/keys/batch_transfer_from.vk.bin",
+    "wasm": "../../circuits/wasm/batch_transfer_from.wasm",
+    "zkey": "../../circuits/keys/batch_transfer_from.zkey"
   }
 ]

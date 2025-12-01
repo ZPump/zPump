@@ -45,7 +45,7 @@ interface LoadedVerifyingKey extends Omit<VerifyingKeyConfig, 'binary'> {
 }
 
 const ProofRequestSchema = z.object({
-  circuit: z.enum(['shield', 'transfer', 'unshield']),
+  circuit: z.enum(['shield', 'transfer', 'unshield', 'batch_transfer', 'batch_transfer_from']),
   payload: z.record(z.any())
 });
 
@@ -87,6 +87,76 @@ const TransferInputSchema = z.object({
     .min(1)
 });
 
+const BatchTransferInputSchema = z.object({
+  transfers: z
+    .array(
+      z.object({
+        oldRoot: z.string(),
+        mintId: z.string(),
+        poolId: z.string(),
+        inNotes: z
+          .array(
+            z.object({
+              noteId: z.string(),
+              spendingKey: z.string(),
+              amount: z.string()
+            })
+          )
+          .min(1)
+          .max(2),
+        outNotes: z
+          .array(
+            z.object({
+              amount: z.string(),
+              recipient: z.string(),
+              blinding: z.string()
+            })
+          )
+          .min(1)
+          .max(2)
+      })
+    )
+    .min(2)
+    .max(10)
+});
+
+const BatchTransferFromInputSchema = z.object({
+  transfers: z
+    .array(
+      z.object({
+        oldRoot: z.string(),
+        mintId: z.string(),
+        poolId: z.string(),
+        inNotes: z
+          .array(
+            z.object({
+              noteId: z.string(),
+              spendingKey: z.string(),
+              amount: z.string()
+            })
+          )
+          .min(1)
+          .max(2),
+        outNotes: z
+          .array(
+            z.object({
+              amount: z.string(),
+              recipient: z.string(),
+              blinding: z.string()
+            })
+          )
+          .min(1)
+          .max(2),
+        // Allowance info (for program-level validation, not used in circuit)
+        allowanceAmount: z.string().optional(),
+        spendAmount: z.string().optional(),
+        allowanceOwner: z.string().optional()
+      })
+    )
+    .min(2)
+    .max(10)
+});
+
 const ChangeSchema = z.object({
   amount: z.string().optional(),
   recipient: z.string().optional(),
@@ -112,6 +182,8 @@ const UnshieldInputSchema = z.object({
 type ShieldInput = z.infer<typeof ShieldInputSchema>;
 type TransferInput = z.infer<typeof TransferInputSchema>;
 type UnshieldInput = z.infer<typeof UnshieldInputSchema>;
+type BatchTransferInput = z.infer<typeof BatchTransferInputSchema>;
+type BatchTransferFromInput = z.infer<typeof BatchTransferFromInputSchema>;
 
 const RootResponseSchema = z.object({
   current: z.string(),
@@ -329,6 +401,98 @@ function deriveTransferPublic(input: TransferInput) {
     newRoot,
     nullifiers,
     outputs
+  };
+}
+
+function deriveBatchTransferPublic(input: BatchTransferInput) {
+  const allPublicInputs: string[] = [];
+  const allNullifiers: string[] = [];
+  const allNewRoots: string[] = [];
+  
+  // Process each transfer independently
+  for (const transfer of input.transfers) {
+    const mintFieldValue = parsePubkeyField(transfer.mintId);
+    const poolFieldValue = parsePubkeyField(transfer.poolId);
+    
+    // Ensure we have exactly 2 input notes (pad with zeros if needed)
+    const paddedInNotes = [...transfer.inNotes];
+    while (paddedInNotes.length < 2) {
+      paddedInNotes.push({ noteId: '0', spendingKey: '0', amount: '0' });
+    }
+    
+    // Ensure we have exactly 2 output notes (pad with zeros if needed)
+    const paddedOutNotes = [...transfer.outNotes];
+    while (paddedOutNotes.length < 2) {
+      paddedOutNotes.push({ amount: '0', recipient: '0', blinding: '0' });
+    }
+    
+    // Compute nullifiers (exactly 2)
+    const nullifier0Value = paddedInNotes[0]!.noteId === '0' && paddedInNotes[0]!.spendingKey === '0'
+      ? 0n
+      : poseidonValue([paddedInNotes[0]!.noteId, paddedInNotes[0]!.spendingKey]);
+    const nullifier1Value = paddedInNotes[1]!.noteId === '0' && paddedInNotes[1]!.spendingKey === '0'
+      ? 0n
+      : poseidonValue([paddedInNotes[1]!.noteId, paddedInNotes[1]!.spendingKey]);
+    
+    const nullifier0Hex = fieldToHex(nullifier0Value);
+    const nullifier1Hex = fieldToHex(nullifier1Value);
+    allNullifiers.push(nullifier0Hex, nullifier1Hex);
+    
+    // Compute output commitments (exactly 2)
+    const outputCommitment0Value = paddedOutNotes[0]!.amount === '0' && paddedOutNotes[0]!.recipient === '0'
+      ? 0n
+      : poseidonValue([
+          paddedOutNotes[0]!.amount,
+          parsePubkeyField(paddedOutNotes[0]!.recipient),
+          mintFieldValue,
+          poolFieldValue,
+          paddedOutNotes[0]!.blinding
+        ]);
+    const outputCommitment1Value = paddedOutNotes[1]!.amount === '0' && paddedOutNotes[1]!.recipient === '0'
+      ? 0n
+      : poseidonValue([
+          paddedOutNotes[1]!.amount,
+          parsePubkeyField(paddedOutNotes[1]!.recipient),
+          mintFieldValue,
+          poolFieldValue,
+          paddedOutNotes[1]!.blinding
+        ]);
+    
+    const outputCommitment0Hex = fieldToHex(outputCommitment0Value);
+    const outputCommitment1Hex = fieldToHex(outputCommitment1Value);
+    
+    // Compute roots
+    const oldRootHex = canonicalizeHex(transfer.oldRoot);
+    const oldRootField = bigIntify(oldRootHex);
+    const newRootValue = poseidonValue([oldRootField, nullifier0Value, nullifier1Value]);
+    const newRootHex = fieldToHex(newRootValue);
+    allNewRoots.push(newRootHex);
+    
+    const mintHex = fieldToHex(mintFieldValue);
+    const poolHex = fieldToHex(poolFieldValue);
+    
+    // Per-transfer public inputs: [old_root, new_root, nullifier_0, nullifier_1, output_commitment_0, output_commitment_1, mint_id, pool_id]
+    allPublicInputs.push(
+      oldRootHex,
+      newRootHex,
+      nullifier0Hex,
+      nullifier1Hex,
+      outputCommitment0Hex,
+      outputCommitment1Hex,
+      mintHex,
+      poolHex
+    );
+  }
+  
+  return {
+    publicInputs: allPublicInputs,
+    newRoots: allNewRoots,
+    nullifiers: allNullifiers,
+    transfers: input.transfers.map((transfer, idx) => ({
+      ...transfer,
+      newRoot: allNewRoots[idx]!,
+      nullifiers: allNullifiers.slice(idx * 2, idx * 2 + 2)
+    }))
   };
 }
 
@@ -692,6 +856,47 @@ async function generateProof(
       const derived = deriveUnshieldPublic(payload);
       await validateAgainstIndexer(indexer, payload.mintId, canonicalizeHex(payload.oldRoot), derived.nullifiers);
       return produceProof(entry, request.circuit, derived.payload, derived.publicInputs);
+    }
+    case 'batch_transfer': {
+      const payload = BatchTransferInputSchema.parse(request.payload);
+      const derived = deriveBatchTransferPublic(payload);
+      // Validate each transfer against indexer
+      for (const transfer of payload.transfers) {
+        const transferNullifiers = derived.nullifiers.slice(
+          payload.transfers.indexOf(transfer) * 2,
+          (payload.transfers.indexOf(transfer) + 1) * 2
+        );
+        await validateAgainstIndexer(
+          indexer,
+          transfer.mintId,
+          canonicalizeHex(transfer.oldRoot),
+          transferNullifiers.filter(n => n !== fieldToHex(0n)) // Filter out zero nullifiers
+        );
+      }
+      return produceProof(entry, request.circuit, payload, derived.publicInputs);
+    }
+    case 'batch_transfer_from': {
+      const payload = BatchTransferFromInputSchema.parse(request.payload);
+      // Strip allowance fields for circuit derivation (circuit is identical to batch_transfer)
+      const batchTransferPayload: BatchTransferInput = {
+        transfers: payload.transfers.map(({ allowanceAmount, spendAmount, allowanceOwner, ...transfer }) => transfer)
+      };
+      const derived = deriveBatchTransferPublic(batchTransferPayload);
+      // Validate each transfer against indexer
+      for (const transfer of payload.transfers) {
+        const transferNullifiers = derived.nullifiers.slice(
+          payload.transfers.indexOf(transfer) * 2,
+          (payload.transfers.indexOf(transfer) + 1) * 2
+        );
+        await validateAgainstIndexer(
+          indexer,
+          transfer.mintId,
+          canonicalizeHex(transfer.oldRoot),
+          transferNullifiers.filter(n => n !== fieldToHex(0n)) // Filter out zero nullifiers
+        );
+      }
+      // Pass full payload (with allowance info) for SDK use
+      return produceProof(entry, request.circuit, payload, derived.publicInputs);
     }
   }
 }

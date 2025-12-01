@@ -44,7 +44,7 @@ export function TokenSelector({ value, onChange, placeholder = 'Select token', e
       zTokenMint: mint.zTokenMint,
       symbol: `z${mint.symbol}`,
       decimals: mint.decimals,
-      name: mint.name || mint.symbol
+      name: mint.symbol
     };
   }, [value, mints]);
   
@@ -67,7 +67,7 @@ export function TokenSelector({ value, onChange, placeholder = 'Select token', e
         zTokenMint: m.zTokenMint!,
         symbol: `z${m.symbol}`,
         decimals: m.decimals,
-        name: m.name || m.symbol
+        name: m.symbol
       }))
       .slice(0, 10);
     

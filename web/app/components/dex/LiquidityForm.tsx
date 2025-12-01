@@ -35,6 +35,7 @@ import { TokenSelector } from './TokenSelector';
 import { ProofClient } from '../../lib/proofClient';
 import { readStoredNotes } from '../../lib/notes/storage';
 import { generateDexShieldProof } from '../../lib/dex-ztoken-helpers';
+import { useMintCatalog } from '../providers/MintCatalogProvider';
 
 const AMOUNT_INPUT_PATTERN = /^\d*(?:\.\d*)?$/;
 
@@ -177,13 +178,13 @@ export function LiquidityForm({ onTokenChange }: LiquidityFormProps = {}) {
         });
       } else {
         // Add to existing pool - requires transfer notes
-        const storedNotes = readStoredNotes(wallet.publicKey.toBase58());
+        const storedNotes = readStoredNotes();
         const notesA = storedNotes.filter(note => 
-          note.originMint === originMintA &&
+          note.mint === originMintA &&
           BigInt(note.amount) >= amountABigInt
         );
         const notesB = storedNotes.filter(note => 
-          note.originMint === originMintB &&
+          note.mint === originMintB &&
           BigInt(note.amount) >= amountBBigInt
         );
         
@@ -240,7 +241,7 @@ export function LiquidityForm({ onTokenChange }: LiquidityFormProps = {}) {
       const lpAmountBigInt = BigInt(lpAmount.replace('.', ''));
       
       // Fetch notes - pool PDA notes would be needed, but for now we'll need to implement this
-      const storedNotes = readStoredNotes(wallet.publicKey.toBase58());
+      const storedNotes = readStoredNotes();
       // TODO: Fetch pool PDA notes for removal
       
       const minAmountA = 0n; // TODO: Calculate from private reserves

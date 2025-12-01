@@ -137,9 +137,9 @@ export function SwapForm({ onTokenChange }: SwapFormProps = {}) {
     
     try {
       // Fetch user's zToken notes for the input token
-      const storedNotes = readStoredNotes(wallet.publicKey.toBase58());
+      const storedNotes = readStoredNotes();
       const inputNotes = storedNotes.filter(note => 
-        note.originMint === originMintA &&
+        note.mint === originMintA &&
         BigInt(note.amount) >= BigInt(amountIn.replace('.', ''))
       );
       

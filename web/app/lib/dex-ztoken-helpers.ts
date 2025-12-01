@@ -492,8 +492,463 @@ export function proofToTransferArgs(proofResponse: {
     nullifiers: proofResponse.nullifiers.map(n => Array.from(n)),
     output_commitments: proofResponse.outputCommitments.map(c => Array.from(c)),
     output_amount_commitments: proofResponse.outputAmountCommitments.map(c => Array.from(c)),
-    proof: Array.from(proofBytes), // Plain Array - Anchor should serialize Vec<u8> with length prefix
-    public_inputs: Array.from(publicInputsBytes) // Plain Array - Anchor should serialize Vec<u8> with length prefix
+    proof: proofBytes, // Buffer for Anchor Vec<u8>
+    public_inputs: publicInputsBytes // Buffer for Anchor Vec<u8>
+  };
+}
+
+/**
+ * Generate batch transfer proof for multiple transfers (2-10 tokens) in a single proof.
+ * This solves the transaction size issue for DEX operations like add_liquidity.
+ * 
+ * @param proofClient - Proof client instance
+ * @param connection - Solana connection
+ * @param transfers - Array of transfer specifications, one per mint
+ * @returns Batch transfer proof response with combined proof data
+ */
+export async function generateBatchTransferProof(
+  proofClient: ProofClient,
+  connection: Connection,
+  transfers: Array<{
+    originMint: PublicKey;
+    notes: Array<{
+      noteId: string;
+      spendingKey: string;
+      amount: bigint;
+    }>;
+    outputs: Array<{
+      amount: bigint;
+      recipient: PublicKey;
+      blinding: string;
+    }>;
+  }>
+): Promise<ProofResponse & {
+  transfers: Array<{
+    oldRoot: string;
+    newRoot: string;
+    nullifiers: Uint8Array[];
+    outputCommitments: Uint8Array[];
+    outputAmountCommitments: Uint8Array[];
+  }>;
+}> {
+  if (transfers.length < 2 || transfers.length > 10) {
+    throw new Error('Batch transfer requires 2-10 transfers');
+  }
+  
+  // Fetch current roots for all pools
+  const poolRoots = await Promise.all(
+    transfers.map(transfer => fetchZTokenPoolRoot(connection, transfer.originMint))
+  );
+  
+  // Prepare batch transfer payload
+  const batchTransfers = transfers.map((transfer, index) => {
+    const poolState = derivePoolState(transfer.originMint);
+    const poolId = poolState.toBase58();
+    
+    // Ensure we have exactly 2 input notes (pad with zeros if needed)
+    const paddedInNotes = [...transfer.notes];
+    while (paddedInNotes.length < 2) {
+      paddedInNotes.push({ 
+        noteId: '0', 
+        spendingKey: '0', 
+        amount: 0n 
+      });
+    }
+    
+    // Ensure we have exactly 2 output notes (pad with zeros if needed)
+    const paddedOutNotes = [...transfer.outputs];
+    while (paddedOutNotes.length < 2) {
+      paddedOutNotes.push({
+        amount: 0n,
+        recipient: PublicKey.default,
+        blinding: '0'
+      });
+    }
+    
+    return {
+      oldRoot: poolRoots[index]!,
+      mintId: transfer.originMint.toBase58(),
+      poolId,
+      inNotes: paddedInNotes.slice(0, 2).map(note => ({
+        noteId: note.noteId,
+        spendingKey: note.spendingKey,
+        amount: note.amount.toString()
+      })),
+      outNotes: paddedOutNotes.slice(0, 2).map(output => ({
+        amount: output.amount.toString(),
+        recipient: pubkeyToFieldString(output.recipient),
+        blinding: output.blinding
+      }))
+    };
+  });
+  
+  // Request batch transfer proof
+  const proof = await proofClient.requestProof('batch_transfer', {
+    transfers: batchTransfers
+  });
+  
+  // Parse batch public inputs to extract individual transfer data
+  // Batch structure: 16 field elements (8 per transfer × 2 transfers)
+  const fields = proof.publicInputs;
+  if (fields.length !== transfers.length * 8) {
+    throw new Error(`Invalid batch public inputs length: expected ${transfers.length * 8}, got ${fields.length}`);
+  }
+  
+  const transferResults: Array<{
+    oldRoot: string;
+    newRoot: string;
+    nullifiers: Uint8Array[];
+    outputCommitments: Uint8Array[];
+    outputAmountCommitments: Uint8Array[];
+  }> = [];
+  
+  // Process each transfer's data from batch public inputs
+  for (let i = 0; i < transfers.length; i++) {
+    const offset = i * 8;
+    const oldRoot = fields[offset]!;
+    const newRoot = fields[offset + 1]!;
+    const nullifier0 = fields[offset + 2]!;
+    const nullifier1 = fields[offset + 3]!;
+    const outputCommit0 = fields[offset + 4]!;
+    const outputCommit1 = fields[offset + 5]!;
+    
+    // Convert field elements to bytes
+    const nullifiers: Uint8Array[] = [
+      canonicalHexToBytesLE(nullifier0),
+      canonicalHexToBytesLE(nullifier1)
+    ];
+    
+    const outputCommitments: Uint8Array[] = [
+      canonicalHexToBytesLE(outputCommit0),
+      canonicalHexToBytesLE(outputCommit1)
+    ];
+    
+    // Calculate output amount commitments from outputs
+    const outputAmountCommitments: Uint8Array[] = [];
+    const transferOutputs = transfers[i]!.outputs.slice(0, 2);
+    for (const output of transferOutputs) {
+      if (output.amount === 0n) {
+        // Zero output
+        outputAmountCommitments.push(Buffer.alloc(32));
+      } else {
+        const amountCommit = await poseidonHashMany([output.amount, BigInt(output.blinding)]);
+        outputAmountCommitments.push(amountCommit);
+      }
+    }
+    
+    // Pad to exactly 2 (ensure we always have 2 amount commitments)
+    while (outputAmountCommitments.length < 2) {
+      outputAmountCommitments.push(Buffer.alloc(32));
+    }
+    
+    // Return exactly 2 nullifiers and 2 commitments (circuit expects exactly 2)
+    // Nullifiers and outputCommitments are already exactly 2 from public inputs
+    transferResults.push({
+      oldRoot,
+      newRoot,
+      nullifiers: nullifiers.slice(0, 2), // Exactly 2 nullifiers
+      outputCommitments: outputCommitments.slice(0, 2), // Exactly 2 commitments
+      outputAmountCommitments: outputAmountCommitments.slice(0, 2) // Exactly 2 amount commitments
+    });
+  }
+  
+  return {
+    ...proof,
+    transfers: transferResults
+  };
+}
+
+/**
+ * Generate batch transfer proof specifically for DEX add_liquidity operation.
+ * This is a convenience wrapper that handles the common case of adding liquidity
+ * with two tokens (token A and token B) to a pool PDA.
+ * 
+ * @param proofClient - Proof client instance
+ * @param connection - Solana connection
+ * @param tokenAMint - Token A mint address
+ * @param tokenBMint - Token B mint address
+ * @param notesA - User's notes for token A to spend
+ * @param notesB - User's notes for token B to spend
+ * @param amountA - Amount of token A to transfer to pool
+ * @param amountB - Amount of token B to transfer to pool
+ * @param poolStatePDA - DEX pool state PDA (recipient for both transfers)
+ * @param userPayer - User's public key (recipient for change)
+ * @returns Batch transfer proof response
+ */
+export async function generateBatchLiquidityProof(
+  proofClient: ProofClient,
+  connection: Connection,
+  tokenAMint: PublicKey,
+  tokenBMint: PublicKey,
+  notesA: Array<{
+    noteId: string;
+    spendingKey: string;
+    amount: bigint;
+  }>,
+  notesB: Array<{
+    noteId: string;
+    spendingKey: string;
+    amount: bigint;
+  }>,
+  amountA: bigint,
+  amountB: bigint,
+  poolStatePDA: PublicKey,
+  userPayer: PublicKey
+): Promise<ReturnType<typeof generateBatchTransferProof>> {
+  // Select notes for each token (same logic as addDexLiquidity)
+  function selectNotesForAmount(
+    notes: Array<{ noteId: string; spendingKey: string; amount: bigint }>,
+    target: bigint
+  ): Array<{ noteId: string; spendingKey: string; amount: bigint }> {
+    if (!notes.length) {
+      throw new Error('No notes available');
+    }
+    const sorted = [...notes].sort((a, b) => {
+      const diff = a.amount - b.amount;
+      return diff > 0n ? 1 : diff < 0n ? -1 : 0;
+    });
+    const single = sorted.find(note => note.amount >= target);
+    if (single) {
+      return [single];
+    }
+    let bestPair: { total: bigint; notes: Array<{ noteId: string; spendingKey: string; amount: bigint }> } | null = null;
+    for (let i = sorted.length - 1; i >= 0; i--) {
+      for (let j = i - 1; j >= 0; j--) {
+        const total = sorted[i]!.amount + sorted[j]!.amount;
+        if (total >= target) {
+          if (!bestPair || total < bestPair.total) {
+            bestPair = { total, notes: [sorted[i]!, sorted[j]!] };
+          }
+        }
+      }
+    }
+    if (bestPair) {
+      return bestPair.notes;
+    }
+    throw new Error(`Insufficient notes: need ${target}, have ${sorted.reduce((sum, n) => sum + n.amount, 0n)}`);
+  }
+  
+  const selectedNotesA = selectNotesForAmount(notesA, amountA);
+  const selectedNotesB = selectNotesForAmount(notesB, amountB);
+  
+  // Calculate total input and change for each token
+  const totalInputA = selectedNotesA.reduce((sum, note) => sum + note.amount, 0n);
+  const totalInputB = selectedNotesB.reduce((sum, note) => sum + note.amount, 0n);
+  const changeA = totalInputA - amountA;
+  const changeB = totalInputB - amountB;
+  
+  // Build outputs for token A: [to pool PDA, change back to user]
+  const outputsA: Array<{ amount: bigint; recipient: PublicKey; blinding: string }> = [
+    {
+      amount: amountA,
+      recipient: poolStatePDA,
+      blinding: generateRandomBlinding()
+    }
+  ];
+  if (changeA > 0n) {
+    outputsA.push({
+      amount: changeA,
+      recipient: userPayer,
+      blinding: generateRandomBlinding()
+    });
+  }
+  
+  // Build outputs for token B: [to pool PDA, change back to user]
+  const outputsB: Array<{ amount: bigint; recipient: PublicKey; blinding: string }> = [
+    {
+      amount: amountB,
+      recipient: poolStatePDA,
+      blinding: generateRandomBlinding()
+    }
+  ];
+  if (changeB > 0n) {
+    outputsB.push({
+      amount: changeB,
+      recipient: userPayer,
+      blinding: generateRandomBlinding()
+    });
+  }
+  
+  // Generate batch transfer proof for both tokens
+  return generateBatchTransferProof(proofClient, connection, [
+    {
+      originMint: tokenAMint,
+      notes: selectedNotesA,
+      outputs: outputsA
+    },
+    {
+      originMint: tokenBMint,
+      notes: selectedNotesB,
+      outputs: outputsB
+    }
+  ]);
+}
+
+/**
+ * Generate batch transfer from proof (with allowances).
+ * Similar to generateBatchTransferProof but includes allowance info for each transfer.
+ * The circuit itself doesn't use allowance info (verified programmatically), but it's
+ * included in the payload for SDK validation.
+ * 
+ * @param proofClient - Proof client instance
+ * @param connection - Solana connection
+ * @param transfers - Array of transfer specs with allowance info
+ * @returns Batch transfer proof response with transfer data
+ */
+export async function generateBatchTransferFromProof(
+  proofClient: ProofClient,
+  connection: Connection,
+  transfers: Array<{
+    originMint: PublicKey;
+    notes: Array<{
+      noteId: string;
+      spendingKey: string;
+      amount: bigint;
+    }>;
+    outputs: Array<{
+      amount: bigint;
+      recipient: PublicKey;
+      blinding: string;
+    }>;
+    allowanceAmount: bigint;
+    spendAmount: bigint;
+    allowanceOwner: PublicKey;
+  }>
+): Promise<ProofResponse & {
+  transfers: Array<{
+    oldRoot: string;
+    newRoot: string;
+    nullifiers: Uint8Array[];
+    outputCommitments: Uint8Array[];
+    outputAmountCommitments: Uint8Array[];
+  }>;
+}> {
+  if (transfers.length < 2 || transfers.length > 10) {
+    throw new Error('Batch transferFrom requires 2-10 transfers');
+  }
+  
+  // Fetch current roots for all pools
+  const poolRoots = await Promise.all(
+    transfers.map(transfer => fetchZTokenPoolRoot(connection, transfer.originMint))
+  );
+  
+  // Prepare batch transfer from payload (includes allowance info)
+  const batchTransfers = transfers.map((transfer, index) => {
+    const poolState = derivePoolState(transfer.originMint);
+    const poolId = poolState.toBase58();
+    
+    // Ensure we have exactly 2 input notes (pad with zeros if needed)
+    const paddedInNotes = [...transfer.notes];
+    while (paddedInNotes.length < 2) {
+      paddedInNotes.push({ 
+        noteId: '0', 
+        spendingKey: '0', 
+        amount: 0n 
+      });
+    }
+    
+    // Ensure we have exactly 2 output notes (pad with zeros if needed)
+    const paddedOutNotes = [...transfer.outputs];
+    while (paddedOutNotes.length < 2) {
+      paddedOutNotes.push({
+        amount: 0n,
+        recipient: PublicKey.default,
+        blinding: '0'
+      });
+    }
+    
+    return {
+      oldRoot: poolRoots[index]!,
+      mintId: transfer.originMint.toBase58(),
+      poolId,
+      inNotes: paddedInNotes.slice(0, 2).map(note => ({
+        noteId: note.noteId,
+        spendingKey: note.spendingKey,
+        amount: note.amount.toString()
+      })),
+      outNotes: paddedOutNotes.slice(0, 2).map(output => ({
+        amount: output.amount.toString(),
+        recipient: pubkeyToFieldString(output.recipient),
+        blinding: output.blinding
+      })),
+      // Allowance info (for program-level validation, not used in circuit)
+      allowanceAmount: transfer.allowanceAmount.toString(),
+      spendAmount: transfer.spendAmount.toString(),
+      allowanceOwner: transfer.allowanceOwner.toBase58()
+    };
+  });
+  
+  // Request batch transfer from proof (circuit is same as batch_transfer)
+  const proof = await proofClient.requestProof('batch_transfer_from', {
+    transfers: batchTransfers
+  });
+  
+  // Parse batch public inputs (same structure as batch_transfer)
+  const fields = proof.publicInputs;
+  if (fields.length !== transfers.length * 8) {
+    throw new Error(`Invalid batch public inputs length: expected ${transfers.length * 8}, got ${fields.length}`);
+  }
+  
+  const transferResults: Array<{
+    oldRoot: string;
+    newRoot: string;
+    nullifiers: Uint8Array[];
+    outputCommitments: Uint8Array[];
+    outputAmountCommitments: Uint8Array[];
+  }> = [];
+  
+  // Process each transfer's data from batch public inputs
+  for (let i = 0; i < transfers.length; i++) {
+    const offset = i * 8;
+    const oldRoot = fields[offset]!;
+    const newRoot = fields[offset + 1]!;
+    const nullifier0 = fields[offset + 2]!;
+    const nullifier1 = fields[offset + 3]!;
+    const outputCommit0 = fields[offset + 4]!;
+    const outputCommit1 = fields[offset + 5]!;
+    
+    // Convert field elements to bytes
+    const nullifiers: Uint8Array[] = [
+      canonicalHexToBytesLE(nullifier0),
+      canonicalHexToBytesLE(nullifier1)
+    ];
+    
+    const outputCommitments: Uint8Array[] = [
+      canonicalHexToBytesLE(outputCommit0),
+      canonicalHexToBytesLE(outputCommit1)
+    ];
+    
+    // Calculate output amount commitments from outputs
+    const outputAmountCommitments: Uint8Array[] = [];
+    const transferOutputs = transfers[i]!.outputs.slice(0, 2);
+    for (const output of transferOutputs) {
+      if (output.amount === 0n) {
+        // Zero output
+        outputAmountCommitments.push(Buffer.alloc(32));
+      } else {
+        const amountCommit = await poseidonHashMany([output.amount, BigInt(output.blinding)]);
+        outputAmountCommitments.push(amountCommit);
+      }
+    }
+    
+    // Pad to exactly 2 (ensure we always have 2 amount commitments)
+    while (outputAmountCommitments.length < 2) {
+      outputAmountCommitments.push(Buffer.alloc(32));
+    }
+    
+    // Return exactly 2 nullifiers and 2 commitments (circuit expects exactly 2)
+    transferResults.push({
+      oldRoot,
+      newRoot,
+      nullifiers: nullifiers.slice(0, 2), // Exactly 2 nullifiers
+      outputCommitments: outputCommitments.slice(0, 2), // Exactly 2 commitments
+      outputAmountCommitments: outputAmountCommitments.slice(0, 2) // Exactly 2 amount commitments
+    });
+  }
+  
+  return {
+    ...proof,
+    transfers: transferResults
   };
 }
 

@@ -99,6 +99,21 @@ interface WrapResult {
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
+// Timeout constants for batch transfer tests
+const FETCH_TIMEOUT_MS = 15000; // 15 seconds for API calls
+const PROOF_TIMEOUT_MS = 60000; // 60 seconds for proof generation
+const TX_CONFIRM_TIMEOUT_MS = 30000; // 30 seconds for transaction confirmation
+
+// Helper to add timeout to promises
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, errorMessage: string): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<T>((_, reject) =>
+      setTimeout(() => reject(new Error(`${errorMessage} (timeout after ${timeoutMs}ms)`)), timeoutMs)
+    )
+  ]);
+}
+
 function toBuffer(value: Buffer | Uint8Array | number[] | undefined): Buffer {
   if (!value) {
     return Buffer.alloc(0);
@@ -1895,14 +1910,14 @@ async function main() {
   
   await sleep(1000);
   const poolRootBeforeSecond = await fetchPoolStateRoot(connection, mintConfig.poolId);
-  const currentRoot2 = canonicalizeHex(poolRootBeforeSecond.root);
-  console.info(`[test-04] Root before second shield (from pool_state): ${currentRoot2}`);
+  const currentRoot2FirstShield = canonicalizeHex(poolRootBeforeSecond.root);
+  console.info(`[test-04] Root before second shield (from pool_state): ${currentRoot2FirstShield}`);
   
   const depositId2 = generateUniqueDepositId();
   const blinding2 = crypto.randomInt(1_000_000, 9_000_000).toString();
   const noteAmount2 = WRAP_AMOUNT + (WRAP_AMOUNT * feeBps) / 10_000n;
   const proof2 = await proofClient.requestProof('wrap', {
-    oldRoot: currentRoot2,
+    oldRoot: currentRoot2FirstShield,
     amount: noteAmount2.toString(),
     recipient: owner.publicKey.toBase58(),
     depositId: depositId2,
@@ -2359,6 +2374,357 @@ async function main() {
 
   const updatedRoot5 = await fetchPoolStateRoot(connection, mintConfig.poolId);
   currentRoot = canonicalizeHex(updatedRoot5.root);
+
+  console.info('[test-06.5] Testing batch_private_transfer instruction (low-level)');
+  
+  // Create a second mint for batch transfer test
+  let batchCatalog = await fetchMintCatalog();
+  if (batchCatalog.length < 2) {
+    console.info('[test-06.5] Creating second mint for batch transfer test...');
+    const registerResponse2 = await fetch(MINTS_API_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ symbol: `BT${Date.now().toString().slice(-6)}`, decimals: TARGET_DECIMALS })
+    });
+    if (!registerResponse2.ok && registerResponse2.status !== 409) {
+      const errorText = await registerResponse2.text();
+      throw new Error(`Failed to register second mint: ${registerResponse2.status} ${errorText}`);
+    }
+    await sleep(2000);
+    batchCatalog = await fetchMintCatalog();
+  }
+  
+  const mintConfig2 = batchCatalog.find(m => m.originMint !== mintConfig.originMint) || batchCatalog[0]!;
+  const originMint2Key = new PublicKey(mintConfig2.originMint);
+  await waitForMintMappingInitialized(connection, originMint2Key);
+  
+  // Fund wallets with second token
+  await faucetToken(connection, originMint2Key, owner.publicKey, WRAP_AMOUNT * 5n);
+  
+  // Derive accounts for second pool
+  const poolState2Key = derivePoolState(originMint2Key);
+  const nullifierSet2Key = deriveNullifierSet(originMint2Key);
+  const noteLedger2Key = deriveNoteLedger(originMint2Key);
+  const commitmentTree2Key = deriveCommitmentTree(originMint2Key);
+  const mintMapping2Key = deriveMintMapping(originMint2Key);
+  
+  // Shield tokens for second mint
+  const rootBeforeBatchShield2 = await fetchPoolStateRoot(connection, mintConfig2.poolId);
+  let currentRoot2Batch = canonicalizeHex(rootBeforeBatchShield2.root);
+  const depositIdBatch2 = generateUniqueDepositId();
+  const blindingBatch2 = crypto.randomInt(1_000_000, 9_000_000).toString();
+  const noteAmountBatch2 = WRAP_AMOUNT + (WRAP_AMOUNT * feeBps) / 10_000n;
+  
+  const proofBatch2 = await proofClient.requestProof('wrap', {
+    oldRoot: currentRoot2Batch,
+    amount: noteAmountBatch2.toString(),
+    recipient: owner.publicKey.toBase58(),
+    depositId: depositIdBatch2,
+    poolId: mintConfig2.poolId,
+    blinding: blindingBatch2,
+    mintId: mintConfig2.originMint
+  });
+  
+  const decodedProofBatch2 = decodeProofPayload(proofBatch2);
+  const amountCommitmentBytesBatch2 = await poseidonHashMany([noteAmountBatch2, BigInt(blindingBatch2)]);
+  
+  const shieldArgsBatch2 = {
+    amount_commit: Array.from(amountCommitmentBytesBatch2),
+    amount: new BN(noteAmountBatch2.toString()),
+    proof: decodedProofBatch2.proof,
+    public_inputs: decodedProofBatch2.publicInputs
+  };
+  
+  const shieldDataBatch2 = poolCoder.instruction.encode('shield', { args: shieldArgsBatch2 });
+  
+  const vaultState2Key = deriveVaultState(originMint2Key);
+  const vaultTokenAccount2 = await getAssociatedTokenAddress(
+    originMint2Key,
+    vaultState2Key,
+    true,
+    TOKEN_PROGRAM_ID,
+    ASSOCIATED_TOKEN_PROGRAM_ID
+  );
+  const depositorTokenAccount2 = await getAssociatedTokenAddress(
+    originMint2Key,
+    owner.publicKey,
+    false,
+    TOKEN_PROGRAM_ID,
+    ASSOCIATED_TOKEN_PROGRAM_ID
+  );
+  const shieldClaim2Key = deriveShieldClaim(poolState2Key);
+  const hookConfig2Key = deriveHookConfig(originMint2Key);
+  const hookWhitelist2Key = deriveHookWhitelist(originMint2Key);
+  
+  const shieldKeysBatch2 = [
+    { pubkey: poolState2Key, isSigner: false, isWritable: true },
+    { pubkey: hookConfig2Key, isSigner: false, isWritable: false },
+    { pubkey: hookWhitelist2Key, isSigner: false, isWritable: true },
+    { pubkey: nullifierSet2Key, isSigner: false, isWritable: true },
+    { pubkey: commitmentTree2Key, isSigner: false, isWritable: true },
+    { pubkey: noteLedger2Key, isSigner: false, isWritable: true },
+    { pubkey: vaultState2Key, isSigner: false, isWritable: true },
+    { pubkey: vaultTokenAccount2, isSigner: false, isWritable: true },
+    { pubkey: depositorTokenAccount2, isSigner: false, isWritable: true }
+  ];
+  
+  if (mintConfig2.zTokenMint) {
+    shieldKeysBatch2.push({ pubkey: new PublicKey(mintConfig2.zTokenMint), isSigner: false, isWritable: true });
+  } else {
+    shieldKeysBatch2.push({ pubkey: POOL_PROGRAM_ID, isSigner: false, isWritable: false });
+  }
+  
+  shieldKeysBatch2.push(
+    { pubkey: VERIFIER_PROGRAM_ID, isSigner: false, isWritable: false },
+    { pubkey: verifyingKey, isSigner: false, isWritable: false },
+    { pubkey: shieldClaim2Key, isSigner: false, isWritable: true },
+    { pubkey: owner.publicKey, isSigner: true, isWritable: true },
+    { pubkey: originMint2Key, isSigner: false, isWritable: false },
+    { pubkey: mintMapping2Key, isSigner: false, isWritable: false },
+    { pubkey: factoryStateKey, isSigner: false, isWritable: false },
+    { pubkey: VAULT_PROGRAM_ID, isSigner: false, isWritable: false },
+    { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
+    { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+    { pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false }
+  );
+  
+  const shieldIxBatch2 = new TransactionInstruction({
+    programId: POOL_PROGRAM_ID,
+    keys: shieldKeysBatch2,
+    data: shieldDataBatch2
+  });
+  
+  const finalizeLedgerIxBatch2 = new TransactionInstruction({
+    programId: POOL_PROGRAM_ID,
+    keys: [
+      { pubkey: poolState2Key, isSigner: false, isWritable: true },
+      { pubkey: hookConfig2Key, isSigner: false, isWritable: false },
+      { pubkey: noteLedger2Key, isSigner: false, isWritable: true },
+      { pubkey: shieldClaim2Key, isSigner: false, isWritable: true },
+      { pubkey: hookWhitelist2Key, isSigner: false, isWritable: false }
+    ],
+    data: poolCoder.instruction.encode('shield_finalize_ledger', {})
+  });
+  
+  await sendAndConfirmInstructions(
+    connection,
+    owner,
+    [ComputeBudgetProgram.setComputeUnitLimit({ units: 1_200_000 }), shieldIxBatch2, finalizeLedgerIxBatch2],
+    originMint2Key
+  );
+  
+  const finalizeTreeIxBatch2 = new TransactionInstruction({
+    programId: POOL_PROGRAM_ID,
+    keys: [
+      { pubkey: poolState2Key, isSigner: false, isWritable: true },
+      { pubkey: commitmentTree2Key, isSigner: false, isWritable: true },
+      { pubkey: shieldClaim2Key, isSigner: false, isWritable: true }
+    ],
+    data: poolCoder.instruction.encode('shield_finalize_tree', {})
+  });
+  await sendAndConfirmInstructions(connection, owner, [finalizeTreeIxBatch2], originMint2Key);
+  
+  const checkInvariantIxBatch2 = new TransactionInstruction({
+    programId: POOL_PROGRAM_ID,
+    keys: [
+      { pubkey: poolState2Key, isSigner: false, isWritable: false },
+      { pubkey: noteLedger2Key, isSigner: false, isWritable: false },
+      { pubkey: shieldClaim2Key, isSigner: false, isWritable: true },
+      { pubkey: vaultTokenAccount2, isSigner: false, isWritable: true },
+      { pubkey: mintConfig2.zTokenMint ? new PublicKey(mintConfig2.zTokenMint) : POOL_PROGRAM_ID, isSigner: false, isWritable: mintConfig2.zTokenMint ? true : false }
+    ],
+    data: poolCoder.instruction.encode('shield_check_invariant', {})
+  });
+  await sendAndConfirmInstructions(connection, owner, [checkInvariantIxBatch2], originMint2Key);
+  await waitForShieldClaimCleared(connection, shieldClaim2Key);
+  
+  const updatedRootBatch2 = await fetchPoolStateRoot(connection, mintConfig2.poolId);
+  currentRoot2Batch = canonicalizeHex(updatedRootBatch2.root);
+  
+  const wrapBatch2: WrapResult = {
+    noteId: depositIdBatch2,
+    spendingKey: blindingBatch2,
+    noteAmount: noteAmountBatch2,
+    newRoot: currentRoot2Batch,
+    commitment: proofBatch2.publicInputs[2]!,
+    nullifier: Buffer.from(await poseidonHashMany([BigInt(depositIdBatch2), BigInt(blindingBatch2)])).reverse().toString('hex').padStart(64, '0')
+  };
+  
+  // Now perform batch transfer: transfer from both pools
+  const batchTransferAmount1 = WRAP_AMOUNT / 2n;
+  const batchChangeAmount1 = wrap3.noteAmount - batchTransferAmount1;
+  const batchTransferAmount2 = WRAP_AMOUNT / 2n;
+  const batchChangeAmount2 = wrapBatch2.noteAmount - batchTransferAmount2;
+  
+  const batchTransferBlinding1 = randomFieldScalar();
+  const batchChangeBlinding1 = randomFieldScalar();
+  const batchTransferBlinding2 = randomFieldScalar();
+  const batchChangeBlinding2 = randomFieldScalar();
+  
+  // Import batch transfer helper
+  const { generateBatchTransferProof } = await import('../lib/dex-ztoken-helpers');
+  const { bytesLEToCanonicalHex } = await import('../lib/onchain/utils');
+  
+  const batchTransferProof = await withTimeout(
+    generateBatchTransferProof(
+      proofClient,
+      connection,
+      [
+        {
+          originMint: originMintKey,
+          notes: [wrap3].map(n => ({
+            noteId: n.noteId,
+            spendingKey: n.spendingKey,
+            amount: n.noteAmount
+          })),
+          outputs: [
+            {
+              amount: batchTransferAmount1,
+              recipient: receiver.publicKey,
+              blinding: batchTransferBlinding1
+            },
+            {
+              amount: batchChangeAmount1,
+              recipient: owner.publicKey,
+              blinding: batchChangeBlinding1
+            }
+          ]
+        },
+        {
+          originMint: originMint2Key,
+          notes: [wrapBatch2].map(n => ({
+            noteId: n.noteId,
+            spendingKey: n.spendingKey,
+            amount: n.noteAmount
+          })),
+          outputs: [
+            {
+              amount: batchTransferAmount2,
+              recipient: receiver.publicKey,
+              blinding: batchTransferBlinding2
+            },
+            {
+              amount: batchChangeAmount2,
+              recipient: owner.publicKey,
+              blinding: batchChangeBlinding2
+            }
+          ]
+        }
+      ]
+    ),
+    PROOF_TIMEOUT_MS,
+    'Generate batch transfer proof for lowlevel test'
+  );
+  
+  // Extract and pad nullifiers/commitments
+  const batchNullifiers1: string[] = batchTransferProof.transfers[0]!.nullifiers.map(n => bytesLEToCanonicalHex(n));
+  while (batchNullifiers1.length < 2) batchNullifiers1.push(bytesLEToCanonicalHex(Buffer.alloc(32)));
+  const batchOutputCommitments1: string[] = batchTransferProof.transfers[0]!.outputCommitments.map(c => bytesLEToCanonicalHex(c));
+  while (batchOutputCommitments1.length < 2) batchOutputCommitments1.push(bytesLEToCanonicalHex(Buffer.alloc(32)));
+  const batchOutputAmountCommitments1: string[] = batchTransferProof.transfers[0]!.outputAmountCommitments.map(c => bytesLEToCanonicalHex(c));
+  while (batchOutputAmountCommitments1.length < 2) batchOutputAmountCommitments1.push(bytesLEToCanonicalHex(Buffer.alloc(32)));
+  
+  const batchNullifiers2: string[] = batchTransferProof.transfers[1]!.nullifiers.map(n => bytesLEToCanonicalHex(n));
+  while (batchNullifiers2.length < 2) batchNullifiers2.push(bytesLEToCanonicalHex(Buffer.alloc(32)));
+  const batchOutputCommitments2: string[] = batchTransferProof.transfers[1]!.outputCommitments.map(c => bytesLEToCanonicalHex(c));
+  while (batchOutputCommitments2.length < 2) batchOutputCommitments2.push(bytesLEToCanonicalHex(Buffer.alloc(32)));
+  const batchOutputAmountCommitments2: string[] = batchTransferProof.transfers[1]!.outputAmountCommitments.map(c => bytesLEToCanonicalHex(c));
+  while (batchOutputAmountCommitments2.length < 2) batchOutputAmountCommitments2.push(bytesLEToCanonicalHex(Buffer.alloc(32)));
+  
+  // Build TransferArgs for each transfer
+  const transferArgsBatch1 = {
+    old_root: Array.from(canonicalHexToBytesLE(canonicalizeHex(batchTransferProof.transfers[0]!.oldRoot))),
+    new_root: Array.from(canonicalHexToBytesLE(canonicalizeHex(batchTransferProof.transfers[0]!.newRoot))),
+    nullifiers: batchNullifiers1.slice(0, 2).map(n => Array.from(canonicalHexToBytesLE(canonicalizeHex(n)))),
+    output_commitments: batchOutputCommitments1.slice(0, 2).map(c => Array.from(canonicalHexToBytesLE(canonicalizeHex(c)))),
+    output_amount_commitments: batchOutputAmountCommitments1.slice(0, 2).map(c => Array.from(canonicalHexToBytesLE(canonicalizeHex(c)))),
+    proof: Buffer.alloc(192), // Dummy (batch proof used)
+    public_inputs: Buffer.alloc(0) // Dummy (batch public inputs used)
+  };
+  
+  const transferArgsBatch2 = {
+    old_root: Array.from(canonicalHexToBytesLE(canonicalizeHex(batchTransferProof.transfers[1]!.oldRoot))),
+    new_root: Array.from(canonicalHexToBytesLE(canonicalizeHex(batchTransferProof.transfers[1]!.newRoot))),
+    nullifiers: batchNullifiers2.slice(0, 2).map(n => Array.from(canonicalHexToBytesLE(canonicalizeHex(n)))),
+    output_commitments: batchOutputCommitments2.slice(0, 2).map(c => Array.from(canonicalHexToBytesLE(canonicalizeHex(c)))),
+    output_amount_commitments: batchOutputAmountCommitments2.slice(0, 2).map(c => Array.from(canonicalHexToBytesLE(canonicalizeHex(c)))),
+    proof: Buffer.alloc(192), // Dummy (batch proof used)
+    public_inputs: Buffer.alloc(0) // Dummy (batch public inputs used)
+  };
+  
+  // Build BatchTransferArgs
+  const batchProofBytes = Buffer.from(batchTransferProof.proof, 'base64');
+  const batchPublicInputsBytes = Buffer.concat(
+    batchTransferProof.publicInputs.map(input => canonicalHexToBytesLE(canonicalizeHex(input)))
+  );
+  
+  const batchTransferArgs = {
+    transfers: [transferArgsBatch1, transferArgsBatch2],
+    proof: Array.from(batchProofBytes),
+    public_inputs: Array.from(batchPublicInputsBytes)
+  };
+  
+  const batchTransferData = poolCoder.instruction.encode('batch_private_transfer', { args: batchTransferArgs });
+  
+  // Build instruction accounts: pool_state_0, nullifier_set_0, commitment_tree_0, note_ledger_0, mint_mapping_0,
+  //                             verifier_program, verifying_key, payer, system_program, rent,
+  //                             remaining_accounts: pool_state_1, nullifier_set_1, commitment_tree_1, note_ledger_1, mint_mapping_1
+  const batchTransferKeys = [
+    { pubkey: poolStateKey, isSigner: false, isWritable: true },
+    { pubkey: nullifierSetKey, isSigner: false, isWritable: true },
+    { pubkey: commitmentTreeKey, isSigner: false, isWritable: true },
+    { pubkey: noteLedgerKey, isSigner: false, isWritable: true },
+    { pubkey: mintMappingKey, isSigner: false, isWritable: false },
+    { pubkey: VERIFIER_PROGRAM_ID, isSigner: false, isWritable: false },
+    { pubkey: verifyingKey, isSigner: false, isWritable: false },
+    { pubkey: owner.publicKey, isSigner: true, isWritable: true },
+    { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+    { pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false },
+    // Remaining accounts: second pool
+    { pubkey: poolState2Key, isSigner: false, isWritable: true },
+    { pubkey: nullifierSet2Key, isSigner: false, isWritable: true },
+    { pubkey: commitmentTree2Key, isSigner: false, isWritable: true },
+    { pubkey: noteLedger2Key, isSigner: false, isWritable: true },
+    { pubkey: mintMapping2Key, isSigner: false, isWritable: false }
+  ];
+  
+  const batchTransferIx = new TransactionInstruction({
+    programId: POOL_PROGRAM_ID,
+    keys: batchTransferKeys,
+    data: batchTransferData
+  });
+  
+  const batchTransferSig = await withTimeout(
+    sendAndConfirmInstructions(
+      connection,
+      owner,
+      [ComputeBudgetProgram.setComputeUnitLimit({ units: 1_400_000 }), batchTransferIx],
+      originMintKey
+    ),
+    TX_CONFIRM_TIMEOUT_MS * 2,
+    'Execute batch_private_transfer instruction'
+  );
+  console.info('[test-06.5] batch_private_transfer instruction successful', batchTransferSig);
+  
+  // Verify roots updated (with timeout)
+  const updatedRootBatch1 = await withTimeout(
+    fetchPoolStateRoot(connection, mintConfig.poolId),
+    FETCH_TIMEOUT_MS,
+    'Fetch root 1 after batch transfer'
+  );
+  const updatedRootBatch2After = await withTimeout(
+    fetchPoolStateRoot(connection, mintConfig2.poolId),
+    FETCH_TIMEOUT_MS,
+    'Fetch root 2 after batch transfer'
+  );
+  const newRoot1 = canonicalizeHex(updatedRootBatch1.root);
+  const newRoot2 = canonicalizeHex(updatedRootBatch2After.root);
+  
+  if (newRoot1 === batchTransferProof.transfers[0]!.newRoot && newRoot2 === batchTransferProof.transfers[1]!.newRoot) {
+    console.info('[test-06.5] ✓ Both pool roots updated correctly');
+  } else {
+    throw new Error(`[test-06.5] Root mismatch: root1=${newRoot1} (expected ${batchTransferProof.transfers[0]!.newRoot}), root2=${newRoot2} (expected ${batchTransferProof.transfers[1]!.newRoot})`);
+  }
 
   console.info('[test-07] Testing unshield_to_origin instruction (low-level)');
   // Ensure mint_mapping is initialized before fourth shield

@@ -1218,24 +1218,19 @@ function WalletDrawerContent({ disclosure }: { disclosure: ReturnType<typeof use
         <DrawerContent bg="rgba(18, 16, 14, 0.96)" borderLeft="1px solid rgba(245,178,27,0.24)">
           <DrawerCloseButton />
           <DrawerHeader borderBottomWidth="1px" borderColor="whiteAlpha.200">
-          <Stack spacing={2}>
-            <Text fontSize="sm" color="whiteAlpha.600">
-              Connected wallet
-            </Text>
-            <HStack spacing={3}>
-              <Badge colorScheme="brand" variant="subtle">
-                Devnet
-              </Badge>
-              {activeAccount && (
-                <HStack spacing={2}>
-                  <Text fontWeight="medium" color="whiteAlpha.800">
-                    {activeAccount.label} · {formatAddress(activeAccount.publicKey)}
-                  </Text>
-                  <CopyAddressButton value={activeAccount.publicKey} ariaLabel="Copy active account address" />
-                </HStack>
-              )}
-            </HStack>
-          </Stack>
+          <HStack spacing={3}>
+            <Badge colorScheme="brand" variant="subtle">
+              Devnet
+            </Badge>
+            {wallet.publicKey && (
+              <HStack spacing={2}>
+                <Text fontWeight="medium" color="whiteAlpha.800">
+                  {formatAddress(wallet.publicKey.toBase58())}
+                </Text>
+                <CopyAddressButton value={wallet.publicKey.toBase58()} ariaLabel="Copy wallet address" />
+              </HStack>
+            )}
+          </HStack>
         </DrawerHeader>
 
         <DrawerBody py={6}>
@@ -1552,114 +1547,6 @@ function WalletDrawerContent({ disclosure }: { disclosure: ReturnType<typeof use
                   </Stack>
                 )}
               </Box>
-            </Stack>
-
-            <Stack spacing={3}>
-              <Flex align="center" justify="space-between">
-                <Text fontSize="sm" color="whiteAlpha.600" textTransform="uppercase" letterSpacing="0.08em">
-                  Accounts
-                </Text>
-                <Menu>
-                  <MenuButton as={IconButton} icon={<Icon as={Plus} />} variant="ghost" aria-label="Manage accounts" />
-                  <MenuList>
-                    <MenuItem icon={<Icon as={Plus} />} onClick={setCreateOpen.on}>
-                      Create new account
-                    </MenuItem>
-                    <MenuItem icon={<Icon as={Coins} />} onClick={setImportOpen.on}>
-                      Import secret key
-                    </MenuItem>
-                  </MenuList>
-                </Menu>
-              </Flex>
-
-              <Stack spacing={3}>
-                {accounts.map((account) => (
-                  <Flex
-                    key={account.id}
-                    px={4}
-                    py={3}
-                    rounded="xl"
-                    border="1px solid"
-                    borderColor={account.id === activeAccount?.id ? 'brand.300' : 'whiteAlpha.200'}
-                    align="center"
-                    justify="space-between"
-                    bg={account.id === activeAccount?.id ? 'whiteAlpha.100' : 'transparent'}
-                    transition="all 0.2s"
-                    _hover={{ borderColor: 'brand.200', cursor: 'pointer' }}
-                    onClick={() => selectAccount(account.id)}
-                  >
-                    <Stack spacing={1}>
-                      <Editable
-                        defaultValue={account.label}
-                        fontWeight="semibold"
-                        color="whiteAlpha.900"
-                        onSubmit={(next) => renameAccount(account.id, next || account.label)}
-                        onClick={(event) => event.stopPropagation()}
-                      >
-                        <EditablePreview />
-                        <EditableInput />
-                      </Editable>
-                      <HStack spacing={2} color="whiteAlpha.500" fontSize="xs">
-                        <Text>{formatAddress(account.publicKey)}</Text>
-                        <CopyAddressButton
-                          value={account.publicKey}
-                          ariaLabel="Copy account address"
-                          stopPropagation
-                        />
-                      </HStack>
-                    </Stack>
-                    <IconButton
-                      icon={<Icon as={Trash2} fontSize="sm" />}
-                      aria-label="Delete account"
-                      variant="ghost"
-                      size="sm"
-                      isDisabled={accounts.length === 1}
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        if (accounts.length === 1) return;
-                        deleteAccount(account.id);
-                      }}
-                    />
-                  </Flex>
-                ))}
-              </Stack>
-
-              {createOpen && (
-                <Box border="1px dashed" borderColor="brand.400" rounded="lg" p={4}>
-                  <Stack spacing={2}>
-                    <Text fontSize="sm" color="whiteAlpha.700">
-                      New account label
-                    </Text>
-                    <Input placeholder="Account label" value={newLabel} onChange={(event) => setNewLabel(event.target.value)} />
-                    <Button size="sm" onClick={handleCreateAccount}>
-                      Create account
-                    </Button>
-                  </Stack>
-                </Box>
-              )}
-
-              {importOpen && (
-                <Box border="1px dashed" borderColor="brand.400" rounded="lg" p={4}>
-                  <Stack spacing={2}>
-                    <Text fontSize="sm" color="whiteAlpha.700">
-                      Paste a base58-encoded secret key to import an existing account.
-                    </Text>
-                    <Input
-                      placeholder="Secret key"
-                      value={importSecret}
-                      onChange={(event) => setImportSecret(event.target.value)}
-                    />
-                    <Input
-                      placeholder="Label (optional)"
-                      value={importLabel}
-                      onChange={(event) => setImportLabel(event.target.value)}
-                    />
-                    <Button size="sm" onClick={handleImportAccount}>
-                      Import account
-                    </Button>
-                  </Stack>
-                </Box>
-              )}
             </Stack>
 
             <Stack spacing={3}>

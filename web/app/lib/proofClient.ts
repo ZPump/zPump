@@ -25,7 +25,9 @@ const DEFAULT_BASE_URL = getDefaultProofUrl();
 const CIRCUIT_ALIAS = {
   wrap: 'shield',
   transfer: 'transfer',
-  unwrap: 'unshield'
+  unwrap: 'unshield',
+  batch_transfer: 'batch_transfer',
+  batch_transfer_from: 'batch_transfer_from'
 } as const;
 
 type CircuitName = keyof typeof CIRCUIT_ALIAS;

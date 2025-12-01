@@ -25,5 +25,23 @@
     "zkey": "transfer_final.zkey",
     "beacon": "ptf-mvp-no-relayer",
     "description": "Private in-pool transfers (feature flagged for v1.1)"
+  },
+  {
+    "name": "batch_transfer",
+    "entry": "batch_transfer/circuit.circom",
+    "wasm": "batch_transfer.wasm",
+    "r1cs": "batch_transfer.r1cs",
+    "zkey": "batch_transfer_final.zkey",
+    "beacon": "ptf-mvp-no-relayer",
+    "description": "Batch private transfers supporting 2 different token transfers in a single proof"
+  },
+  {
+    "name": "batch_transfer_from",
+    "entry": "batch_transfer_from/circuit.circom",
+    "wasm": "batch_transfer_from.wasm",
+    "r1cs": "batch_transfer_from.r1cs",
+    "zkey": "batch_transfer_from_final.zkey",
+    "beacon": "ptf-mvp-no-relayer",
+    "description": "Batch private transfers from (with approvals) supporting 2 different token transfers in a single proof"
   }
 ]

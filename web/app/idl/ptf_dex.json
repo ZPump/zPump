@@ -108,18 +108,10 @@
           "type": "u64"
         },
         {
-          "name": "transfer_args_a",
+          "name": "batch_transfer_args",
           "type": {
             "defined": {
-              "name": "TransferArgs"
-            }
-          }
-        },
-        {
-          "name": "transfer_args_b",
-          "type": {
-            "defined": {
-              "name": "TransferArgs"
+              "name": "BatchTransferArgs"
             }
           }
         }
@@ -799,6 +791,36 @@
                   "u8",
                   32
                 ]
+              }
+            }
+          },
+          {
+            "name": "proof",
+            "type": "bytes"
+          },
+          {
+            "name": "public_inputs",
+            "type": "bytes"
+          }
+        ]
+      }
+    },
+    {
+      "name": "BatchTransferArgs",
+      "docs": [
+        "Batch transfer arguments for ptf_pool::batch_private_transfer CPI",
+        "Contains multiple TransferArgs for different mints, with a single batch proof"
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "transfers",
+            "type": {
+              "vec": {
+                "defined": {
+                  "name": "TransferArgs"
+                }
               }
             }
           },

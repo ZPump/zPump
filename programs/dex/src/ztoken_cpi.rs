@@ -5,6 +5,7 @@
 //! this module provides helpers to parse accounts from remaining_accounts and set up CPIs.
 
 use anchor_lang::prelude::*;
+use solana_program::hash::hashv;
 use ptf_common::addresses::{AddressDeriver, PoolAddresses};
 use ptf_pool::ID as POOL_PROGRAM_ID;
 use ptf_factory::ID as FACTORY_PROGRAM_ID;
@@ -247,6 +248,15 @@ pub struct TransferArgs {
     pub output_amount_commitments: Vec<[u8; 32]>,
     pub proof: Vec<u8>,
     pub public_inputs: Vec<u8>,
+}
+
+/// Batch transfer arguments for ptf_pool::batch_private_transfer CPI
+/// Contains multiple TransferArgs for different mints, with a single batch proof
+#[derive(AnchorSerialize, AnchorDeserialize, Clone)]
+pub struct BatchTransferArgs {
+    pub transfers: Vec<TransferArgs>,  // 2-10 transfers
+    pub proof: Vec<u8>,                // Single batch proof
+    pub public_inputs: Vec<u8>,        // Combined public inputs
 }
 
 /// Set up and invoke ptf_pool::shield CPI
@@ -866,5 +876,217 @@ pub fn invoke_transfer_for_add_liquidity_ctx<'info, 'a, 'b, 'c>(
         false, // sender_is_pool_pda = false (user is sender)
         None,
     )
+}
+
+/// Invoke batch_private_transfer CPI for add_liquidity instruction
+/// 
+/// This handles batch transfers for two tokens atomically (token A and token B)
+/// using a single batch proof. This solves the transaction size issue.
+/// 
+/// Returns: ((commitment_a, new_reserve_a_amount), (commitment_b, new_reserve_b_amount))
+pub fn invoke_batch_transfer_for_add_liquidity<'info>(
+    remaining_accounts: &'info [AccountInfo<'info>],
+    token_a: &Pubkey,
+    token_b: &Pubkey,
+    batch_transfer_args: BatchTransferArgs,
+    payer_pubkey: &Pubkey,
+    pool_state_key: &Pubkey,
+    current_private_reserve_a: u64,
+    current_private_reserve_b: u64,
+    amount_a: u64,
+    amount_b: u64,
+) -> Result<((Option<[u8; 32]>, Option<u64>), (Option<[u8; 32]>, Option<u64>))> {
+    require!(
+        batch_transfer_args.transfers.len() == 2,
+        crate::errors::DexError::InvalidAccount
+    );
+    
+    // Parse first pool accounts (explicit in BatchPrivateTransfer)
+    // SAFETY: AccountInfo from remaining_accounts has a different lifetime, but we validate it before use
+    let remaining_accounts_transmuted: &'info [AccountInfo<'info>] = unsafe {
+        std::mem::transmute(remaining_accounts)
+    };
+    let ztoken_accounts_a = parse_ztoken_accounts(
+        remaining_accounts_transmuted,
+        token_a,
+        &POOL_PROGRAM_ID,
+        false,
+    )?;
+    
+    // Parse second pool accounts (via remaining_accounts after first pool)
+    // Expected order in BatchPrivateTransfer remaining_accounts:
+    // pool_state_1, nullifier_set_1, commitment_tree_1, note_ledger_1, mint_mapping_1
+    let account_offset = 7; // First pool uses 7 accounts (same as parse_ztoken_accounts)
+    require!(
+        remaining_accounts_transmuted.len() > account_offset + 4,
+        crate::errors::DexError::InvalidAccount
+    );
+    
+    let pool_state_1 = &remaining_accounts_transmuted[account_offset];
+    let nullifier_set_1 = &remaining_accounts_transmuted[account_offset + 1];
+    let commitment_tree_1 = &remaining_accounts_transmuted[account_offset + 2];
+    let note_ledger_1 = &remaining_accounts_transmuted[account_offset + 3];
+    let mint_mapping_1 = &remaining_accounts_transmuted[account_offset + 4];
+    
+    // Parse common accounts (payer, system_program, rent) - should be at the end
+    let (payer_account, system_program_account, rent_account) =
+        parse_cpi_common_accounts(remaining_accounts_transmuted, payer_pubkey)?;
+    
+    // Build account metas for batch_private_transfer
+    // Order: pool_state_0, nullifier_set_0, commitment_tree_0, note_ledger_0, mint_mapping_0,
+    //        verifier_program, verifying_key, payer, system_program, rent,
+    //        remaining_accounts: pool_state_1, nullifier_set_1, commitment_tree_1, note_ledger_1, mint_mapping_1
+    let mut account_metas = Vec::new();
+    let mut account_infos: Vec<AccountInfo<'info>> = Vec::new();
+    
+    // First pool accounts (explicit)
+    account_metas.push(anchor_lang::solana_program::instruction::AccountMeta::new(
+        ztoken_accounts_a.pool_state.key(),
+        false,
+    ));
+    account_infos.push(ztoken_accounts_a.pool_state.clone());
+    
+    account_metas.push(anchor_lang::solana_program::instruction::AccountMeta::new(
+        ztoken_accounts_a.nullifier_set.key(),
+        false,
+    ));
+    account_infos.push(ztoken_accounts_a.nullifier_set.clone());
+    
+    account_metas.push(anchor_lang::solana_program::instruction::AccountMeta::new(
+        ztoken_accounts_a.commitment_tree.key(),
+        false,
+    ));
+    account_infos.push(ztoken_accounts_a.commitment_tree.clone());
+    
+    account_metas.push(anchor_lang::solana_program::instruction::AccountMeta::new(
+        ztoken_accounts_a.note_ledger.key(),
+        false,
+    ));
+    account_infos.push(ztoken_accounts_a.note_ledger.clone());
+    
+    account_metas.push(anchor_lang::solana_program::instruction::AccountMeta::new_readonly(
+        ztoken_accounts_a.mint_mapping.key(),
+        false,
+    ));
+    account_infos.push(ztoken_accounts_a.mint_mapping.clone());
+    
+    // Shared accounts
+    account_metas.push(anchor_lang::solana_program::instruction::AccountMeta::new_readonly(
+        ztoken_accounts_a.verifier_program.key(),
+        false,
+    ));
+    account_infos.push(ztoken_accounts_a.verifier_program.clone());
+    
+    account_metas.push(anchor_lang::solana_program::instruction::AccountMeta::new_readonly(
+        ztoken_accounts_a.verifying_key.key(),
+        false,
+    ));
+    account_infos.push(ztoken_accounts_a.verifying_key.clone());
+    
+    account_metas.push(anchor_lang::solana_program::instruction::AccountMeta::new(
+        payer_account.key(),
+        true,
+    ));
+    account_infos.push(payer_account);
+    
+    account_metas.push(anchor_lang::solana_program::instruction::AccountMeta::new_readonly(
+        system_program_account.key(),
+        false,
+    ));
+    account_infos.push(system_program_account);
+    
+    account_metas.push(anchor_lang::solana_program::instruction::AccountMeta::new_readonly(
+        rent_account.key(),
+        false,
+    ));
+    account_infos.push(rent_account);
+    
+    // Second pool accounts (remaining_accounts)
+    account_metas.push(anchor_lang::solana_program::instruction::AccountMeta::new(
+        pool_state_1.key(),
+        false,
+    ));
+    account_infos.push(pool_state_1.clone());
+    
+    account_metas.push(anchor_lang::solana_program::instruction::AccountMeta::new(
+        nullifier_set_1.key(),
+        false,
+    ));
+    account_infos.push(nullifier_set_1.clone());
+    
+    account_metas.push(anchor_lang::solana_program::instruction::AccountMeta::new(
+        commitment_tree_1.key(),
+        false,
+    ));
+    account_infos.push(commitment_tree_1.clone());
+    
+    account_metas.push(anchor_lang::solana_program::instruction::AccountMeta::new(
+        note_ledger_1.key(),
+        false,
+    ));
+    account_infos.push(note_ledger_1.clone());
+    
+    account_metas.push(anchor_lang::solana_program::instruction::AccountMeta::new_readonly(
+        mint_mapping_1.key(),
+        false,
+    ));
+    account_infos.push(mint_mapping_1.clone());
+    
+    // Build instruction data for batch_private_transfer
+    let mut instruction_data = Vec::new();
+    
+    // Compute discriminator for batch_private_transfer instruction
+    // Anchor format: sha256("global:" + instruction_name)[0..8]
+    let mut preimage = b"global:".to_vec();
+    preimage.extend_from_slice(b"batch_private_transfer");
+    let hash = hashv(&[&preimage]);
+    let mut batch_transfer_discriminator = [0u8; 8];
+    batch_transfer_discriminator.copy_from_slice(&hash.to_bytes()[..8]);
+    instruction_data.extend_from_slice(&batch_transfer_discriminator);
+    
+    // Serialize BatchTransferArgs
+    let args_data = batch_transfer_args.try_to_vec()
+        .map_err(|_| crate::errors::DexError::InvalidProof)?;
+    instruction_data.extend_from_slice(&args_data);
+    
+    msg!("[ztoken_cpi] Batch transfer instruction data prepared: {} bytes", instruction_data.len());
+    
+    // Construct instruction
+    let instruction = anchor_lang::solana_program::instruction::Instruction {
+        program_id: POOL_PROGRAM_ID,
+        accounts: account_metas,
+        data: instruction_data,
+    };
+    
+    // Invoke batch_private_transfer CPI
+    anchor_lang::solana_program::program::invoke(
+        &instruction,
+        &account_infos,
+    )?;
+    
+    msg!("[ztoken_cpi] ✓ ptf_pool::batch_private_transfer CPI invoked successfully");
+    
+    // Extract commitments from batch transfer results
+    let transfer_a = &batch_transfer_args.transfers[0];
+    let transfer_b = &batch_transfer_args.transfers[1];
+    
+    // Extract commitments that go to the DEX pool PDA (recipient)
+    let commitment_a = extract_pool_commitment(&transfer_a.output_commitments, pool_state_key);
+    let commitment_b = extract_pool_commitment(&transfer_b.output_commitments, pool_state_key);
+    
+    // Calculate new reserve amounts (add to current reserves)
+    let amount_a_result = commitment_a.map(|_| {
+        current_private_reserve_a
+            .checked_add(amount_a)
+            .ok_or(crate::errors::DexError::MathOverflow)
+    }).transpose()?;
+    
+    let amount_b_result = commitment_b.map(|_| {
+        current_private_reserve_b
+            .checked_add(amount_b)
+            .ok_or(crate::errors::DexError::MathOverflow)
+    }).transpose()?;
+    
+    Ok(((commitment_a, amount_a_result), (commitment_b, amount_b_result)))
 }
 

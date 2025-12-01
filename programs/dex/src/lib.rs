@@ -8,7 +8,7 @@ pub mod ztoken_cpi;
 
 pub use errors::DexError;
 pub use state::{PoolState, DEX_POOL_SEED};
-pub use ztoken_cpi::{ShieldArgs, TransferArgs, ZTokenPoolAccounts, parse_ztoken_accounts, parse_cpi_common_accounts, invoke_shield_cpi, invoke_transfer_cpi, invoke_transfer_cpi_with_accounts, invoke_transfer_for_add_liquidity_ctx};
+pub use ztoken_cpi::{ShieldArgs, TransferArgs, BatchTransferArgs, ZTokenPoolAccounts, parse_ztoken_accounts, parse_cpi_common_accounts, invoke_shield_cpi, invoke_transfer_cpi, invoke_transfer_cpi_with_accounts, invoke_transfer_for_add_liquidity_ctx, invoke_batch_transfer_for_add_liquidity};
 
 declare_id!("8PMDczNoSdVhj5DsphLD1TrLAUtrZFpqMVThHQo8m12n");
 
@@ -37,16 +37,14 @@ pub mod ptf_dex {
         amount_a: u64,
         amount_b: u64,
         min_lp_tokens: u64,
-        transfer_args_a: TransferArgs,
-        transfer_args_b: TransferArgs,
+        batch_transfer_args: ztoken_cpi::BatchTransferArgs,
     ) -> Result<()> {
         instructions::add_liquidity::add_liquidity(
             ctx,
             amount_a,
             amount_b,
             min_lp_tokens,
-            transfer_args_a,
-            transfer_args_b,
+            batch_transfer_args,
         )
     }
 

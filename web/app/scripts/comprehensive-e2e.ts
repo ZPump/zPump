@@ -26,7 +26,7 @@ import {
   getAccount,
   getMint
 } from '@solana/spl-token';
-import { mintNativeZToken, wrap, unwrap, transfer, preparePool } from '../lib/sdk';
+import { mintNativeZToken, wrap, unwrap, transfer, preparePool, batchTransfer } from '../lib/sdk';
 import { ProofClient } from '../lib/proofClient';
 import { IndexerClient } from '../lib/indexerClient';
 import { deriveViewingKey } from '../lib/wallet/viewingKey';
@@ -52,6 +52,21 @@ const WRAP_AMOUNT = BigInt(process.env.WRAP_AMOUNT ?? '1000000'); // 1 token wit
 const TARGET_DECIMALS = 6;
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// Timeout constants for batch transfer tests
+const FETCH_TIMEOUT_MS = 15000; // 15 seconds for API calls
+const PROOF_TIMEOUT_MS = 60000; // 60 seconds for proof generation
+const TX_CONFIRM_TIMEOUT_MS = 30000; // 30 seconds for transaction confirmation
+
+// Helper to add timeout to promises
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, errorMessage: string): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<T>((_, reject) =>
+      setTimeout(() => reject(new Error(`${errorMessage} (timeout after ${timeoutMs}ms)`)), timeoutMs)
+    )
+  ]);
+}
 
 async function airdropSol(connection: Connection, address: PublicKey, amount: bigint): Promise<void> {
   const signature = await connection.requestAirdrop(address, Number(amount));
@@ -931,6 +946,184 @@ async function comprehensiveE2ETest(): Promise<void> {
   }
   console.info(`[test-7] ✓ Charlie final balance: ${charlieFinalBalance}`);
   
+  // ============================================
+  // TEST 8: Batch Transfer with 2 tokens
+  // ============================================
+  console.info('\n[test-8] Testing batch transfer with 2 different zTokens');
+  
+  // Create a second token for batch transfer test
+  const token2Name = `Test Token 2 ${Date.now()}`;
+  const token2Symbol = `TT2${Date.now().toString().slice(-4)}`;
+  const token2InitialSupply = WRAP_AMOUNT * 20n;
+  
+  const mintResult2 = await mintNativeZToken({
+    connection,
+    wallet: aliceAdapter,
+    name: token2Name,
+    symbol: token2Symbol,
+    uri: `ipfs://test2-${Date.now()}`,
+    decimals: tokenDecimals,
+    initialSupply: token2InitialSupply
+  });
+  
+  const originMint2Key = new PublicKey(mintResult2.originMint);
+  console.info(`[test-8] ✓ Second token minted: ${mintResult2.originMint}`);
+  
+  // Shield both tokens (token1 and token2) for batch transfer
+  console.info('[test-8] Shielding tokens for batch transfer...');
+  const shieldBatch1 = await performShield(
+    connection,
+    proofClient,
+    aliceAdapter,
+    alice,
+    mintResult.originMint,
+    mintResult.poolId,
+    WRAP_AMOUNT * 2n,
+    alice.publicKey,
+    'batch-1'
+  );
+  
+  const shieldBatch2 = await performShield(
+    connection,
+    proofClient,
+    aliceAdapter,
+    alice,
+    mintResult2.originMint,
+    mintResult2.poolId,
+    WRAP_AMOUNT * 2n,
+    alice.publicKey,
+    'batch-2'
+  );
+  
+  console.info(`[test-8] ✓ Shielded ${WRAP_AMOUNT * 2n} of token 1 and token 2`);
+  
+  // Import batch transfer helpers
+  const { generateBatchTransferProof, fetchZTokenPoolRoot } = await import('../lib/dex-ztoken-helpers');
+  const { bytesLEToCanonicalHex } = await import('../lib/onchain/utils');
+  
+  // Perform batch transfer: send tokens to Bob and Charlie
+  const batchTransferAmount1 = WRAP_AMOUNT;
+  const batchTransferAmount2 = WRAP_AMOUNT;
+  
+  console.info(`[test-8] Performing batch transfer: ${batchTransferAmount1} token1 -> Bob, ${batchTransferAmount2} token2 -> Charlie`);
+  
+  const batchProof = await withTimeout(
+    generateBatchTransferProof(
+      proofClient,
+      connection,
+      [
+        {
+          originMint: originMintKey,
+          notes: [shieldBatch1].map(n => ({
+            noteId: n.noteId,
+            spendingKey: n.spendingKey,
+            amount: n.noteAmount
+          })),
+          outputs: [
+            {
+              amount: batchTransferAmount1,
+              recipient: bob.publicKey,
+              blinding: randomBlinding()
+            },
+            {
+              amount: shieldBatch1.noteAmount - batchTransferAmount1,
+              recipient: alice.publicKey,
+              blinding: randomBlinding()
+            }
+          ]
+        },
+        {
+          originMint: originMint2Key,
+          notes: [shieldBatch2].map(n => ({
+            noteId: n.noteId,
+            spendingKey: n.spendingKey,
+            amount: n.noteAmount
+          })),
+          outputs: [
+            {
+              amount: batchTransferAmount2,
+              recipient: charlie.publicKey,
+              blinding: randomBlinding()
+            },
+            {
+              amount: shieldBatch2.noteAmount - batchTransferAmount2,
+              recipient: alice.publicKey,
+              blinding: randomBlinding()
+            }
+          ]
+        }
+      ]
+    ),
+    PROOF_TIMEOUT_MS,
+    'Generate batch transfer proof for comprehensive test'
+  );
+  
+  // Extract and pad nullifiers/commitments to exactly 2 per transfer
+  const nullifiers1_bt: string[] = batchProof.transfers[0]!.nullifiers.map(n => bytesLEToCanonicalHex(n));
+  while (nullifiers1_bt.length < 2) nullifiers1_bt.push(bytesLEToCanonicalHex(Buffer.alloc(32)));
+  const outputCommitments1_bt: string[] = batchProof.transfers[0]!.outputCommitments.map(c => bytesLEToCanonicalHex(c));
+  while (outputCommitments1_bt.length < 2) outputCommitments1_bt.push(bytesLEToCanonicalHex(Buffer.alloc(32)));
+  const outputAmountCommitments1_bt: string[] = batchProof.transfers[0]!.outputAmountCommitments.map(c => bytesLEToCanonicalHex(c));
+  while (outputAmountCommitments1_bt.length < 2) outputAmountCommitments1_bt.push(bytesLEToCanonicalHex(Buffer.alloc(32)));
+  
+  const nullifiers2_bt: string[] = batchProof.transfers[1]!.nullifiers.map(n => bytesLEToCanonicalHex(n));
+  while (nullifiers2_bt.length < 2) nullifiers2_bt.push(bytesLEToCanonicalHex(Buffer.alloc(32)));
+  const outputCommitments2_bt: string[] = batchProof.transfers[1]!.outputCommitments.map(c => bytesLEToCanonicalHex(c));
+  while (outputCommitments2_bt.length < 2) outputCommitments2_bt.push(bytesLEToCanonicalHex(Buffer.alloc(32)));
+  const outputAmountCommitments2_bt: string[] = batchProof.transfers[1]!.outputAmountCommitments.map(c => bytesLEToCanonicalHex(c));
+  while (outputAmountCommitments2_bt.length < 2) outputAmountCommitments2_bt.push(bytesLEToCanonicalHex(Buffer.alloc(32)));
+  
+  const batchTransferSig = await withTimeout(
+    batchTransfer({
+      connection,
+      wallet: aliceAdapter,
+      transfers: [
+        {
+          originMint: mintResult.originMint,
+          poolId: mintResult.poolId,
+          proof: batchProof,
+          nullifiers: nullifiers1_bt.slice(0, 2),
+          outputCommitments: outputCommitments1_bt.slice(0, 2),
+          outputAmountCommitments: outputAmountCommitments1_bt.slice(0, 2)
+        },
+        {
+          originMint: mintResult2.originMint,
+          poolId: mintResult2.poolId,
+          proof: batchProof,
+          nullifiers: nullifiers2_bt.slice(0, 2),
+          outputCommitments: outputCommitments2_bt.slice(0, 2),
+          outputAmountCommitments: outputAmountCommitments2_bt.slice(0, 2)
+        }
+      ],
+      batchProof,
+      batchPublicInputs: batchProof.publicInputs,
+      keypair: alice
+    }),
+    TX_CONFIRM_TIMEOUT_MS * 2,
+    'Execute batch transfer in comprehensive test'
+  );
+  
+  console.info(`[test-8] ✓ Batch transfer successful: ${batchTransferSig}`);
+  
+  // Verify roots updated (with timeout)
+  await sleep(2000);
+  const newRoot1_bt = await withTimeout(
+    fetchZTokenPoolRoot(connection, originMintKey),
+    FETCH_TIMEOUT_MS,
+    'Fetch root 1 after batch transfer'
+  );
+  const newRoot2_bt = await withTimeout(
+    fetchZTokenPoolRoot(connection, originMint2Key),
+    FETCH_TIMEOUT_MS,
+    'Fetch root 2 after batch transfer'
+  );
+  
+  if (newRoot1_bt === batchProof.transfers[0]!.newRoot && newRoot2_bt === batchProof.transfers[1]!.newRoot) {
+    console.info('[test-8] ✓ Both pool roots updated correctly');
+  } else {
+    throw new Error(`[test-8] Root mismatch: root1=${newRoot1_bt} (expected ${batchProof.transfers[0]!.newRoot}), root2=${newRoot2_bt} (expected ${batchProof.transfers[1]!.newRoot})`);
+  }
+  
   console.info('\n[comprehensive-e2e] ✅ All comprehensive E2E tests passed!');
   console.info('[comprehensive-e2e] Summary:');
   console.info('  ✓ Token minting via mint page API');
@@ -940,6 +1133,7 @@ async function comprehensiveE2ETest(): Promise<void> {
   console.info('  ✓ Second-time unshield');
   console.info('  ✓ Normal token trades between multiple accounts');
   console.info('  ✓ Private zToken trades between multiple accounts');
+  console.info('  ✓ Batch transfer with 2 different zTokens');
 }
 
 async function main() {

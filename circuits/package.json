@@ -10,6 +10,8 @@
     "compile:shield": "node scripts/compile.js shield",
     "compile:unshield": "node scripts/compile.js unshield",
     "compile:transfer": "node scripts/compile.js transfer",
+    "compile:batch_transfer": "node scripts/compile.js batch_transfer",
+    "compile:batch_transfer_from": "node scripts/compile.js batch_transfer_from",
     "prove:shield": "node scripts/prove.js shield",
     "prove:unshield": "node scripts/prove.js unshield",
     "prove:transfer": "node scripts/prove.js transfer",

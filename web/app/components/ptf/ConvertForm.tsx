@@ -233,7 +233,7 @@ export function ConvertForm() {
   const [noteLabelDraft, setNoteLabelDraft] = useState<string>('');
   const [nullifierPreview, setNullifierPreview] = useState<string | null>(null);
   const [nullifierPreviewError, setNullifierPreviewError] = useState<string | null>(null);
-  const [mintStatuses, setMintStatuses] = useState<Record<string, number>>({});
+  const [mintStatuses, setMintStatuses] = useState<Record<string, number | 'MISSING'>>({});
   const [mintStatusLoading, setMintStatusLoading] = useState(false);
   const [mintStatusError, setMintStatusError] = useState<string | null>(null);
 
@@ -498,6 +498,10 @@ export function ConvertForm() {
       
       mints.forEach((mint) => {
         const status = mintStatuses[mint.originMint];
+        // Skip mints that don't exist on-chain (missing mint mapping account)
+        if (status === 'MISSING') {
+          return;
+        }
         const isMintFrozen = status === MINT_STATUS.FROZEN;
         const freezeSuffix = isMintFrozen ? ' — Frozen by governance' : '';
         const publicBalance = publicBalances.get(mint.originMint) ?? 0n;
@@ -1240,8 +1244,11 @@ export function ConvertForm() {
               const status = typeof decoded.status === 'number' ? decoded.status : MINT_STATUS.UNKNOWN;
               return [mint.originMint, status] as const;
             } catch (error) {
-              console.warn('[convert-form] failed to fetch mint status', mint.originMint, error);
-              return [mint.originMint, MINT_STATUS.UNKNOWN] as const;
+              // Mint mapping account missing - mint doesn't exist on-chain (likely from validator reset)
+              // This is expected for stale mints in the generated catalog, so log at debug level
+              console.debug('[convert-form] Mint mapping missing (mint not on-chain)', mint.originMint, error instanceof Error ? error.message : String(error));
+              // Return a special status to indicate the mint doesn't exist
+              return [mint.originMint, 'MISSING' as any] as const;
             }
           })
         );
