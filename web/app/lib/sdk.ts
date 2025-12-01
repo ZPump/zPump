@@ -3433,8 +3433,22 @@ export async function batchTransfer(params: BatchTransferParams): Promise<string
   }
   
   // Pre-check: If instruction data is already at or near the limit, warn early
-  if (instructionData.length >= 1275) {
+  if (instructionData.length >= 1200) {
     console.warn(`[batchTransfer] ⚠️  Instruction data is very large (${instructionData.length} bytes), close to 1280-byte limit`);
+  }
+  
+  // Try to serialize before signing to check actual size
+  // Note: We can't serialize unsigned transaction, but we can estimate
+  // V0 transaction: 1 byte version + message + signatures
+  // Message overhead: ~50-100 bytes (header, blockhash, account keys via lookup tables, etc.)
+  // Signature: 64 bytes
+  // Conservative estimate: instruction data + 150 bytes
+  const estimatedTxSize = instructionData.length + 150;
+  
+  if (estimatedTxSize > 1280) {
+    console.warn(`[batchTransfer] ⚠️  Estimated transaction size (${estimatedTxSize} bytes) may exceed 1280-byte limit`);
+    console.warn(`[batchTransfer] Instruction data: ${instructionData.length} bytes`);
+    console.warn(`[batchTransfer] Will attempt to sign and check actual size`);
   }
   
   try {
@@ -3442,15 +3456,28 @@ export async function batchTransfer(params: BatchTransferParams): Promise<string
   } catch (signError: any) {
     // Check if error is related to transaction size
     if (signError.message?.includes('overruns') || signError.message?.includes('too large') || signError.message?.includes('Uint8Array')) {
-      // Try to serialize to get actual size (if possible)
-      let actualSize = instructionData.length;
+      // Transaction is too large - try to get actual size if possible
+      let actualSize = estimatedTxSize;
       try {
+        // Try to serialize to get actual size (might fail, but worth trying)
         const testSerialized = versionedTx.serialize();
         actualSize = testSerialized.length;
       } catch {
-        // Can't serialize, use instruction data size as estimate
+        // Can't serialize, use estimate
       }
-      throw new Error(`Transaction too large to serialize. Instruction data: ${instructionData.length} bytes. Estimated total transaction size: ~${actualSize} bytes. The V0 transaction limit is 1280 bytes total (including headers and metadata). Instruction data must be reduced.`);
+      
+      console.error(`[batchTransfer] ❌ Transaction too large during signing`);
+      console.error(`[batchTransfer] Instruction data: ${instructionData.length} bytes`);
+      console.error(`[batchTransfer] Estimated/Actual size: ${actualSize} bytes`);
+      console.error(`[batchTransfer] Error: ${signError.message}`);
+      
+      // Provide helpful error with suggestions
+      throw new Error(
+        `Transaction too large to serialize. Instruction data: ${instructionData.length} bytes. ` +
+        `Estimated transaction size: ${actualSize} bytes (exceeds 1280-byte V0 limit). ` +
+        `The 1-output optimization is already applied. ` +
+        `Consider: (1) Using single transfers instead of batch, (2) Reducing number of transfers, or (3) Further circuit/program optimizations.`
+      );
     }
     throw signError;
   }

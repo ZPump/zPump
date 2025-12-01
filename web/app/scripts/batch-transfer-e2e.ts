@@ -587,11 +587,12 @@ async function main() {
     const recipient = Keypair.generate();
     console.info(`[test-1] Recipient: ${recipient.publicKey.toBase58()}`);
     
-    // Prepare batch transfer: transfer 500k of each token to recipient
-    const transferAmount1 = WRAP_AMOUNT / 2n;
-    const transferAmount2 = WRAP_AMOUNT / 2n;
+    // Prepare batch transfer: transfer exact amount (no change) to trigger 1-output optimization
+    // This saves 64-128 bytes per transfer by only including 1 output when second is zero
+    const transferAmount1 = notes1[0]!.noteAmount; // Transfer entire note (no change)
+    const transferAmount2 = notes2[0]!.noteAmount; // Transfer entire note (no change)
     
-    console.info(`[test-1] Preparing batch transfer: ${transferAmount1} token1 + ${transferAmount2} token2`);
+    console.info(`[test-1] Preparing batch transfer: ${transferAmount1} token1 + ${transferAmount2} token2 (exact amounts, no change)`);
     
     // Generate batch transfer proof with timeout
     const batchProofPromise = generateBatchTransferProof(
@@ -610,12 +611,8 @@ async function main() {
               amount: transferAmount1,
               recipient: recipient.publicKey,
               blinding: randomBlinding()
-            },
-            {
-              amount: notes1[0]!.noteAmount - transferAmount1, // Change back to user
-              recipient: user.publicKey,
-              blinding: randomBlinding()
             }
+            // No second output (zero) - will trigger optimization
           ]
         },
         {
@@ -630,12 +627,8 @@ async function main() {
               amount: transferAmount2,
               recipient: recipient.publicKey,
               blinding: randomBlinding()
-            },
-            {
-              amount: notes2[0]!.noteAmount - transferAmount2, // Change back to user
-              recipient: user.publicKey,
-              blinding: randomBlinding()
             }
+            // No second output (zero) - will trigger optimization
           ]
         }
       ]
