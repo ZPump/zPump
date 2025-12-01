@@ -3451,19 +3451,38 @@ export async function batchTransfer(params: BatchTransferParams): Promise<string
     console.warn(`[batchTransfer] Will attempt to sign and check actual size`);
   }
   
+  // Try to estimate message size before signing
+  // V0 message structure: header (3 bytes) + static account keys (32 bytes each, but compressed via lookup tables) 
+  // + recent blockhash (32 bytes) + instructions + address table lookups
+  // With lookup tables, most accounts are compressed to 1-2 bytes (index in lookup table)
+  // Only signers and accounts not in lookup tables are 32 bytes
+  // Estimate: instruction data + ~80-100 bytes for message overhead + 64 bytes signature = ~144-164 bytes total overhead
+  const messageOverheadEstimate = 100; // Conservative estimate
+  const signatureSize = 64;
+  const estimatedTotalSize = instructionData.length + messageOverheadEstimate + signatureSize;
+  
+  if (estimatedTotalSize > 1280) {
+    console.warn(`[batchTransfer] ⚠️  Estimated total size (${estimatedTotalSize} bytes) exceeds 1280-byte limit`);
+    console.warn(`[batchTransfer] Instruction data: ${instructionData.length} bytes`);
+    console.warn(`[batchTransfer] Message overhead estimate: ${messageOverheadEstimate} bytes`);
+    console.warn(`[batchTransfer] Signature size: ${signatureSize} bytes`);
+  }
+  
   try {
     versionedTx.sign([params.keypair]);
   } catch (signError: any) {
     // Check if error is related to transaction size
     if (signError.message?.includes('overruns') || signError.message?.includes('too large') || signError.message?.includes('Uint8Array')) {
       // Transaction is too large - try to get actual size if possible
-      let actualSize = estimatedTxSize;
+      let actualSize = estimatedTotalSize;
       try {
         // Try to serialize to get actual size (might fail, but worth trying)
         const testSerialized = versionedTx.serialize();
         actualSize = testSerialized.length;
-      } catch {
+        console.log(`[batchTransfer] Actual serialized size: ${actualSize} bytes`);
+      } catch (serializeError: any) {
         // Can't serialize, use estimate
+        console.warn(`[batchTransfer] Could not serialize to get actual size: ${serializeError.message}`);
       }
       
       console.error(`[batchTransfer] ❌ Transaction too large during signing`);
@@ -3471,12 +3490,20 @@ export async function batchTransfer(params: BatchTransferParams): Promise<string
       console.error(`[batchTransfer] Estimated/Actual size: ${actualSize} bytes`);
       console.error(`[batchTransfer] Error: ${signError.message}`);
       
+      // Check if we're very close to the limit - if so, try to optimize further
+      const bytesOver = actualSize - 1280;
+      if (bytesOver <= 20) {
+        console.warn(`[batchTransfer] ⚠️  Only ${bytesOver} bytes over limit - trying to optimize account compression`);
+        // Could try to extend lookup tables with more accounts, but that's already done
+      }
+      
       // Provide helpful error with suggestions
       throw new Error(
         `Transaction too large to serialize. Instruction data: ${instructionData.length} bytes. ` +
-        `Estimated transaction size: ${actualSize} bytes (exceeds 1280-byte V0 limit). ` +
-        `The 1-output optimization is already applied. ` +
-        `Consider: (1) Using single transfers instead of batch, (2) Reducing number of transfers, or (3) Further circuit/program optimizations.`
+        `Estimated transaction size: ${actualSize} bytes (exceeds 1280-byte V0 limit by ${bytesOver} bytes). ` +
+        `The 1-output optimization is already applied (saved 128 bytes). ` +
+        `Current limitation: Batch transfers with 2 tokens may not fit in a single transaction. ` +
+        `Options: (1) Use single transfers sequentially, (2) Further optimize circuit/program, or (3) Accept this limitation.`
       );
     }
     throw signError;

@@ -87,10 +87,15 @@ function randomBlinding(): string {
   return BigInt('0x' + randomBytes(32).toString('hex')).toString();
 }
 
+let symbolCounter = 0;
 function generateUniqueSymbol(): string {
-  // Symbol must be 2-6 characters. Use format: BT + 3-digit number = 5 chars total
-  const num = Math.floor(Math.random() * 1000).toString().padStart(3, '0');
-  return `BT${num}`;
+  // Symbol must be 2-6 characters. Use format: BT + counter + random = 5 chars total
+  // Use counter to ensure uniqueness within test run, plus random to avoid collisions across runs
+  symbolCounter++;
+  const counter = (symbolCounter % 100).toString().padStart(2, '0');
+  const random = Math.floor(Math.random() * 10);
+  const symbol = `BT${counter}${random}`.slice(0, 5); // Ensure exactly 5 chars
+  return symbol;
 }
 
 async function createToken(symbol: string): Promise<MintConfig> {
