@@ -698,7 +698,7 @@ pub fn invoke_transfer_cpi<'info>(
 /// 
 /// For multiple zTokens: accounts are at the very end, shared between all zToken CPIs
 pub fn parse_cpi_common_accounts<'info>(
-    remaining_accounts: &[AccountInfo<'info>],
+    remaining_accounts: &'info [AccountInfo<'info>],
     payer_pubkey: &Pubkey,
 ) -> Result<(AccountInfo<'info>, AccountInfo<'info>, AccountInfo<'info>)> {
     use anchor_lang::solana_program::system_program;
@@ -711,9 +711,9 @@ pub fn parse_cpi_common_accounts<'info>(
     );
     
     let start_idx = remaining_accounts.len() - 3;
-    let payer_account = &remaining_accounts[start_idx];
-    let system_program_account = &remaining_accounts[start_idx + 1];
-    let rent_account = &remaining_accounts[start_idx + 2];
+    let payer_account = remaining_accounts[start_idx].clone();
+    let system_program_account = remaining_accounts[start_idx + 1].clone();
+    let rent_account = remaining_accounts[start_idx + 2].clone();
     
     // Validate payer
     require_keys_eq!(
@@ -744,9 +744,9 @@ pub fn parse_cpi_common_accounts<'info>(
         payer_account.key(), system_program_account.key(), rent_account.key());
     
     Ok((
-        payer_account.clone(),
-        system_program_account.clone(),
-        rent_account.clone(),
+        payer_account,
+        system_program_account,
+        rent_account,
     ))
 }
 
