@@ -1,4 +1,5 @@
 use anchor_lang::prelude::*;
+use anchor_lang::AnchorSerialize;
 use anchor_lang::InstructionData;
 use anchor_lang::solana_program::instruction::{AccountMeta, Instruction};
 use anchor_lang::solana_program::program::{invoke, invoke_signed};
@@ -32,7 +33,7 @@ use ptf_verifier_groth16::{self, VerifyingKeyAccount};
 
 mod poseidon;
 
-declare_id!("GBfBiuyXm5YZjnCPkZNjakht41rxEkMRxawQcocowwdi");
+declare_id!("CqagMfwWi4u1d1CbKWUhwJdkGQ2nW2BgtjamcMwnqRwQ");
 
 const DEFAULT_CANOPY_DEPTH: u8 = 8;
 // CRITICAL SECURITY: Maximum amounts to prevent overflow in calculations
@@ -46,6 +47,25 @@ const AUTHORITY_CHANGE_TIMELOCK_SECONDS: i64 = 7 * 24 * 60 * 60; // 7 days
 const AUTHORITY_CHANGE_RATE_LIMIT_SECONDS: i64 = 30 * 24 * 60 * 60; // 30 days
 // CRITICAL FIX: Pending change expiration (30 days after execution time, same as vault)
 const PENDING_CHANGE_EXPIRATION_SECONDS: i64 = 30 * 24 * 60 * 60; // 30 days
+
+/// Lightweight context wrapper used by core execution helpers to avoid direct
+/// dependency on Anchor's `Context<T>` (and the associated bump structs).
+pub struct CoreContext<'info, A> {
+    pub program_id: &'info Pubkey,
+    pub accounts: &'info mut A,
+    pub remaining_accounts: &'info [AccountInfo<'info>],
+}
+
+pub type ShieldCoreContext<'info> = CoreContext<'info, Shield<'info>>;
+pub type UnshieldCoreContext<'info> = CoreContext<'info, Unshield<'info>>;
+pub type PrivateTransferCoreContext<'info> =
+    CoreContext<'info, PrivateTransfer<'info>>;
+pub type TransferFromCoreContext<'info> =
+    CoreContext<'info, TransferFrom<'info>>;
+pub type BatchPrivateTransferCoreContext<'info> =
+    CoreContext<'info, BatchPrivateTransfer<'info>>;
+pub type BatchTransferFromCoreContext<'info> =
+    CoreContext<'info, BatchTransferFrom<'info>>;
 
 #[program]
 pub mod ptf_pool {
@@ -1033,7 +1053,7 @@ pub mod ptf_pool {
     }
 
     pub fn shield<'info>(
-        ctx: Context<'_, '_, '_, 'info, Shield<'info>>,
+        mut ctx: Context<'_, '_, '_, 'info, Shield<'info>>,
         args: ShieldArgs,
     ) -> Result<()> {
         msg!("shield: entry");
@@ -1214,11 +1234,17 @@ pub mod ptf_pool {
         
         // CRITICAL FIX: Initialize hook_whitelist if needed (init_if_needed constraint)
         // This ensures the account exists before process_shield_finalize_ledger tries to use it
-        if ctx.accounts.hook_whitelist.to_account_info().owner == &anchor_lang::solana_program::system_program::ID {
+        if ctx
+            .accounts
+            .hook_whitelist
+            .to_account_info()
+            .owner
+            == &anchor_lang::solana_program::system_program::ID
+        {
             let hook_whitelist = &mut ctx.accounts.hook_whitelist;
             hook_whitelist.authority = pool_state.authority;
             hook_whitelist.allowed_programs = Vec::new();
-            hook_whitelist.bump = ctx.bumps.hook_whitelist;
+            hook_whitelist.bump = pool_addresses.hook_whitelist_bump;
         }
         
         // CRITICAL SECURITY FIX: Initialize nullifier_set manually (converted to UncheckedAccount to reduce stack usage)
@@ -1286,7 +1312,7 @@ pub mod ptf_pool {
         // CRITICAL SECURITY FIX: Initialize commitment_tree if it was just created
         // Anchor's init_if_needed creates the account but doesn't initialize the data structure
         // CRITICAL FIX: Validate commitment_tree PDA and bump seed
-        let commitment_tree_bump = ctx.bumps.commitment_tree;
+        let commitment_tree_bump = pool_addresses.commitment_tree_bump;
         {
             let mut commitment_tree = ctx.accounts.commitment_tree.load_mut()?;
             // Check if tree is uninitialized (pool is default)
@@ -1737,543 +1763,12 @@ pub mod ptf_pool {
         // DEPRECATED: Use prepare_shield + execute_shield instead
         // For backward compatibility, this function still handles lazy initialization
         // then calls execute_shield_core() for the actual execution
-        execute_shield_core(ctx, &args)
-    }
-
-    // Core shield execution logic (extracted for reuse in execute_shield)
-    pub(crate) fn execute_shield_core<'info>(
-        ctx: Context<'_, '_, '_, 'info, Shield<'info>>,
-        args: &ShieldArgs,
-    ) -> Result<()> {
-        msg!("execute_shield_core: entry");
-        
-        // PROGRAM-LEVEL ADDRESS DERIVATION: Derive all PDAs from origin_mint at the start
-        let origin_mint_key = ctx.accounts.origin_mint.key();
-        msg!("execute_shield_core: deriving addresses from origin_mint={}", origin_mint_key);
-        
-        // Derive all pool-related addresses
-        let pool_addresses = ptf_common::addresses::PoolAddresses::derive_all(
-            &origin_mint_key,
-            ctx.program_id,
-        );
-        
-        // Derive mint_mapping PDA
-        let (expected_mint_mapping, _mint_mapping_bump) = AddressDeriver::derive_mint_mapping(
-            &origin_mint_key,
-            &ptf_factory::ID,
-        );
-        
-        // Derive vault_state PDA
-        let (expected_vault_state, _vault_bump) = AddressDeriver::derive_vault_state(
-            &origin_mint_key,
-            &ptf_vault::ID,
-        );
-        
-        msg!("execute_shield_core: derived pool_state={}, commitment_tree={}, vault_state={}", 
-             pool_addresses.pool_state, pool_addresses.commitment_tree, expected_vault_state);
-        
-        // Validate provided accounts match derived addresses
-        let mint_mapping_info = ctx.accounts.mint_mapping.to_account_info();
-        
-        // Validate mint_mapping matches derived address
-        require_keys_eq!(
-            mint_mapping_info.key(),
-            expected_mint_mapping,
-            PoolError::OriginMintMismatch,
-        );
-        if mint_mapping_info.owner != &ptf_factory::ID {
-            msg!("execute_shield_core: mint_mapping owner mismatch - owner={}, expected={}", 
-                 mint_mapping_info.owner, ptf_factory::ID);
-            return err!(PoolError::MintMappingCorrupt);
-        }
-        ensure_mint_active(&mint_mapping_info)?;
-        
-        // CRITICAL SECURITY: Validate amount to prevent overflow
-        InputValidator::validate_amount(args.amount, MAX_SHIELD_AMOUNT)?;
-        
-        let pool_loader = &ctx.accounts.pool_state;
-        msg!("execute_shield_core: got pool_loader");
-        
-        // Validate pool_state matches derived address
-        require_keys_eq!(
-            pool_loader.key(),
-            pool_addresses.pool_state,
-            PoolError::OriginMintMismatch,
-        );
-        
-        // NOTE: Pool initialization is handled by prepare step, so we assume pool is already initialized
-        let mut pool_state = pool_loader.load_mut()?;
-        msg!("execute_shield_core: loaded pool_state");
-        
-        // Validate pool_state.origin_mint matches the origin_mint we derived from
-        require_keys_eq!(
-            pool_state.origin_mint,
-            origin_mint_key,
-            PoolError::OriginMintMismatch,
-        );
-        
-        // CRITICAL FIX: Initialize hook_whitelist if needed (init_if_needed constraint)
-        if ctx.accounts.hook_whitelist.to_account_info().owner == &anchor_lang::solana_program::system_program::ID {
-            let hook_whitelist = &mut ctx.accounts.hook_whitelist;
-            hook_whitelist.authority = pool_state.authority;
-            hook_whitelist.allowed_programs = Vec::new();
-            hook_whitelist.bump = ctx.bumps.hook_whitelist;
-        }
-        
-        // CRITICAL SECURITY FIX: Initialize nullifier_set manually if needed
-        require_keys_eq!(
-            ctx.accounts.nullifier_set.key(),
-            pool_addresses.nullifier_set,
-            PoolError::NullifierSetMismatch,
-        );
-        let nullifier_set_bump = pool_addresses.nullifier_set_bump;
-        
-        // Initialize nullifier_set if needed
-        let nullifier_set_data = ctx.accounts.nullifier_set.try_borrow_data()?;
-        let needs_init = nullifier_set_data.is_empty() || nullifier_set_data.len() < 8;
-        drop(nullifier_set_data);
-        
-        if needs_init {
-            let rent = Rent::get()?;
-            let space = NullifierSet::BASE_SPACE;
-            let lamports = rent.minimum_balance(space);
-            
-            anchor_lang::solana_program::program::invoke_signed(
-                &anchor_lang::solana_program::system_instruction::create_account(
-                    &ctx.accounts.payer.key(),
-                    &ctx.accounts.nullifier_set.key(),
-                    lamports,
-                    space as u64,
-                    ctx.program_id,
-                ),
-                &[
-                    ctx.accounts.payer.to_account_info(),
-                    ctx.accounts.nullifier_set.to_account_info(),
-                    ctx.accounts.system_program.to_account_info(),
-                ],
-                &[&[seeds::NULLIFIERS, pool_state.origin_mint.as_ref(), &[nullifier_set_bump]]],
-            )?;
-            
-            // Initialize the data structure
-            let mut nullifier_set_data = ctx.accounts.nullifier_set.try_borrow_mut_data()?;
-            let mut nullifier_set = NullifierSet {
-                pool: Pubkey::default(),
-                nullifiers: Vec::new(),
-                bump: 0,
-            };
-            nullifier_set.init(pool_loader.key(), nullifier_set_bump);
-            use anchor_lang::AnchorSerialize;
-            let mut cursor = std::io::Cursor::new(&mut nullifier_set_data[..]);
-            nullifier_set.serialize(&mut cursor).map_err(|_| PoolError::NullifierSetMismatch)?;
-        } else {
-            // Validate existing nullifier_set
-            let nullifier_set_data = ctx.accounts.nullifier_set.try_borrow_data()?;
-            if nullifier_set_data.len() >= 8 + 32 {
-                let pool_bytes: [u8; 32] = nullifier_set_data[8..40].try_into().map_err(|_| PoolError::NullifierSetMismatch)?;
-                let nullifier_pool = Pubkey::new_from_array(pool_bytes);
-                drop(nullifier_set_data);
-                require_keys_eq!(
-                    nullifier_pool,
-                    pool_loader.key(),
-                    PoolError::NullifierSetMismatch,
-                );
-            }
-        }
-        
-        // CRITICAL SECURITY FIX: Initialize commitment_tree if it was just created
-        let commitment_tree_bump = ctx.bumps.commitment_tree;
-        {
-            let mut commitment_tree = ctx.accounts.commitment_tree.load_mut()?;
-            if commitment_tree.pool == Pubkey::default() {
-                commitment_tree.init(pool_loader.key(), DEFAULT_CANOPY_DEPTH, commitment_tree_bump)?;
-            } else {
-                require_keys_eq!(
-                    commitment_tree.pool,
-                    pool_loader.key(),
-                    PoolError::CommitmentTreeMismatch
-                );
-                require!(
-                    commitment_tree.bump == commitment_tree_bump,
-                    PoolError::InvalidBump
-                );
-            }
-        }
-        
-        // CRITICAL FIX: Validate note_ledger PDA and bump seed
-        require_keys_eq!(
-            ctx.accounts.note_ledger.key(),
-            pool_addresses.note_ledger,
-            PoolError::NoteLedgerMismatch,
-        );
-        require!(
-            pool_state.note_ledger_bump == pool_addresses.note_ledger_bump,
-            PoolError::InvalidBump
-        );
-        
-        // Validate note_ledger pool matches
-        let note_ledger_data = ctx.accounts.note_ledger.try_borrow_data()?;
-        if note_ledger_data.len() >= 8 + 32 {
-            let pool_bytes: [u8; 32] = note_ledger_data[8..40].try_into().map_err(|_| PoolError::NoteLedgerMismatch)?;
-            let ledger_pool = Pubkey::new_from_array(pool_bytes);
-            drop(note_ledger_data);
-            require_keys_eq!(
-                ledger_pool,
-                pool_loader.key(),
-                PoolError::NoteLedgerMismatch,
-            );
-        } else {
-            drop(note_ledger_data);
-            return err!(PoolError::NoteLedgerMismatch);
-        }
-        
-        // Derive shield_claim PDA from pool_state
-        let (expected_shield_claim, shield_claim_bump) = AddressDeriver::derive_shield_claim(
-            &pool_addresses.pool_state,
-            ctx.program_id,
-        );
-        
-        // Validate shield_claim matches derived address
-        require_keys_eq!(
-            ctx.accounts.shield_claim.key(),
-            expected_shield_claim,
-            PoolError::OriginMintMismatch,
-        );
-        
-        let expected_pool = pool_loader.key();
-        let claim_bump = {
-            let shield_claim = &mut ctx.accounts.shield_claim;
-            if shield_claim.pool == Pubkey::default() || shield_claim.pool != expected_pool {
-                shield_claim.pool = expected_pool;
-                shield_claim.bump = shield_claim_bump;
-                shield_claim.status = ShieldClaim::STATUS_INACTIVE;
-                shield_claim.bump
-            } else {
-                require!(
-                    shield_claim.bump == shield_claim_bump,
-                    PoolError::InvalidBump
-                );
-                shield_claim.bump
-            }
+        let mut core_ctx = ShieldCoreContext {
+            program_id: ctx.program_id,
+            accounts: &mut ctx.accounts,
+            remaining_accounts: ctx.remaining_accounts,
         };
-        
-        // Check if there's an active shield claim that needs finalization
-        let has_active_claim = ctx.accounts.shield_claim.is_active();
-        
-        if !pool_state.pending_shield.is_inactive() && !has_active_claim {
-            msg!("execute_shield_core: detected stuck pending_shield with inactive claim, deactivating...");
-            pool_state.pending_shield.deactivate();
-        }
-        
-        if !pool_state.pending_shield.is_inactive() && has_active_claim {
-            let commitment_tree = ctx.accounts.commitment_tree.load()?;
-            let claim_old_root = ctx.accounts.shield_claim.old_root;
-            let tree_current_root = commitment_tree.current_root;
-            
-            if claim_old_root != tree_current_root {
-                msg!("execute_shield_core: detected stuck pending_shield with stale claim (old_root mismatch), deactivating...");
-                pool_state.pending_shield.deactivate();
-            }
-        }
-        
-        if has_active_claim {
-            let commitment_tree = ctx.accounts.commitment_tree.load()?;
-            let claim_old_root = ctx.accounts.shield_claim.old_root;
-            let tree_current_root = commitment_tree.current_root;
-            
-            if ctx.accounts.shield_claim.is_expired() {
-                msg!("execute_shield_core: claim expired, deactivating expired claim");
-                ctx.accounts.shield_claim.deactivate();
-                pool_state.pending_shield.deactivate();
-            } else if claim_old_root != tree_current_root {
-                msg!("execute_shield_core: claim timeout/stale (old_root mismatch), deactivating stale claim");
-                ctx.accounts.shield_claim.deactivate();
-                pool_state.pending_shield.deactivate();
-            } else {
-                return err!(PoolError::PendingShieldInFlight);
-            }
-        }
-        
-        // CRITICAL FIX: Increment shield sequence to prevent race conditions
-        pool_state.shield_sequence = pool_state.shield_sequence
-            .checked_add(1)
-            .ok_or(PoolError::AmountOverflow)?;
-        
-        require!(
-            pool_state.pending_shield.is_inactive(),
-            PoolError::PendingShieldInFlight
-        );
-        
-        // Validate unchecked accounts
-        require_keys_eq!(
-            ctx.accounts.verifier_program.key(),
-            ptf_verifier_groth16::ID,
-            PoolError::VerifierMismatch,
-        );
-        require_keys_eq!(
-            ctx.accounts.verifying_key.key(),
-            pool_state.verifying_key,
-            PoolError::VerifierMismatch,
-        );
-        
-        // Read verifying key fields from bytes
-        let vk_data = ctx.accounts.verifying_key.try_borrow_data()?;
-        if vk_data.len() < 8 + 32 + 32 + 32 + 32 {
-            return err!(PoolError::MintMappingCorrupt);
-        }
-        let vk_id: [u8; 32] = vk_data[72..104].try_into().map_err(|_| PoolError::MintMappingCorrupt)?;
-        let vk_hash: [u8; 32] = vk_data[104..136].try_into().map_err(|_| PoolError::MintMappingCorrupt)?;
-        drop(vk_data);
-        
-        require!(
-            vk_id == pool_state.verifying_key_id,
-            PoolError::VerifierMismatch,
-        );
-        require!(
-            vk_hash == pool_state.verifying_key_hash,
-            PoolError::VerifyingKeyHashMismatch,
-        );
-        
-        // Validate vault_state PDA matches derived address
-        require_keys_eq!(
-            ctx.accounts.vault_state.key(),
-            expected_vault_state,
-            PoolError::VaultTokenAccountMismatch,
-        );
-        require_keys_eq!(
-            ctx.accounts.vault_state.key(),
-            pool_state.vault,
-            PoolError::MismatchedVaultAuthority,
-        );
-        
-        // Read vault_state.pool_authority from bytes
-        let vault_data = ctx.accounts.vault_state.try_borrow_data()?;
-        if vault_data.len() < 8 + 64 {
-            return err!(PoolError::MintMappingCorrupt);
-        }
-        let vault_pool_auth_bytes: [u8; 32] = vault_data[40..72].try_into().map_err(|_| PoolError::MintMappingCorrupt)?;
-        let vault_pool_authority = Pubkey::new_from_array(vault_pool_auth_bytes);
-        drop(vault_data);
-        
-        require_keys_eq!(
-            vault_pool_authority,
-            pool_loader.key(),
-            PoolError::MismatchedVaultAuthority,
-        );
-        
-        // Validate token accounts
-        require_keys_eq!(
-            ctx.accounts.vault_token_account.owner,
-            pool_state.vault,
-            PoolError::VaultTokenAccountMismatch,
-        );
-        require_keys_eq!(
-            ctx.accounts.vault_token_account.mint,
-            pool_state.origin_mint,
-            PoolError::OriginMintMismatch,
-        );
-        require_keys_eq!(
-            ctx.accounts.origin_mint.key(),
-            pool_state.origin_mint,
-            PoolError::OriginMintMismatch,
-        );
-        require_keys_eq!(
-            ctx.accounts.depositor_token_account.owner,
-            ctx.accounts.payer.key(),
-            PoolError::InvalidDepositorAccount,
-        );
-        require_keys_eq!(
-            ctx.accounts.depositor_token_account.mint,
-            pool_state.origin_mint,
-            PoolError::OriginMintMismatch,
-        );
-        require_keys_eq!(
-            ctx.accounts.commitment_tree.key(),
-            pool_addresses.commitment_tree,
-            PoolError::CommitmentTreeMismatch,
-        );
-        require_keys_eq!(
-            pool_state.commitment_tree,
-            pool_addresses.commitment_tree,
-            PoolError::CommitmentTreeMismatch,
-        );
-
-        // Validate hook_config manually
-        let hooks_feature_enabled = pool_state.features.contains(FeatureFlags::from(FEATURE_HOOKS_ENABLED));
-        if hooks_feature_enabled && pool_state.hook_config_present {
-            require_keys_eq!(
-                ctx.accounts.hook_config.key(),
-                pool_addresses.hook_config,
-                PoolError::HookConfigInvalid,
-            );
-            require!(
-                pool_state.hook_config_bump == pool_addresses.hook_config_bump,
-                PoolError::InvalidBump
-            );
-            
-            let hook_config_data = ctx.accounts.hook_config.try_borrow_data()?;
-            if hook_config_data.len() >= 8 + 32 {
-                let hook_config_pool_bytes: [u8; 32] = hook_config_data[8..40].try_into().map_err(|_| PoolError::HookConfigInvalid)?;
-                let hook_config_pool = Pubkey::new_from_array(hook_config_pool_bytes);
-                drop(hook_config_data);
-                require_keys_eq!(
-                    hook_config_pool,
-                    pool_loader.key(),
-                    PoolError::HookConfigInvalid,
-                );
-            }
-        }
-        
-        require_keys_eq!(
-            ctx.accounts.hook_whitelist.key(),
-            pool_addresses.hook_whitelist,
-            PoolError::HookConfigInvalid,
-        );
-
-        // Load commitment_tree data and extract needed values
-        let (commitment_tree_next_index, commitment_tree_current_root) = {
-            let commitment_tree_data = ctx.accounts.commitment_tree.load()?;
-            (commitment_tree_data.next_index, commitment_tree_data.current_root)
-        };
-        let roots_match = commitment_tree_current_root == pool_state.current_root;
-        let tree_root_is_known = pool_state.is_known_root(&commitment_tree_current_root);
-        require!(
-            roots_match || tree_root_is_known,
-            PoolError::RootDrift
-        );
-
-        if pool_state.twin_mint_enabled {
-            let twin_mint = ctx
-                .accounts
-                .twin_mint
-                .as_ref()
-                .ok_or(PoolError::TwinMintNotConfigured)?;
-            require_keys_eq!(
-                twin_mint.key(),
-                pool_state.twin_mint,
-                PoolError::TwinMintMismatch,
-            );
-        }
-
-        let public_fields = parse_field_elements(&args.public_inputs)?;
-        require!(public_fields.len() >= 3, PoolError::InvalidPublicInputs);
-
-        let old_root_bytes = public_fields[0];
-        let new_root_bytes = public_fields[1];
-        let commitment_bytes = public_fields[2];
-        let mut old_root_be = old_root_bytes;
-        old_root_be.reverse();
-        let mut new_root_be = new_root_bytes;
-        new_root_be.reverse();
-
-        if old_root_bytes != pool_state.current_root {
-            msg!("execute_shield_core: root mismatch");
-        }
-        require!(
-            old_root_bytes == pool_state.current_root,
-            PoolError::RootMismatch
-        );
-
-        // CRITICAL FIX: Use centralized input sanitization
-        InputSanitizer::sanitize_proof(&args.proof, MAX_PROOF_SIZE)?;
-        InputSanitizer::sanitize_public_inputs(&args.public_inputs, MAX_PUBLIC_INPUTS_SIZE)?;
-
-        let cpi_accounts = ptf_verifier_groth16::cpi::accounts::VerifyGroth16 {
-            verifier_state: ctx.accounts.verifying_key.to_account_info(),
-        };
-        let cpi_ctx = CpiContext::new(
-            ctx.accounts.verifier_program.to_account_info(),
-            cpi_accounts,
-        );
-        ptf_verifier_groth16::cpi::verify_groth16(
-            cpi_ctx,
-            pool_state.verifying_key_id,
-            args.proof.clone(),
-            args.public_inputs.clone(),
-        )?;
-
-        let deposit_accounts = ptf_vault::cpi::accounts::Deposit {
-            vault_state: ctx.accounts.vault_state.to_account_info(),
-            vault_token_account: ctx.accounts.vault_token_account.to_account_info(),
-            origin_mint: ctx.accounts.origin_mint.to_account_info(),
-            depositor: ctx.accounts.payer.to_account_info(),
-            depositor_token_account: ctx.accounts.depositor_token_account.to_account_info(),
-            token_program: ctx.accounts.token_program.to_account_info(),
-        };
-        let deposit_ctx = CpiContext::new(
-            ctx.accounts.vault_program.to_account_info(),
-            deposit_accounts,
-        );
-        ptf_vault::cpi::deposit(deposit_ctx, args.amount)?;
-
-        pool_state.pending_shield = PendingShield {
-            active: 1,
-            old_root: old_root_bytes,
-            new_root: new_root_bytes,
-            commitment: commitment_bytes,
-            amount_commit: args.amount_commit,
-            amount: args.amount,
-            depositor: ctx.accounts.payer.key(),
-            next_index: commitment_tree_next_index,
-        };
-        {
-            let shield_claim = &mut ctx.accounts.shield_claim;
-            shield_claim.activate(
-                pool_loader.key(),
-                ctx.accounts.payer.key(),
-                commitment_bytes,
-                args.amount_commit,
-                old_root_bytes,
-                new_root_bytes,
-                args.amount,
-                commitment_tree_next_index,
-                claim_bump,
-            )?;
-            msg!(
-                "execute_shield_core: claim activated new_root={} next_index={}",
-                hex::encode(new_root_bytes),
-                commitment_tree_next_index
-            );
-        }
-
-        let hook_enabled_check = pool_state
-            .features
-            .contains(FeatureFlags::from(FEATURE_HOOKS_ENABLED))
-            && pool_state.hook_config_present;
-        
-        let hook_config_account = &ctx.accounts.hook_config;
-        let hooks_feature_enabled = pool_state.features.contains(FeatureFlags::from(FEATURE_HOOKS_ENABLED));
-        let hook_config_present = pool_state.hook_config_present;
-        let hook_config_info = if hooks_feature_enabled && hook_config_present {
-            Some(ctx.accounts.hook_config.to_account_info())
-        } else {
-            None
-        };
-        
-        let note_ledger_account = &ctx.accounts.note_ledger;
-        let shield_claim_ref = &mut ctx.accounts.shield_claim;
-        let hook_whitelist_ref = &ctx.accounts.hook_whitelist;
-        let remaining_accounts_ref = ctx.remaining_accounts;
-        let pool_info = pool_loader.to_account_info();
-
-        drop(pool_state);
-
-        let hook_config_account_opt = if hooks_feature_enabled && hook_config_present {
-            Some(hook_config_account)
-        } else {
-            None
-        };
-        process_shield_finalize_ledger(
-            pool_loader,
-            hook_config_account_opt,
-            hook_config_info.as_ref(),
-            &pool_info,
-            note_ledger_account,
-            shield_claim_ref,
-            hook_whitelist_ref,
-            remaining_accounts_ref,
-        )?;
-
-        Ok(())
+        execute_shield_core(core_ctx, &args)
     }
 
     pub fn shield_finalize_tree<'info>(
@@ -2383,40 +1878,25 @@ pub mod ptf_pool {
 
     // Proof Account Abstraction: Prepare Shield
     pub fn prepare_shield(
-        ctx: Context<PrepareShield>,
+        mut ctx: Context<PrepareShield>,
         shield_args: ShieldArgs,
     ) -> Result<[u8; 32]> {
         let vault = &mut ctx.accounts.proof_vault;
         let clock = Clock::get()?;
         
-        // Initialize vault if it was just created
-        if vault.owner == Pubkey::default() {
-            vault.owner = ctx.accounts.payer.key();
-            vault.vault_bump = ctx.bumps.proof_vault;
-            vault.prepared_operations = Vec::new();
-            vault.created_at = clock.unix_timestamp;
-            vault.last_used = clock.unix_timestamp;
-            vault.operation_count = 0;
-        }
-        
-        // Validate ownership
-        require_keys_eq!(
-            vault.owner,
-            ctx.accounts.payer.key(),
-            PoolError::Unauthorized
-        );
-        
-        // Check vault capacity
-        require!(
-            vault.prepared_operations.len() < UserProofVault::MAX_OPERATIONS,
-            PoolError::VaultFull
-        );
+        prepare_vault_if_needed(
+            vault,
+            &ctx.accounts.payer,
+            ctx.bumps.proof_vault,
+            clock.unix_timestamp,
+        )?;
         
         // Generate unique operation_id (hash of args + timestamp + user_pubkey)
         let amount_commit_slice: &[u8] = &shield_args.amount_commit;
         let amount_bytes = shield_args.amount.to_le_bytes();
         let timestamp_bytes = clock.unix_timestamp.to_le_bytes();
-        let payer_bytes = ctx.accounts.payer.key().as_ref();
+        let payer_key = ctx.accounts.payer.key();
+        let payer_bytes = payer_key.as_ref();
         let operation_id_hash = hashv(&[
             amount_commit_slice,
             &amount_bytes,
@@ -2439,52 +1919,33 @@ pub mod ptf_pool {
             expires_at,
         };
         
-        vault.prepared_operations.push(operation);
-        vault.last_used = clock.unix_timestamp;
-        vault.operation_count = vault.operation_count
-            .checked_add(1)
-            .ok_or(PoolError::AmountOverflow)?;
+        store_prepared_operation(vault, operation, clock.unix_timestamp)?;
         
         Ok(operation_id)
     }
 
     // Proof Account Abstraction: Prepare Unshield
     pub fn prepare_unshield(
-        ctx: Context<PrepareUnshield>,
+        mut ctx: Context<PrepareUnshield>,
         unshield_args: UnshieldArgs,
     ) -> Result<[u8; 32]> {
         let vault = &mut ctx.accounts.proof_vault;
         let clock = Clock::get()?;
         
-        // Initialize vault if it was just created
-        if vault.owner == Pubkey::default() {
-            vault.owner = ctx.accounts.payer.key();
-            vault.vault_bump = ctx.bumps.proof_vault;
-            vault.prepared_operations = Vec::new();
-            vault.created_at = clock.unix_timestamp;
-            vault.last_used = clock.unix_timestamp;
-            vault.operation_count = 0;
-        }
-        
-        // Validate ownership
-        require_keys_eq!(
-            vault.owner,
-            ctx.accounts.payer.key(),
-            PoolError::Unauthorized
-        );
-        
-        // Check vault capacity
-        require!(
-            vault.prepared_operations.len() < UserProofVault::MAX_OPERATIONS,
-            PoolError::VaultFull
-        );
+        prepare_vault_if_needed(
+            vault,
+            &ctx.accounts.payer,
+            ctx.bumps.proof_vault,
+            clock.unix_timestamp,
+        )?;
         
         // Generate unique operation_id (hash of args + timestamp + user_pubkey)
         let old_root_slice: &[u8] = &unshield_args.old_root;
         let new_root_slice: &[u8] = &unshield_args.new_root;
         let amount_bytes = unshield_args.amount.to_le_bytes();
         let timestamp_bytes = clock.unix_timestamp.to_le_bytes();
-        let payer_bytes = ctx.accounts.payer.key().as_ref();
+        let payer_key = ctx.accounts.payer.key();
+        let payer_bytes = payer_key.as_ref();
         let operation_id_hash = hashv(&[
             old_root_slice,
             new_root_slice,
@@ -2508,111 +1969,226 @@ pub mod ptf_pool {
             expires_at,
         };
         
-        vault.prepared_operations.push(operation);
-        vault.last_used = clock.unix_timestamp;
-        vault.operation_count = vault.operation_count
-            .checked_add(1)
+        store_prepared_operation(vault, operation, clock.unix_timestamp)?;
+        
+        Ok(operation_id)
+    }
+
+    pub fn prepare_transfer(
+        mut ctx: Context<PrepareTransfer>,
+        transfer_args: TransferArgs,
+    ) -> Result<[u8; 32]> {
+        let vault = &mut ctx.accounts.proof_vault;
+        let clock = Clock::get()?;
+
+        prepare_vault_if_needed(
+            vault,
+            &ctx.accounts.payer,
+            ctx.bumps.proof_vault,
+            clock.unix_timestamp,
+        )?;
+
+        let serialized = transfer_args
+            .try_to_vec()
+            .map_err(|_| PoolError::AccountDataCorrupt)?;
+        let timestamp_bytes = clock.unix_timestamp.to_le_bytes();
+        let payer_key = ctx.accounts.payer.key();
+        let payer_bytes = payer_key.as_ref();
+        let operation_id =
+            hashv(&[serialized.as_slice(), &timestamp_bytes, payer_bytes]).to_bytes();
+
+        let expires_at = clock
+            .unix_timestamp
+            .checked_add(UserProofVault::OPERATION_EXPIRY_SECONDS)
             .ok_or(PoolError::AmountOverflow)?;
         
+        let operation = PreparedOperation::Transfer {
+            operation_id,
+            transfer_args,
+            status: OperationStatus::Prepared,
+            created_at: clock.unix_timestamp,
+            expires_at,
+        };
+
+        store_prepared_operation(vault, operation, clock.unix_timestamp)?;
+        Ok(operation_id)
+    }
+
+    pub fn prepare_transfer_from(
+        mut ctx: Context<PrepareTransferFrom>,
+        transfer_args: TransferFromArgs,
+    ) -> Result<[u8; 32]> {
+        let vault = &mut ctx.accounts.proof_vault;
+        let clock = Clock::get()?;
+
+        prepare_vault_if_needed(
+            vault,
+            &ctx.accounts.payer,
+            ctx.bumps.proof_vault,
+            clock.unix_timestamp,
+        )?;
+
+        let serialized = transfer_args
+            .try_to_vec()
+            .map_err(|_| PoolError::AccountDataCorrupt)?;
+        let timestamp_bytes = clock.unix_timestamp.to_le_bytes();
+        let payer_key = ctx.accounts.payer.key();
+        let payer_bytes = payer_key.as_ref();
+        let operation_id =
+            hashv(&[serialized.as_slice(), &timestamp_bytes, payer_bytes]).to_bytes();
+
+        let expires_at = clock
+            .unix_timestamp
+            .checked_add(UserProofVault::OPERATION_EXPIRY_SECONDS)
+            .ok_or(PoolError::AmountOverflow)?;
+
+        let operation = PreparedOperation::TransferFrom {
+            operation_id,
+            transfer_from_args: transfer_args,
+            status: OperationStatus::Prepared,
+            created_at: clock.unix_timestamp,
+            expires_at,
+        };
+
+        store_prepared_operation(vault, operation, clock.unix_timestamp)?;
+        Ok(operation_id)
+    }
+
+    pub fn prepare_batch_transfer(
+        mut ctx: Context<PrepareBatchTransfer>,
+        batch_args: BatchTransferArgs,
+    ) -> Result<[u8; 32]> {
+        let vault = &mut ctx.accounts.proof_vault;
+        let clock = Clock::get()?;
+
+        prepare_vault_if_needed(
+            vault,
+            &ctx.accounts.payer,
+            ctx.bumps.proof_vault,
+            clock.unix_timestamp,
+        )?;
+
+        let serialized = batch_args
+            .try_to_vec()
+            .map_err(|_| PoolError::AccountDataCorrupt)?;
+        let timestamp_bytes = clock.unix_timestamp.to_le_bytes();
+        let payer_key = ctx.accounts.payer.key();
+        let payer_bytes = payer_key.as_ref();
+        let operation_id =
+            hashv(&[serialized.as_slice(), &timestamp_bytes, payer_bytes]).to_bytes();
+
+        let expires_at = clock
+            .unix_timestamp
+            .checked_add(UserProofVault::OPERATION_EXPIRY_SECONDS)
+            .ok_or(PoolError::AmountOverflow)?;
+
+        let operation = PreparedOperation::BatchTransfer {
+            operation_id,
+            batch_args,
+            status: OperationStatus::Prepared,
+            created_at: clock.unix_timestamp,
+            expires_at,
+        };
+
+        store_prepared_operation(vault, operation, clock.unix_timestamp)?;
+        Ok(operation_id)
+    }
+
+    pub fn prepare_batch_transfer_from(
+        mut ctx: Context<PrepareBatchTransferFrom>,
+        batch_args: BatchTransferFromArgs,
+    ) -> Result<[u8; 32]> {
+        let vault = &mut ctx.accounts.proof_vault;
+        let clock = Clock::get()?;
+
+        prepare_vault_if_needed(
+            vault,
+            &ctx.accounts.payer,
+            ctx.bumps.proof_vault,
+            clock.unix_timestamp,
+        )?;
+
+        let serialized = batch_args
+            .try_to_vec()
+            .map_err(|_| PoolError::AccountDataCorrupt)?;
+        let timestamp_bytes = clock.unix_timestamp.to_le_bytes();
+        let payer_key = ctx.accounts.payer.key();
+        let payer_bytes = payer_key.as_ref();
+        let operation_id =
+            hashv(&[serialized.as_slice(), &timestamp_bytes, payer_bytes]).to_bytes();
+
+        let expires_at = clock
+            .unix_timestamp
+            .checked_add(UserProofVault::OPERATION_EXPIRY_SECONDS)
+            .ok_or(PoolError::AmountOverflow)?;
+
+        let operation = PreparedOperation::BatchTransferFrom {
+            operation_id,
+            batch_args,
+            status: OperationStatus::Prepared,
+            created_at: clock.unix_timestamp,
+            expires_at,
+        };
+
+        store_prepared_operation(vault, operation, clock.unix_timestamp)?;
         Ok(operation_id)
     }
 
     // Proof Account Abstraction: Execute Shield
     pub fn execute_shield(
-        ctx: Context<ExecuteShield>,
+        mut ctx: Context<ExecuteShield>,
         operation_id: [u8; 32],
     ) -> Result<()> {
-        let vault = &mut ctx.accounts.proof_vault;
         let clock = Clock::get()?;
         
-        // Find operation
-        let operation_idx = vault.prepared_operations
-            .iter()
-            .position(|op| {
-                match op {
-                    PreparedOperation::Shield { operation_id: id, .. } => *id == operation_id,
-                    _ => false,
+        // Extract operation and mark as executing
+        let (operation_idx, shield_args) = {
+            let vault = &mut ctx.accounts.proof_vault;
+            let idx = vault
+                .prepared_operations
+                .iter()
+                .position(|op| matches!(op, PreparedOperation::Shield { operation_id: id, .. } if *id == operation_id))
+                .ok_or(PoolError::OperationNotFound)?;
+            
+            let shield_args = {
+                let operation = &mut vault.prepared_operations[idx];
+                match operation {
+                    PreparedOperation::Shield { shield_args, status, expires_at, .. } => {
+                        require!(clock.unix_timestamp < *expires_at, PoolError::OperationExpired);
+                        require!(*status == OperationStatus::Prepared, PoolError::InvalidOperationStatus);
+                        *status = OperationStatus::Executing;
+                        shield_args.clone()
+                    }
+                    _ => return err!(PoolError::OperationNotFound),
                 }
-            })
-            .ok_or(PoolError::OperationNotFound)?;
-        
-        // Extract and validate
-        let shield_args = {
-            let operation = &mut vault.prepared_operations[operation_idx];
-            match operation {
-                PreparedOperation::Shield { shield_args, status, expires_at, .. } => {
-                    // Check expiration
-                    require!(clock.unix_timestamp < *expires_at, PoolError::OperationExpired);
-                    require!(*status == OperationStatus::Prepared, PoolError::InvalidOperationStatus);
-                    
-                    // Mark as executing
-                    *status = OperationStatus::Executing;
-                    
-                    shield_args.clone()
-                },
-                _ => return err!(PoolError::OperationNotFound),
-            }
+            };
+            (idx, shield_args)
         };
         
-        // Execute core logic (reuse existing function)
-        // NOTE: execute_shield_core expects Context<Shield> but we have Context<ExecuteShield>
-        // Since ExecuteShield has all Shield accounts (plus proof_vault), we can create
-        // a Shield context by moving the accounts. However, Context construction is complex.
-        // The proper solution is to refactor execute_shield_core to work with account references.
-        // For now, we'll use a workaround: create Shield accounts and use them with execute_shield_core
-        // by calling it through a helper that accepts the accounts.
-        
-        // Extract accounts needed for execute_shield_core
-        // We'll move them into a Shield struct and create a new Context
-        // This is safe because we've already extracted what we need from proof_vault
-        let shield_accounts_struct = crate::accounts::Shield {
-            pool_state: ctx.accounts.pool_state,
-            hook_config: ctx.accounts.hook_config,
-            hook_whitelist: ctx.accounts.hook_whitelist,
-            nullifier_set: ctx.accounts.nullifier_set,
-            commitment_tree: ctx.accounts.commitment_tree,
-            note_ledger: ctx.accounts.note_ledger,
-            vault_state: ctx.accounts.vault_state,
-            vault_token_account: ctx.accounts.vault_token_account,
-            depositor_token_account: ctx.accounts.depositor_token_account,
-            twin_mint: ctx.accounts.twin_mint,
-            verifier_program: ctx.accounts.verifier_program,
-            verifying_key: ctx.accounts.verifying_key,
-            shield_claim: ctx.accounts.shield_claim,
-            payer: ctx.accounts.payer,
-            origin_mint: ctx.accounts.origin_mint,
-            mint_mapping: ctx.accounts.mint_mapping,
-            factory_state: ctx.accounts.factory_state,
-            vault_program: ctx.accounts.vault_program,
-            token_program: ctx.accounts.token_program,
-            system_program: ctx.accounts.system_program,
-            rent: ctx.accounts.rent,
+        // Execute shield core - create CoreContext directly
+        let result = {
+            let mut core_ctx = ShieldCoreContext {
+                program_id: ctx.program_id,
+                accounts: &mut ctx.accounts.shield,
+                remaining_accounts: ctx.remaining_accounts,
+            };
+            execute_shield_core(core_ctx, &shield_args)
         };
         
-        // Create Shield context - Context can be constructed from accounts, program_id, remaining_accounts, and bumps
-        // Use Anchor's internal mechanism to create Context
-        let shield_ctx = Context {
-            program_id: ctx.program_id,
-            accounts: shield_accounts_struct,
-            remaining_accounts: ctx.remaining_accounts,
-            bumps: ctx.bumps,
-        };
-        
-        let result = execute_shield_core(shield_ctx, &shield_args);
-        
-        // Update status based on result
+        // Update vault status after execution
         {
-            let operation = &mut vault.prepared_operations[operation_idx];
-            if let PreparedOperation::Shield { status, .. } = operation {
-                *status = match &result {
-                    Ok(_) => OperationStatus::Completed,
-                    Err(_) => OperationStatus::Failed,
-                };
+            let vault = &mut ctx.accounts.proof_vault;
+            if let Some(operation) = vault.prepared_operations.get_mut(operation_idx) {
+                if let PreparedOperation::Shield { status, .. } = operation {
+                    *status = match &result {
+                        Ok(_) => OperationStatus::Completed,
+                        Err(_) => OperationStatus::Failed,
+                    };
+                }
             }
-        }
-        
-        if result.is_ok() {
-            vault.last_used = clock.unix_timestamp;
+            if result.is_ok() {
+                vault.last_used = clock.unix_timestamp;
+            }
         }
         
         result
@@ -2620,67 +2196,286 @@ pub mod ptf_pool {
 
     // Proof Account Abstraction: Execute Unshield
     pub fn execute_unshield(
-        ctx: Context<ExecuteUnshield>,
+        mut ctx: Context<ExecuteUnshield>,
         operation_id: [u8; 32],
         mode: UnshieldMode,
     ) -> Result<()> {
-        let vault = &mut ctx.accounts.proof_vault;
         let clock = Clock::get()?;
         
-        // Find operation
-        let operation_idx = vault.prepared_operations
+        let (operation_idx, unshield_args) = {
+            let vault = &mut ctx.accounts.proof_vault;
+            let idx = vault
+                .prepared_operations
             .iter()
-            .position(|op| {
-                match op {
-                    PreparedOperation::Unshield { operation_id: id, .. } => *id == operation_id,
-                    _ => false,
-                }
-            })
+                .position(|op| matches!(op, PreparedOperation::Unshield { operation_id: id, .. } if *id == operation_id))
             .ok_or(PoolError::OperationNotFound)?;
         
-        // Extract and validate
         let unshield_args = {
-            let operation = &mut vault.prepared_operations[operation_idx];
+                let operation = &mut vault.prepared_operations[idx];
             match operation {
                 PreparedOperation::Unshield { unshield_args, status, expires_at, .. } => {
-                    // Check expiration
                     require!(clock.unix_timestamp < *expires_at, PoolError::OperationExpired);
                     require!(*status == OperationStatus::Prepared, PoolError::InvalidOperationStatus);
-                    
-                    // Mark as executing
-                    *status = OperationStatus::Executing;
-                    
-                    unshield_args.clone()
-                },
-                _ => return err!(PoolError::OperationNotFound),
-            }
+                        *status = OperationStatus::Executing;
+                        unshield_args.clone()
+                    }
+                    _ => return err!(PoolError::OperationNotFound),
+                }
+            };
+            (idx, unshield_args)
         };
         
-        // Execute core logic
-        // NOTE: execute_unshield_core needs to be fully extracted from process_unshield
-        // The challenge is that process_unshield takes Context by value while we have &Context
-        // The proper solution is to extract all logic into execute_unshield_core that takes &Context
-        // For now, we'll call execute_unshield_core which is a placeholder
-        // TODO: Complete execute_unshield_core extraction - it currently returns Ok(())
-        msg!("execute_unshield: executing operation_id={:?}", operation_id);
+        // Execute unshield core - create CoreContext directly to avoid lifetime issues
+        let result = {
+            let core_ctx = UnshieldCoreContext {
+                program_id: ctx.program_id,
+                accounts: &mut ctx.accounts.unshield,
+                remaining_accounts: ctx.remaining_accounts,
+            };
+            execute_unshield_core(core_ctx, &unshield_args, mode)
+        };
         
-        // Call execute_unshield_core (currently a placeholder)
-        // This will be properly implemented when we extract the full logic from process_unshield
-        let result = execute_unshield_core(&ctx, &unshield_args, mode);
-        
-        // Update status based on result
         {
-            let operation = &mut vault.prepared_operations[operation_idx];
-            if let PreparedOperation::Unshield { status, .. } = operation {
+            let vault = &mut ctx.accounts.proof_vault;
+            if let Some(operation) = vault.prepared_operations.get_mut(operation_idx) {
+                if let PreparedOperation::Unshield { status, .. } = operation {
+                    *status = match &result {
+                        Ok(_) => OperationStatus::Completed,
+                        Err(_) => OperationStatus::Failed,
+                    };
+                }
+            }
+            if result.is_ok() {
+                vault.last_used = clock.unix_timestamp;
+            }
+        }
+        
+        result
+    }
+
+    pub fn execute_transfer(
+        mut ctx: Context<ExecuteTransfer>,
+        operation_id: [u8; 32],
+    ) -> Result<()> {
+        let clock = Clock::get()?;
+
+        let (operation_idx, transfer_args) = {
+            let vault = &mut ctx.accounts.proof_vault;
+            let idx = vault
+                .prepared_operations
+                .iter()
+                .position(|op| matches!(op, PreparedOperation::Transfer { operation_id: id, .. } if *id == operation_id))
+                .ok_or(PoolError::OperationNotFound)?;
+
+            let transfer_args = {
+                let operation = &mut vault.prepared_operations[idx];
+                match operation {
+                    PreparedOperation::Transfer { transfer_args, status, expires_at, .. } => {
+                        require!(clock.unix_timestamp < *expires_at, PoolError::OperationExpired);
+                        require!(*status == OperationStatus::Prepared, PoolError::InvalidOperationStatus);
+                    *status = OperationStatus::Executing;
+                        transfer_args.clone()
+                    }
+                    _ => return err!(PoolError::OperationNotFound),
+                }
+            };
+            (idx, transfer_args)
+        };
+
+        // Execute transfer core - create CoreContext directly to avoid lifetime issues
+        let result = {
+            let mut core_ctx = PrivateTransferCoreContext {
+                program_id: ctx.program_id,
+                accounts: &mut ctx.accounts.transfer,
+                remaining_accounts: ctx.remaining_accounts,
+            };
+            private_transfer_core(core_ctx, &transfer_args)
+        };
+
+        {
+            let vault = &mut ctx.accounts.proof_vault;
+            if let Some(operation) = vault.prepared_operations.get_mut(operation_idx) {
+                if let PreparedOperation::Transfer { status, .. } = operation {
+                    *status = match &result {
+                        Ok(_) => OperationStatus::Completed,
+                        Err(_) => OperationStatus::Failed,
+                    };
+                }
+            }
+            if result.is_ok() {
+                vault.last_used = clock.unix_timestamp;
+            }
+        }
+
+        result
+    }
+
+    pub fn execute_transfer_from(
+        mut ctx: Context<ExecuteTransferFrom>,
+        operation_id: [u8; 32],
+    ) -> Result<()> {
+        let clock = Clock::get()?;
+
+        let (operation_idx, transfer_args) = {
+            let vault = &mut ctx.accounts.proof_vault;
+            let idx = vault
+                .prepared_operations
+                .iter()
+                .position(|op| matches!(op, PreparedOperation::TransferFrom { operation_id: id, .. } if *id == operation_id))
+                .ok_or(PoolError::OperationNotFound)?;
+
+            let transfer_args = {
+                let operation = &mut vault.prepared_operations[idx];
+                match operation {
+                    PreparedOperation::TransferFrom { transfer_from_args, status, expires_at, .. } => {
+                        require!(clock.unix_timestamp < *expires_at, PoolError::OperationExpired);
+                        require!(*status == OperationStatus::Prepared, PoolError::InvalidOperationStatus);
+                        *status = OperationStatus::Executing;
+                        transfer_from_args.clone()
+                    }
+                _ => return err!(PoolError::OperationNotFound),
+            }
+            };
+            (idx, transfer_args)
+        };
+
+        // Execute transfer from core - create CoreContext directly to avoid lifetime issues
+        let result = {
+            let mut core_ctx = TransferFromCoreContext {
+                program_id: ctx.program_id,
+                accounts: &mut ctx.accounts.transfer,
+                remaining_accounts: ctx.remaining_accounts,
+            };
+            transfer_from_core(core_ctx, &transfer_args)
+        };
+
+        {
+            let vault = &mut ctx.accounts.proof_vault;
+            if let Some(operation) = vault.prepared_operations.get_mut(operation_idx) {
+                if let PreparedOperation::TransferFrom { status, .. } = operation {
+                    *status = match &result {
+                        Ok(_) => OperationStatus::Completed,
+                        Err(_) => OperationStatus::Failed,
+                    };
+                }
+            }
+            if result.is_ok() {
+                vault.last_used = clock.unix_timestamp;
+            }
+        }
+
+        result
+    }
+
+    pub fn execute_batch_transfer(
+        mut ctx: Context<ExecuteBatchTransfer>,
+        operation_id: [u8; 32],
+    ) -> Result<()> {
+        let clock = Clock::get()?;
+
+        let (operation_idx, batch_args) = {
+            let vault = &mut ctx.accounts.proof_vault;
+            let idx = vault
+                .prepared_operations
+                .iter()
+                .position(|op| matches!(op, PreparedOperation::BatchTransfer { operation_id: id, .. } if *id == operation_id))
+                .ok_or(PoolError::OperationNotFound)?;
+
+            let batch_args = {
+                let operation = &mut vault.prepared_operations[idx];
+                match operation {
+                    PreparedOperation::BatchTransfer { batch_args, status, expires_at, .. } => {
+                        require!(clock.unix_timestamp < *expires_at, PoolError::OperationExpired);
+                        require!(*status == OperationStatus::Prepared, PoolError::InvalidOperationStatus);
+                        *status = OperationStatus::Executing;
+                        batch_args.clone()
+                    }
+                    _ => return err!(PoolError::OperationNotFound),
+                }
+            };
+            (idx, batch_args)
+        };
+
+        // Execute batch transfer core - create CoreContext directly to avoid lifetime issues
+        let result = {
+            let core_ctx = BatchPrivateTransferCoreContext {
+                program_id: ctx.program_id,
+                accounts: &mut ctx.accounts.transfer,
+                remaining_accounts: ctx.remaining_accounts,
+            };
+            batch_private_transfer_core(core_ctx, &batch_args)
+        };
+        
+        {
+            let vault = &mut ctx.accounts.proof_vault;
+            if let Some(operation) = vault.prepared_operations.get_mut(operation_idx) {
+                if let PreparedOperation::BatchTransfer { status, .. } = operation {
                 *status = match &result {
                     Ok(_) => OperationStatus::Completed,
                     Err(_) => OperationStatus::Failed,
                 };
+                }
+            }
+            if result.is_ok() {
+                vault.last_used = clock.unix_timestamp;
             }
         }
-        
+
+        result
+    }
+
+    pub fn execute_batch_transfer_from(
+        mut ctx: Context<ExecuteBatchTransferFrom>,
+        operation_id: [u8; 32],
+    ) -> Result<()> {
+        let clock = Clock::get()?;
+
+        let (operation_idx, batch_args) = {
+            let vault = &mut ctx.accounts.proof_vault;
+            let idx = vault
+                .prepared_operations
+                .iter()
+                .position(|op| matches!(op, PreparedOperation::BatchTransferFrom { operation_id: id, .. } if *id == operation_id))
+                .ok_or(PoolError::OperationNotFound)?;
+
+            let batch_args = {
+                let operation = &mut vault.prepared_operations[idx];
+                match operation {
+                    PreparedOperation::BatchTransferFrom { batch_args, status, expires_at, .. } => {
+                        require!(clock.unix_timestamp < *expires_at, PoolError::OperationExpired);
+                        require!(*status == OperationStatus::Prepared, PoolError::InvalidOperationStatus);
+                        *status = OperationStatus::Executing;
+                        batch_args.clone()
+                    }
+                    _ => return err!(PoolError::OperationNotFound),
+                }
+            };
+            (idx, batch_args)
+        };
+
+        // Execute batch transfer from core - create CoreContext directly to avoid lifetime issues
+        let result = {
+            let core_ctx = BatchTransferFromCoreContext {
+                program_id: ctx.program_id,
+                accounts: &mut ctx.accounts.transfer,
+                remaining_accounts: ctx.remaining_accounts,
+            };
+            batch_transfer_from_core(core_ctx, &batch_args)
+        };
+
+        {
+            let vault = &mut ctx.accounts.proof_vault;
+            if let Some(operation) = vault.prepared_operations.get_mut(operation_idx) {
+                if let PreparedOperation::BatchTransferFrom { status, .. } = operation {
+                    *status = match &result {
+                        Ok(_) => OperationStatus::Completed,
+                        Err(_) => OperationStatus::Failed,
+                    };
+                }
+            }
         if result.is_ok() {
             vault.last_used = clock.unix_timestamp;
+            }
         }
         
         result
@@ -2695,28 +2490,42 @@ pub mod ptf_pool {
         
         let initial_len = vault.prepared_operations.len();
         
-        // Remove expired operations
+        // Remove expired operations and terminal-state operations (Completed/Failed)
         vault.prepared_operations.retain(|op| {
-            let expires_at = match op {
-                PreparedOperation::Shield { expires_at, .. } => expires_at,
-                PreparedOperation::Unshield { expires_at, .. } => expires_at,
+            let (expires_at, status) = match op {
+                PreparedOperation::Shield { expires_at, status, .. }
+                | PreparedOperation::Unshield { expires_at, status, .. }
+                | PreparedOperation::Transfer { expires_at, status, .. }
+                | PreparedOperation::TransferFrom { expires_at, status, .. }
+                | PreparedOperation::BatchTransfer { expires_at, status, .. }
+                | PreparedOperation::BatchTransferFrom { expires_at, status, .. } => {
+                    (expires_at, status)
+                }
             };
             clock.unix_timestamp < *expires_at
+                && !matches!(status, OperationStatus::Completed | OperationStatus::Failed)
         });
         
-        let removed = initial_len - vault.prepared_operations.len();
+        let removed = initial_len
+            .checked_sub(vault.prepared_operations.len())
+            .ok_or(PoolError::AmountOverflow)?;
+        
+        if removed > 0 {
+            vault.last_used = clock.unix_timestamp;
+        }
+        
         Ok(removed as u64)
     }
 
     pub fn unshield_to_origin<'info>(
-        ctx: Context<'_, '_, '_, 'info, Unshield<'info>>,
+        mut ctx: Context<'_, '_, '_, 'info, Unshield<'info>>,
         args: UnshieldArgs,
     ) -> Result<()> {
         process_unshield(ctx, args, UnshieldMode::Origin)
     }
 
     pub fn unshield_to_ptkn<'info>(
-        ctx: Context<'_, '_, '_, 'info, Unshield<'info>>,
+        mut ctx: Context<'_, '_, '_, 'info, Unshield<'info>>,
         args: UnshieldArgs,
     ) -> Result<()> {
         process_unshield(ctx, args, UnshieldMode::Twin)
@@ -2728,70 +2537,16 @@ pub mod ptf_pool {
     // If emergency recovery is needed, implement a separate safeguarded mechanism with
     // timelock, multi-sig, and governance approval.
 
-    pub fn private_transfer(ctx: Context<PrivateTransfer>, args: TransferArgs) -> Result<()> {
-        // PROGRAM-LEVEL ADDRESS DERIVATION: Derive all PDAs from origin_mint at the start
-        // Load pool_state first to get origin_mint (since mint_mapping is UncheckedAccount)
-        let pool_state = ctx.accounts.pool_state.load()?;
-        let origin_mint_key = pool_state.origin_mint;
-        drop(pool_state);
-        msg!("private_transfer: deriving addresses from origin_mint={}", origin_mint_key);
-        
-        // Derive all pool-related addresses
-        let pool_addresses = ptf_common::addresses::PoolAddresses::derive_all(
-            &origin_mint_key,
-            ctx.program_id,
-        );
-        
-        // Derive mint_mapping PDA
-        let (expected_mint_mapping, _mint_mapping_bump) = AddressDeriver::derive_mint_mapping(
-            &origin_mint_key,
-            &ptf_factory::ID,
-        );
-        
-        // Validate provided accounts match derived addresses
-        require_keys_eq!(
-            ctx.accounts.mint_mapping.key(),
-            expected_mint_mapping,
-            PoolError::OriginMintMismatch,
-        );
-        
-        // Validate pool_state matches derived address
-        require_keys_eq!(
-            ctx.accounts.pool_state.key(),
-            pool_addresses.pool_state,
-            PoolError::OriginMintMismatch,
-        );
-        
-        // Validate other PDAs
-        require_keys_eq!(
-            ctx.accounts.nullifier_set.key(),
-            pool_addresses.nullifier_set,
-            PoolError::NullifierSetMismatch,
-        );
-        require_keys_eq!(
-            ctx.accounts.commitment_tree.key(),
-            pool_addresses.commitment_tree,
-            PoolError::CommitmentTreeMismatch,
-        );
-        require_keys_eq!(
-            ctx.accounts.note_ledger.key(),
-            pool_addresses.note_ledger,
-            PoolError::NoteLedgerMismatch,
-        );
-        
-        ensure_mint_active(&ctx.accounts.mint_mapping.to_account_info())?;
-        let payer_account_info = ctx.accounts.payer.to_account_info();
-        let system_program_account_info = ctx.accounts.system_program.to_account_info();
-        // PrivateTransfer still uses AccountLoader, so no conversion needed
-        execute_private_transfer(
-            &ctx.accounts.pool_state,
-            &mut ctx.accounts.nullifier_set,
-            &payer_account_info,
-            &system_program_account_info,
-            &ctx.accounts.commitment_tree,
-            &ctx.accounts.note_ledger,
-            &ctx.accounts.verifier_program,
-            &ctx.accounts.verifying_key,
+    pub fn private_transfer(
+        mut ctx: Context<PrivateTransfer>,
+        args: TransferArgs,
+    ) -> Result<()> {
+        private_transfer_core(
+            PrivateTransferCoreContext {
+                program_id: ctx.program_id,
+                accounts: &mut ctx.accounts,
+                remaining_accounts: ctx.remaining_accounts,
+            },
             &args,
         )
     }
@@ -2837,34 +2592,74 @@ pub mod ptf_pool {
         )
     }
 
-    pub fn transfer_from(ctx: Context<TransferFrom>, args: TransferFromArgs) -> Result<()> {
+    pub fn transfer_from(
+        mut ctx: Context<TransferFrom>,
+        args: TransferFromArgs,
+    ) -> Result<()> {
+        transfer_from_core(
+            TransferFromCoreContext {
+                program_id: ctx.program_id,
+                accounts: &mut ctx.accounts,
+                remaining_accounts: ctx.remaining_accounts,
+            },
+            &args,
+        )
+    }
+
+    // Batch private transfer for 2 transfers (solves DEX add_liquidity transaction size issue)
+    // Uses remaining_accounts for second pool's accounts
+    pub fn batch_private_transfer(
+        mut ctx: Context<BatchPrivateTransfer>, 
+        args: BatchTransferArgs
+    ) -> Result<()> {
+        batch_private_transfer_core(
+            BatchPrivateTransferCoreContext {
+                program_id: ctx.program_id,
+                accounts: &mut ctx.accounts,
+                remaining_accounts: ctx.remaining_accounts,
+            },
+            &args,
+        )
+    }
+
+    // Batch private transfer from for 2 transfers (with approvals)
+    // Uses remaining_accounts for second pool's accounts and allowances
+    pub fn batch_transfer_from(
+        mut ctx: Context<BatchTransferFrom>,
+        args: BatchTransferFromArgs
+    ) -> Result<()> {
+        batch_transfer_from_core(
+            BatchTransferFromCoreContext {
+                program_id: ctx.program_id,
+                accounts: &mut ctx.accounts,
+                remaining_accounts: ctx.remaining_accounts,
+            },
+            &args,
+        )
+    }
+}
+
+fn private_transfer_core<'info>(
+    mut ctx: PrivateTransferCoreContext<'info, '_>,
+    args: &TransferArgs,
+) -> Result<()> {
         // PROGRAM-LEVEL ADDRESS DERIVATION: Derive all PDAs from origin_mint at the start
         // Load pool_state first to get origin_mint (since mint_mapping is UncheckedAccount)
         let pool_state = ctx.accounts.pool_state.load()?;
         let origin_mint_key = pool_state.origin_mint;
         drop(pool_state);
-        msg!("transfer_from: deriving addresses from origin_mint={}", origin_mint_key);
+    msg!(
+        "private_transfer: deriving addresses from origin_mint={}",
+        origin_mint_key
+    );
         
         // Derive all pool-related addresses
-        let pool_addresses = ptf_common::addresses::PoolAddresses::derive_all(
-            &origin_mint_key,
-            ctx.program_id,
-        );
+    let pool_addresses =
+        ptf_common::addresses::PoolAddresses::derive_all(&origin_mint_key, ctx.program_id);
         
         // Derive mint_mapping PDA
-        let (expected_mint_mapping, _mint_mapping_bump) = AddressDeriver::derive_mint_mapping(
-            &origin_mint_key,
-            &ptf_factory::ID,
-        );
-        
-        // Derive allowance account PDA
-        let pool_state_key = pool_addresses.pool_state;
-        let (expected_allowance, _allowance_bump) = AddressDeriver::derive_allowance_account(
-            &pool_state_key,
-            &ctx.accounts.allowance_owner.key(),
-            &ctx.accounts.spender.key(),
-            ctx.program_id,
-        );
+    let (expected_mint_mapping, _mint_mapping_bump) =
+        AddressDeriver::derive_mint_mapping(&origin_mint_key, &ptf_factory::ID);
         
         // Validate provided accounts match derived addresses
         require_keys_eq!(
@@ -2878,13 +2673,6 @@ pub mod ptf_pool {
             ctx.accounts.pool_state.key(),
             pool_addresses.pool_state,
             PoolError::OriginMintMismatch,
-        );
-        
-        // Validate allowance account matches derived address
-        require_keys_eq!(
-            ctx.accounts.allowance.key(),
-            expected_allowance,
-            PoolError::AllowancePoolMismatch,
         );
         
         // Validate other PDAs
@@ -2904,88 +2692,25 @@ pub mod ptf_pool {
             PoolError::NoteLedgerMismatch,
         );
         
-        require!(args.allowance_amount > 0, PoolError::AllowanceAmountInvalid);
-        require!(args.spend_amount > 0, PoolError::AllowanceAmountInvalid);
-        
-        // CRITICAL FIX: Verify that spend_amount doesn't exceed allowance_amount
-        // This prevents attackers from draining unlimited funds while only decrementing
-        // allowance by an arbitrary small amount
-        // Allow partial allowance usage: spend_amount <= allowance_amount
-        require!(
-            args.spend_amount <= args.allowance_amount,
-            PoolError::AllowanceInsufficient
-        );
-        
         ensure_mint_active(&ctx.accounts.mint_mapping.to_account_info())?;
-
-        {
-            let allowance = &mut ctx.accounts.allowance;
-            require_keys_eq!(
-                allowance.pool,
-                ctx.accounts.pool_state.key(),
-                PoolError::AllowancePoolMismatch
-            );
-            require_keys_eq!(
-                allowance.owner,
-                ctx.accounts.allowance_owner.key(),
-                PoolError::AllowanceOwnerMismatch
-            );
-            require_keys_eq!(
-                allowance.spender,
-                ctx.accounts.spender.key(),
-                PoolError::AllowanceSpenderMismatch
-            );
-            let pool_state = ctx.accounts.pool_state.load()?;
-            require_keys_eq!(allowance.mint, pool_state.origin_mint, PoolError::AllowanceMintMismatch);
-            
-            // CRITICAL FIX: Check allowance expiration
-            let clock = Clock::get()?;
-            if let Some(expires_at) = allowance.expires_at {
-                require!(
-                    clock.unix_timestamp < expires_at,
-                    PoolError::AllowanceExpired
-                );
-            }
-            
-            require!(
-                allowance.amount >= args.spend_amount,
-                PoolError::AllowanceInsufficient
-            );
-            // CRITICAL FIX: Decrement by spend_amount (not allowance_amount) to support partial usage
-            allowance.amount = allowance
-                .amount
-                .checked_sub(args.spend_amount)
-                .ok_or(PoolError::AllowanceInsufficient)?;
-            allowance.updated_at = clock.unix_timestamp;
-            emit!(PTFAllowanceUpdated {
-                mint: allowance.mint,
-                owner: allowance.owner,
-                spender: allowance.spender,
-                amount: allowance.amount,
-            });
-        }
-
-        let spender_account_info = ctx.accounts.spender.to_account_info();
+    let payer_account_info = ctx.accounts.payer.to_account_info();
         let system_program_account_info = ctx.accounts.system_program.to_account_info();
-        // TransferFrom still uses AccountLoader, so no conversion needed
         execute_private_transfer(
             &ctx.accounts.pool_state,
             &mut ctx.accounts.nullifier_set,
-            &spender_account_info,
+        &payer_account_info,
             &system_program_account_info,
             &ctx.accounts.commitment_tree,
             &ctx.accounts.note_ledger,
             &ctx.accounts.verifier_program,
             &ctx.accounts.verifying_key,
-            &args.transfer,
-        )
-    }
+        args,
+    )
+}
 
-    // Batch private transfer for 2 transfers (solves DEX add_liquidity transaction size issue)
-    // Uses remaining_accounts for second pool's accounts
-    pub fn batch_private_transfer(
-        ctx: Context<BatchPrivateTransfer>, 
-        args: BatchTransferArgs
+fn batch_private_transfer_core<'info>(
+    ctx: BatchPrivateTransferCoreContext<'info, '_>,
+    args: &BatchTransferArgs,
     ) -> Result<()> {
         require!(
             args.transfers.len() == 2,
@@ -3190,11 +2915,145 @@ pub mod ptf_pool {
         Ok(())
     }
 
-    // Batch private transfer from for 2 transfers (with approvals)
-    // Uses remaining_accounts for second pool's accounts and allowances
-    pub fn batch_transfer_from(
-        ctx: Context<BatchTransferFrom>,
-        args: BatchTransferFromArgs
+fn transfer_from_core<'info>(
+    mut ctx: TransferFromCoreContext<'info, '_>,
+    args: &TransferFromArgs,
+) -> Result<()> {
+    // PROGRAM-LEVEL ADDRESS DERIVATION: Derive all PDAs from origin_mint at the start
+    // Load pool_state first to get origin_mint (since mint_mapping is UncheckedAccount)
+    let pool_state = ctx.accounts.pool_state.load()?;
+    let origin_mint_key = pool_state.origin_mint;
+    drop(pool_state);
+    msg!(
+        "transfer_from: deriving addresses from origin_mint={}",
+        origin_mint_key
+    );
+    
+    // Derive all pool-related addresses
+    let pool_addresses =
+        ptf_common::addresses::PoolAddresses::derive_all(&origin_mint_key, ctx.program_id);
+    
+    // Derive mint_mapping PDA
+    let (expected_mint_mapping, _mint_mapping_bump) =
+        AddressDeriver::derive_mint_mapping(&origin_mint_key, &ptf_factory::ID);
+    
+    // Derive allowance account PDA
+    let pool_state_key = pool_addresses.pool_state;
+    let (expected_allowance, _allowance_bump) = AddressDeriver::derive_allowance_account(
+        &pool_state_key,
+        &ctx.accounts.allowance_owner.key(),
+        &ctx.accounts.spender.key(),
+        ctx.program_id,
+    );
+    
+    // Validate provided accounts match derived addresses
+    require_keys_eq!(
+        ctx.accounts.mint_mapping.key(),
+        expected_mint_mapping,
+        PoolError::OriginMintMismatch,
+    );
+    
+    require_keys_eq!(
+        ctx.accounts.pool_state.key(),
+        pool_addresses.pool_state,
+        PoolError::OriginMintMismatch,
+    );
+    
+    require_keys_eq!(
+        ctx.accounts.allowance.key(),
+        expected_allowance,
+        PoolError::AllowancePoolMismatch,
+    );
+    
+    require_keys_eq!(
+        ctx.accounts.nullifier_set.key(),
+        pool_addresses.nullifier_set,
+        PoolError::NullifierSetMismatch,
+    );
+    require_keys_eq!(
+        ctx.accounts.commitment_tree.key(),
+        pool_addresses.commitment_tree,
+        PoolError::CommitmentTreeMismatch,
+    );
+    require_keys_eq!(
+        ctx.accounts.note_ledger.key(),
+        pool_addresses.note_ledger,
+        PoolError::NoteLedgerMismatch,
+    );
+    
+    require!(args.allowance_amount > 0, PoolError::AllowanceAmountInvalid);
+    require!(args.spend_amount > 0, PoolError::AllowanceAmountInvalid);
+    require!(
+        args.spend_amount <= args.allowance_amount,
+        PoolError::AllowanceInsufficient
+    );
+    
+    ensure_mint_active(&ctx.accounts.mint_mapping.to_account_info())?;
+
+    {
+        let allowance = &mut ctx.accounts.allowance;
+        require_keys_eq!(
+            allowance.pool,
+            ctx.accounts.pool_state.key(),
+            PoolError::AllowancePoolMismatch
+        );
+        require_keys_eq!(
+            allowance.owner,
+            ctx.accounts.allowance_owner.key(),
+            PoolError::AllowanceOwnerMismatch
+        );
+        require_keys_eq!(
+            allowance.spender,
+            ctx.accounts.spender.key(),
+            PoolError::AllowanceSpenderMismatch
+        );
+        let pool_state = ctx.accounts.pool_state.load()?;
+        require_keys_eq!(
+            allowance.mint,
+            pool_state.origin_mint,
+            PoolError::AllowanceMintMismatch
+        );
+        
+        let clock = Clock::get()?;
+        if let Some(expires_at) = allowance.expires_at {
+            require!(clock.unix_timestamp < expires_at, PoolError::AllowanceExpired);
+        }
+        
+        require!(
+            allowance.amount >= args.spend_amount,
+            PoolError::AllowanceInsufficient
+        );
+        allowance.amount = allowance
+            .amount
+            .checked_sub(args.spend_amount)
+            .ok_or(PoolError::AllowanceInsufficient)?;
+        allowance.updated_at = clock.unix_timestamp;
+        emit!(PTFAllowanceUpdated {
+            mint: allowance.mint,
+            owner: allowance.owner,
+            spender: allowance.spender,
+            amount: allowance.amount,
+        });
+    }
+
+    let spender_account_info = ctx.accounts.spender.to_account_info();
+    let system_program_account_info = ctx.accounts.system_program.to_account_info();
+    execute_private_transfer(
+        &ctx.accounts.pool_state,
+        &mut ctx.accounts.nullifier_set,
+        &spender_account_info,
+        &system_program_account_info,
+        &ctx.accounts.commitment_tree,
+        &ctx.accounts.note_ledger,
+        &ctx.accounts.verifier_program,
+        &ctx.accounts.verifying_key,
+        &args.transfer,
+    )
+}
+
+fn batch_transfer_from_core<'info>(
+    ctx: BatchTransferFromCoreContext<'info, '_>,
+    args: &BatchTransferFromArgs,
     ) -> Result<()> {
         require!(
             args.batch_transfer.transfers.len() == 2,
@@ -3517,7 +3376,6 @@ pub mod ptf_pool {
         
         msg!("batch_transfer_from: both transfers executed successfully");
         Ok(())
-    }
 }
 
 fn execute_private_transfer<'info>(
@@ -3899,13 +3757,207 @@ fn process_nullifiers<'info>(
 }
 
 fn process_unshield<'info>(
-    ctx: Context<'_, '_, '_, 'info, Unshield<'info>>,
+    mut ctx: Context<'_, '_, '_, 'info, Unshield<'info>>,
     args: UnshieldArgs,
+    mode: UnshieldMode,
+) -> Result<()> {
+    let core_ctx = UnshieldCoreContext {
+        program_id: ctx.program_id,
+        accounts: &mut ctx.accounts,
+        remaining_accounts: ctx.remaining_accounts,
+    };
+    execute_unshield_core(core_ctx, &args, mode)
+}
+
+// Core shield execution logic (extracted for reuse in execute_shield)
+pub(crate) fn execute_shield_core<'info>(
+    mut ctx: ShieldCoreContext<'info, '_>,
+    args: &ShieldArgs,
+) -> Result<()> {
+    // This function contains the core shield logic extracted from the shield instruction.
+    // It's called by both the legacy shield instruction and the new execute_shield instruction.
+    
+    let pool_loader = &ctx.accounts.pool_state;
+    let mut pool_state = pool_loader.load_mut()?;
+    
+    // Load commitment_tree data and extract needed values before any mutable operations
+    let (commitment_tree_next_index, commitment_tree_current_root) = {
+        let commitment_tree_data = ctx.accounts.commitment_tree.load()?;
+        (commitment_tree_data.next_index, commitment_tree_data.current_root)
+    };
+    
+    // CRITICAL FIX: Root synchronization check - allow if roots match OR if tree root is in recent_roots
+    let roots_match = commitment_tree_current_root == pool_state.current_root;
+    let tree_root_is_known = pool_state.is_known_root(&commitment_tree_current_root);
+    require!(
+        roots_match || tree_root_is_known,
+        PoolError::RootDrift
+    );
+
+    if pool_state.twin_mint_enabled {
+        let twin_mint = ctx
+            .accounts
+            .twin_mint
+            .as_ref()
+            .ok_or(PoolError::TwinMintNotConfigured)?;
+        require_keys_eq!(
+            twin_mint.key(),
+            pool_state.twin_mint,
+            PoolError::TwinMintMismatch,
+        );
+    }
+
+    let public_fields = parse_field_elements(&args.public_inputs)?;
+    require!(public_fields.len() >= 3, PoolError::InvalidPublicInputs);
+
+    let old_root_bytes = public_fields[0];
+    let new_root_bytes = public_fields[1];
+    let commitment_bytes = public_fields[2];
+    let mut old_root_be = old_root_bytes;
+    old_root_be.reverse();
+    let mut new_root_be = new_root_bytes;
+    new_root_be.reverse();
+
+    if old_root_bytes != pool_state.current_root {
+        msg!("shield: root mismatch");
+    }
+    require!(
+        old_root_bytes == pool_state.current_root,
+        PoolError::RootMismatch
+    );
+
+    // CRITICAL FIX: Use centralized input sanitization
+    InputSanitizer::sanitize_proof(&args.proof, MAX_PROOF_SIZE)?;
+    InputSanitizer::sanitize_public_inputs(&args.public_inputs, MAX_PUBLIC_INPUTS_SIZE)?;
+
+    let cpi_accounts = ptf_verifier_groth16::cpi::accounts::VerifyGroth16 {
+        verifier_state: ctx.accounts.verifying_key.to_account_info(),
+    };
+    let cpi_ctx = CpiContext::new(
+        ctx.accounts.verifier_program.to_account_info(),
+        cpi_accounts,
+    );
+    ptf_verifier_groth16::cpi::verify_groth16(
+        cpi_ctx,
+        pool_state.verifying_key_id,
+        args.proof.clone(),
+        args.public_inputs.clone(),
+    )?;
+
+    let deposit_accounts = ptf_vault::cpi::accounts::Deposit {
+        vault_state: ctx.accounts.vault_state.to_account_info(),
+        vault_token_account: ctx.accounts.vault_token_account.to_account_info(),
+        origin_mint: ctx.accounts.origin_mint.to_account_info(),
+        depositor: ctx.accounts.payer.to_account_info(),
+        depositor_token_account: ctx.accounts.depositor_token_account.to_account_info(),
+        token_program: ctx.accounts.token_program.to_account_info(),
+    };
+    let deposit_ctx = CpiContext::new(
+        ctx.accounts.vault_program.to_account_info(),
+        deposit_accounts,
+    );
+    ptf_vault::cpi::deposit(deposit_ctx, args.amount)?;
+
+    pool_state.pending_shield = PendingShield {
+        active: 1,
+        old_root: old_root_bytes,
+        new_root: new_root_bytes,
+        commitment: commitment_bytes,
+        amount_commit: args.amount_commit,
+        amount: args.amount,
+        depositor: ctx.accounts.payer.key(),
+        next_index: commitment_tree_next_index,
+    };
+    
+    // CRITICAL FIX: Activate shield claim with status set to AWAITING_LEDGER
+    let claim_bump = ctx.accounts.shield_claim.bump;
+    {
+        let shield_claim = &mut ctx.accounts.shield_claim;
+        shield_claim.activate(
+            pool_loader.key(),
+            ctx.accounts.payer.key(),
+            commitment_bytes,
+            args.amount_commit,
+            old_root_bytes,
+            new_root_bytes,
+            args.amount,
+            commitment_tree_next_index,
+            claim_bump,
+        )?;
+        msg!(
+            "shield: claim activated new_root={} next_index={}",
+            hex::encode(new_root_bytes),
+            commitment_tree_next_index
+        );
+    }
+
+    // CRITICAL: Check if hooks are enabled before accessing hook_config to avoid access violations
+    let hook_enabled_check = pool_state
+        .features
+        .contains(FeatureFlags::from(FEATURE_HOOKS_ENABLED))
+        && pool_state.hook_config_present;
+    
+    // CRITICAL: Cache account references and infos before dropping pool_state to avoid access violations
+    let hook_config_account = &ctx.accounts.hook_config;
+    let hooks_feature_enabled = pool_state.features.contains(FeatureFlags::from(FEATURE_HOOKS_ENABLED));
+    let hook_config_present = pool_state.hook_config_present;
+    let hook_config_info = if hooks_feature_enabled && hook_config_present {
+        Some(ctx.accounts.hook_config.to_account_info())
+    } else {
+        None
+    };
+    
+    let note_ledger_account = &ctx.accounts.note_ledger;
+    let shield_claim_ref = &mut ctx.accounts.shield_claim;
+    let hook_whitelist_ref = &ctx.accounts.hook_whitelist;
+    let remaining_accounts_ref = ctx.remaining_accounts;
+    let pool_info = pool_loader.to_account_info();
+
+    drop(pool_state);
+
+    // Pass cached references and infos - process_shield_finalize_ledger now accepts Option<UncheckedAccount>
+    let hook_config_account_opt = if hooks_feature_enabled && hook_config_present {
+        Some(hook_config_account)
+    } else {
+        None
+    };
+    process_shield_finalize_ledger(
+        pool_loader,
+        hook_config_account_opt,
+        hook_config_info.as_ref(),
+        &pool_info,
+        note_ledger_account,
+        shield_claim_ref,
+        hook_whitelist_ref,
+        remaining_accounts_ref,
+    )?;
+    
+    Ok(())
+}
+
+
+// Core unshield execution logic (extracted for reuse in execute_unshield)
+// This function contains the core unshield logic extracted from process_unshield.
+// It takes Context by value to match the pattern used by execute_shield_core.
+// NOTE: This function is called by both process_unshield (with Context<Unshield>)
+// and execute_unshield (which needs to work around the bumps type mismatch).
+pub(crate) fn execute_unshield_core<'info>(
+    ctx: UnshieldCoreContext<'info, '_>,
+    args: &UnshieldArgs,
+    mode: UnshieldMode,
+) -> Result<()> {
+    execute_unshield_core_impl(ctx, args, mode)
+}
+
+// Internal implementation that can be called with accounts directly
+fn execute_unshield_core_impl<'info>(
+    mut ctx: UnshieldCoreContext<'info, '_>,
+    args: &UnshieldArgs,
     mode: UnshieldMode,
 ) -> Result<()> {
     // PROGRAM-LEVEL ADDRESS DERIVATION: Derive all PDAs from origin_mint at the start
     let origin_mint_key = ctx.accounts.mint_mapping.origin_mint;
-    msg!("process_unshield: deriving addresses from origin_mint={}", origin_mint_key);
+    msg!("execute_unshield_core: deriving addresses from origin_mint={}", origin_mint_key);
     
     // Derive all pool-related addresses
     let pool_addresses = ptf_common::addresses::PoolAddresses::derive_all(
@@ -3930,7 +3982,7 @@ fn process_unshield<'info>(
         &ptf_factory::ID,
     );
     
-    msg!("process_unshield: derived pool_state={}, vault_state={}", 
+    msg!("execute_unshield_core: derived pool_state={}, vault_state={}", 
          pool_addresses.pool_state, expected_vault_state);
     
     // Validate provided accounts match derived addresses
@@ -4182,7 +4234,7 @@ fn process_unshield<'info>(
     let fee = validate_unshield_public_inputs(
         &pool_state,
         pool_account_key,
-        &args,
+        args,
         mode,
         destination_owner,
         decimals,
@@ -4220,7 +4272,7 @@ fn process_unshield<'info>(
         let commitment_tree = commitment_tree_loader.load()?;
         if commitment_tree.current_root != args.old_root {
             msg!(
-                "unshield: root mismatch - commitment_tree.current_root={} proof old_root={}",
+                "execute_unshield_core: root mismatch - commitment_tree.current_root={} proof old_root={}",
                 hex::encode(commitment_tree.current_root),
                 hex::encode(args.old_root)
             );
@@ -4536,6 +4588,7 @@ fn process_unshield<'info>(
     #[cfg(all(feature = "invariant_checks", not(feature = "lightweight")))]
     if should_enforce_invariant {
         let pool_state = pool_loader.load()?;
+        #[cfg(not(feature = "lightweight"))]
         enforce_supply_invariant(
             &pool_state,
             &note_ledger,
@@ -4543,37 +4596,6 @@ fn process_unshield<'info>(
             ctx.accounts.twin_mint.as_ref(),
         )?;
     }
-    Ok(())
-}
-
-// Core unshield execution logic (extracted for reuse in execute_unshield)
-// NOTE: This function contains the core unshield logic extracted from process_unshield.
-// The full implementation will be completed when we implement execute_unshield instruction.
-// For now, process_unshield remains as-is and will be refactored to call this function.
-fn execute_unshield_core<'info>(
-    ctx: &Context<'_, '_, '_, 'info, Unshield<'info>>,
-    args: &UnshieldArgs,
-    mode: UnshieldMode,
-) -> Result<()> {
-    // NOTE: Full extraction of process_unshield logic will be done when implementing execute_unshield.
-    // The challenge is that process_unshield takes Context by value while this takes &Context.
-    // The proper solution is to extract the logic into a helper that both can use, or
-    // refactor process_unshield to take &Context. For now, this is a placeholder.
-    // 
-    // When execute_unshield is implemented, we'll properly extract all the validation,
-    // proof verification, vault operations, and tree operations from process_unshield here.
-    
-    // Temporary: For now, we'll need to call process_unshield differently.
-    // The execute_unshield instruction will handle creating the proper Context.
-    // This function signature is set up correctly for when we do the full extraction.
-    
-    // TODO: Extract full process_unshield logic here when implementing execute_unshield
-    // This will include all validation, proof verification, vault withdraw, tree operations, etc.
-    
-    // For compilation purposes, we need to return something. This will be properly implemented.
-    msg!("execute_unshield_core: placeholder - full implementation pending execute_unshield");
-    // The actual implementation will be added when we implement execute_unshield instruction
-    // It will contain the full logic from process_unshield (lines 3574-4220)
     Ok(())
 }
 
@@ -5394,89 +5416,82 @@ pub struct PrepareUnshield<'info> {
     pub system_program: Program<'info, System>,
 }
 
+// Separate structs for each prepare type (required for Anchor macro expansion)
+#[derive(Accounts)]
+pub struct PrepareTransfer<'info> {
+    #[account(
+        init_if_needed,
+        payer = payer,
+        space = UserProofVault::SPACE,
+        seeds = [b"proof-vault", payer.key().as_ref()],
+        bump
+    )]
+    pub proof_vault: Account<'info, UserProofVault>,
+    
+    #[account(mut)]
+    pub payer: Signer<'info>,
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct PrepareTransferFrom<'info> {
+    #[account(
+        init_if_needed,
+        payer = payer,
+        space = UserProofVault::SPACE,
+        seeds = [b"proof-vault", payer.key().as_ref()],
+        bump
+    )]
+    pub proof_vault: Account<'info, UserProofVault>,
+    
+    #[account(mut)]
+    pub payer: Signer<'info>,
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct PrepareBatchTransfer<'info> {
+    #[account(
+        init_if_needed,
+        payer = payer,
+        space = UserProofVault::SPACE,
+        seeds = [b"proof-vault", payer.key().as_ref()],
+        bump
+    )]
+    pub proof_vault: Account<'info, UserProofVault>,
+    
+    #[account(mut)]
+    pub payer: Signer<'info>,
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct PrepareBatchTransferFrom<'info> {
+    #[account(
+        init_if_needed,
+        payer = payer,
+        space = UserProofVault::SPACE,
+        seeds = [b"proof-vault", payer.key().as_ref()],
+        bump
+    )]
+    pub proof_vault: Account<'info, UserProofVault>,
+    
+    #[account(mut)]
+    pub payer: Signer<'info>,
+    pub system_program: Program<'info, System>,
+}
+
 // Proof Account Abstraction: Execute Shield
 #[derive(Accounts)]
 pub struct ExecuteShield<'info> {
     #[account(
         mut,
-        seeds = [b"proof-vault", payer.key().as_ref()],
+        seeds = [b"proof-vault", shield.payer.key().as_ref()],
         bump = proof_vault.vault_bump,
-        constraint = proof_vault.owner == payer.key() @ PoolError::Unauthorized
+        constraint = proof_vault.owner == shield.payer.key() @ PoolError::Unauthorized
     )]
     pub proof_vault: Account<'info, UserProofVault>,
-    
-    // All accounts from Shield struct
-    #[account(
-        init_if_needed,
-        payer = payer,
-        seeds = [seeds::POOL, origin_mint.key().as_ref()],
-        bump,
-        space = PoolState::SPACE,
-    )]
-    pub pool_state: AccountLoader<'info, PoolState>,
-    #[account(
-        seeds = [seeds::HOOKS, origin_mint.key().as_ref()],
-        bump,
-    )]
-    pub hook_config: UncheckedAccount<'info>,
-    #[account(
-        init_if_needed,
-        payer = payer,
-        seeds = [b"hook-whitelist", origin_mint.key().as_ref()],
-        bump,
-        space = HookWhitelist::SPACE,
-    )]
-    pub hook_whitelist: Account<'info, HookWhitelist>,
-    #[account(
-        seeds = [seeds::NULLIFIERS, origin_mint.key().as_ref()],
-        bump,
-    )]
-    pub nullifier_set: UncheckedAccount<'info>,
-    #[account(
-        init_if_needed,
-        payer = payer,
-        seeds = [seeds::TREE, origin_mint.key().as_ref()],
-        bump,
-        space = CommitmentTree::SPACE,
-    )]
-    pub commitment_tree: AccountLoader<'info, CommitmentTree>,
-    #[account(
-        seeds = [seeds::NOTES, origin_mint.key().as_ref()],
-        bump,
-    )]
-    pub note_ledger: UncheckedAccount<'info>,
-    #[account(mut)]
-    pub vault_state: UncheckedAccount<'info>,
-    #[account(mut)]
-    pub vault_token_account: InterfaceAccount<'info, TokenAccount>,
-    #[account(mut)]
-    pub depositor_token_account: InterfaceAccount<'info, TokenAccount>,
-    #[account(mut)]
-    pub twin_mint: Option<UncheckedAccount<'info>>,
-    pub verifier_program: UncheckedAccount<'info>,
-    pub verifying_key: UncheckedAccount<'info>,
-    #[account(
-        init_if_needed,
-        payer = payer,
-        space = ShieldClaim::SPACE,
-        seeds = [seeds::CLAIM, pool_state.key().as_ref()],
-        bump
-    )]
-    pub shield_claim: Account<'info, ShieldClaim>,
-    #[account(mut)]
-    pub payer: Signer<'info>,
-    pub origin_mint: InterfaceAccount<'info, Mint>,
-    #[account(
-        seeds = [seeds::MINT_MAPPING, origin_mint.key().as_ref()],
-        bump,
-        seeds::program = ptf_factory::ID,
-    )]
-    pub mint_mapping: Account<'info, MintMapping>,
-    pub factory_state: UncheckedAccount<'info>,
-    pub vault_program: Program<'info, PtfVault>,
-    pub token_program: Interface<'info, TokenInterface>,
-    pub system_program: Program<'info, System>,
-    pub rent: Sysvar<'info, Rent>,
+    pub shield: Shield<'info>,
 }
 
 // Proof Account Abstraction: Execute Unshield
@@ -5484,84 +5499,60 @@ pub struct ExecuteShield<'info> {
 pub struct ExecuteUnshield<'info> {
     #[account(
         mut,
-        seeds = [b"proof-vault", payer.key().as_ref()],
+        seeds = [b"proof-vault", unshield.payer.key().as_ref()],
         bump = proof_vault.vault_bump,
-        constraint = proof_vault.owner == payer.key() @ PoolError::Unauthorized
+        constraint = proof_vault.owner == unshield.payer.key() @ PoolError::Unauthorized
     )]
     pub proof_vault: Account<'info, UserProofVault>,
+    pub unshield: Unshield<'info>,
+}
     
-    // All accounts from Unshield struct
+#[derive(Accounts)]
+pub struct ExecuteTransfer<'info> {
     #[account(
         mut,
-        seeds = [seeds::POOL, pool_state.load()?.origin_mint.as_ref()],
-        bump
+        seeds = [b"proof-vault", transfer.payer.key().as_ref()],
+        bump = proof_vault.vault_bump,
+        constraint = proof_vault.owner == transfer.payer.key() @ PoolError::Unauthorized
     )]
-    pub pool_state: AccountLoader<'info, PoolState>,
-    #[account(
-        seeds = [seeds::HOOKS, pool_state.load()?.origin_mint.as_ref()],
-        bump = pool_state.load()?.hook_config_bump,
-    )]
-    pub hook_config: UncheckedAccount<'info>,
-    #[account(
-        seeds = [b"hook-whitelist", pool_state.load()?.origin_mint.as_ref()],
-        bump = hook_whitelist.bump
-    )]
-    pub hook_whitelist: Account<'info, HookWhitelist>,
+    pub proof_vault: Account<'info, UserProofVault>,
+    pub transfer: PrivateTransfer<'info>,
+}
+
+#[derive(Accounts)]
+pub struct ExecuteTransferFrom<'info> {
     #[account(
         mut,
-        seeds = [seeds::NULLIFIERS, pool_state.load()?.origin_mint.as_ref()],
-        bump = nullifier_set.bump
+        seeds = [b"proof-vault", transfer.spender.key().as_ref()],
+        bump = proof_vault.vault_bump,
+        constraint = proof_vault.owner == transfer.spender.key() @ PoolError::Unauthorized
     )]
-    pub nullifier_set: Account<'info, NullifierSet>,
+    pub proof_vault: Account<'info, UserProofVault>,
+    pub transfer: TransferFrom<'info>,
+}
+
+#[derive(Accounts)]
+pub struct ExecuteBatchTransfer<'info> {
     #[account(
         mut,
-        seeds = [seeds::TREE, pool_state.load()?.origin_mint.as_ref()],
-        bump = commitment_tree.load()?.bump,
-        constraint = commitment_tree.load()?.pool == pool_state.key() @ PoolError::CommitmentTreeMismatch
+        seeds = [b"proof-vault", transfer.payer.key().as_ref()],
+        bump = proof_vault.vault_bump,
+        constraint = proof_vault.owner == transfer.payer.key() @ PoolError::Unauthorized
     )]
-    pub commitment_tree: AccountLoader<'info, CommitmentTree>,
+    pub proof_vault: Account<'info, UserProofVault>,
+    pub transfer: BatchPrivateTransfer<'info>,
+}
+
+#[derive(Accounts)]
+pub struct ExecuteBatchTransferFrom<'info> {
     #[account(
         mut,
-        seeds = [seeds::NOTES, pool_state.load()?.origin_mint.as_ref()],
-        bump = pool_state.load()?.note_ledger_bump,
-        constraint = note_ledger.key() == pool_state.load()?.note_ledger @ PoolError::NoteLedgerMismatch,
-        constraint = note_ledger.load()?.pool == pool_state.key() @ PoolError::NoteLedgerMismatch,
+        seeds = [b"proof-vault", transfer.spender.key().as_ref()],
+        bump = proof_vault.vault_bump,
+        constraint = proof_vault.owner == transfer.spender.key() @ PoolError::Unauthorized
     )]
-    pub note_ledger: AccountLoader<'info, NoteLedger>,
-    #[account(
-        seeds = [seeds::MINT_MAPPING, pool_state.load()?.origin_mint.as_ref()],
-        bump = mint_mapping.bump,
-        seeds::program = ptf_factory::ID,
-        constraint = mint_mapping.origin_mint == pool_state.load()?.origin_mint @ PoolError::OriginMintMismatch,
-    )]
-    pub mint_mapping: Account<'info, MintMapping>,
-    pub verifier_program: Program<'info, PtfVerifierGroth16>,
-    #[account(
-        address = pool_state.load()?.verifying_key,
-        constraint = verifying_key.hash == pool_state.load()?.verifying_key_hash @ PoolError::VerifyingKeyHashMismatch,
-    )]
-    pub verifying_key: Account<'info, VerifyingKeyAccount>,
-    #[account(mut)]
-    pub vault_state: Account<'info, ptf_vault::VaultState>,
-    #[account(mut)]
-    pub vault_token_account: InterfaceAccount<'info, TokenAccount>,
-    #[account(mut)]
-    pub destination_token_account: InterfaceAccount<'info, TokenAccount>,
-    #[account(mut)]
-    pub twin_mint: Option<InterfaceAccount<'info, Mint>>,
-    pub vault_program: Program<'info, PtfVault>,
-    #[account(
-        seeds = [seeds::FACTORY, ptf_factory::ID.as_ref()],
-        bump = factory_state.bump,
-        seeds::program = ptf_factory::ID
-    )]
-    pub factory_state: Account<'info, ptf_factory::FactoryState>,
-    pub factory_program: Program<'info, PtfFactory>,
-    pub token_program: Interface<'info, TokenInterface>,
-    pub system_program: Program<'info, System>,
-    #[account(mut)]
-    pub payer: Signer<'info>,
-    pub rent: Sysvar<'info, Rent>,
+    pub proof_vault: Account<'info, UserProofVault>,
+    pub transfer: BatchTransferFrom<'info>,
 }
 
 // Proof Account Abstraction: Cleanup Expired Operations
@@ -7046,6 +7037,34 @@ pub enum PreparedOperation {
         created_at: i64,
         expires_at: i64,
     },
+    Transfer {
+        operation_id: [u8; 32],
+        transfer_args: TransferArgs,
+        status: OperationStatus,
+        created_at: i64,
+        expires_at: i64,
+    },
+    TransferFrom {
+        operation_id: [u8; 32],
+        transfer_from_args: TransferFromArgs,
+        status: OperationStatus,
+        created_at: i64,
+        expires_at: i64,
+    },
+    BatchTransfer {
+        operation_id: [u8; 32],
+        batch_args: BatchTransferArgs,
+        status: OperationStatus,
+        created_at: i64,
+        expires_at: i64,
+    },
+    BatchTransferFrom {
+        operation_id: [u8; 32],
+        batch_args: BatchTransferFromArgs,
+        status: OperationStatus,
+        created_at: i64,
+        expires_at: i64,
+    },
 }
 
 // Proof Account Abstraction: User Proof Vault
@@ -7068,17 +7087,57 @@ impl UserProofVault {
     // + created_at (8) + last_used (8) + operation_count (8) + padding
     // Base space: 8 + 32 + 1 + 4 + 8 + 8 + 8 = 69 bytes
     // For Vec<PreparedOperation>, estimate max size per operation:
-    // Shield variant: operation_id (32) + ShieldArgs (~600 bytes) + status (1) + created_at (8) + expires_at (8) + variant discriminator (1) = ~650 bytes
-    // Unshield variant: operation_id (32) + UnshieldArgs (~800 bytes) + status (1) + created_at (8) + expires_at (8) + variant discriminator (1) = ~850 bytes
-    // Using worst case (Unshield): ~850 bytes per operation
-    // With MAX_OPERATIONS = 10: 10 * 850 = 8500 bytes
-    // Total: 69 + 8500 = 8569 bytes, round up to 9000 for safety and alignment
-    pub const SPACE: usize = 8 + 32 + 1 + 4 + 8 + 8 + 8 + 9000; // Base + Vec length + max operations data
+    // Shield variant: ~650 bytes per operation
+    // Unshield/Transfer variants: up to ~1000 bytes per operation
+    // Batch variants (with embedded proof data): up to ~5000 bytes per operation
+    // With MAX_OPERATIONS = 10 we allocate ~50 KB for operation storage to cover all cases.
+    pub const SPACE: usize = 8 + 32 + 1 + 4 + 8 + 8 + 8 + 50_000; // Base + Vec length + max operations data
 }
 
 // Proof Account Abstraction: PDA derivation helper
 pub fn derive_proof_vault(user: &Pubkey, program_id: &Pubkey) -> (Pubkey, u8) {
     Pubkey::find_program_address(&[b"proof-vault", user.as_ref()], program_id)
+}
+
+// Helper to initialize vault if needed (called from prepare_* instructions)
+pub fn prepare_vault_if_needed<'info>(
+    vault: &mut Account<'info, UserProofVault>,
+    payer: &Signer<'info>,
+    vault_bump: u8,
+    current_timestamp: i64,
+) -> Result<()> {
+    // If vault is uninitialized (owner is default), initialize it
+    if vault.owner == Pubkey::default() {
+        vault.owner = payer.key();
+        vault.vault_bump = vault_bump;
+        vault.prepared_operations = Vec::new();
+        vault.created_at = current_timestamp;
+        vault.last_used = current_timestamp;
+        vault.operation_count = 0;
+    }
+    Ok(())
+}
+
+// Helper to store a prepared operation in the vault
+pub fn store_prepared_operation<'info>(
+    vault: &mut Account<'info, UserProofVault>,
+    operation: PreparedOperation,
+    current_timestamp: i64,
+) -> Result<()> {
+    // Check capacity
+    require!(
+        vault.prepared_operations.len() < UserProofVault::MAX_OPERATIONS,
+        PoolError::VaultFull
+    );
+    
+    // Add operation
+    vault.prepared_operations.push(operation);
+    vault.last_used = current_timestamp;
+    vault.operation_count = vault.operation_count
+        .checked_add(1)
+        .ok_or(PoolError::AmountOverflow)?;
+    
+    Ok(())
 }
 
 // CRITICAL FIX: Replaced bloom filter with deterministic sorted array

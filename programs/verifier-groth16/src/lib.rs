@@ -2,7 +2,7 @@ use anchor_lang::prelude::*;
 use anchor_lang::solana_program::pubkey;
 use sha3::{Digest, Keccak256};
 
-declare_id!("3aCv39mCRFH9BGJskfXqwQoWzW1ULq2yXEbEwGgKtLgg");
+declare_id!("5EkT8DJqJw3YcveVFjBQP8E4QnZMfbDdFMupfqH2AWu1");
 
 // CRITICAL FIX: Factory program ID is now stored in VerifierConfig account
 // This allows factory upgrades and multi-factory support

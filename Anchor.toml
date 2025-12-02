@@ -1,23 +1,24 @@
-[workspace]
-members = [
-  "programs/factory",
-  "programs/vault",
-  "programs/pool",
-  "programs/verifier-groth16",
-  "programs/dex"
-]
+[toolchain]
+
+[features]
+resolution = true
+skip-lint = false
 
 [programs.localnet]
-ptf_factory = "YNZGqPEsKkMcUopmXThpigDdxfCYPE6jS1QtsXfRzjV"
-ptf_vault = "ABUQvsF8kdY9HCFrVEomafg9ABbq4zVQuxLfevpwGnvb"
-ptf_pool = "GBfBiuyXm5YZjnCPkZNjakht41rxEkMRxawQcocowwdi"
-ptf_verifier_groth16 = "3aCv39mCRFH9BGJskfXqwQoWzW1ULq2yXEbEwGgKtLgg"
-ptf_dex = "8PMDczNoSdVhj5DsphLD1TrLAUtrZFpqMVThHQo8m12n"
+ptf_dex = "CptyJozyQhhNjymwpmw1vkcBSLYXzRVWqyXuDsS2FshG"
+ptf_factory = "8tvCDpvKjnFkFRGdQAne6gU5UFTHhqtxEfT1251WLDtZ"
+ptf_pool = "CqagMfwWi4u1d1CbKWUhwJdkGQ2nW2BgtjamcMwnqRwQ"
+ptf_vault = "BUGFGrSnZXY3kUVn9k6T4kTNQ6skEBhBpditHd7mK92R"
+ptf_verifier_groth16 = "5EkT8DJqJw3YcveVFjBQP8E4QnZMfbDdFMupfqH2AWu1"
 
 [registry]
 url = "https://anchor.projectserum.com"
 
 [provider]
-cluster = "Localnet"
+cluster = "localnet"
 wallet = "~/.config/solana/id.json"
 
+[workspace]
+members = ["programs/factory", "programs/vault", "programs/pool", "programs/verifier-groth16", "programs/dex"]
+
+[hooks]
