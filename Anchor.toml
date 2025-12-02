@@ -5,11 +5,11 @@ resolution = true
 skip-lint = false
 
 [programs.localnet]
-ptf_dex = "CptyJozyQhhNjymwpmw1vkcBSLYXzRVWqyXuDsS2FshG"
-ptf_factory = "8tvCDpvKjnFkFRGdQAne6gU5UFTHhqtxEfT1251WLDtZ"
-ptf_pool = "CqagMfwWi4u1d1CbKWUhwJdkGQ2nW2BgtjamcMwnqRwQ"
-ptf_vault = "BUGFGrSnZXY3kUVn9k6T4kTNQ6skEBhBpditHd7mK92R"
-ptf_verifier_groth16 = "5EkT8DJqJw3YcveVFjBQP8E4QnZMfbDdFMupfqH2AWu1"
+ptf_dex = "5Dvt8enX3PgC5hJmzcpB7iuZX6LcYYLP12WXVv7Uef2G"
+ptf_factory = "6uruFJACS8n2H28vWA39XqnPwRinL3P1DPLipySZfAuM"
+ptf_pool = "F8bEMyP6Yt3SMGVT9jKL6m13Sn6mc1Z5AeuuJPNCR8to"
+ptf_vault = "Cp154M1oxXYJDbrgg9f57ytuthW8X8WNe73NQ7kQQr4Q"
+ptf_verifier_groth16 = "geepCeZMrQu1Fh8mXYTxUcZhkw858R2joYXwqRQVS9S"
 
 [registry]
 url = "https://anchor.projectserum.com"
