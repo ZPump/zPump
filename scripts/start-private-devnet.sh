@@ -55,18 +55,24 @@ PROGRAM_POOL_PUBKEY="F8bEMyP6Yt3SMGVT9jKL6m13Sn6mc1Z5AeuuJPNCR8to"
 PROGRAM_VERIFIER_PUBKEY="geepCeZMrQu1Fh8mXYTxUcZhkw858R2joYXwqRQVS9S"
 PROGRAM_DEX_PUBKEY="5Dvt8enX3PgC5hJmzcpB7iuZX6LcYYLP12WXVv7Uef2G"
 
+# Core programs required for shield/unshield/transfer operations
 for program in \
   "$PROGRAM_DIR/ptf_factory.so" \
   "$PROGRAM_DIR/ptf_vault.so" \
   "$PROGRAM_DIR/ptf_pool.so" \
-  "$PROGRAM_DIR/ptf_verifier_groth16.so" \
-  "$PROGRAM_DIR/ptf_dex.so"; do
+  "$PROGRAM_DIR/ptf_verifier_groth16.so"; do
   if [[ ! -f "$program" ]]; then
     echo "error: program artifact not found: $program" >&2
     echo "hint: run './scripts/build-all-programs.sh' before launching the validator." >&2
     exit 1
   fi
 done
+
+# ptf_dex is optional (has compilation errors but not needed for core operations)
+if [[ ! -f "$PROGRAM_DIR/ptf_dex.so" ]]; then
+  echo "warning: ptf_dex.so not found - DEX operations will not be available" >&2
+  echo "hint: ptf_dex has compilation errors but is not required for shield/unshield/transfer tests" >&2
+fi
 
 mkdir -p "$LEDGER_DIR"
 mkdir -p "$LEDGER_DIR/rocksdb"
@@ -90,15 +96,22 @@ echo "    RPC endpoint     : http://127.0.0.1:$RPC_PORT"
 echo "    Faucet endpoint  : http://127.0.0.1:$FAUCET_PORT"
 echo
 
-exec solana-test-validator \
+# Build command with optional ptf_dex
+VALIDATOR_CMD="solana-test-validator \
   --reset \
-  --ledger "$LEDGER_DIR" \
+  --ledger \"$LEDGER_DIR\" \
   --limit-ledger-size \
-  --rpc-port "$RPC_PORT" \
-  --faucet-port "$FAUCET_PORT" \
-  --bpf-program "$PROGRAM_FACTORY_PUBKEY" "$PROGRAM_DIR/ptf_factory.so" \
-  --bpf-program "$PROGRAM_VAULT_PUBKEY" "$PROGRAM_DIR/ptf_vault.so" \
-  --bpf-program "$PROGRAM_POOL_PUBKEY" "$PROGRAM_DIR/ptf_pool.so" \
-  --bpf-program "$PROGRAM_VERIFIER_PUBKEY" "$PROGRAM_DIR/ptf_verifier_groth16.so" \
-  --bpf-program "$PROGRAM_DEX_PUBKEY" "$PROGRAM_DIR/ptf_dex.so"
+  --rpc-port \"$RPC_PORT\" \
+  --faucet-port \"$FAUCET_PORT\" \
+  --bpf-program \"$PROGRAM_FACTORY_PUBKEY\" \"$PROGRAM_DIR/ptf_factory.so\" \
+  --bpf-program \"$PROGRAM_VAULT_PUBKEY\" \"$PROGRAM_DIR/ptf_vault.so\" \
+  --bpf-program \"$PROGRAM_POOL_PUBKEY\" \"$PROGRAM_DIR/ptf_pool.so\" \
+  --bpf-program \"$PROGRAM_VERIFIER_PUBKEY\" \"$PROGRAM_DIR/ptf_verifier_groth16.so\""
+
+# Add ptf_dex if available
+if [[ -f "$PROGRAM_DIR/ptf_dex.so" ]]; then
+  VALIDATOR_CMD="$VALIDATOR_CMD --bpf-program \"$PROGRAM_DEX_PUBKEY\" \"$PROGRAM_DIR/ptf_dex.so\""
+fi
+
+exec bash -c "$VALIDATOR_CMD"
 

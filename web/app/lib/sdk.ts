@@ -1376,8 +1376,8 @@ export async function prepareShield(params: PrepareShieldParams): Promise<Prepar
   const shieldArgs = {
     amount_commit: Array.from(amountCommitmentBytes),
     amount: new BN(amount.toString()),
-    proof: Buffer.from(decodedProof.proof),
-    public_inputs: Buffer.from(decodedProof.publicInputs)
+    proof: decodedProof.proof,
+    public_inputs: decodedProof.publicInputs
   };
 
   return sendPrepareInstruction(
@@ -3097,6 +3097,54 @@ export async function executeBatchTransfer(
       data: poolCoder.instruction.encode('execute_batch_transfer', {
         operationId: operationIdHexToArray(params.operationId)
       })
+    })
+  );
+  
+  const latestBlockhash = await connection.getLatestBlockhash('confirmed');
+  const tx = new Transaction().add(...instructions);
+  tx.feePayer = payer;
+  tx.recentBlockhash = latestBlockhash.blockhash;
+  const signature = await wallet.sendTransaction(tx, connection, { skipPreflight: false });
+  
+  await waitForSignatureConfirmation(
+    connection,
+    signature,
+    latestBlockhash.blockhash,
+    latestBlockhash.lastValidBlockHeight
+  );
+  
+  return signature;
+}
+
+export interface CleanupExpiredOperationsParams {
+  connection: Connection;
+  wallet: WalletContextState;
+  keypair?: Keypair;
+}
+
+export async function cleanupExpiredOperations(
+  params: CleanupExpiredOperationsParams
+): Promise<string> {
+  assertWallet(params.wallet);
+  const wallet = params.wallet;
+  const connection = params.connection;
+  const payer = wallet.publicKey;
+  if (!payer) {
+    throw new Error('Wallet public key missing');
+  }
+  
+  const proofVault = deriveProofVault(wallet.publicKey!);
+  
+  const instructions: TransactionInstruction[] = [];
+  
+  instructions.push(
+    new TransactionInstruction({
+      programId: POOL_PROGRAM_ID,
+      keys: [
+        { pubkey: proofVault, isSigner: false, isWritable: true },
+        { pubkey: payer, isSigner: true, isWritable: true }
+      ],
+      data: poolCoder.instruction.encode('cleanup_expired_operations', {})
     })
   );
   

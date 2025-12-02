@@ -48,13 +48,33 @@ async function testPrepareExecuteShield() {
   const wallet = createWalletAdapter(keypair);
   
   // Airdrop SOL
-  await airdropSol(connection, keypair.publicKey, 2n * LAMPORTS_PER_SOL);
+  await airdropSol(connection, keypair.publicKey, BigInt(2) * BigInt(LAMPORTS_PER_SOL));
   
-  const proofClient = new ProofClient(PROOF_URL);
+  const proofClient = new ProofClient({ baseUrl: PROOF_URL });
   const originMint = 'So11111111111111111111111111111111111111112'; // SOL
-  const amount = 100_000_000n; // 0.1 SOL
+  const amount = BigInt(100_000_000); // 0.1 SOL
   
   try {
+    // Generate proof first (required for prepareShield)
+    console.log('0. Generating shield proof...');
+    const { derivePoolState } = await import('../lib/onchain/pdas');
+    const { fetchZTokenPoolRoot } = await import('../lib/dex-ztoken-helpers');
+    const poolState = derivePoolState(new PublicKey(originMint));
+    const currentRoot = await fetchZTokenPoolRoot(connection, new PublicKey(originMint));
+    const depositId = Date.now().toString();
+    const blinding = Math.floor(Math.random() * 10 ** 18).toString();
+    
+    const proof = await proofClient.requestProof('wrap', {
+      oldRoot: currentRoot,
+      amount: amount.toString(),
+      recipient: keypair.publicKey.toBase58(),
+      depositId,
+      poolId: poolState.toBase58(),
+      blinding,
+      mintId: originMint
+    });
+    console.log('   ✓ Proof generated');
+    
     // Step 1: Prepare shield
     console.log('1. Preparing shield...');
     const { operationId, signature: prepareSig } = await prepareShield({
@@ -62,6 +82,9 @@ async function testPrepareExecuteShield() {
       connection,
       originMint,
       amount,
+      depositId,
+      blinding,
+      proof,
       proofClient
     });
     console.log(`   ✓ Prepare signature: ${prepareSig}`);
@@ -74,7 +97,10 @@ async function testPrepareExecuteShield() {
       connection,
       operationId,
       originMint,
-      poolId: '...', // Will need to derive from originMint
+      poolId: poolState.toBase58(),
+      amount,
+      depositId,
+      blinding,
       keypair
     });
     console.log(`   ✓ Execute signature: ${executeSig}`);
@@ -95,11 +121,11 @@ async function testPrepareExecuteUnshield() {
   const wallet = createWalletAdapter(keypair);
   
   // Airdrop SOL
-  await airdropSol(connection, keypair.publicKey, 2n * LAMPORTS_PER_SOL);
+  await airdropSol(connection, keypair.publicKey, BigInt(2) * BigInt(LAMPORTS_PER_SOL));
   
   const proofClient = new ProofClient(PROOF_URL);
   const originMint = 'So11111111111111111111111111111111111111112';
-  const amount = 50_000_000n; // 0.05 SOL
+  const amount = BigInt(50_000_000); // 0.05 SOL
   
   try {
     // Note: This test requires notes to exist first (from a previous shield)
