@@ -1376,14 +1376,14 @@ export async function prepareShield(params: PrepareShieldParams): Promise<Prepar
   const shieldArgs = {
     amount_commit: Array.from(amountCommitmentBytes),
     amount: new BN(amount.toString()),
-    proof: decodedProof.proof,
-    public_inputs: decodedProof.publicInputs
+    proof: Buffer.from(decodedProof.proof),
+    public_inputs: Buffer.from(decodedProof.publicInputs)
   };
 
   return sendPrepareInstruction(
     connection,
     wallet,
-    poolCoder.instruction.encode('prepare_shield', { shieldArgs })
+    poolCoder.instruction.encode('prepare_shield', { shield_args: shieldArgs })
   );
 }
 
