@@ -2182,11 +2182,19 @@ pub mod ptf_pool {
         };
         
         // Execute shield core - create CoreContext directly
-        // Use unsafe to extend lifetimes - this is safe because the Context lives for the entire instruction
-        let result = unsafe {
-            let program_id: &'static Pubkey = mem::transmute(ctx.program_id);
-            let accounts: &'static mut Shield<'static> = mem::transmute(&mut ctx.accounts.shield);
-            let remaining_accounts: &'static [AccountInfo<'static>] = mem::transmute(ctx.remaining_accounts);
+        // CRITICAL FIX: Use a safer transmute pattern - only transmute the slice, not mutable references
+        // The issue was transmuting mutable references which can cause access violations
+        // Execute shield core - create CoreContext with proper lifetime handling
+        // CRITICAL FIX: Only transmute the remaining_accounts slice lifetime, not mutable references
+        // This avoids the access violation caused by transmuting mutable references
+        let result = {
+            let program_id = ctx.program_id;
+            let accounts = &mut ctx.accounts.shield;
+            // Use unsafe only for the remaining_accounts slice lifetime extension
+            // This is safe because the Context lives for the entire instruction
+            let remaining_accounts: &'static [AccountInfo<'static>] = unsafe {
+                mem::transmute(ctx.remaining_accounts)
+            };
             execute_shield_core(
                 ShieldCoreContext {
                     program_id,
