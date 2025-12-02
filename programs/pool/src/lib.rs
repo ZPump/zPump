@@ -1888,6 +1888,18 @@ pub mod ptf_pool {
         let vault = &mut ctx.accounts.proof_vault;
         let clock = Clock::get()?;
         
+        // CRITICAL FIX: Check account size before doing anything
+        // init_if_needed should allocate full space, but verify it did
+        let account_info = vault.to_account_info();
+        let current_space = account_info.data_len();
+        let required_space = UserProofVault::SPACE;
+        msg!("prepare_shield: account space check - current: {}, required: {}", current_space, required_space);
+        
+        require!(
+            current_space >= required_space,
+            PoolError::AccountDataTooShort
+        );
+        
         prepare_vault_if_needed(
             vault,
             &ctx.accounts.payer,
@@ -1923,7 +1935,7 @@ pub mod ptf_pool {
             expires_at,
         };
         
-        store_prepared_operation(vault, operation, clock.unix_timestamp)?;
+        store_prepared_operation(vault, &ctx.accounts.payer, operation, clock.unix_timestamp)?;
         
         Ok(operation_id)
     }
@@ -1973,7 +1985,7 @@ pub mod ptf_pool {
             expires_at,
         };
         
-        store_prepared_operation(vault, operation, clock.unix_timestamp)?;
+        store_prepared_operation(vault, &ctx.accounts.payer, operation, clock.unix_timestamp)?;
         
         Ok(operation_id)
     }
@@ -2014,7 +2026,7 @@ pub mod ptf_pool {
             expires_at,
         };
 
-        store_prepared_operation(vault, operation, clock.unix_timestamp)?;
+        store_prepared_operation(vault, &ctx.accounts.payer, operation, clock.unix_timestamp)?;
         Ok(operation_id)
     }
 
@@ -2054,7 +2066,7 @@ pub mod ptf_pool {
             expires_at,
         };
 
-        store_prepared_operation(vault, operation, clock.unix_timestamp)?;
+        store_prepared_operation(vault, &ctx.accounts.payer, operation, clock.unix_timestamp)?;
         Ok(operation_id)
     }
 
@@ -2094,7 +2106,7 @@ pub mod ptf_pool {
             expires_at,
         };
 
-        store_prepared_operation(vault, operation, clock.unix_timestamp)?;
+        store_prepared_operation(vault, &ctx.accounts.payer, operation, clock.unix_timestamp)?;
         Ok(operation_id)
     }
 
@@ -2134,7 +2146,7 @@ pub mod ptf_pool {
             expires_at,
         };
 
-        store_prepared_operation(vault, operation, clock.unix_timestamp)?;
+        store_prepared_operation(vault, &ctx.accounts.payer, operation, clock.unix_timestamp)?;
         Ok(operation_id)
     }
 
@@ -7124,7 +7136,14 @@ impl UserProofVault {
     // Unshield/Transfer variants: up to ~1000 bytes per operation
     // Batch variants (with embedded proof data): up to ~5000 bytes per operation
     // With MAX_OPERATIONS = 10 we allocate ~50 KB for operation storage to cover all cases.
-    pub const SPACE: usize = 8 + 32 + 1 + 4 + 8 + 8 + 8 + 50_000; // Base + Vec length + max operations data
+    // 
+    // CRITICAL FIX: Reduced initial space to avoid reallocation limit in inner instructions (10KB)
+    // We'll start with a smaller space and grow incrementally as needed, similar to NullifierSet
+    // Base space + enough for 1-2 operations initially, then grow as needed
+    pub const BASE_SPACE: usize = 8 + 32 + 1 + 4 + 8 + 8 + 8; // 69 bytes base
+    pub const INITIAL_SPACE: usize = Self::BASE_SPACE + 2_000; // Start with 2KB for operations (enough for 2-3 operations)
+    pub const MAX_SPACE: usize = Self::BASE_SPACE + 50_000; // Max 50KB for operations
+    pub const SPACE: usize = Self::INITIAL_SPACE; // Use initial space for init_if_needed
 }
 
 // Proof Account Abstraction: PDA derivation helper
@@ -7154,6 +7173,7 @@ pub fn prepare_vault_if_needed<'info>(
 // Helper to store a prepared operation in the vault
 pub fn store_prepared_operation<'info>(
     vault: &mut Account<'info, UserProofVault>,
+    payer: &Signer<'info>,
     operation: PreparedOperation,
     current_timestamp: i64,
 ) -> Result<()> {
@@ -7162,6 +7182,53 @@ pub fn store_prepared_operation<'info>(
         vault.prepared_operations.len() < UserProofVault::MAX_OPERATIONS,
         PoolError::VaultFull
     );
+    
+    // CRITICAL FIX: Ensure account has enough space before pushing to Vec
+    // We start with INITIAL_SPACE (2KB) and grow incrementally as needed, similar to NullifierSet
+    // This avoids the 10KB reallocation limit in inner instructions
+    let account_info = vault.to_account_info();
+    let current_space = account_info.data_len();
+    
+    // Estimate space needed for current operations + new operation
+    let current_ops_len = vault.prepared_operations.len();
+    let estimated_op_size = 1000; // Conservative estimate per operation
+    let estimated_new_space = UserProofVault::BASE_SPACE + ((current_ops_len + 1) * estimated_op_size);
+    let required_space = estimated_new_space.min(UserProofVault::MAX_SPACE);
+    
+    // If we need more space, reallocate (but stay within 10KB limit per reallocation)
+    if required_space > current_space && required_space <= current_space + 10_240 {
+        let rent = Rent::get()?;
+        let additional_rent = rent
+            .minimum_balance(required_space)
+            .checked_sub(rent.minimum_balance(current_space))
+            .ok_or(PoolError::RentCalculationError)?;
+        
+        // Transfer additional rent if needed
+        if additional_rent > 0 {
+            let payer_info = payer.to_account_info();
+            anchor_lang::solana_program::program::invoke(
+                &anchor_lang::solana_program::system_instruction::transfer(
+                    &payer.key(),
+                    account_info.key,
+                    additional_rent,
+                ),
+                &[
+                    payer_info,
+                    account_info.clone(),
+                ],
+            )?;
+        }
+        
+        // Reallocate to required space (get fresh reference after CPI)
+        let account_info_after = vault.to_account_info();
+        account_info_after.realloc(required_space, false)?;
+    } else if required_space > current_space {
+        // Need more than 10KB reallocation - this shouldn't happen with our incremental approach
+        require!(
+            false,
+            PoolError::AccountDataTooShort
+        );
+    }
     
     // Add operation
     vault.prepared_operations.push(operation);
