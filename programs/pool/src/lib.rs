@@ -3846,7 +3846,9 @@ pub mod ptf_pool {
             .map_err(|_| PoolError::AccountDataTooShort)?;
         let allowance_account: Account<'static, AllowanceAccount> = unsafe { mem::transmute(allowance_account_temp) };
         
-        let spender_info_static: &'static AccountInfo<'static> = unsafe { mem::transmute(spender_info) };
+        // Get spender AccountInfo from context
+        let spender_info_ref = &ctx.accounts.spender.to_account_info();
+        let spender_info_static: &'static AccountInfo<'static> = unsafe { mem::transmute(spender_info_ref) };
         let spender_wrapper_temp: Signer<'_> = Signer::try_from(spender_info_static)
             .map_err(|_| PoolError::Unauthorized)?;
         let spender_wrapper: Signer<'static> = unsafe { mem::transmute(spender_wrapper_temp) };
@@ -3879,9 +3881,9 @@ pub mod ptf_pool {
             },
             allowance: allowance_account,
             allowance_owner: {
-                // AccountInfo is Copy, so we can dereference the reference
+                // AccountInfo implements Clone, so we can clone it
                 let owner_static: &'static AccountInfo<'static> = unsafe { mem::transmute(allowance_owner_info) };
-                *owner_static
+                owner_static.clone()
             },
             spender: spender_wrapper,
             system_program: system_program_wrapper,
