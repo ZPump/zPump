@@ -2631,47 +2631,18 @@ pub mod ptf_pool {
         
         // Deserialize hook_whitelist and mint_mapping
         // We'll transmute them to 'static for execute_shield_impl
-        // Initialize hook_whitelist if needed (similar to shield function)
+        // Note: hook_whitelist must be initialized before execute_shield is called
+        // Lazy initialization removed due to transmute issues with &AccountInfo references
         msg!("execute_shield: checking hook_whitelist, data_len={}", hook_whitelist_info.data_len());
-        if hook_whitelist_info.data_len() == 0 || hook_whitelist_info.owner == &System::id() {
-            msg!("execute_shield: initializing hook_whitelist");
-            // Read pool_state authority directly from account data to avoid lifetime issues
-            let pool_state_account_info = ctx.accounts.pool_state.to_account_info();
-            let pool_state_data = pool_state_account_info.try_borrow_data()?;
-            if pool_state_data.len() < 8 + 32 {
-                msg!("execute_shield: pool_state not initialized yet, skipping hook_whitelist init");
-                drop(pool_state_data);
-                return err!(PoolError::AccountDataTooShort);
-            }
-            let pool_authority_bytes = &pool_state_data[8..40]; // Skip discriminator, read authority (32 bytes)
-            let pool_authority = Pubkey::try_from(pool_authority_bytes)
-                .map_err(|_| PoolError::AccountDataCorrupt)?;
-            drop(pool_state_data);
-            
-            let rent = Rent::get()?;
-            let required_lamports = rent.minimum_balance(8 + HookWhitelist::SPACE);
-            if hook_whitelist_info.lamports() < required_lamports {
-                msg!("execute_shield: transferring {} lamports to hook_whitelist", required_lamports);
-                **hook_whitelist_info.try_borrow_mut_lamports()? += required_lamports.saturating_sub(hook_whitelist_info.lamports());
-                **ctx.accounts.payer.to_account_info().try_borrow_mut_lamports()? -= required_lamports.saturating_sub(hook_whitelist_info.lamports());
-            }
-            // Assign ownership to program
-            hook_whitelist_info.assign(ctx.program_id);
-            hook_whitelist_info.realloc(8 + HookWhitelist::SPACE, false)?;
-            let mut whitelist_data = hook_whitelist_info.try_borrow_mut_data()?;
-            require!(
-                whitelist_data.len() >= 8 + HookWhitelist::SPACE,
-                PoolError::AccountDataTooShort
-            );
-            let hook_whitelist: &mut HookWhitelist = unsafe {
-                &mut *(whitelist_data.as_mut_ptr().add(8) as *mut HookWhitelist)
-            };
-            hook_whitelist.authority = pool_authority;
-            hook_whitelist.allowed_programs = Vec::new();
-            hook_whitelist.bump = pool_addresses.hook_whitelist_bump;
-            drop(whitelist_data);
-            msg!("execute_shield: hook_whitelist initialized");
-        }
+        require!(
+            hook_whitelist_info.data_len() >= 8 + HookWhitelist::SPACE,
+            PoolError::AccountDataTooShort
+        );
+        require_keys_eq!(
+            *hook_whitelist_info.owner,
+            *ctx.program_id,
+            PoolError::InvalidAccountOwner
+        );
         
         msg!("execute_shield: creating hook_whitelist wrapper, data_len={}", hook_whitelist_info.data_len());
         let hook_whitelist_account_temp: Account<'_, HookWhitelist> = Account::try_from(hook_whitelist_info)
@@ -2713,27 +2684,15 @@ pub mod ptf_pool {
         let token_program_wrapper_temp: Interface<'_, TokenInterface> = Interface::try_from(token_program_info)
             .map_err(|_| PoolError::AccountDataTooShort)?;
         
-        let hook_config_wrapper: UncheckedAccount<'static> = unsafe {
-            mem::transmute(hook_config_info)
-        };
-        let nullifier_set_wrapper: UncheckedAccount<'static> = unsafe {
-            mem::transmute(nullifier_set_info)
-        };
-        let note_ledger_wrapper: UncheckedAccount<'static> = unsafe {
-            mem::transmute(note_ledger_info)
-        };
-        let vault_state_wrapper: UncheckedAccount<'static> = unsafe {
-            mem::transmute(vault_state_info)
-        };
-        let verifier_program_wrapper: UncheckedAccount<'static> = unsafe {
-            mem::transmute(verifier_program_info)
-        };
-        let verifying_key_wrapper: UncheckedAccount<'static> = unsafe {
-            mem::transmute(verifying_key_info)
-        };
-        let factory_state_wrapper: UncheckedAccount<'static> = unsafe {
-            mem::transmute(factory_state_info)
-        };
+        // Create UncheckedAccount wrappers - use same pattern as line 3545 (direct transmute)
+        // Note: This works because UncheckedAccount is a zero-sized wrapper around AccountInfo
+        let hook_config_wrapper: UncheckedAccount<'static> = unsafe { mem::transmute(hook_config_info) };
+        let nullifier_set_wrapper: UncheckedAccount<'static> = unsafe { mem::transmute(nullifier_set_info) };
+        let note_ledger_wrapper: UncheckedAccount<'static> = unsafe { mem::transmute(note_ledger_info) };
+        let vault_state_wrapper: UncheckedAccount<'static> = unsafe { mem::transmute(vault_state_info) };
+        let verifier_program_wrapper: UncheckedAccount<'static> = unsafe { mem::transmute(verifier_program_info) };
+        let verifying_key_wrapper: UncheckedAccount<'static> = unsafe { mem::transmute(verifying_key_info) };
+        let factory_state_wrapper: UncheckedAccount<'static> = unsafe { mem::transmute(factory_state_info) };
         
         // Handle optional twin_mint
         let twin_mint_wrapper: Option<UncheckedAccount<'static>> = twin_mint_info.map(|info| {
