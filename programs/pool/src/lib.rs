@@ -4253,53 +4253,371 @@ pub mod ptf_pool {
         result
     }
 
-    pub fn execute_batch_transfer_from(
-        mut ctx: Context<ExecuteBatchTransferFrom>,
+    pub fn execute_batch_transfer_from<'info>(
+        mut ctx: Context<'_, '_, '_, 'info, ExecuteBatchTransferFrom<'info>>,
         operation_id: [u8; 32],
     ) -> Result<()> {
         let clock = Clock::get()?;
+        msg!("execute_batch_transfer_from: start");
 
-        let (operation_idx, batch_args) = {
-            let vault = &mut ctx.accounts.proof_vault;
-            let idx = vault
-                .prepared_operations
-                .iter()
-                .position(|op| matches!(op, PreparedOperation::BatchTransferFrom { operation_id: id, .. } if *id == operation_id))
-                .ok_or(PoolError::OperationNotFound)?;
+        // Validate spender manually (must be signer)
+        let spender_info = ctx.accounts.spender.to_account_info();
+        require!(spender_info.is_signer, PoolError::Unauthorized);
+        let spender_key = spender_info.key();
+        msg!("execute_batch_transfer_from: validated spender, key={}", spender_key);
 
-            let batch_args = {
-                let operation = &mut vault.prepared_operations[idx];
-                match operation {
-                    PreparedOperation::BatchTransferFrom { batch_args, status, expires_at, .. } => {
-                        require!(clock.unix_timestamp < *expires_at, PoolError::OperationExpired);
-                        require!(*status == OperationStatus::Prepared, PoolError::InvalidOperationStatus);
-                        *status = OperationStatus::Executing;
-                        batch_args.clone()
-                    }
-                    _ => return err!(PoolError::OperationNotFound),
+        // Validate system_program manually
+        require_keys_eq!(
+            ctx.accounts.system_program.key(),
+            system_program::ID,
+            PoolError::InvalidAccountOwner
+        );
+
+        // Validate rent sysvar manually
+        require_keys_eq!(
+            ctx.accounts.rent.key(),
+            anchor_lang::solana_program::sysvar::rent::ID,
+            PoolError::InvalidAccountOwner
+        );
+
+        // Validate proof_vault manually
+        msg!("execute_batch_transfer_from: validating proof_vault");
+        let proof_vault_account_info = ctx.accounts.proof_vault.to_account_info();
+        let proof_vault_info_ref: &'info AccountInfo<'info> = unsafe { mem::transmute(&proof_vault_account_info) };
+        let (expected_vault, _) = derive_proof_vault(&spender_key, ctx.program_id);
+        require_keys_eq!(
+            proof_vault_info_ref.key(),
+            expected_vault,
+            PoolError::Unauthorized
+        );
+        require_keys_eq!(
+            *proof_vault_info_ref.owner,
+            *ctx.program_id,
+            PoolError::Unauthorized
+        );
+
+        // Deserialize proof_vault
+        let proof_vault_account: Account<'_, UserProofVault> = Account::try_from(proof_vault_info_ref)
+            .map_err(|_| PoolError::AccountDataTooShort)?;
+
+        // Find operation and extract args
+        let operation_idx = proof_vault_account
+            .prepared_operations
+            .iter()
+            .position(|op| matches!(op, PreparedOperation::BatchTransferFrom { operation_id: id, .. } if *id == operation_id))
+            .ok_or(PoolError::OperationNotFound)?;
+
+        let batch_args = {
+            let operation = &proof_vault_account.prepared_operations[operation_idx];
+            match operation {
+                PreparedOperation::BatchTransferFrom { batch_args, status, expires_at, .. } => {
+                    require!(clock.unix_timestamp < *expires_at, PoolError::OperationExpired);
+                    require!(*status == OperationStatus::Prepared, PoolError::InvalidOperationStatus);
+                    batch_args.clone()
                 }
-            };
-            (idx, batch_args)
+                _ => return err!(PoolError::OperationNotFound),
+            }
         };
 
-        // Execute batch transfer from core - create CoreContext directly to avoid lifetime issues
-        // Use unsafe to extend lifetimes - this is safe because the Context lives for the entire instruction
+        // Mark as executing
+        {
+            let mut vault_data = proof_vault_info_ref.try_borrow_mut_data()?;
+            let vault: &mut UserProofVault = unsafe {
+                &mut *(vault_data.as_mut_ptr().add(8) as *mut UserProofVault)
+            };
+            if let Some(operation) = vault.prepared_operations.get_mut(operation_idx) {
+                if let PreparedOperation::BatchTransferFrom { status, .. } = operation {
+                    *status = OperationStatus::Executing;
+                }
+            }
+        }
+        msg!("execute_batch_transfer_from: operation found at idx={}", operation_idx);
+
+        // Extract and validate accounts from remaining_accounts
+        // BatchTransferFrom needs:
+        // Pool 0: pool_state_0, nullifier_set_0, commitment_tree_0, note_ledger_0, mint_mapping_0
+        // Allowance 0: allowance_0, allowance_owner_0
+        // Shared: verifier_program, verifying_key
+        // Pool 1: pool_state_1, nullifier_set_1, commitment_tree_1, note_ledger_1, mint_mapping_1
+        // Allowance 1: allowance_1, allowance_owner_1 (in remaining_accounts)
+        // spender, system_program, rent are already in ExecuteBatchTransferFrom struct
+        msg!(
+            "execute_batch_transfer_from: extracting accounts from remaining_accounts (len={})",
+            ctx.remaining_accounts.len()
+        );
+
+        // Parse batch public inputs to get mint IDs for both pools (same as execute_batch_transfer)
+        let batch_fields = parse_field_elements(&batch_args.batch_transfer.public_inputs)?;
+        require!(
+            batch_fields.len() == 16,
+            PoolError::InvalidPublicInputs
+        );
+        
+        // Extract mint IDs from batch public inputs
+        let mint_id_0 = batch_fields[6];
+        let mint_id_1 = batch_fields[14];
+        
+        let origin_mint_0 = field_bytes_to_pubkey(&mint_id_0)?;
+        let origin_mint_1 = field_bytes_to_pubkey(&mint_id_1)?;
+        
+        msg!("execute_batch_transfer_from: pool 0 mint={}, pool 1 mint={}", origin_mint_0, origin_mint_1);
+        
+        // Derive expected addresses for both pools
+        let pool_addresses_0 = ptf_common::addresses::PoolAddresses::derive_all(
+            &origin_mint_0,
+            ctx.program_id,
+        );
+        let pool_addresses_1 = ptf_common::addresses::PoolAddresses::derive_all(
+            &origin_mint_1,
+            ctx.program_id,
+        );
+        let (expected_mint_mapping_0, _) = AddressDeriver::derive_mint_mapping(
+            &origin_mint_0,
+            &ptf_factory::ID,
+        );
+        let (expected_mint_mapping_1, _) = AddressDeriver::derive_mint_mapping(
+            &origin_mint_1,
+            &ptf_factory::ID,
+        );
+        
+        // Verifying key for batch transfer uses "batch_transfer" circuit tag
+        let mut circuit_tag = [0u8; 32];
+        circuit_tag[..12].copy_from_slice(b"batch_transfer");
+        let version = 1u8;
+        let (expected_verifying_key, _) = AddressDeriver::derive_verifying_key(
+            &circuit_tag,
+            version,
+            &ptf_verifier_groth16::ID,
+        );
+        
+        // Extract accounts from remaining_accounts by matching derived addresses
+        let mut pool_state_0_info: Option<&AccountInfo> = None;
+        let mut nullifier_set_0_info: Option<&AccountInfo> = None;
+        let mut commitment_tree_0_info: Option<&AccountInfo> = None;
+        let mut note_ledger_0_info: Option<&AccountInfo> = None;
+        let mut mint_mapping_0_info: Option<&AccountInfo> = None;
+        let mut allowance_0_info: Option<&AccountInfo> = None;
+        let mut allowance_owner_0_info: Option<&AccountInfo> = None;
+        let mut pool_state_1_info: Option<&AccountInfo> = None;
+        let mut nullifier_set_1_info: Option<&AccountInfo> = None;
+        let mut commitment_tree_1_info: Option<&AccountInfo> = None;
+        let mut note_ledger_1_info: Option<&AccountInfo> = None;
+        let mut mint_mapping_1_info: Option<&AccountInfo> = None;
+        let mut allowance_1_info: Option<&AccountInfo> = None;
+        let mut allowance_owner_1_info: Option<&AccountInfo> = None;
+        let mut verifier_program_info: Option<&AccountInfo> = None;
+        let mut verifying_key_info: Option<&AccountInfo> = None;
+        
+        for account in ctx.remaining_accounts.iter() {
+            let key = account.key();
+            let account_static: &'static AccountInfo = unsafe { mem::transmute(account) };
+            
+            // Match by derived addresses
+            if key == pool_addresses_0.pool_state {
+                pool_state_0_info = Some(account_static);
+            } else if key == pool_addresses_0.nullifier_set {
+                nullifier_set_0_info = Some(account_static);
+            } else if key == pool_addresses_0.commitment_tree {
+                commitment_tree_0_info = Some(account_static);
+            } else if key == pool_addresses_0.note_ledger {
+                note_ledger_0_info = Some(account_static);
+            } else if key == expected_mint_mapping_0 {
+                mint_mapping_0_info = Some(account_static);
+            } else if key == pool_addresses_1.pool_state {
+                pool_state_1_info = Some(account_static);
+            } else if key == pool_addresses_1.nullifier_set {
+                nullifier_set_1_info = Some(account_static);
+            } else if key == pool_addresses_1.commitment_tree {
+                commitment_tree_1_info = Some(account_static);
+            } else if key == pool_addresses_1.note_ledger {
+                note_ledger_1_info = Some(account_static);
+            } else if key == expected_mint_mapping_1 {
+                mint_mapping_1_info = Some(account_static);
+            } else if *account.owner == system_program::ID && account.executable {
+                if key == ptf_verifier_groth16::ID {
+                    verifier_program_info = Some(account_static);
+                }
+            } else if key == expected_verifying_key {
+                verifying_key_info = Some(account_static);
+            } else if *account.owner == *ctx.program_id && account.data_len() >= 8 {
+                // Could be allowance - we'll validate by deriving the PDA
+                // Try allowance_0 first, then allowance_1
+                if allowance_0_info.is_none() {
+                    // Derive expected allowance_0 PDA
+                    // We need allowance_owner_0 first, but we'll identify it by process of elimination
+                    // For now, just store it and validate later
+                    allowance_0_info = Some(account_static);
+                } else if allowance_1_info.is_none() {
+                    allowance_1_info = Some(account_static);
+                }
+            } else if *account.owner != system_program::ID && !account.executable && *account.owner != ptf_verifier_groth16::ID && *account.owner != ptf_factory::ID {
+                // Could be allowance_owner (any non-program account)
+                if allowance_owner_0_info.is_none() {
+                    allowance_owner_0_info = Some(account_static);
+                } else if allowance_owner_1_info.is_none() {
+                    allowance_owner_1_info = Some(account_static);
+                }
+            }
+        }
+        
+        // Validate all required accounts are provided
+        let pool_state_0_info = pool_state_0_info.ok_or(PoolError::InvalidAccountOwner)?;
+        let nullifier_set_0_info = nullifier_set_0_info.ok_or(PoolError::InvalidAccountOwner)?;
+        let commitment_tree_0_info = commitment_tree_0_info.ok_or(PoolError::InvalidAccountOwner)?;
+        let note_ledger_0_info = note_ledger_0_info.ok_or(PoolError::InvalidAccountOwner)?;
+        let mint_mapping_0_info = mint_mapping_0_info.ok_or(PoolError::InvalidAccountOwner)?;
+        let allowance_0_info = allowance_0_info.ok_or(PoolError::InvalidAccountOwner)?;
+        let allowance_owner_0_info = allowance_owner_0_info.ok_or(PoolError::InvalidAccountOwner)?;
+        let pool_state_1_info = pool_state_1_info.ok_or(PoolError::InvalidAccountOwner)?;
+        let nullifier_set_1_info = nullifier_set_1_info.ok_or(PoolError::InvalidAccountOwner)?;
+        let commitment_tree_1_info = commitment_tree_1_info.ok_or(PoolError::InvalidAccountOwner)?;
+        let note_ledger_1_info = note_ledger_1_info.ok_or(PoolError::InvalidAccountOwner)?;
+        let mint_mapping_1_info = mint_mapping_1_info.ok_or(PoolError::InvalidAccountOwner)?;
+        let allowance_1_info = allowance_1_info.ok_or(PoolError::InvalidAccountOwner)?;
+        let allowance_owner_1_info = allowance_owner_1_info.ok_or(PoolError::InvalidAccountOwner)?;
+        let verifier_program_info = verifier_program_info.ok_or(PoolError::InvalidAccountOwner)?;
+        let verifying_key_info = verifying_key_info.ok_or(PoolError::InvalidAccountOwner)?;
+        
+        // Validate ownership and executability
+        require_keys_eq!(*verifier_program_info.owner, system_program::ID, PoolError::InvalidAccountOwner);
+        require!(verifier_program_info.executable, PoolError::InvalidAccountOwner);
+        
+        // Validate allowance PDAs
+        let (expected_allowance_0, _) = Pubkey::find_program_address(
+            &[
+                seeds::ALLOWANCE,
+                pool_state_0_info.key().as_ref(),
+                allowance_owner_0_info.key().as_ref(),
+                spender_key.as_ref(),
+            ],
+            ctx.program_id,
+        );
+        require_keys_eq!(
+            allowance_0_info.key(),
+            expected_allowance_0,
+            PoolError::InvalidAccountOwner
+        );
+        
+        // Use pool_state_1_info.key() directly for allowance_1 derivation
+        let (expected_allowance_1, _) = Pubkey::find_program_address(
+            &[
+                seeds::ALLOWANCE,
+                pool_state_1_info.key().as_ref(),
+                allowance_owner_1_info.key().as_ref(),
+                spender_key.as_ref(),
+            ],
+            ctx.program_id,
+        );
+        require_keys_eq!(
+            allowance_1_info.key(),
+            expected_allowance_1,
+            PoolError::InvalidAccountOwner
+        );
+        
+        // Create typed wrappers for pool 0
+        let pool_state_0_loader_temp: AccountLoader<'_, PoolState> = AccountLoader::try_from(unsafe { mem::transmute(pool_state_0_info) })
+            .map_err(|_| PoolError::AccountDataTooShort)?;
+        let pool_state_0_loader: AccountLoader<'static, PoolState> = unsafe { mem::transmute(pool_state_0_loader_temp) };
+        
+        let nullifier_set_0_account_temp: Account<'_, NullifierSet> = Account::try_from(nullifier_set_0_info)
+            .map_err(|_| PoolError::AccountDataTooShort)?;
+        let nullifier_set_0_account: Account<'static, NullifierSet> = unsafe { mem::transmute(nullifier_set_0_account_temp) };
+        
+        let commitment_tree_0_loader_temp: AccountLoader<'_, CommitmentTree> = AccountLoader::try_from(unsafe { mem::transmute(commitment_tree_0_info) })
+            .map_err(|_| PoolError::AccountDataTooShort)?;
+        let commitment_tree_0_loader: AccountLoader<'static, CommitmentTree> = unsafe { mem::transmute(commitment_tree_0_loader_temp) };
+        
+        let note_ledger_0_loader_temp: AccountLoader<'_, NoteLedger> = AccountLoader::try_from(unsafe { mem::transmute(note_ledger_0_info) })
+            .map_err(|_| PoolError::AccountDataTooShort)?;
+        let note_ledger_0_loader: AccountLoader<'static, NoteLedger> = unsafe { mem::transmute(note_ledger_0_loader_temp) };
+        
+        let mint_mapping_0_wrapper: UncheckedAccount<'static> = unsafe { mem::transmute(mint_mapping_0_info) };
+        
+        let allowance_0_account_temp: Account<'_, AllowanceAccount> = Account::try_from(allowance_0_info)
+            .map_err(|_| PoolError::AccountDataTooShort)?;
+        let allowance_0_account: Account<'static, AllowanceAccount> = unsafe { mem::transmute(allowance_0_account_temp) };
+        
+        // Create typed wrappers for shared accounts
+        let verifier_program_wrapper_temp: Program<'_, PtfVerifierGroth16> = Program::try_from(verifier_program_info)
+            .map_err(|_| PoolError::AccountDataTooShort)?;
+        let verifier_program_wrapper: Program<'static, PtfVerifierGroth16> = unsafe { mem::transmute(verifier_program_wrapper_temp) };
+        
+        let verifying_key_account_temp: Account<'_, VerifyingKeyAccount> = Account::try_from(verifying_key_info)
+            .map_err(|_| PoolError::AccountDataTooShort)?;
+        let verifying_key_account: Account<'static, VerifyingKeyAccount> = unsafe { mem::transmute(verifying_key_account_temp) };
+        
+        // Create typed wrappers for spender, system_program, rent
+        let spender_info_ref = &ctx.accounts.spender.to_account_info();
+        let spender_info_static: &'static AccountInfo<'static> = unsafe { mem::transmute(spender_info_ref) };
+        let spender_wrapper_temp: Signer<'_> = Signer::try_from(spender_info_static)
+            .map_err(|_| PoolError::Unauthorized)?;
+        let spender_wrapper: Signer<'static> = unsafe { mem::transmute(spender_wrapper_temp) };
+        
+        let system_program_info = ctx.accounts.system_program.to_account_info();
+        let system_program_info_static: &'static AccountInfo<'static> = unsafe { mem::transmute(&system_program_info) };
+        let system_program_wrapper_temp: Program<'_, System> = Program::try_from(system_program_info_static)
+            .map_err(|_| PoolError::AccountDataTooShort)?;
+        let system_program_wrapper: Program<'static, System> = unsafe { mem::transmute(system_program_wrapper_temp) };
+        
+        let rent_info = ctx.accounts.rent.to_account_info();
+        let rent_info_static: &'static AccountInfo<'static> = unsafe { mem::transmute(&rent_info) };
+        let rent_wrapper: Sysvar<'static, Rent> = Sysvar::from_account_info(rent_info_static)
+            .map_err(|_| PoolError::AccountDataTooShort)?;
+        
+        msg!("execute_batch_transfer_from: all wrappers created, constructing BatchTransferFrom struct");
+        
+        // Construct BatchTransferFrom struct
+        // Note: Pool 1 accounts and allowance_1 are passed via remaining_accounts to batch_transfer_from_core
+        // We construct the struct with pool 0 accounts, allowance_0, and shared accounts
+        let batch_transfer_from_struct = BatchTransferFrom {
+            pool_state_0: pool_state_0_loader,
+            nullifier_set_0: nullifier_set_0_account,
+            commitment_tree_0: commitment_tree_0_loader,
+            note_ledger_0: note_ledger_0_loader,
+            mint_mapping_0: mint_mapping_0_wrapper,
+            allowance_0: allowance_0_account,
+            allowance_owner_0: unsafe { mem::transmute(allowance_owner_0_info) },
+            verifier_program: verifier_program_wrapper,
+            verifying_key: verifying_key_account,
+            spender: spender_wrapper,
+            system_program: system_program_wrapper,
+            rent: rent_wrapper,
+        };
+        
+        // Extend lifetime to 'static using unsafe transmute
         let result = unsafe {
-            let program_id: &'static Pubkey = mem::transmute(ctx.program_id);
-            let accounts: &'static mut BatchTransferFrom<'static> = mem::transmute(&mut ctx.accounts.transfer);
-            let remaining_accounts: &'static [AccountInfo<'static>] = mem::transmute(ctx.remaining_accounts);
-            batch_transfer_from_core(
+            let batch_transfer_from_static: BatchTransferFrom<'static> = mem::transmute(batch_transfer_from_struct);
+            let program_id_static: &'static Pubkey = mem::transmute(ctx.program_id);
+            
+            // Prepare remaining_accounts for batch_transfer_from_core
+            // It expects: pool_state_1, nullifier_set_1, commitment_tree_1, note_ledger_1, mint_mapping_1, allowance_1, allowance_owner_1
+            let remaining_accounts_static: &'static [AccountInfo<'static>] = mem::transmute(ctx.remaining_accounts);
+            
+            // Create a mutable reference to batch_transfer_from_static
+            let batch_transfer_from_ptr: *mut BatchTransferFrom<'static> = Box::into_raw(Box::new(batch_transfer_from_static));
+            let batch_transfer_from_mut: &'static mut BatchTransferFrom<'static> = &mut *batch_transfer_from_ptr;
+            
+            let result = batch_transfer_from_core(
                 BatchTransferFromCoreContext {
-                    program_id,
-                    accounts,
-                    remaining_accounts,
+                    program_id: program_id_static,
+                    accounts: batch_transfer_from_mut,
+                    remaining_accounts: remaining_accounts_static,
                 },
                 &batch_args
-            )
+            );
+            
+            // Clean up the boxed struct
+            drop(Box::from_raw(batch_transfer_from_ptr));
+            
+            result
         };
-
+        
+        // Update vault status after execution
         {
-            let vault = &mut ctx.accounts.proof_vault;
+            let mut vault_data = proof_vault_info_ref.try_borrow_mut_data()?;
+            let vault: &mut UserProofVault = unsafe {
+                &mut *(vault_data.as_mut_ptr().add(8) as *mut UserProofVault)
+            };
             if let Some(operation) = vault.prepared_operations.get_mut(operation_idx) {
                 if let PreparedOperation::BatchTransferFrom { status, .. } = operation {
                     *status = match &result {
@@ -4308,8 +4626,8 @@ pub mod ptf_pool {
                     };
                 }
             }
-        if result.is_ok() {
-            vault.last_used = clock.unix_timestamp;
+            if result.is_ok() {
+                vault.last_used = clock.unix_timestamp;
             }
         }
         
@@ -7470,16 +7788,21 @@ pub struct ExecuteBatchTransfer<'info> {
     pub rent: UncheckedAccount<'info>,
 }
 
+// Proof Account Abstraction: Execute Batch Transfer From
+// Minimal struct to avoid stack overflow from nested BatchTransferFrom validation
 #[derive(Accounts)]
 pub struct ExecuteBatchTransferFrom<'info> {
-    #[account(
-        mut,
-        seeds = [b"proof-vault", transfer.spender.key().as_ref()],
-        bump = proof_vault.vault_bump,
-        constraint = proof_vault.owner == transfer.spender.key() @ PoolError::Unauthorized
-    )]
-    pub proof_vault: Account<'info, UserProofVault>,
-    pub transfer: BatchTransferFrom<'info>,
+    /// CHECK: Validated manually in handler (must be signer - this is the spender)
+    #[account(mut)]
+    pub spender: UncheckedAccount<'info>,
+    /// Proof vault for storing prepared operations
+    /// CHECK: Validated manually in handler (PDA derivation and owner)
+    #[account(mut)]
+    pub proof_vault: UncheckedAccount<'info>,
+    /// CHECK: Validated manually in handler (must be System Program)
+    pub system_program: UncheckedAccount<'info>,
+    /// CHECK: Validated manually in handler (must be Rent sysvar)
+    pub rent: UncheckedAccount<'info>,
 }
 
 // Proof Account Abstraction: Cleanup Expired Operations
