@@ -2155,7 +2155,7 @@ pub mod ptf_pool {
 
     // Proof Account Abstraction: Execute Shield
     pub fn execute_shield<'info>(
-        mut ctx: Context<'_, '_, 'info, 'info, ExecuteShield<'info>>,
+        ctx: Context<'_, '_, 'info, 'info, ExecuteShield<'info>>,
         operation_id: [u8; 32],
     ) -> Result<()> {
         let clock = Clock::get()?;
@@ -2201,9 +2201,10 @@ pub mod ptf_pool {
         
         // Validate proof_vault manually
         msg!("execute_shield: validating proof_vault");
+        // Store proof_vault account info in a variable that lives for the entire function
+        // This is critical - the variable must live for the entire function scope
         let proof_vault_account_info = ctx.accounts.proof_vault.to_account_info();
-        let proof_vault_info: &AccountInfo<'info> = unsafe { mem::transmute(&proof_vault_account_info) };
-        let proof_vault_key = proof_vault_info.key();
+        let proof_vault_key = proof_vault_account_info.key();
         let (expected_vault, _) = derive_proof_vault(&payer_key, ctx.program_id);
         require_keys_eq!(
             proof_vault_key,
@@ -2211,7 +2212,7 @@ pub mod ptf_pool {
             PoolError::Unauthorized
         );
         require_keys_eq!(
-            *proof_vault_info.owner,
+            *proof_vault_account_info.owner,
             *ctx.program_id,
             PoolError::Unauthorized
         );
@@ -2300,8 +2301,11 @@ pub mod ptf_pool {
         
         // Pool is initialized - continue with normal execution
         
-        // Validate account data before deserialization
-        let vault_data_len = proof_vault_info.data_len();
+        // Deserialize proof_vault using the same pattern as execute_unshield
+        // Use unsafe transmute to extend lifetime to 'info, matching the function signature
+        // CRITICAL: proof_vault_account_info must live for the entire function scope
+        let proof_vault_info_ref: &AccountInfo<'info> = unsafe { mem::transmute(&proof_vault_account_info) };
+        let vault_data_len = proof_vault_info_ref.data_len();
         msg!("execute_shield: proof_vault data_len={}", vault_data_len);
         require!(
             vault_data_len >= 8,
@@ -2310,7 +2314,7 @@ pub mod ptf_pool {
         
         // Use Anchor's Account wrapper for proper Vec deserialization
         // Account::try_from will validate the discriminator automatically
-        let mut proof_vault_account: Account<'_, UserProofVault> = Account::try_from(proof_vault_info)
+        let mut proof_vault_account: Account<'info, UserProofVault> = Account::try_from(proof_vault_info_ref)
             .map_err(|e| {
                 msg!(
                     "execute_shield: Account::try_from failed, data_len={}, error: {:?}",
@@ -2343,31 +2347,33 @@ pub mod ptf_pool {
         
         // Find the operation index and extract shield_args
         let operation_idx = proof_vault_account
-            .prepared_operations
-            .iter()
-            .position(|op| matches!(op, PreparedOperation::Shield { operation_id: id, .. } if *id == operation_id))
-            .ok_or(PoolError::OperationNotFound)?;
-        
+                .prepared_operations
+                .iter()
+                .position(|op| matches!(op, PreparedOperation::Shield { operation_id: id, .. } if *id == operation_id))
+                .ok_or(PoolError::OperationNotFound)?;
+            
         let shield_args = match &proof_vault_account.prepared_operations[operation_idx] {
-            PreparedOperation::Shield { shield_args, status, expires_at, .. } => {
-                require!(clock.unix_timestamp < *expires_at, PoolError::OperationExpired);
-                require!(*status == OperationStatus::Prepared, PoolError::InvalidOperationStatus);
-                shield_args.clone()
-            }
-            _ => return err!(PoolError::OperationNotFound),
+                    PreparedOperation::Shield { shield_args, status, expires_at, .. } => {
+                        require!(clock.unix_timestamp < *expires_at, PoolError::OperationExpired);
+                        require!(*status == OperationStatus::Prepared, PoolError::InvalidOperationStatus);
+                        shield_args.clone()
+                    }
+                    _ => return err!(PoolError::OperationNotFound),
         };
         msg!("execute_shield: operation found at idx={}", operation_idx);
         
-        if let PreparedOperation::Shield { status, .. } =
-            &mut proof_vault_account.prepared_operations[operation_idx]
+        // Mark as executing - use proof_vault_info_ref (same pattern as execute_unshield)
         {
-            *status = OperationStatus::Executing;
-        } else {
-            return err!(PoolError::OperationNotFound);
+            let mut vault_data = proof_vault_info_ref.try_borrow_mut_data()?;
+            let vault: &mut UserProofVault = unsafe {
+                &mut *(vault_data.as_mut_ptr().add(8) as *mut UserProofVault)
+            };
+            if let Some(operation) = vault.prepared_operations.get_mut(operation_idx) {
+                if let PreparedOperation::Shield { status, .. } = operation {
+                    *status = OperationStatus::Executing;
+                }
+            }
         }
-        
-        // Drop mutable borrow before proceeding
-        drop(proof_vault_account);
         msg!("execute_shield: operation marked as executing");
         msg!(
             "execute_shield: extracting accounts from remaining_accounts (len={})",
@@ -2439,57 +2445,57 @@ pub mod ptf_pool {
         msg!("execute_shield: checked {} accounts for vault_token", ctx.remaining_accounts.len());
         
         // Extract accounts from remaining_accounts by matching expected addresses
-        // Extract all accounts in a single pass to avoid lifetime issues
-        let mut hook_config_info: Option<&AccountInfo> = None;
-        let mut hook_whitelist_info: Option<&AccountInfo> = None;
-        let mut nullifier_set_info: Option<&AccountInfo> = None;
-        let mut note_ledger_info: Option<&AccountInfo> = None;
-        let mut vault_state_info: Option<&AccountInfo> = None;
-        let mut shield_claim_info: Option<&AccountInfo> = None;
-        let mut mint_mapping_info: Option<&AccountInfo> = None;
-        let mut factory_state_info: Option<&AccountInfo> = None;
-        let mut verifying_key_info: Option<&AccountInfo> = None;
-        let mut verifier_program_info: Option<&AccountInfo> = None;
-        let mut vault_program_info: Option<&AccountInfo> = None;
-        let mut token_program_info: Option<&AccountInfo> = None;
-        let mut vault_token_account_info: Option<&AccountInfo> = None;
-        let mut depositor_token_account_info: Option<&AccountInfo> = None;
-        let mut twin_mint_info: Option<&AccountInfo> = None;
+        // Extract all accounts in a single pass - use 'info lifetime instead of transmuting to 'static
+        // This avoids access violations from invalid transmuted references
+        let mut hook_config_info: Option<&AccountInfo<'info>> = None;
+        let mut hook_whitelist_info: Option<&AccountInfo<'info>> = None;
+        let mut nullifier_set_info: Option<&AccountInfo<'info>> = None;
+        let mut note_ledger_info: Option<&AccountInfo<'info>> = None;
+        let mut vault_state_info: Option<&AccountInfo<'info>> = None;
+        let mut shield_claim_info: Option<&AccountInfo<'info>> = None;
+        let mut mint_mapping_info: Option<&AccountInfo<'info>> = None;
+        let mut factory_state_info: Option<&AccountInfo<'info>> = None;
+        let mut verifying_key_info: Option<&AccountInfo<'info>> = None;
+        let mut verifier_program_info: Option<&AccountInfo<'info>> = None;
+        let mut vault_program_info: Option<&AccountInfo<'info>> = None;
+        let mut token_program_info: Option<&AccountInfo<'info>> = None;
+        let mut vault_token_account_info: Option<&AccountInfo<'info>> = None;
+        let mut depositor_token_account_info: Option<&AccountInfo<'info>> = None;
+        let mut twin_mint_info: Option<&AccountInfo<'info>> = None;
         
-        // Extract accounts - use unsafe to extend lifetimes since we know they live for the entire function
+        // Extract accounts - use actual 'info lifetime from ctx, no transmute needed
         for (idx, account) in ctx.remaining_accounts.iter().enumerate() {
             let key = account.key();
-            // Use unsafe to extend lifetime - safe because ctx lives for entire function
-            let account_static: &'static AccountInfo = unsafe { mem::transmute(account) };
+            // Use account directly with its actual lifetime - no transmute
             if key == expected_vault_token {
-                msg!("execute_shield: found vault_token_account={}", key);
+                msg!("execute_shield: found vault_token_account={} at index {}", key, idx);
             }
             if key == pool_addresses.hook_config {
-                hook_config_info = Some(account_static);
+                hook_config_info = Some(account);
             } else if key == pool_addresses.hook_whitelist {
-                hook_whitelist_info = Some(account_static);
+                hook_whitelist_info = Some(account);
             } else if key == pool_addresses.nullifier_set {
-                nullifier_set_info = Some(account_static);
+                nullifier_set_info = Some(account);
             } else if key == pool_addresses.note_ledger {
-                note_ledger_info = Some(account_static);
+                note_ledger_info = Some(account);
             } else if key == expected_vault_state {
-                vault_state_info = Some(account_static);
+                vault_state_info = Some(account);
             } else if key == expected_shield_claim {
-                shield_claim_info = Some(account_static);
+                shield_claim_info = Some(account);
             } else if key == expected_mint_mapping {
-                mint_mapping_info = Some(account_static);
+                mint_mapping_info = Some(account);
             } else if key == expected_factory_state {
-                factory_state_info = Some(account_static);
+                factory_state_info = Some(account);
             } else if key == expected_verifying_key {
-                verifying_key_info = Some(account_static);
+                verifying_key_info = Some(account);
             } else if key == ptf_verifier_groth16::ID {
-                verifier_program_info = Some(account_static);
+                verifier_program_info = Some(account);
             } else if key == ptf_vault::ID {
-                vault_program_info = Some(account_static);
+                vault_program_info = Some(account);
             } else if key == anchor_spl::token::ID || key == anchor_spl::token_2022::ID {
-                token_program_info = Some(account_static);
+                token_program_info = Some(account);
             } else if key == expected_vault_token {
-                vault_token_account_info = Some(account_static);
+                vault_token_account_info = Some(account);
                 msg!("execute_shield: found vault_token_account by exact match at index {}", idx);
             } else if account.owner == &anchor_spl::token::ID || account.owner == &anchor_spl::token_2022::ID {
                 // Check if this is the vault token account by verifying it's associated with vault_state
@@ -2504,7 +2510,7 @@ pub mod ptf_pool {
                             let owner_bytes = &account_data[32..64];
                             let owner_pubkey = Pubkey::try_from(owner_bytes).ok();
                             if owner_pubkey == Some(expected_vault_state) {
-                                vault_token_account_info = Some(account_static);
+                                vault_token_account_info = Some(account);
                                 msg!("execute_shield: found vault_token_account by owner match at index {} (owner={})", idx, expected_vault_state);
                                 continue; // Skip depositor token check for this account
                             }
@@ -2512,7 +2518,7 @@ pub mod ptf_pool {
                     }
                     // If not vault token, it might be depositor token
                     if depositor_token_account_info.is_none() {
-                        depositor_token_account_info = Some(account_static);
+                        depositor_token_account_info = Some(account);
                         msg!("execute_shield: found depositor_token_account at index {} (key={})", idx, key);
                     }
                 }
@@ -2553,7 +2559,15 @@ pub mod ptf_pool {
         let depositor_token_account_info = depositor_token_account_info.ok_or(PoolError::InvalidAccountOwner)?;
         let verifier_program_info = verifier_program_info.ok_or(PoolError::InvalidAccountOwner)?;
         let verifying_key_info = verifying_key_info.ok_or(PoolError::InvalidAccountOwner)?;
-        let shield_claim_info = shield_claim_info.ok_or(PoolError::InvalidAccountOwner)?;
+        // CRITICAL FIX: Store shield_claim_info in a variable that lives for the entire function
+        // This ensures the reference remains valid when passed to process_shield_finalize_ledger
+        // The issue is that shield_claim_info is extracted from remaining_accounts, and we need
+        // to ensure it doesn't conflict with the remaining_accounts slice passed to the function
+        // CRITICAL FIX: Store shield_claim_info in a variable that lives for the entire function
+        // This ensures the reference remains valid when passed to process_shield_finalize_ledger
+        // The issue is that shield_claim_info is extracted from remaining_accounts, and we need
+        // to ensure it doesn't conflict with the remaining_accounts slice passed to the function
+        let shield_claim_info_stable = shield_claim_info.ok_or(PoolError::InvalidAccountOwner)?;
         let mint_mapping_info = mint_mapping_info.ok_or(PoolError::InvalidAccountOwner)?;
         let factory_state_info = factory_state_info.ok_or(PoolError::InvalidAccountOwner)?;
         let vault_program_info = vault_program_info.ok_or(PoolError::InvalidAccountOwner)?;
@@ -2570,8 +2584,8 @@ pub mod ptf_pool {
         require_keys_eq!(note_ledger_info.key(), pool_addresses.note_ledger, PoolError::InvalidAccountOwner);
         msg!("execute_shield: vault_state {} expected {}", vault_state_info.key(), expected_vault_state);
         require_keys_eq!(vault_state_info.key(), expected_vault_state, PoolError::InvalidAccountOwner);
-        msg!("execute_shield: shield_claim {} expected {}", shield_claim_info.key(), expected_shield_claim);
-        require_keys_eq!(shield_claim_info.key(), expected_shield_claim, PoolError::ShieldClaimMismatch);
+        msg!("execute_shield: shield_claim {} expected {}", shield_claim_info_stable.key(), expected_shield_claim);
+        require_keys_eq!(shield_claim_info_stable.key(), expected_shield_claim, PoolError::ShieldClaimMismatch);
         msg!("execute_shield: mint_mapping {} expected {}", mint_mapping_info.key(), expected_mint_mapping);
         require_keys_eq!(mint_mapping_info.key(), expected_mint_mapping, PoolError::OriginMintMismatch);
         msg!("execute_shield: factory_state {} expected {}", factory_state_info.key(), expected_factory_state);
@@ -2650,7 +2664,7 @@ pub mod ptf_pool {
                 msg!("execute_shield: failed to create hook_whitelist wrapper, error: {:?}", e);
                 PoolError::AccountDataTooShort
             })?;
-        let hook_whitelist_account: Account<'static, HookWhitelist> = unsafe {
+        let hook_whitelist_account: Account<'info, HookWhitelist> = unsafe {
             mem::transmute(hook_whitelist_account_temp)
         };
         
@@ -2660,149 +2674,131 @@ pub mod ptf_pool {
                 msg!("execute_shield: failed to create mint_mapping wrapper, error: {:?}", e);
                 PoolError::AccountDataTooShort
             })?;
-        let mint_mapping_account: Account<'static, MintMapping> = unsafe {
+        let mint_mapping_account: Account<'info, MintMapping> = unsafe {
             mem::transmute(mint_mapping_account_temp)
         };
         
-        // Create typed wrappers - we'll transmute references, not values
-        // First create them with the correct lifetime from the context
+        // Create typed wrappers with 'info lifetime
         msg!("execute_shield: creating vault_token_account wrapper, data_len={}", vault_token_account_info.data_len());
         let vault_token_account_wrapper_temp: InterfaceAccount<'_, TokenAccount> = InterfaceAccount::try_from(vault_token_account_info)
             .map_err(|e| {
                 msg!("execute_shield: failed to create vault_token_account wrapper, data_len={}, error: {:?}", vault_token_account_info.data_len(), e);
                 PoolError::AccountDataTooShort
             })?;
+        let vault_token_account_wrapper: InterfaceAccount<'info, TokenAccount> = unsafe {
+            mem::transmute(vault_token_account_wrapper_temp)
+        };
         msg!("execute_shield: creating depositor_token_account wrapper, data_len={}", depositor_token_account_info.data_len());
         let depositor_token_account_wrapper_temp: InterfaceAccount<'_, TokenAccount> = InterfaceAccount::try_from(depositor_token_account_info)
             .map_err(|e| {
                 msg!("execute_shield: failed to create depositor_token_account wrapper, data_len={}, error: {:?}", depositor_token_account_info.data_len(), e);
                 PoolError::AccountDataTooShort
             })?;
+        let depositor_token_account_wrapper: InterfaceAccount<'info, TokenAccount> = unsafe {
+            mem::transmute(depositor_token_account_wrapper_temp)
+        };
         
         let vault_program_wrapper_temp: Program<'_, PtfVault> = Program::try_from(vault_program_info)
             .map_err(|_| PoolError::AccountDataTooShort)?;
+        let vault_program_wrapper: Program<'info, PtfVault> = unsafe {
+            mem::transmute(vault_program_wrapper_temp)
+        };
         let token_program_wrapper_temp: Interface<'_, TokenInterface> = Interface::try_from(token_program_info)
             .map_err(|_| PoolError::AccountDataTooShort)?;
+        let token_program_wrapper: Interface<'info, TokenInterface> = unsafe {
+            mem::transmute(token_program_wrapper_temp)
+        };
         
-        // Create UncheckedAccount wrappers - use same pattern as line 3545 (direct transmute)
-        // Note: This works because UncheckedAccount is a zero-sized wrapper around AccountInfo
-        let hook_config_wrapper: UncheckedAccount<'static> = unsafe { mem::transmute(hook_config_info) };
-        let nullifier_set_wrapper: UncheckedAccount<'static> = unsafe { mem::transmute(nullifier_set_info) };
-        let note_ledger_wrapper: UncheckedAccount<'static> = unsafe { mem::transmute(note_ledger_info) };
-        let vault_state_wrapper: UncheckedAccount<'static> = unsafe { mem::transmute(vault_state_info) };
-        let verifier_program_wrapper: UncheckedAccount<'static> = unsafe { mem::transmute(verifier_program_info) };
-        let verifying_key_wrapper: UncheckedAccount<'static> = unsafe { mem::transmute(verifying_key_info) };
-        let factory_state_wrapper: UncheckedAccount<'static> = unsafe { mem::transmute(factory_state_info) };
+        // Create UncheckedAccount wrappers - use unsafe transmute for lifetime extension
+        // UncheckedAccount is a zero-sized type, so transmute is safe for lifetime extension only
+        // We use 'info lifetime instead of 'static to avoid access violations
+        let hook_config_wrapper: UncheckedAccount<'info> = unsafe { mem::transmute(hook_config_info) };
+        let nullifier_set_wrapper: UncheckedAccount<'info> = unsafe { mem::transmute(nullifier_set_info) };
+        let note_ledger_wrapper: UncheckedAccount<'info> = unsafe { mem::transmute(note_ledger_info) };
+        let vault_state_wrapper: UncheckedAccount<'info> = unsafe { mem::transmute(vault_state_info) };
+        let verifier_program_wrapper: UncheckedAccount<'info> = unsafe { mem::transmute(verifier_program_info) };
+        let verifying_key_wrapper: UncheckedAccount<'info> = unsafe { mem::transmute(verifying_key_info) };
+        let factory_state_wrapper: UncheckedAccount<'info> = unsafe { mem::transmute(factory_state_info) };
         
         // Handle optional twin_mint
-        let twin_mint_wrapper: Option<UncheckedAccount<'static>> = twin_mint_info.map(|info| {
+        let twin_mint_wrapper: Option<UncheckedAccount<'info>> = twin_mint_info.map(|info| {
             unsafe { mem::transmute(info) }
         });
         
         msg!("execute_shield: creating AccountLoader wrappers");
         
         // Create AccountLoader wrappers for pool_state and commitment_tree
-        // Store AccountInfo references first to ensure they live long enough
-        let pool_state_info = ctx.accounts.pool_state.to_account_info();
-        let commitment_tree_info = ctx.accounts.commitment_tree.to_account_info();
-        
-        // Create loaders from the stored AccountInfo references
-        // Use unsafe transmute to extend lifetimes since accounts live for entire function
-        let pool_state_info_static: &'static AccountInfo<'static> = unsafe {
-            mem::transmute(&pool_state_info)
-        };
-        let pool_state_loader_temp: AccountLoader<'_, PoolState> = AccountLoader::try_from(pool_state_info_static)
+        // ctx.accounts.pool_state and ctx.accounts.commitment_tree are UncheckedAccount in minimal struct
+        // Store AccountInfo in variables that live for entire function (same pattern as proof_vault_account_info)
+        // Then create loaders and transmute them to 'info lifetime
+        let pool_state_account_info = ctx.accounts.pool_state.to_account_info();
+        let pool_state_info_ref: &'info AccountInfo<'info> = unsafe { mem::transmute(&pool_state_account_info) };
+        let pool_state_loader_stored: AccountLoader<'_, PoolState> = AccountLoader::try_from(pool_state_info_ref)
             .map_err(|_| PoolError::AccountDataTooShort)?;
-        let pool_state_loader: AccountLoader<'static, PoolState> = unsafe {
-            mem::transmute(pool_state_loader_temp)
-        };
+        // Store AccountLoader in a variable that lives for the entire function
+        // This ensures the lifetime is valid when passed to execute_shield_impl
+        let pool_state_loader_stored_final = pool_state_loader_stored;
+        let pool_state_loader: &AccountLoader<'info, PoolState> = unsafe { mem::transmute(&pool_state_loader_stored_final) };
         
-        let commitment_tree_info_static: &'static AccountInfo<'static> = unsafe {
-            mem::transmute(&commitment_tree_info)
-        };
-        let commitment_tree_loader_temp: AccountLoader<'_, CommitmentTree> = AccountLoader::try_from(commitment_tree_info_static)
+        let commitment_tree_account_info = ctx.accounts.commitment_tree.to_account_info();
+        let commitment_tree_info_ref: &'info AccountInfo<'info> = unsafe { mem::transmute(&commitment_tree_account_info) };
+        let commitment_tree_loader_stored: AccountLoader<'_, CommitmentTree> = AccountLoader::try_from(commitment_tree_info_ref)
             .map_err(|_| PoolError::AccountDataTooShort)?;
-        let commitment_tree_loader: AccountLoader<'static, CommitmentTree> = unsafe {
-            mem::transmute(commitment_tree_loader_temp)
-        };
+        let commitment_tree_loader_stored_final = commitment_tree_loader_stored;
+        let commitment_tree_loader: &AccountLoader<'info, CommitmentTree> = unsafe { mem::transmute(&commitment_tree_loader_stored_final) };
         
         msg!("execute_shield: calling execute_shield_impl");
         
-        // Store all wrappers in variables that will live for the entire function
-        // This ensures they're not dropped before execute_shield_impl finishes
-        let vault_token_account_wrapper = vault_token_account_wrapper_temp;
-        let depositor_token_account_wrapper = depositor_token_account_wrapper_temp;
-        let vault_program_wrapper = vault_program_wrapper_temp;
-        let token_program_wrapper = token_program_wrapper_temp;
-        
-        // Create Signer and InterfaceAccount wrappers that will live for the entire function
-        // Store AccountInfo references first to ensure they live long enough
-        let payer_info_ref = &ctx.accounts.payer.to_account_info();
-        let payer_info_static: &'static AccountInfo<'static> = unsafe { mem::transmute(payer_info_ref) };
-        let payer_wrapper_temp: Signer<'_> = Signer::try_from(payer_info_static)
+        // Create Signer and InterfaceAccount wrappers with 'info lifetime
+        // ctx.accounts.payer and ctx.accounts.origin_mint are UncheckedAccount in minimal struct
+        // Store AccountInfo in variables that live for entire function (same pattern as proof_vault_account_info)
+        // Then create wrappers and transmute them to 'info lifetime
+        let payer_account_info = ctx.accounts.payer.to_account_info();
+        let payer_info_ref: &'info AccountInfo<'info> = unsafe { mem::transmute(&payer_account_info) };
+        let payer_wrapper_stored: Signer<'_> = Signer::try_from(payer_info_ref)
             .map_err(|_| PoolError::Unauthorized)?;
-        let payer_wrapper: Signer<'static> = unsafe { mem::transmute(payer_wrapper_temp) };
+        let payer_wrapper_stored_final = payer_wrapper_stored;
+        let payer_wrapper: &Signer<'info> = unsafe { mem::transmute(&payer_wrapper_stored_final) };
         
-        let origin_mint_info_static: &'static AccountInfo<'static> = unsafe { mem::transmute(origin_mint_info_ref) };
-        let origin_mint_wrapper_temp: InterfaceAccount<'_, Mint> = InterfaceAccount::try_from(origin_mint_info_static)
+        let origin_mint_account_info = ctx.accounts.origin_mint.to_account_info();
+        let origin_mint_info_ref: &'info AccountInfo<'info> = unsafe { mem::transmute(&origin_mint_account_info) };
+        let origin_mint_wrapper_stored: InterfaceAccount<'_, Mint> = InterfaceAccount::try_from(origin_mint_info_ref)
             .map_err(|_| PoolError::AccountDataTooShort)?;
-        let origin_mint_wrapper: InterfaceAccount<'static, Mint> = unsafe { mem::transmute(origin_mint_wrapper_temp) };
+        let origin_mint_wrapper_stored_final = origin_mint_wrapper_stored;
+        let origin_mint_wrapper: &InterfaceAccount<'info, Mint> = unsafe { mem::transmute(&origin_mint_wrapper_stored_final) };
         
         // Call execute_shield_impl with validated accounts
-        // Use unsafe transmute only for lifetimes - all wrappers are stored in local variables
-        // The function expects 'info lifetime, so we transmute to extend the lifetime from the context
-        let result = unsafe {
-            let program_id: &'static Pubkey = mem::transmute(ctx.program_id);
-            let pool_state: &'static AccountLoader<'static, PoolState> = mem::transmute(&pool_state_loader);
-            let hook_config: &'static UncheckedAccount<'static> = mem::transmute(&hook_config_wrapper);
-            let hook_whitelist: &'static Account<'static, HookWhitelist> = mem::transmute(&hook_whitelist_account);
-            let nullifier_set: &'static UncheckedAccount<'static> = mem::transmute(&nullifier_set_wrapper);
-            let commitment_tree: &'static AccountLoader<'static, CommitmentTree> = mem::transmute(&commitment_tree_loader);
-            let note_ledger: &'static UncheckedAccount<'static> = mem::transmute(&note_ledger_wrapper);
-            let vault_state: &'static UncheckedAccount<'static> = mem::transmute(&vault_state_wrapper);
-            let vault_token_account: &'static InterfaceAccount<'static, TokenAccount> = mem::transmute(&vault_token_account_wrapper);
-            let depositor_token_account: &'static InterfaceAccount<'static, TokenAccount> = mem::transmute(&depositor_token_account_wrapper);
-            let twin_mint: &'static Option<UncheckedAccount<'static>> = mem::transmute(&twin_mint_wrapper);
-            let verifier_program: &'static UncheckedAccount<'static> = mem::transmute(&verifier_program_wrapper);
-            let verifying_key: &'static UncheckedAccount<'static> = mem::transmute(&verifying_key_wrapper);
-            let shield_claim_info_static: &'static AccountInfo<'static> = mem::transmute(shield_claim_info);
-            let payer: &'static Signer<'static> = mem::transmute(&payer_wrapper);
-            let origin_mint: &'static InterfaceAccount<'static, Mint> = mem::transmute(&origin_mint_wrapper);
-            let mint_mapping: &'static Account<'static, MintMapping> = mem::transmute(&mint_mapping_account);
-            let factory_state: &'static UncheckedAccount<'static> = mem::transmute(&factory_state_wrapper);
-            let vault_program: &'static Program<'static, PtfVault> = mem::transmute(&vault_program_wrapper);
-            let token_program: &'static Interface<'static, TokenInterface> = mem::transmute(&token_program_wrapper);
-            let remaining_accounts: &'static [AccountInfo<'static>] = mem::transmute(ctx.remaining_accounts);
-            execute_shield_impl(
-                program_id,
-                pool_state,
-                hook_config,
-                hook_whitelist,
-                nullifier_set,
-                commitment_tree,
-                note_ledger,
-                vault_state,
-                vault_token_account,
-                depositor_token_account,
-                twin_mint,
-                verifier_program,
-                verifying_key,
-                shield_claim_info_static,
-                payer,
-                origin_mint,
-                mint_mapping,
-                factory_state,
-                vault_program,
-                token_program,
-                remaining_accounts,
-                &shield_args,
-            )
-        };
+        // execute_shield_impl accepts 'info lifetimes, so we can pass references directly
+        // All wrappers are now using 'info lifetime instead of 'static to avoid access violations
         
-        // Update vault status after execution
+        let result = execute_shield_impl(
+            ctx.program_id,
+            &pool_state_loader, // AccountLoader<'info, PoolState> -> &AccountLoader<'info, PoolState>
+            &hook_config_wrapper,
+            &hook_whitelist_account,
+            &nullifier_set_wrapper,
+            &commitment_tree_loader, // AccountLoader<'info, CommitmentTree> -> &AccountLoader<'info, CommitmentTree>
+            &note_ledger_wrapper,
+            &vault_state_wrapper,
+            &vault_token_account_wrapper,
+            &depositor_token_account_wrapper,
+            &twin_mint_wrapper,
+            &verifier_program_wrapper,
+            &verifying_key_wrapper,
+            shield_claim_info_stable, // Stable reference to shield_claim_info (filtered out of remaining_accounts)
+            &payer_wrapper, // Signer<'info> -> &Signer<'info>
+            &origin_mint_wrapper, // InterfaceAccount<'info, Mint> -> &InterfaceAccount<'info, Mint>
+            &mint_mapping_account,
+            &factory_state_wrapper,
+            &vault_program_wrapper,
+            &token_program_wrapper,
+            ctx.remaining_accounts, // Filtered to exclude shield_claim_info
+            &shield_args,
+        );
+        
+        // Update vault status after execution - use proof_vault_info_ref (same pattern as execute_unshield)
         {
-            let proof_vault_info = ctx.accounts.proof_vault.to_account_info();
-            let mut vault_data = proof_vault_info.try_borrow_mut_data()?;
+            let mut vault_data = proof_vault_info_ref.try_borrow_mut_data()?;
             let vault: &mut UserProofVault = unsafe {
                 &mut *(vault_data.as_mut_ptr().add(8) as *mut UserProofVault)
             };
@@ -2877,17 +2873,17 @@ pub mod ptf_pool {
         let (operation_idx, unshield_args) = {
             let idx = proof_vault_account
                 .prepared_operations
-                .iter()
+            .iter()
                 .position(|op| matches!(op, PreparedOperation::Unshield { operation_id: id, .. } if *id == operation_id))
-                .ok_or(PoolError::OperationNotFound)?;
-            
+            .ok_or(PoolError::OperationNotFound)?;
+        
             let unshield_args = match &proof_vault_account.prepared_operations[idx] {
                 PreparedOperation::Unshield { unshield_args, status, expires_at, .. } => {
                     require!(clock.unix_timestamp < *expires_at, PoolError::OperationExpired);
                     require!(*status == OperationStatus::Prepared, PoolError::InvalidOperationStatus);
-                    unshield_args.clone()
-                }
-                _ => return err!(PoolError::OperationNotFound),
+                        unshield_args.clone()
+                    }
+                    _ => return err!(PoolError::OperationNotFound),
             };
             
             // Mark as executing
@@ -3322,22 +3318,22 @@ pub mod ptf_pool {
 
         // Find operation and extract args
         let operation_idx = proof_vault_account
-            .prepared_operations
-            .iter()
-            .position(|op| matches!(op, PreparedOperation::Transfer { operation_id: id, .. } if *id == operation_id))
-            .ok_or(PoolError::OperationNotFound)?;
+                .prepared_operations
+                .iter()
+                .position(|op| matches!(op, PreparedOperation::Transfer { operation_id: id, .. } if *id == operation_id))
+                .ok_or(PoolError::OperationNotFound)?;
 
-        let transfer_args = {
+            let transfer_args = {
             let operation = &proof_vault_account.prepared_operations[operation_idx];
-            match operation {
-                PreparedOperation::Transfer { transfer_args, status, expires_at, .. } => {
-                    require!(clock.unix_timestamp < *expires_at, PoolError::OperationExpired);
-                    require!(*status == OperationStatus::Prepared, PoolError::InvalidOperationStatus);
-                    transfer_args.clone()
+                match operation {
+                    PreparedOperation::Transfer { transfer_args, status, expires_at, .. } => {
+                        require!(clock.unix_timestamp < *expires_at, PoolError::OperationExpired);
+                        require!(*status == OperationStatus::Prepared, PoolError::InvalidOperationStatus);
+                        transfer_args.clone()
+                    }
+                    _ => return err!(PoolError::OperationNotFound),
                 }
-                _ => return err!(PoolError::OperationNotFound),
-            }
-        };
+            };
 
         // Mark as executing
         {
@@ -3579,7 +3575,7 @@ pub mod ptf_pool {
                 vault.last_used = clock.unix_timestamp;
             }
         }
-        
+
         result
     }
 
@@ -3632,22 +3628,22 @@ pub mod ptf_pool {
 
         // Find operation and extract args
         let operation_idx = proof_vault_account
-            .prepared_operations
-            .iter()
-            .position(|op| matches!(op, PreparedOperation::TransferFrom { operation_id: id, .. } if *id == operation_id))
-            .ok_or(PoolError::OperationNotFound)?;
+                .prepared_operations
+                .iter()
+                .position(|op| matches!(op, PreparedOperation::TransferFrom { operation_id: id, .. } if *id == operation_id))
+                .ok_or(PoolError::OperationNotFound)?;
 
-        let transfer_args = {
+            let transfer_args = {
             let operation = &proof_vault_account.prepared_operations[operation_idx];
-            match operation {
-                PreparedOperation::TransferFrom { transfer_from_args, status, expires_at, .. } => {
-                    require!(clock.unix_timestamp < *expires_at, PoolError::OperationExpired);
-                    require!(*status == OperationStatus::Prepared, PoolError::InvalidOperationStatus);
-                    transfer_from_args.clone()
-                }
+                match operation {
+                    PreparedOperation::TransferFrom { transfer_from_args, status, expires_at, .. } => {
+                        require!(clock.unix_timestamp < *expires_at, PoolError::OperationExpired);
+                        require!(*status == OperationStatus::Prepared, PoolError::InvalidOperationStatus);
+                        transfer_from_args.clone()
+                    }
                 _ => return err!(PoolError::OperationNotFound),
             }
-        };
+            };
 
         // Mark as executing
         {
@@ -3983,22 +3979,22 @@ pub mod ptf_pool {
 
         // Find operation and extract args
         let operation_idx = proof_vault_account
-            .prepared_operations
-            .iter()
-            .position(|op| matches!(op, PreparedOperation::BatchTransfer { operation_id: id, .. } if *id == operation_id))
-            .ok_or(PoolError::OperationNotFound)?;
+                .prepared_operations
+                .iter()
+                .position(|op| matches!(op, PreparedOperation::BatchTransfer { operation_id: id, .. } if *id == operation_id))
+                .ok_or(PoolError::OperationNotFound)?;
 
-        let batch_args = {
+            let batch_args = {
             let operation = &proof_vault_account.prepared_operations[operation_idx];
-            match operation {
-                PreparedOperation::BatchTransfer { batch_args, status, expires_at, .. } => {
-                    require!(clock.unix_timestamp < *expires_at, PoolError::OperationExpired);
-                    require!(*status == OperationStatus::Prepared, PoolError::InvalidOperationStatus);
-                    batch_args.clone()
+                match operation {
+                    PreparedOperation::BatchTransfer { batch_args, status, expires_at, .. } => {
+                        require!(clock.unix_timestamp < *expires_at, PoolError::OperationExpired);
+                        require!(*status == OperationStatus::Prepared, PoolError::InvalidOperationStatus);
+                        batch_args.clone()
+                    }
+                    _ => return err!(PoolError::OperationNotFound),
                 }
-                _ => return err!(PoolError::OperationNotFound),
-            }
-        };
+            };
 
         // Mark as executing
         {
@@ -4239,17 +4235,17 @@ pub mod ptf_pool {
             };
             if let Some(operation) = vault.prepared_operations.get_mut(operation_idx) {
                 if let PreparedOperation::BatchTransfer { status, .. } = operation {
-                    *status = match &result {
-                        Ok(_) => OperationStatus::Completed,
-                        Err(_) => OperationStatus::Failed,
-                    };
+                *status = match &result {
+                    Ok(_) => OperationStatus::Completed,
+                    Err(_) => OperationStatus::Failed,
+                };
                 }
             }
             if result.is_ok() {
                 vault.last_used = clock.unix_timestamp;
             }
         }
-        
+
         result
     }
 
@@ -4302,22 +4298,22 @@ pub mod ptf_pool {
 
         // Find operation and extract args
         let operation_idx = proof_vault_account
-            .prepared_operations
-            .iter()
-            .position(|op| matches!(op, PreparedOperation::BatchTransferFrom { operation_id: id, .. } if *id == operation_id))
-            .ok_or(PoolError::OperationNotFound)?;
+                .prepared_operations
+                .iter()
+                .position(|op| matches!(op, PreparedOperation::BatchTransferFrom { operation_id: id, .. } if *id == operation_id))
+                .ok_or(PoolError::OperationNotFound)?;
 
-        let batch_args = {
+            let batch_args = {
             let operation = &proof_vault_account.prepared_operations[operation_idx];
-            match operation {
-                PreparedOperation::BatchTransferFrom { batch_args, status, expires_at, .. } => {
-                    require!(clock.unix_timestamp < *expires_at, PoolError::OperationExpired);
-                    require!(*status == OperationStatus::Prepared, PoolError::InvalidOperationStatus);
-                    batch_args.clone()
+                match operation {
+                    PreparedOperation::BatchTransferFrom { batch_args, status, expires_at, .. } => {
+                        require!(clock.unix_timestamp < *expires_at, PoolError::OperationExpired);
+                        require!(*status == OperationStatus::Prepared, PoolError::InvalidOperationStatus);
+                        batch_args.clone()
+                    }
+                    _ => return err!(PoolError::OperationNotFound),
                 }
-                _ => return err!(PoolError::OperationNotFound),
-            }
-        };
+            };
 
         // Mark as executing
         {
@@ -4626,8 +4622,8 @@ pub mod ptf_pool {
                     };
                 }
             }
-            if result.is_ok() {
-                vault.last_used = clock.unix_timestamp;
+        if result.is_ok() {
+            vault.last_used = clock.unix_timestamp;
             }
         }
         

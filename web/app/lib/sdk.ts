@@ -564,9 +564,17 @@ interface ExecuteBatchTransferParams extends Omit<BatchTransferParams, 'batchPro
   operationId: string;
 }
 
-type PrepareBatchTransferFromParams = BatchTransferParams;
+interface BatchTransferFromParams extends BatchTransferParams {
+  allowances: Array<{
+    allowanceOwner: string;
+    allowanceAmount: bigint | number | string;
+    spendAmount: bigint | number | string;
+  }>;
+}
 
-interface ExecuteBatchTransferFromParams extends Omit<BatchTransferParams, 'batchProof'> {
+type PrepareBatchTransferFromParams = BatchTransferFromParams;
+
+interface ExecuteBatchTransferFromParams extends Omit<BatchTransferFromParams, 'batchProof'> {
   operationId: string;
 }
 
@@ -1619,7 +1627,8 @@ export async function executeShield(params: ExecuteShieldParams): Promise<string
       }
     }
     // Increased default for shield with SOL wrapping (multiple token account creations)
-    return 2_000_000;
+    // Further increased to handle proof verification and account operations
+    return 3_000_000;
   })();
 
   if (resolvedComputeLimit > 0) {
@@ -1635,51 +1644,61 @@ export async function executeShield(params: ExecuteShieldParams): Promise<string
     }
   }
 
-  // SOL WRAPPING: Always wrap the full amount needed (don't check existing wSOL balance)
+  // SOL WRAPPING: Optimized - only wrap if absolutely necessary
+  // The wrap() function handles wrapping in a separate transaction for better efficiency
+  // When executeShield is called directly (e.g., in tests), we check if wrapping is needed
   if (isShieldingSOL && wsolTokenAccount) {
-    console.log('[wrap] 🔄 Wrapping SOL to wSOL before shielding');
-    console.log('[wrap] Amount to wrap:', amount.toString(), 'lamports');
+    const balanceCheck = await checkWrappedSolBalance(connection, wallet.publicKey!, amount);
+    
+    if (!balanceCheck.hasEnough) {
+      // Need to wrap - but this makes the transaction expensive
+      // Ideally, wrapping should be done before executeShield (as wrap() function does)
+      console.warn(`[executeShield] wSOL balance insufficient (${balanceCheck.currentBalance} < ${amount}) - wrapping in executeShield (not optimal)`);
+      const wsolAccountInfo = await connection.getAccountInfo(wsolTokenAccount, 'confirmed');
+      if (!wsolAccountInfo) {
+        instructions.push(createAssociatedTokenAccountInstruction(
+          wallet.publicKey!,
+          wsolTokenAccount,
+          wallet.publicKey!,
+          NATIVE_SOL_MINT,
+          TOKEN_PROGRAM_ID,
+          ASSOCIATED_TOKEN_PROGRAM_ID
+        ));
+      }
     const wrapInstructions = await createWrapSolInstructions(
       wsolTokenAccount,
-      amount,
+        balanceCheck.needsWrap,
       wallet.publicKey,
       connection
     );
+      // Remove duplicate create ATA if we already added it
+      if (!wsolAccountInfo) {
+        instructions.push(...wrapInstructions.filter(ix => 
+          !ix.programId.equals(ASSOCIATED_TOKEN_PROGRAM_ID)
+        ));
+      } else {
     instructions.push(...wrapInstructions);
-    console.log('[wrap] ✅ Added', wrapInstructions.length, 'wrap instructions');
+      }
+    } else {
+      // wSOL exists with sufficient balance - skip all wrapping (this is the optimal path)
+      console.log(`[executeShield] ✅ wSOL has sufficient balance (${balanceCheck.currentBalance} >= ${amount}) - skipping wrap`);
+    }
   }
 
-  // Ensure vault token account exists (required for shield)
+  // OPTIMIZATION: Account creation should happen BEFORE executeShield to reduce transaction size
+  // Check if accounts exist, and if not, throw an error (don't create them here)
+  // The wrap() function or prepareShield() should ensure accounts exist
   const vaultTokenAccountInfo = await connection.getAccountInfo(vaultTokenAccount, 'confirmed');
   if (!vaultTokenAccountInfo) {
-    // Create vault token account
-    instructions.push(
-      createAssociatedTokenAccountInstruction(
-        wallet.publicKey!,
-        vaultTokenAccount,
-        vaultState,
-        actualShieldMint, // Use actualShieldMint (wSOL if SOL)
-        tokenProgramId,
-        ASSOCIATED_TOKEN_PROGRAM_ID
-      )
-    );
+    throw new Error(`Vault token account does not exist. Accounts should be created before calling executeShield. Use wrap() function or ensure accounts are created first.`);
   }
   
-  // If shielding SOL, depositor account is wSOL account which should already exist or be created by wrap instructions
-  // For non-SOL, create depositor account if needed
+  // Depositor account should also exist (for SOL, it's wSOL which should be wrapped before)
+  // For non-SOL, it should be created before executeShield
   if (!isShieldingSOL) {
-    const depositorInfo = await connection.getAccountInfo(depositorTokenAccount);
+    const depositorInfo = await connection.getAccountInfo(depositorTokenAccount, 'confirmed');
     if (!depositorInfo) {
-      instructions.push(
-        createAssociatedTokenAccountInstruction(
-          wallet.publicKey,
-          depositorTokenAccount,
-          wallet.publicKey,
-          actualShieldMint,
-          tokenProgramId,
-          ASSOCIATED_TOKEN_PROGRAM_ID
-        )
-      );
+      throw new Error(`Depositor token account does not exist. Accounts should be created before calling executeShield.`);
     }
   }
 
@@ -1983,6 +2002,7 @@ export async function executeShield(params: ExecuteShieldParams): Promise<string
         
         const txSize = regularTx.serialize().length;
         const maxTxSize = 1232;
+        let useSkipPreflight = false;
         if (txSize > maxTxSize) {
           // Transaction too large - try with skipPreflight for slightly oversized transactions
           // For first shield (before lookup table exists), allow up to 1400 bytes
@@ -1991,6 +2011,7 @@ export async function executeShield(params: ExecuteShieldParams): Promise<string
             throw new Error(`Transaction too large (${txSize} bytes > 1232). Address Lookup Table required but not available.`);
           }
           console.warn(`[wrap] Transaction slightly oversized (${txSize} bytes), using skipPreflight: true`);
+          useSkipPreflight = true;
         }
         
         // Recreate transaction for sending (wallet.sendTransaction will sign it)
@@ -2000,7 +2021,7 @@ export async function executeShield(params: ExecuteShieldParams): Promise<string
         
         try {
           shieldSignature = await wallet.sendTransaction(txForSending, connection, {
-            skipPreflight: txSize > maxTxSize // Use skipPreflight for oversized transactions
+            skipPreflight: useSkipPreflight || txSize > maxTxSize // Use skipPreflight for oversized transactions
           });
         } catch (txError) {
           // Check if this is a PendingShieldInFlight error - if so, throw it to trigger retry logic
@@ -2600,7 +2621,8 @@ export async function executeUnshield(params: ExecuteUnshieldParams): Promise<st
       }
     }
     // Increased default for shield with SOL wrapping (multiple token account creations)
-    return 2_000_000;
+    // Further increased to handle proof verification and account operations
+    return 3_000_000;
   })();
   if (resolvedLimit > 0) {
     instructions.push(ComputeBudgetProgram.setComputeUnitLimit({ units: resolvedLimit }));
@@ -2750,6 +2772,101 @@ export async function unwrap(params: UnwrapParams): Promise<string> {
 }
 
 export async function wrap(params: WrapParams): Promise<string> {
+  // OPTIMIZATION: Handle SOL wrapping BEFORE prepareShield to reduce executeShield transaction size
+  // This matches the old behavior where wrap did everything in one transaction, but now we split it
+  // to avoid making executeShield too expensive
+  const wallet = params.wallet;
+  const connection = params.connection;
+  let originMintKey = new PublicKey(params.originMint);
+  const isShieldingSOL = isNativeSol(originMintKey);
+  
+  // If shielding SOL, wrap it to wSOL first in a separate transaction
+  // This reduces the size and compute cost of executeShield
+  if (isShieldingSOL) {
+    const wsolTokenAccount = await getWrappedSolAccount(wallet.publicKey!);
+    
+    // Check if wSOL token account exists
+    const wsolAccountInfo = await connection.getAccountInfo(wsolTokenAccount, 'confirmed');
+    const wrapInstructions: TransactionInstruction[] = [];
+    
+    if (!wsolAccountInfo) {
+      // Create wSOL token account if it doesn't exist
+      const createAtaIx = createAssociatedTokenAccountInstruction(
+        wallet.publicKey!,
+        wsolTokenAccount,
+        wallet.publicKey!,
+        NATIVE_SOL_MINT,
+        TOKEN_PROGRAM_ID,
+        ASSOCIATED_TOKEN_PROGRAM_ID
+      );
+      wrapInstructions.push(createAtaIx);
+    }
+    
+    // Add wrap instructions (transfer SOL + sync native)
+    const solWrapInstructions = await createWrapSolInstructions(
+      wsolTokenAccount,
+      params.amount,
+      wallet.publicKey!,
+      connection
+    );
+    wrapInstructions.push(...solWrapInstructions);
+    
+    // Send wrapping transaction separately
+    if (wrapInstructions.length > 0) {
+      const wrapTx = new Transaction().add(...wrapInstructions);
+      wrapTx.feePayer = wallet.publicKey;
+      const wrapBlockhash = await connection.getLatestBlockhash('confirmed');
+      wrapTx.recentBlockhash = wrapBlockhash.blockhash;
+      
+      const wrapSig = await wallet.sendTransaction(wrapTx, connection, { skipPreflight: false });
+      await waitForSignatureConfirmation(
+        connection,
+        wrapSig,
+        wrapBlockhash.blockhash,
+        wrapBlockhash.lastValidBlockHeight
+      );
+      console.log('[wrap] ✅ SOL wrapped to wSOL in separate transaction:', wrapSig);
+    }
+  }
+  
+  // Ensure vault token account exists before executeShield (reduces executeShield transaction size)
+  // This matches the old behavior where wrap did everything in one transaction
+  const vaultTokenAccount = await getAssociatedTokenAddress(
+    actualShieldMint,
+    vaultState,
+    true,
+    tokenProgramId,
+    ASSOCIATED_TOKEN_PROGRAM_ID
+  );
+  
+  const vaultTokenAccountInfo = await connection.getAccountInfo(vaultTokenAccount, 'confirmed');
+  if (!vaultTokenAccountInfo) {
+    // Create vault token account in a separate transaction before executeShield
+    console.log('[wrap] Creating vault token account before executeShield...');
+    const createVaultTx = new Transaction().add(
+      createAssociatedTokenAccountInstruction(
+        wallet.publicKey!,
+        vaultTokenAccount,
+        vaultState,
+        actualShieldMint,
+        tokenProgramId,
+        ASSOCIATED_TOKEN_PROGRAM_ID
+      )
+    );
+    createVaultTx.feePayer = wallet.publicKey;
+    const createVaultBlockhash = await connection.getLatestBlockhash('confirmed');
+    createVaultTx.recentBlockhash = createVaultBlockhash.blockhash;
+    const createVaultSig = await wallet.sendTransaction(createVaultTx, connection, { skipPreflight: false });
+    await waitForSignatureConfirmation(
+      connection,
+      createVaultSig,
+      createVaultBlockhash.blockhash,
+      createVaultBlockhash.lastValidBlockHeight
+    );
+    console.log('[wrap] ✅ Vault token account created:', createVaultSig);
+  }
+  
+  // Now prepare and execute shield (executeShield won't need to create accounts or wrap SOL)
   const { operationId } = await prepareShield(params);
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const { proof: _proof, ...executeParams } = params;
@@ -2798,6 +2915,155 @@ export async function prepareTransfer(params: PrepareTransferParams): Promise<Pr
   );
 }
 
+export async function executeTransfer(params: ExecuteTransferParams): Promise<string> {
+  assertWallet(params.wallet);
+  const wallet = params.wallet;
+  const connection = params.connection;
+  const payer = wallet.publicKey;
+  if (!payer) {
+    throw new Error('Wallet public key missing');
+  }
+  const poolStateKey = new PublicKey(params.poolId);
+  const originMintKey = new PublicKey(params.originMint);
+  const commitmentTreeKey = deriveCommitmentTree(originMintKey);
+  const nullifierSetKey = deriveNullifierSet(originMintKey);
+  const noteLedgerKey = deriveNoteLedger(originMintKey);
+  const verifyingKey = deriveVerifyingKey();
+  const { key: mintMappingKey, decoded: mintMapping } = await fetchMintMappingAccount(
+    connection,
+    originMintKey
+  );
+  ensureMintActive(mintMapping);
+
+  const proofVault = deriveProofVault(wallet.publicKey!);
+
+  const instructions: TransactionInstruction[] = [];
+  const computeLimitEnv =
+    process.env.TRANSFER_COMPUTE_UNIT_LIMIT ??
+    process.env.WRAP_COMPUTE_UNIT_LIMIT ??
+    process.env.NEXT_PUBLIC_WRAP_COMPUTE_UNIT_LIMIT;
+  const resolvedLimit = (() => {
+    if (computeLimitEnv !== undefined) {
+      const parsed = Number(computeLimitEnv);
+      if (!Number.isNaN(parsed)) {
+        return Math.max(parsed, 0);
+      }
+    }
+    return 1_200_000;
+  })();
+  if (resolvedLimit > 0) {
+    instructions.push(ComputeBudgetProgram.setComputeUnitLimit({ units: resolvedLimit }));
+  }
+
+  const computePriceEnv =
+    process.env.TRANSFER_COMPUTE_UNIT_PRICE ??
+    process.env.WRAP_COMPUTE_UNIT_PRICE ??
+    process.env.NEXT_PUBLIC_WRAP_COMPUTE_UNIT_PRICE;
+  if (computePriceEnv) {
+    const microLamports = Number(computePriceEnv);
+    if (!Number.isNaN(microLamports) && microLamports > 0) {
+      instructions.push(ComputeBudgetProgram.setComputeUnitPrice({ microLamports }));
+    }
+  }
+
+  // Build execute_transfer instruction
+  // Account order matches ExecuteTransfer struct: payer, proof_vault, system_program, rent
+  // All other accounts go in remaining_accounts
+  const instructionKeys = [
+    { pubkey: payer, isSigner: true, isWritable: true },
+        { pubkey: proofVault, isSigner: false, isWritable: true },
+        { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+        { pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false }
+  ];
+  
+  // Add remaining accounts (pool_state, nullifier_set, commitment_tree, note_ledger, mint_mapping, verifier_program, verifying_key)
+  instructionKeys.push(
+    { pubkey: poolStateKey, isSigner: false, isWritable: true },
+    { pubkey: nullifierSetKey, isSigner: false, isWritable: true },
+    { pubkey: commitmentTreeKey, isSigner: false, isWritable: true },
+    { pubkey: noteLedgerKey, isSigner: false, isWritable: true },
+    { pubkey: mintMappingKey, isSigner: false, isWritable: false },
+    { pubkey: VERIFIER_PROGRAM_ID, isSigner: false, isWritable: false },
+    { pubkey: verifyingKey, isSigner: false, isWritable: false }
+  );
+
+  instructions.push(
+    new TransactionInstruction({
+      programId: POOL_PROGRAM_ID,
+      keys: instructionKeys,
+      data: poolCoder.instruction.encode('execute_transfer', {
+        operation_id: operationIdHexToArray(params.operationId)
+      })
+    })
+  );
+  
+  const latestBlockhash = await connection.getLatestBlockhash('confirmed');
+  const tx = new Transaction().add(...instructions);
+  tx.feePayer = payer;
+  tx.recentBlockhash = latestBlockhash.blockhash;
+  const signature = await wallet.sendTransaction(tx, connection, { skipPreflight: false });
+  
+  await waitForSignatureConfirmation(
+    connection,
+    signature,
+    latestBlockhash.blockhash,
+    latestBlockhash.lastValidBlockHeight
+  );
+  
+  return signature;
+}
+
+export type PrepareTransferFromResult = PrepareResult;
+
+export async function prepareTransferFrom(params: PrepareTransferFromParams): Promise<PrepareTransferFromResult> {
+  assertWallet(params.wallet);
+  if (params.outputCommitments.length !== params.outputAmountCommitments.length) {
+    throw new Error('Output commitment set mismatch');
+  }
+
+  const decodedProof = decodeProofPayload(params.proof);
+  if (decodedProof.fields.length < 4) {
+    throw new Error('Transfer proof missing public inputs');
+  }
+
+  const expectedFieldCount =
+    2 + params.nullifiers.length + params.outputCommitments.length + 2;
+  if (decodedProof.fields.length !== expectedFieldCount) {
+    console.warn('[prepareTransferFrom] unexpected public input count', {
+      expectedFieldCount,
+      actual: decodedProof.fields.length
+    });
+  }
+
+  // Create TransferArgs (same as prepareTransfer)
+  const transferArgs = {
+    old_root: toFixedArray(decodedProof.fields[0]!, 'old_root'),
+    new_root: toFixedArray(decodedProof.fields[1]!, 'new_root'),
+    nullifiers: encodeFieldVector(params.nullifiers, 'nullifiers'),
+    output_commitments: encodeFieldVector(params.outputCommitments, 'output_commitments'),
+    output_amount_commitments: encodeFieldVector(
+      params.outputAmountCommitments,
+      'output_amount_commitments'
+    ),
+    proof: Buffer.from(decodedProof.proof),
+    public_inputs: Buffer.from(decodedProof.publicInputs)
+  };
+
+  // Create TransferFromArgs with allowance info
+  // Calculate spend_amount from output commitments (sum of outputs to others, excluding change)
+  // For now, we'll use allowance_amount as spend_amount (caller should ensure they match)
+  const transferFromArgs = {
+    transfer: transferArgs,
+    allowance_amount: new BN(params.allowanceAmount.toString()),
+    spend_amount: new BN(params.spendAmount?.toString() ?? params.allowanceAmount.toString())
+  };
+
+  return sendPrepareInstruction(
+    params.connection,
+    params.wallet,
+    poolCoder.instruction.encode('prepare_transfer_from', { transfer_from_args: transferFromArgs })
+  );
+}
 
 export async function executeTransferFrom(params: ExecuteTransferFromParams): Promise<string> {
   assertWallet(params.wallet);
@@ -2854,24 +3120,33 @@ export async function executeTransferFrom(params: ExecuteTransferFromParams): Pr
     }
   }
 
-  instructions.push(
-    new TransactionInstruction({
-      programId: POOL_PROGRAM_ID,
-      keys: [
+  // Build execute_transfer_from instruction
+  // Account order matches ExecuteTransferFrom struct: spender, proof_vault, system_program, rent
+  // All other accounts go in remaining_accounts
+  const instructionKeys = [
+    { pubkey: spender, isSigner: true, isWritable: true },
         { pubkey: proofVault, isSigner: false, isWritable: true },
+        { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+        { pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false }
+  ];
+  
+  // Add remaining accounts (pool_state, nullifier_set, commitment_tree, note_ledger, mint_mapping, verifier_program, verifying_key, allowance, allowance_owner)
+  instructionKeys.push(
         { pubkey: poolStateKey, isSigner: false, isWritable: true },
         { pubkey: nullifierSetKey, isSigner: false, isWritable: true },
         { pubkey: commitmentTreeKey, isSigner: false, isWritable: true },
         { pubkey: noteLedgerKey, isSigner: false, isWritable: true },
+        { pubkey: mintMappingKey, isSigner: false, isWritable: false },
         { pubkey: VERIFIER_PROGRAM_ID, isSigner: false, isWritable: false },
         { pubkey: verifyingKey, isSigner: false, isWritable: false },
-        { pubkey: mintMappingKey, isSigner: false, isWritable: false },
-        { pubkey: allowanceKey, isSigner: false, isWritable: true },
-        { pubkey: allowanceOwner, isSigner: false, isWritable: false },
-        { pubkey: spender, isSigner: true, isWritable: false },
-        { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
-        { pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false }
-      ],
+    { pubkey: allowanceKey, isSigner: false, isWritable: true },
+    { pubkey: allowanceOwner, isSigner: false, isWritable: false }
+  );
+
+  instructions.push(
+    new TransactionInstruction({
+      programId: POOL_PROGRAM_ID,
+      keys: instructionKeys,
       data: poolCoder.instruction.encode('execute_transfer_from', {
         operation_id: operationIdHexToArray(params.operationId)
       })
@@ -3082,11 +3357,20 @@ export async function executeBatchTransfer(
   }
   
   // Build execute_batch_transfer instruction
-  // Account order: proof_vault, pool_state_0, nullifier_set_0, commitment_tree_0, note_ledger_0, mint_mapping_0,
-  //                verifier_program, verifying_key, payer, system_program, rent,
-  //                remaining_accounts: pool_state_1, nullifier_set_1, commitment_tree_1, note_ledger_1, mint_mapping_1
+  // Account order matches ExecuteBatchTransfer struct: payer, proof_vault, system_program, rent
+  // All other accounts go in remaining_accounts
   const instructionKeys = [
+    { pubkey: payer, isSigner: true, isWritable: true },
     { pubkey: proofVault, isSigner: false, isWritable: true },
+    { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+    { pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false }
+  ];
+  
+  // Add remaining accounts:
+  // Pool 0: pool_state_0, nullifier_set_0, commitment_tree_0, note_ledger_0, mint_mapping_0
+  // Shared: verifier_program, verifying_key
+  // Pool 1: pool_state_1, nullifier_set_1, commitment_tree_1, note_ledger_1, mint_mapping_1
+  instructionKeys.push(
     { pubkey: poolState0Key, isSigner: false, isWritable: true },
     { pubkey: nullifierSet0Key, isSigner: false, isWritable: true },
     { pubkey: commitmentTree0Key, isSigner: false, isWritable: true },
@@ -3094,13 +3378,6 @@ export async function executeBatchTransfer(
     { pubkey: mintMapping0Key, isSigner: false, isWritable: false },
     { pubkey: VERIFIER_PROGRAM_ID, isSigner: false, isWritable: false },
     { pubkey: verifyingKey, isSigner: false, isWritable: false },
-    { pubkey: payer, isSigner: true, isWritable: true },
-    { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
-    { pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false }
-  ];
-  
-  // Add second pool accounts as remaining_accounts
-  instructionKeys.push(
     { pubkey: poolState1Key, isSigner: false, isWritable: true },
     { pubkey: nullifierSet1Key, isSigner: false, isWritable: true },
     { pubkey: commitmentTree1Key, isSigner: false, isWritable: true },
@@ -3121,6 +3398,249 @@ export async function executeBatchTransfer(
   const latestBlockhash = await connection.getLatestBlockhash('confirmed');
   const tx = new Transaction().add(...instructions);
   tx.feePayer = payer;
+  tx.recentBlockhash = latestBlockhash.blockhash;
+  const signature = await wallet.sendTransaction(tx, connection, { skipPreflight: false });
+  
+  await waitForSignatureConfirmation(
+    connection,
+    signature,
+    latestBlockhash.blockhash,
+    latestBlockhash.lastValidBlockHeight
+  );
+  
+  return signature;
+}
+
+export type PrepareBatchTransferFromResult = PrepareResult;
+
+export async function prepareBatchTransferFrom(
+  params: PrepareBatchTransferFromParams
+): Promise<PrepareBatchTransferFromResult> {
+  assertWallet(params.wallet);
+  
+  if (params.transfers.length < 2 || params.transfers.length > 10) {
+    throw new Error('Batch transfer requires 2-10 transfers');
+  }
+  
+  // For now, support exactly 2 transfers (matches circuit)
+  if (params.transfers.length !== 2) {
+    throw new Error('Currently only 2 transfers are supported (circuit limitation)');
+  }
+  
+  if (params.allowances.length !== 2) {
+    throw new Error('Batch transfer from requires exactly 2 allowances (one per transfer)');
+  }
+  
+  // Validate all transfers have matching commitment counts
+  for (const transfer of params.transfers) {
+    if (transfer.outputCommitments.length !== transfer.outputAmountCommitments.length) {
+      throw new Error(`Transfer ${transfer.originMint}: Output commitment set mismatch`);
+    }
+  }
+  
+  // Extract roots from batch public inputs (same as prepareBatchTransfer)
+  if (params.batchPublicInputs.length !== 16) {
+    throw new Error(`Invalid batch public inputs length: expected 16, got ${params.batchPublicInputs.length}`);
+  }
+  
+  const oldRoot0Bytes = canonicalHexToBytesLE(canonicalizeHex(params.batchPublicInputs[0]!));
+  const newRoot0Bytes = canonicalHexToBytesLE(canonicalizeHex(params.batchPublicInputs[1]!));
+  const oldRoot1Bytes = canonicalHexToBytesLE(canonicalizeHex(params.batchPublicInputs[8]!));
+  const newRoot1Bytes = canonicalHexToBytesLE(canonicalizeHex(params.batchPublicInputs[9]!));
+  
+  // OPTIMIZATION: Only include 1 output in TransferArgs when second output is zero (saves 64 bytes per transfer)
+  const isSecondOutputZero0 = params.transfers[0]!.outputAmountCommitments.length >= 2 && 
+    Buffer.from(canonicalHexToBytesLE(canonicalizeHex(params.transfers[0]!.outputAmountCommitments[1]!))).every(b => b === 0);
+  const isSecondOutputZero1 = params.transfers[1]!.outputAmountCommitments.length >= 2 && 
+    Buffer.from(canonicalHexToBytesLE(canonicalizeHex(params.transfers[1]!.outputAmountCommitments[1]!))).every(b => b === 0);
+  
+  const outputCommitments0 = isSecondOutputZero0 
+    ? params.transfers[0]!.outputCommitments.slice(0, 1)
+    : params.transfers[0]!.outputCommitments;
+  const outputAmountCommitments0 = isSecondOutputZero0
+    ? params.transfers[0]!.outputAmountCommitments.slice(0, 1)
+    : params.transfers[0]!.outputAmountCommitments;
+    
+  const outputCommitments1 = isSecondOutputZero1
+    ? params.transfers[1]!.outputCommitments.slice(0, 1)
+    : params.transfers[1]!.outputCommitments;
+  const outputAmountCommitments1 = isSecondOutputZero1
+    ? params.transfers[1]!.outputAmountCommitments.slice(0, 1)
+    : params.transfers[1]!.outputAmountCommitments;
+  
+  // Create TransferArgs for each transfer (same as prepareBatchTransfer)
+  const transferArgs0 = {
+    old_root: Array.from(oldRoot0Bytes),
+    new_root: Array.from(newRoot0Bytes),
+    nullifiers: encodeFieldVector(params.transfers[0]!.nullifiers, 'nullifiers'),
+    output_commitments: encodeFieldVector(outputCommitments0, 'output_commitments'),
+    output_amount_commitments: encodeFieldVector(outputAmountCommitments0, 'output_amount_commitments'),
+    proof: [], // Empty Vec<u8> - batch proof used instead
+    public_inputs: [] // Empty Vec<u8> - batch public inputs used instead
+  };
+  
+  const transferArgs1 = {
+    old_root: Array.from(oldRoot1Bytes),
+    new_root: Array.from(newRoot1Bytes),
+    nullifiers: encodeFieldVector(params.transfers[1]!.nullifiers, 'nullifiers'),
+    output_commitments: encodeFieldVector(outputCommitments1, 'output_commitments'),
+    output_amount_commitments: encodeFieldVector(outputAmountCommitments1, 'output_amount_commitments'),
+    proof: [], // Empty Vec<u8> - batch proof used instead
+    public_inputs: [] // Empty Vec<u8> - batch public inputs used instead
+  };
+  
+  // Create BatchTransferArgs (same as prepareBatchTransfer)
+  const batchProofBytes = Buffer.from(params.batchProof.proof, 'base64');
+  const batchPublicInputsBytes = Buffer.concat(
+    params.batchPublicInputs.map(input => canonicalHexToBytesLE(canonicalizeHex(input)))
+  );
+  
+  const batchTransferArgs = {
+    transfers: [transferArgs0, transferArgs1],
+    proof: Array.from(batchProofBytes),
+    public_inputs: Array.from(batchPublicInputsBytes)
+  };
+  
+  // Create TransferFromAllowanceInfo for each transfer
+  const allowances = params.allowances.map(allowance => ({
+    allowance_amount: new BN(allowance.allowanceAmount.toString()),
+    spend_amount: new BN(allowance.spendAmount.toString())
+  }));
+  
+  // Create BatchTransferFromArgs
+  const batchTransferFromArgs = {
+    batch_transfer: batchTransferArgs,
+    allowances
+  };
+
+  return sendPrepareInstruction(
+    params.connection,
+    params.wallet,
+    poolCoder.instruction.encode('prepare_batch_transfer_from', { batch_args: batchTransferFromArgs })
+  );
+}
+
+export async function executeBatchTransferFrom(
+  params: ExecuteBatchTransferFromParams
+): Promise<string> {
+  assertWallet(params.wallet);
+  const wallet = params.wallet;
+  const connection = params.connection;
+  const spender = wallet.publicKey;
+  if (!spender) {
+    throw new Error('Wallet public key missing');
+  }
+
+  if (params.transfers.length !== 2) {
+    throw new Error('Currently only 2 transfers are supported');
+  }
+  
+  if (params.allowances.length !== 2) {
+    throw new Error('Batch transfer from requires exactly 2 allowances');
+  }
+  
+  // Derive accounts for first pool
+  const originMint0 = new PublicKey(params.transfers[0]!.originMint);
+  const poolState0Key = new PublicKey(params.transfers[0]!.poolId);
+  const commitmentTree0Key = deriveCommitmentTree(originMint0);
+  const nullifierSet0Key = deriveNullifierSet(originMint0);
+  const noteLedger0Key = deriveNoteLedger(originMint0);
+  const { key: mintMapping0Key, decoded: mintMapping0 } = await fetchMintMappingAccount(
+    connection,
+    originMint0
+  );
+  ensureMintActive(mintMapping0);
+  
+  // Derive allowance 0
+  const allowanceOwner0 = new PublicKey(params.allowances[0]!.allowanceOwner);
+  const allowance0Key = deriveAllowanceAccount(poolState0Key, allowanceOwner0, spender);
+  
+  // Derive accounts for second pool (via remaining_accounts)
+  const originMint1 = new PublicKey(params.transfers[1]!.originMint);
+  const poolState1Key = new PublicKey(params.transfers[1]!.poolId);
+  const commitmentTree1Key = deriveCommitmentTree(originMint1);
+  const nullifierSet1Key = deriveNullifierSet(originMint1);
+  const noteLedger1Key = deriveNoteLedger(originMint1);
+  const { key: mintMapping1Key, decoded: mintMapping1 } = await fetchMintMappingAccount(
+    connection,
+    originMint1
+  );
+  ensureMintActive(mintMapping1);
+  
+  // Derive allowance 1
+  const allowanceOwner1 = new PublicKey(params.allowances[1]!.allowanceOwner);
+  const allowance1Key = deriveAllowanceAccount(poolState1Key, allowanceOwner1, spender);
+  
+  const verifyingKey = deriveVerifyingKey();
+  const proofVault = deriveProofVault(wallet.publicKey!);
+  
+  const instructions: TransactionInstruction[] = [];
+  
+  // Add compute budget
+  const computeLimitEnv =
+    process.env.BATCH_TRANSFER_FROM_COMPUTE_UNIT_LIMIT ??
+    process.env.BATCH_TRANSFER_COMPUTE_UNIT_LIMIT ??
+    process.env.TRANSFER_FROM_COMPUTE_UNIT_LIMIT ??
+    process.env.NEXT_PUBLIC_WRAP_COMPUTE_UNIT_LIMIT;
+  const resolvedLimit = (() => {
+    if (computeLimitEnv !== undefined) {
+      const parsed = Number(computeLimitEnv);
+      if (!Number.isNaN(parsed)) {
+        return Math.max(parsed, 0);
+      }
+    }
+    return 1_200_000; // Higher limit for batch operations
+  })();
+  if (resolvedLimit > 0) {
+    instructions.push(ComputeBudgetProgram.setComputeUnitLimit({ units: resolvedLimit }));
+  }
+  
+  // Build execute_batch_transfer_from instruction
+  // Account order matches ExecuteBatchTransferFrom struct: spender, proof_vault, system_program, rent
+  // All other accounts go in remaining_accounts
+  const instructionKeys = [
+    { pubkey: spender, isSigner: true, isWritable: true },
+    { pubkey: proofVault, isSigner: false, isWritable: true },
+        { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+        { pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false }
+  ];
+  
+  // Add remaining accounts:
+  // Pool 0: pool_state_0, nullifier_set_0, commitment_tree_0, note_ledger_0, mint_mapping_0, allowance_0, allowance_owner_0
+  // Shared: verifier_program, verifying_key
+  // Pool 1: pool_state_1, nullifier_set_1, commitment_tree_1, note_ledger_1, mint_mapping_1, allowance_1, allowance_owner_1
+  instructionKeys.push(
+    { pubkey: poolState0Key, isSigner: false, isWritable: true },
+    { pubkey: nullifierSet0Key, isSigner: false, isWritable: true },
+    { pubkey: commitmentTree0Key, isSigner: false, isWritable: true },
+    { pubkey: noteLedger0Key, isSigner: false, isWritable: true },
+    { pubkey: mintMapping0Key, isSigner: false, isWritable: false },
+    { pubkey: allowance0Key, isSigner: false, isWritable: true },
+    { pubkey: allowanceOwner0, isSigner: false, isWritable: false },
+    { pubkey: VERIFIER_PROGRAM_ID, isSigner: false, isWritable: false },
+    { pubkey: verifyingKey, isSigner: false, isWritable: false },
+    { pubkey: poolState1Key, isSigner: false, isWritable: true },
+    { pubkey: nullifierSet1Key, isSigner: false, isWritable: true },
+    { pubkey: commitmentTree1Key, isSigner: false, isWritable: true },
+    { pubkey: noteLedger1Key, isSigner: false, isWritable: true },
+    { pubkey: mintMapping1Key, isSigner: false, isWritable: false },
+    { pubkey: allowance1Key, isSigner: false, isWritable: true },
+    { pubkey: allowanceOwner1, isSigner: false, isWritable: false }
+  );
+  
+  instructions.push(
+    new TransactionInstruction({
+      programId: POOL_PROGRAM_ID,
+      keys: instructionKeys,
+      data: poolCoder.instruction.encode('execute_batch_transfer_from', {
+        operation_id: operationIdHexToArray(params.operationId)
+      })
+    })
+  );
+  
+  const latestBlockhash = await connection.getLatestBlockhash('confirmed');
+  const tx = new Transaction().add(...instructions);
+  tx.feePayer = spender;
   tx.recentBlockhash = latestBlockhash.blockhash;
   const signature = await wallet.sendTransaction(tx, connection, { skipPreflight: false });
   
