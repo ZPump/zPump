@@ -458,6 +458,157 @@ async function testPrepareExecuteUnshield() {
   }
 }
 
+async function testPrepareExecuteTransfer() {
+  console.log('\n=== Test: Prepare + Execute Transfer ===');
+  
+  const connection = new Connection(RPC_URL, 'confirmed');
+  const keypair = Keypair.generate();
+  const wallet = createWalletAdapter(keypair);
+  
+  // Airdrop SOL
+  await airdropSol(connection, keypair.publicKey, BigInt(2) * BigInt(LAMPORTS_PER_SOL));
+  
+  const proofClient = new ProofClient({ baseUrl: PROOF_URL });
+  const originMint = 'So11111111111111111111111111111111111111112'; // wSOL
+  const testMint = new PublicKey(originMint);
+  
+  try {
+    // Step 1: First perform a shield to create notes
+    console.log('1. Performing shield to create notes...');
+    const { derivePoolState } = await import('../lib/onchain/pdas');
+    const poolState = derivePoolState(testMint);
+    
+    // Check/initialize pool
+    const poolAccount = await connection.getAccountInfo(poolState, 'confirmed');
+    if (!poolAccount || poolAccount.data.length < 8 + 32) {
+      console.log('   ℹ️  Pool not initialized - initializing via preparePool...');
+      const poolResult = await preparePool({
+        connection,
+        wallet,
+        originMint
+      });
+      if (poolResult.poolInitialized) {
+        console.log('   ✓ Pool initialized successfully');
+      }
+    } else {
+      console.log('   ✓ Pool is already initialized');
+    }
+    
+    // Perform shield
+    const shieldAmount = BigInt(100_000_000); // 0.1 SOL
+    const { fetchZTokenPoolRoot } = await import('../lib/dex-ztoken-helpers');
+    const currentRoot = await fetchZTokenPoolRoot(connection, testMint);
+    const depositId = Date.now().toString();
+    const blinding = Math.floor(Math.random() * 10 ** 18).toString();
+    
+    console.log('   Generating shield proof...');
+    const shieldProof = await proofClient.requestProof('wrap', {
+      oldRoot: currentRoot,
+      amount: shieldAmount.toString(),
+      recipient: keypair.publicKey.toBase58(),
+      depositId,
+      poolId: poolState.toBase58(),
+      blinding,
+      mintId: originMint
+    });
+    console.log('   ✓ Shield proof generated');
+    
+    // Prepare shield
+    const { operationId: shieldOpId, signature: prepareShieldSig } = await prepareShield({
+      wallet,
+      connection,
+      originMint,
+      amount: shieldAmount,
+      depositId,
+      blinding,
+      proof: shieldProof,
+      proofClient
+    });
+    console.log(`   ✓ Shield prepared: ${prepareShieldSig}`);
+    
+    // Execute shield
+    console.log('   Executing shield...');
+    const executeShieldSig = await executeShield({
+      wallet,
+      connection,
+      operationId: shieldOpId,
+      originMint,
+      poolId: poolState.toBase58(),
+      amount: shieldAmount,
+      depositId,
+      blinding,
+      keypair
+    });
+    console.log(`   ✓ Shield executed: ${executeShieldSig}`);
+    
+    // Wait for shield to finalize
+    await new Promise(resolve => setTimeout(resolve, 3000));
+    console.log('   ✓ Shield completed - notes created');
+    
+    // Step 2: Now test transfer with the created note
+    console.log('2. Testing transfer with created note...');
+    const transferAmount = BigInt(50_000_000); // 0.05 SOL (half of shield amount)
+    const recipient = Keypair.generate().publicKey;
+    
+    // Get current root for transfer
+    const transferRoot = await fetchZTokenPoolRoot(connection, testMint);
+    
+    // Generate transfer proof
+    console.log('   Generating transfer proof...');
+    const { generateDexTransferProofSimple } = await import('../lib/dex-ztoken-helpers');
+    const transferProof = await generateDexTransferProofSimple(
+      proofClient,
+      connection,
+      testMint,
+      [{
+        noteId: depositId,
+        spendingKey: blinding,
+        amount: shieldAmount
+      }],
+      transferAmount,
+      recipient,
+      keypair.publicKey // change recipient
+    );
+    console.log('   ✓ Transfer proof generated');
+    
+    // Prepare transfer
+    console.log('   Preparing transfer...');
+    const { operationId: transferOpId, signature: prepareTransferSig } = await prepareTransfer({
+      wallet,
+      connection,
+      originMint,
+      nullifiers: transferProof.nullifiers,
+      outputCommitments: transferProof.outputCommitments,
+      outputAmountCommitments: transferProof.outputAmountCommitments,
+      proof: transferProof.proof,
+      proofClient
+    });
+    console.log(`   ✓ Transfer prepared: ${prepareTransferSig}`);
+    console.log(`   ✓ Operation ID: ${transferOpId}`);
+    
+    // Execute transfer
+    console.log('   Executing transfer...');
+    const executeTransferSig = await executeTransfer({
+      wallet,
+      connection,
+      operationId: transferOpId,
+      originMint,
+      poolId: poolState.toBase58(),
+      keypair
+    });
+    console.log(`   ✓ Execute signature: ${executeTransferSig}`);
+    console.log('   ✓ Transfer completed successfully!');
+    
+    return true;
+  } catch (error: any) {
+    console.error('   ✗ Test failed:', error.message);
+    if (error.logs) {
+      console.error('   Logs:', error.logs);
+    }
+    return false;
+  }
+}
+
 async function testOperationExpiry() {
   console.log('\n=== Test: Operation Expiry ===');
   
@@ -510,6 +661,9 @@ async function main() {
   
   // Test prepare/execute unshield (partial)
   results.push(await testPrepareExecuteUnshield());
+  
+  // Test prepare/execute transfer
+  results.push(await testPrepareExecuteTransfer());
   
   // Test operation expiry (skipped)
   results.push(await testOperationExpiry());
