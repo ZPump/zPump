@@ -3396,14 +3396,14 @@ pub mod ptf_pool {
 
         // Extract and validate accounts from remaining_accounts
         // PrivateTransfer needs: pool_state, nullifier_set, commitment_tree, note_ledger, mint_mapping, verifier_program, verifying_key, payer, system_program, rent
+        // payer, system_program, and rent are already in ExecuteTransfer struct
         msg!(
             "execute_transfer: extracting accounts from remaining_accounts (len={})",
             ctx.remaining_accounts.len()
         );
 
-        // Derive expected addresses from transfer_args (we need origin_mint from pool_state)
-        // We'll need to extract pool_state first to get origin_mint
-        // For now, extract all accounts and validate them
+        // First, we need to identify pool_state to get origin_mint for deriving other addresses
+        // We'll iterate through remaining_accounts and identify accounts by their owners and data structure
         let mut pool_state_info: Option<&AccountInfo> = None;
         let mut nullifier_set_info: Option<&AccountInfo> = None;
         let mut commitment_tree_info: Option<&AccountInfo> = None;
@@ -3412,35 +3412,33 @@ pub mod ptf_pool {
         let mut verifier_program_info: Option<&AccountInfo> = None;
         let mut verifying_key_info: Option<&AccountInfo> = None;
 
+        // First pass: identify accounts by owner and basic structure
         for account in ctx.remaining_accounts.iter() {
             let key = account.key();
             let account_static: &'static AccountInfo = unsafe { mem::transmute(account) };
 
-            // We'll identify accounts by their program owners and PDA patterns
-            // pool_state: owned by program, PDA with seeds [POOL, origin_mint]
-            // nullifier_set: owned by program, PDA with seeds [NULLIFIERS, origin_mint]
-            // commitment_tree: owned by program, PDA with seeds [TREE, origin_mint]
-            // note_ledger: owned by program, PDA with seeds [NOTES, origin_mint]
-            // mint_mapping: owned by factory, PDA with seeds [MINT_MAPPING, origin_mint]
-            // verifier_program: owned by system, executable, key == ptf_verifier_groth16::ID
-            // verifying_key: owned by verifier, PDA
-
             if *account.owner == *ctx.program_id {
                 // Could be pool_state, nullifier_set, commitment_tree, or note_ledger
-                // We'll identify by checking data length and structure
-                if account.data_len() >= 8 + 32 {
-                    // Check if it's pool_state (has discriminator + origin_mint at offset 8)
-                    let data = account.try_borrow_data()?;
-                    if data.len() >= 8 + 32 {
-                        // Try to load as PoolState to check
-                        if pool_state_info.is_none() {
-                            pool_state_info = Some(account_static);
-                        }
+                // pool_state is typically the largest (has PoolState struct)
+                // We'll identify by data length - pool_state is larger than others
+                if account.data_len() > 1000 {
+                    // Likely pool_state (PoolState is large)
+                    if pool_state_info.is_none() {
+                        pool_state_info = Some(account_static);
                     }
-                    drop(data);
+                } else if account.data_len() > 100 {
+                    // Could be nullifier_set, commitment_tree, or note_ledger
+                    // We'll identify them after we have pool_state and can derive addresses
+                    if nullifier_set_info.is_none() {
+                        nullifier_set_info = Some(account_static);
+                    } else if commitment_tree_info.is_none() {
+                        commitment_tree_info = Some(account_static);
+                    } else if note_ledger_info.is_none() {
+                        note_ledger_info = Some(account_static);
+                    }
                 }
             } else if *account.owner == ptf_factory::ID {
-                // Could be mint_mapping
+                // mint_mapping
                 if mint_mapping_info.is_none() {
                     mint_mapping_info = Some(account_static);
                 }
@@ -3449,25 +3447,162 @@ pub mod ptf_pool {
                     verifier_program_info = Some(account_static);
                 }
             } else if *account.owner == ptf_verifier_groth16::ID {
-                // Could be verifying_key
+                // verifying_key
                 if verifying_key_info.is_none() {
                     verifying_key_info = Some(account_static);
                 }
             }
         }
 
-        // TODO: Implement full account extraction and PrivateTransfer struct construction
-        // Similar to execute_unshield, but PrivateTransfer has fewer accounts
-        // For now, we need to complete the account extraction logic
-        // This is a placeholder - the full implementation will extract all accounts from remaining_accounts
-        // and construct a PrivateTransfer struct to pass to private_transfer_core
+        // Validate pool_state is found
+        let pool_state_info = pool_state_info.ok_or(PoolError::InvalidAccountOwner)?;
         
-        // TODO: Implement full account extraction and PrivateTransfer struct construction
-        // Similar to execute_unshield, but PrivateTransfer has fewer accounts
-        // For now, return error indicating this needs completion
-        msg!("execute_transfer: account extraction not yet fully implemented");
+        // Load pool_state to get origin_mint for deriving other addresses
+        let pool_state_loader_temp: AccountLoader<'_, PoolState> = AccountLoader::try_from(unsafe { mem::transmute(pool_state_info) })
+            .map_err(|_| PoolError::AccountDataTooShort)?;
+        let pool_state_temp = pool_state_loader_temp.load()?;
+        let origin_mint_key = pool_state_temp.origin_mint;
+        drop(pool_state_temp);
         
-        // Update vault status to mark as failed (since we're not executing yet)
+        // Derive expected addresses
+        let pool_addresses = ptf_common::addresses::PoolAddresses::derive_all(
+            &origin_mint_key,
+            ctx.program_id,
+        );
+        let (expected_mint_mapping, _) = AddressDeriver::derive_mint_mapping(
+            &origin_mint_key,
+            &ptf_factory::ID,
+        );
+        // Verifying key for transfer uses "transfer" circuit tag
+        let mut circuit_tag = [0u8; 32];
+        circuit_tag[..7].copy_from_slice(b"transfer");
+        let version = 1u8;
+        let (expected_verifying_key, _) = AddressDeriver::derive_verifying_key(
+            &circuit_tag,
+            version,
+            &ptf_verifier_groth16::ID,
+        );
+
+        // Second pass: identify accounts by matching derived addresses
+        nullifier_set_info = None;
+        commitment_tree_info = None;
+        note_ledger_info = None;
+        
+        for account in ctx.remaining_accounts.iter() {
+            let key = account.key();
+            let account_static: &'static AccountInfo = unsafe { mem::transmute(account) };
+
+            if key == pool_addresses.nullifier_set {
+                nullifier_set_info = Some(account_static);
+            } else if key == pool_addresses.commitment_tree {
+                commitment_tree_info = Some(account_static);
+            } else if key == pool_addresses.note_ledger {
+                note_ledger_info = Some(account_static);
+            } else if key == expected_mint_mapping {
+                mint_mapping_info = Some(account_static);
+            } else if key == expected_verifying_key {
+                verifying_key_info = Some(account_static);
+            }
+        }
+
+        // Validate all required accounts are provided
+        let nullifier_set_info = nullifier_set_info.ok_or(PoolError::InvalidAccountOwner)?;
+        let commitment_tree_info = commitment_tree_info.ok_or(PoolError::InvalidAccountOwner)?;
+        let note_ledger_info = note_ledger_info.ok_or(PoolError::InvalidAccountOwner)?;
+        let mint_mapping_info = mint_mapping_info.ok_or(PoolError::InvalidAccountOwner)?;
+        let verifier_program_info = verifier_program_info.ok_or(PoolError::InvalidAccountOwner)?;
+        let verifying_key_info = verifying_key_info.ok_or(PoolError::InvalidAccountOwner)?;
+
+        // Validate ownership and executability
+        require_keys_eq!(*verifier_program_info.owner, system_program::ID, PoolError::InvalidAccountOwner);
+        require!(verifier_program_info.executable, PoolError::InvalidAccountOwner);
+
+        // Create typed wrappers
+        let pool_state_loader: AccountLoader<'static, PoolState> = unsafe { mem::transmute(pool_state_loader_temp) };
+        
+        let nullifier_set_account_temp: Account<'_, NullifierSet> = Account::try_from(nullifier_set_info)
+            .map_err(|_| PoolError::AccountDataTooShort)?;
+        let nullifier_set_account: Account<'static, NullifierSet> = unsafe { mem::transmute(nullifier_set_account_temp) };
+        
+        let commitment_tree_loader_temp: AccountLoader<'_, CommitmentTree> = AccountLoader::try_from(unsafe { mem::transmute(commitment_tree_info) })
+            .map_err(|_| PoolError::AccountDataTooShort)?;
+        let commitment_tree_loader: AccountLoader<'static, CommitmentTree> = unsafe { mem::transmute(commitment_tree_loader_temp) };
+        
+        let note_ledger_loader_temp: AccountLoader<'_, NoteLedger> = AccountLoader::try_from(unsafe { mem::transmute(note_ledger_info) })
+            .map_err(|_| PoolError::AccountDataTooShort)?;
+        let note_ledger_loader: AccountLoader<'static, NoteLedger> = unsafe { mem::transmute(note_ledger_loader_temp) };
+        
+        let mint_mapping_wrapper: UncheckedAccount<'static> = unsafe { mem::transmute(mint_mapping_info) };
+        
+        let verifier_program_wrapper_temp: Program<'_, PtfVerifierGroth16> = Program::try_from(verifier_program_info)
+            .map_err(|_| PoolError::AccountDataTooShort)?;
+        let verifier_program_wrapper: Program<'static, PtfVerifierGroth16> = unsafe { mem::transmute(verifier_program_wrapper_temp) };
+        
+        let verifying_key_account_temp: Account<'_, VerifyingKeyAccount> = Account::try_from(verifying_key_info)
+            .map_err(|_| PoolError::AccountDataTooShort)?;
+        let verifying_key_account: Account<'static, VerifyingKeyAccount> = unsafe { mem::transmute(verifying_key_account_temp) };
+        
+        let payer_info_ref = &ctx.accounts.payer.to_account_info();
+        let payer_info_static: &'static AccountInfo<'static> = unsafe { mem::transmute(payer_info_ref) };
+        let payer_wrapper_temp: Signer<'_> = Signer::try_from(payer_info_static)
+            .map_err(|_| PoolError::Unauthorized)?;
+        let payer_wrapper: Signer<'static> = unsafe { mem::transmute(payer_wrapper_temp) };
+        
+        // System program wrapper - use the same pattern as execute_unshield
+        let system_program_info = ctx.accounts.system_program.to_account_info();
+        let system_program_info_static: &'static AccountInfo<'static> = unsafe { mem::transmute(&system_program_info) };
+        let system_program_wrapper_temp: Program<'_, System> = Program::try_from(system_program_info_static)
+            .map_err(|_| PoolError::AccountDataTooShort)?;
+        let system_program_wrapper: Program<'static, System> = unsafe { mem::transmute(system_program_wrapper_temp) };
+        
+        // Rent sysvar - create wrapper manually
+        let rent_info = ctx.accounts.rent.to_account_info();
+        let rent_info_static: &'static AccountInfo<'static> = unsafe { mem::transmute(&rent_info) };
+        let rent_wrapper: Sysvar<'static, Rent> = Sysvar::from_account_info(rent_info_static)
+            .map_err(|_| PoolError::AccountDataTooShort)?;
+
+        msg!("execute_transfer: all wrappers created, constructing PrivateTransfer struct");
+        
+        // Construct PrivateTransfer struct
+        let transfer_struct = PrivateTransfer {
+            pool_state: pool_state_loader,
+            nullifier_set: nullifier_set_account,
+            commitment_tree: commitment_tree_loader,
+            note_ledger: note_ledger_loader,
+            mint_mapping: mint_mapping_wrapper,
+            verifier_program: verifier_program_wrapper,
+            verifying_key: verifying_key_account,
+            payer: payer_wrapper,
+            system_program: system_program_wrapper,
+            rent: rent_wrapper,
+        };
+        
+        // Extend lifetime to 'static using unsafe transmute
+        let result = unsafe {
+            let transfer_static: PrivateTransfer<'static> = mem::transmute(transfer_struct);
+            let program_id_static: &'static Pubkey = mem::transmute(ctx.program_id);
+            let remaining_accounts_static: &'static [AccountInfo<'static>] = mem::transmute(ctx.remaining_accounts);
+            
+            // Create a mutable reference to transfer_static
+            let transfer_ptr: *mut PrivateTransfer<'static> = Box::into_raw(Box::new(transfer_static));
+            let transfer_mut: &'static mut PrivateTransfer<'static> = &mut *transfer_ptr;
+            
+            let result = private_transfer_core(
+                PrivateTransferCoreContext {
+                    program_id: program_id_static,
+                    accounts: transfer_mut,
+                    remaining_accounts: remaining_accounts_static,
+                },
+                &transfer_args
+            );
+            
+            // Clean up the boxed struct
+            drop(Box::from_raw(transfer_ptr));
+            
+            result
+        };
+        
+        // Update vault status after execution
         {
             let mut vault_data = proof_vault_info_ref.try_borrow_mut_data()?;
             let vault: &mut UserProofVault = unsafe {
@@ -3475,12 +3610,18 @@ pub mod ptf_pool {
             };
             if let Some(operation) = vault.prepared_operations.get_mut(operation_idx) {
                 if let PreparedOperation::Transfer { status, .. } = operation {
-                    *status = OperationStatus::Failed;
+                    *status = match &result {
+                        Ok(_) => OperationStatus::Completed,
+                        Err(_) => OperationStatus::Failed,
+                    };
                 }
+            }
+            if result.is_ok() {
+                vault.last_used = clock.unix_timestamp;
             }
         }
         
-        err!(PoolError::AccountDataTooShort)
+        result
     }
 
     pub fn execute_transfer_from(
