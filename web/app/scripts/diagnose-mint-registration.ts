@@ -9,10 +9,10 @@ import { TOKEN_PROGRAM_ID } from '@solana/spl-token';
 
 const RPC_URL = process.env.RPC_URL || 'http://127.0.0.1:8899';
 const PROGRAM_IDS = {
-  factory: new PublicKey('YNZGqPEsKkMcUopmXThpigDdxfCYPE6jS1QtsXfRzjV'),
-  pool: new PublicKey('GBfBiuyXm5YZjnCPkZNjakht41rxEkMRxawQcocowwdi'),
-  vault: new PublicKey('ABUQvsF8kdY9HCFrVEomafg9ABbq4zVQuxLfevpwGnvb'),
-  verifier: new PublicKey('3aCv39mCRFH9BGJskfXqwQoWzW1ULq2yXEbEwGgKtLgg')
+  factory: new PublicKey('94XEJsvLbTNYit4mXowjhqkDpwqtnXnKs2KtF3PNW2oK'),
+  pool: new PublicKey('ESbKkBQ9P7pavvFPejBXhguBY3BSLtf1LyEQqBNRDHqb'),
+  vault: new PublicKey('AuFnb2FWz1W8ozcpSGc9RYbgSaon7bwtB5w9bPJnHkqH'),
+  verifier: new PublicKey('2V5XN9rpubXdK3cdWBBjZwjxMpMzQBKTaN3moEJ59a8K')
 };
 
 interface AccountDiagnostic {

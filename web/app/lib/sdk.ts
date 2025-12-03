@@ -716,7 +716,12 @@ export async function fetchMintMappingAccount(
   originMint: PublicKey
 ): Promise<{ key: PublicKey; decoded: MintMappingAccount }> {
   const key = deriveMintMapping(originMint);
-  const account = await connection.getAccountInfo(key, 'confirmed');
+  // Try multiple times with increasing confirmation levels in case of timing issues
+  let account = await connection.getAccountInfo(key, 'confirmed');
+  if (!account) {
+    // Retry with 'finalized' confirmation level
+    account = await connection.getAccountInfo(key, 'finalized');
+  }
   if (!account) {
     // Check if this is wSOL (native SOL mint) and provide a helpful error message
     if (isNativeSol(originMint)) {
@@ -1613,7 +1618,8 @@ export async function executeShield(params: ExecuteShieldParams): Promise<string
         return Math.max(parsed, 0);
       }
     }
-    return 1_400_000;
+    // Increased default for shield with SOL wrapping (multiple token account creations)
+    return 2_000_000;
   })();
 
   if (resolvedComputeLimit > 0) {
@@ -1681,42 +1687,50 @@ export async function executeShield(params: ExecuteShieldParams): Promise<string
   const finalizeLedgerData = poolCoder.instruction.encode('shield_finalize_ledger', {});
   const checkInvariantData = poolCoder.instruction.encode('shield_check_invariant', {});
   const shieldData = poolCoder.instruction.encode('execute_shield', {
-    operationId: operationIdHexToArray(params.operationId)
+    operation_id: operationIdHexToArray(params.operationId)
   });
 
+  // CRITICAL FIX: Account order must match new minimal ExecuteShield struct
+  // ExecuteShield now has only: pool_state, commitment_tree, payer, origin_mint, proof_vault (optional), system_program, rent
+  // All other accounts go as remaining_accounts
   const shieldKeys = [
-    { pubkey: proofVault, isSigner: false, isWritable: true },
-    { pubkey: poolState, isSigner: false, isWritable: true },
+    // Minimal ExecuteShield struct accounts (in IDL order)
+    { pubkey: poolState, isSigner: false, isWritable: true }, // pool_state
+    { pubkey: commitmentTreeKey, isSigner: false, isWritable: true }, // commitment_tree
+    { pubkey: wallet.publicKey, isSigner: true, isWritable: true }, // payer
+    { pubkey: actualShieldMint, isSigner: false, isWritable: false }, // origin_mint (use actualShieldMint - wSOL if SOL)
+    { pubkey: proofVault, isSigner: false, isWritable: true }, // proof_vault (now required, not optional)
+    { pubkey: SystemProgram.programId, isSigner: false, isWritable: false }, // system_program
+    { pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false }, // rent
+  ];
+
+  // All other accounts go as remaining_accounts (in the order they're expected by the handler)
+  const remainingAccounts = [
     { pubkey: hookConfig, isSigner: false, isWritable: false },
     { pubkey: hookWhitelist, isSigner: false, isWritable: true },
     { pubkey: nullifierSet, isSigner: false, isWritable: true },
-    { pubkey: commitmentTreeKey, isSigner: false, isWritable: true },
     { pubkey: noteLedger, isSigner: false, isWritable: true },
     { pubkey: vaultState, isSigner: false, isWritable: true },
     { pubkey: vaultTokenAccount, isSigner: false, isWritable: true },
-    { pubkey: depositorTokenAccount, isSigner: false, isWritable: true }
+    { pubkey: depositorTokenAccount, isSigner: false, isWritable: true },
   ];
 
   if (twinMintKey) {
-    shieldKeys.push({ pubkey: twinMintKey, isSigner: false, isWritable: true });
-  } else {
-    // Anchor treats an optional account as `None` when the slot equals the program id.
-    shieldKeys.push({ pubkey: POOL_PROGRAM_ID, isSigner: false, isWritable: false });
+    remainingAccounts.push({ pubkey: twinMintKey, isSigner: false, isWritable: true });
   }
 
-  shieldKeys.push(
+  remainingAccounts.push(
     { pubkey: VERIFIER_PROGRAM_ID, isSigner: false, isWritable: false },
     { pubkey: verifyingKey, isSigner: false, isWritable: false },
     { pubkey: shieldClaim, isSigner: false, isWritable: true },
-    { pubkey: wallet.publicKey, isSigner: true, isWritable: true },
-    { pubkey: actualShieldMint, isSigner: false, isWritable: false }, // Use actualShieldMint (wSOL if SOL)
     { pubkey: mintMappingKey, isSigner: false, isWritable: false },
-    { pubkey: factoryState, isSigner: false, isWritable: false }, // Needed for program validation
+    { pubkey: factoryState, isSigner: false, isWritable: false },
     { pubkey: VAULT_PROGRAM_ID, isSigner: false, isWritable: false },
-    { pubkey: tokenProgramId, isSigner: false, isWritable: false },
-    { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
-    { pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false }
+    { pubkey: tokenProgramId, isSigner: false, isWritable: false }
   );
+
+  // Combine main accounts and remaining accounts
+  shieldKeys.push(...remainingAccounts);
 
   const shieldInstruction = new TransactionInstruction({
     programId: POOL_PROGRAM_ID,
@@ -1792,6 +1806,9 @@ export async function executeShield(params: ExecuteShieldParams): Promise<string
   }
 
   let latestBlockhash = await connection.getLatestBlockhash('confirmed');
+  
+  // Compute budget is already added to instructions array above (lines 1624-1634)
+  // No need to add it again here
   
   const shieldInstructionSet = [...instructions, shieldInstruction];
 
@@ -2582,7 +2599,8 @@ export async function executeUnshield(params: ExecuteUnshieldParams): Promise<st
         return Math.max(parsed, 0);
       }
     }
-    return 1_400_000;
+    // Increased default for shield with SOL wrapping (multiple token account creations)
+    return 2_000_000;
   })();
   if (resolvedLimit > 0) {
     instructions.push(ComputeBudgetProgram.setComputeUnitLimit({ units: resolvedLimit }));
@@ -2643,7 +2661,7 @@ export async function executeUnshield(params: ExecuteUnshieldParams): Promise<st
       programId: POOL_PROGRAM_ID,
       keys,
       data: poolCoder.instruction.encode('execute_unshield', {
-        operationId: operationIdHexToArray(params.operationId),
+        operation_id: operationIdHexToArray(params.operationId),
         mode: mode === 'ptkn' ? { twin: {} } : { origin: {} }
       })
     })
@@ -2855,7 +2873,7 @@ export async function executeTransferFrom(params: ExecuteTransferFromParams): Pr
         { pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false }
       ],
       data: poolCoder.instruction.encode('execute_transfer_from', {
-        operationId: operationIdHexToArray(params.operationId)
+        operation_id: operationIdHexToArray(params.operationId)
       })
     })
   );
@@ -3095,7 +3113,7 @@ export async function executeBatchTransfer(
       programId: POOL_PROGRAM_ID,
       keys: instructionKeys,
       data: poolCoder.instruction.encode('execute_batch_transfer', {
-        operationId: operationIdHexToArray(params.operationId)
+        operation_id: operationIdHexToArray(params.operationId)
       })
     })
   );

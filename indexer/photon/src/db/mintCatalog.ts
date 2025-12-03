@@ -12,8 +12,8 @@ const __dirname = path.dirname(__filename);
 const logger = pino({ level: process.env.LOG_LEVEL ?? 'info' });
 
 // Program IDs (hardcoded for now - should match web/app/lib/onchain/programIds.ts)
-const FACTORY_PROGRAM_ID = new PublicKey('YNZGqPEsKkMcUopmXThpigDdxfCYPE6jS1QtsXfRzjV');
-const POOL_PROGRAM_ID = new PublicKey('GBfBiuyXm5YZjnCPkZNjakht41rxEkMRxawQcocowwdi');
+const FACTORY_PROGRAM_ID = new PublicKey('94XEJsvLbTNYit4mXowjhqkDpwqtnXnKs2KtF3PNW2oK');
+const POOL_PROGRAM_ID = new PublicKey('ESbKkBQ9P7pavvFPejBXhguBY3BSLtf1LyEQqBNRDHqb');
 
 // PDA derivation functions
 const textEncoder = new TextEncoder();

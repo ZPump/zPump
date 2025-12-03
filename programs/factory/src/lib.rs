@@ -24,15 +24,15 @@ use ptf_verifier_groth16;
 use sha3::{Digest, Keccak256};
 use solana_program::pubkey;
 
-const PTF_POOL_PROGRAM_ID: Pubkey = pubkey!("GBfBiuyXm5YZjnCPkZNjakht41rxEkMRxawQcocowwdi");
-const PTF_VAULT_PROGRAM_ID: Pubkey = pubkey!("ABUQvsF8kdY9HCFrVEomafg9ABbq4zVQuxLfevpwGnvb");
+const PTF_POOL_PROGRAM_ID: Pubkey = pubkey!("ESbKkBQ9P7pavvFPejBXhguBY3BSLtf1LyEQqBNRDHqb");
+const PTF_VAULT_PROGRAM_ID: Pubkey = pubkey!("AuFnb2FWz1W8ozcpSGc9RYbgSaon7bwtB5w9bPJnHkqH");
 // CRITICAL FIX: Minimum timelock duration in seconds (24 hours)
 const MIN_TIMELOCK_SECONDS: i64 = 24 * 60 * 60; // 86400 seconds = 24 hours
                                                 // Authority changes require longer timelock (7 days)
 const AUTHORITY_CHANGE_TIMELOCK_SECONDS: i64 = 7 * 24 * 60 * 60; // 604800 seconds = 7 days
 const TIMELOCK_STALE_GRACE_SECONDS: i64 = 30 * 24 * 60 * 60; // 30 days
 
-declare_id!("6uruFJACS8n2H28vWA39XqnPwRinL3P1DPLipySZfAuM");
+declare_id!("94XEJsvLbTNYit4mXowjhqkDpwqtnXnKs2KtF3PNW2oK");
 
 #[program]
 pub mod ptf_factory {

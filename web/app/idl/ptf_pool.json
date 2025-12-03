@@ -1,5 +1,5 @@
 {
-  "address": "F8bEMyP6Yt3SMGVT9jKL6m13Sn6mc1Z5AeuuJPNCR8to",
+  "address": "ESbKkBQ9P7pavvFPejBXhguBY3BSLtf1LyEQqBNRDHqb",
   "metadata": {
     "name": "ptf_pool",
     "version": "0.1.0",
@@ -330,7 +330,7 @@
         },
         {
           "name": "verifier_program",
-          "address": "geepCeZMrQu1Fh8mXYTxUcZhkw858R2joYXwqRQVS9S"
+          "address": "2V5XN9rpubXdK3cdWBBjZwjxMpMzQBKTaN3moEJ59a8K"
         },
         {
           "name": "verifying_key"
@@ -550,7 +550,7 @@
         },
         {
           "name": "verifier_program",
-          "address": "geepCeZMrQu1Fh8mXYTxUcZhkw858R2joYXwqRQVS9S"
+          "address": "2V5XN9rpubXdK3cdWBBjZwjxMpMzQBKTaN3moEJ59a8K"
         },
         {
           "name": "verifying_key"
@@ -1200,7 +1200,7 @@
             },
             {
               "name": "verifier_program",
-              "address": "geepCeZMrQu1Fh8mXYTxUcZhkw858R2joYXwqRQVS9S"
+              "address": "2V5XN9rpubXdK3cdWBBjZwjxMpMzQBKTaN3moEJ59a8K"
             },
             {
               "name": "verifying_key"
@@ -1455,7 +1455,7 @@
             },
             {
               "name": "verifier_program",
-              "address": "geepCeZMrQu1Fh8mXYTxUcZhkw858R2joYXwqRQVS9S"
+              "address": "2V5XN9rpubXdK3cdWBBjZwjxMpMzQBKTaN3moEJ59a8K"
             },
             {
               "name": "verifying_key"
@@ -1501,35 +1501,6 @@
         80
       ],
       "accounts": [
-        {
-          "name": "proof_vault",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  112,
-                  114,
-                  111,
-                  111,
-                  102,
-                  45,
-                  118,
-                  97,
-                  117,
-                  108,
-                  116
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "shield.payer",
-                "account": "Shield"
-              }
-            ]
-          }
-        },
         {
           "name": "shield",
           "accounts": [
@@ -1794,7 +1765,7 @@
             },
             {
               "name": "vault_program",
-              "address": "Cp154M1oxXYJDbrgg9f57ytuthW8X8WNe73NQ7kQQr4Q"
+              "address": "AuFnb2FWz1W8ozcpSGc9RYbgSaon7bwtB5w9bPJnHkqH"
             },
             {
               "name": "token_program"
@@ -1808,6 +1779,15 @@
               "address": "SysvarRent111111111111111111111111111111111"
             }
           ]
+        },
+        {
+          "name": "proof_vault",
+          "docs": [
+            "Proof vault for storing prepared operations",
+            "We validate PDA derivation and owner manually in the handler"
+          ],
+          "writable": true,
+          "optional": true
         }
       ],
       "args": [
@@ -2011,7 +1991,7 @@
             },
             {
               "name": "verifier_program",
-              "address": "geepCeZMrQu1Fh8mXYTxUcZhkw858R2joYXwqRQVS9S"
+              "address": "2V5XN9rpubXdK3cdWBBjZwjxMpMzQBKTaN3moEJ59a8K"
             },
             {
               "name": "verifying_key"
@@ -2177,7 +2157,7 @@
             },
             {
               "name": "verifier_program",
-              "address": "geepCeZMrQu1Fh8mXYTxUcZhkw858R2joYXwqRQVS9S"
+              "address": "2V5XN9rpubXdK3cdWBBjZwjxMpMzQBKTaN3moEJ59a8K"
             },
             {
               "name": "verifying_key"
@@ -2538,7 +2518,7 @@
             },
             {
               "name": "verifier_program",
-              "address": "geepCeZMrQu1Fh8mXYTxUcZhkw858R2joYXwqRQVS9S"
+              "address": "2V5XN9rpubXdK3cdWBBjZwjxMpMzQBKTaN3moEJ59a8K"
             },
             {
               "name": "verifying_key"
@@ -2562,7 +2542,7 @@
             },
             {
               "name": "vault_program",
-              "address": "Cp154M1oxXYJDbrgg9f57ytuthW8X8WNe73NQ7kQQr4Q"
+              "address": "AuFnb2FWz1W8ozcpSGc9RYbgSaon7bwtB5w9bPJnHkqH"
             },
             {
               "name": "factory_state",
@@ -2659,7 +2639,7 @@
             },
             {
               "name": "factory_program",
-              "address": "6uruFJACS8n2H28vWA39XqnPwRinL3P1DPLipySZfAuM"
+              "address": "94XEJsvLbTNYit4mXowjhqkDpwqtnXnKs2KtF3PNW2oK"
             },
             {
               "name": "token_program"
@@ -3469,7 +3449,7 @@
         },
         {
           "name": "verifier_program",
-          "address": "geepCeZMrQu1Fh8mXYTxUcZhkw858R2joYXwqRQVS9S"
+          "address": "2V5XN9rpubXdK3cdWBBjZwjxMpMzQBKTaN3moEJ59a8K"
         },
         {
           "name": "verifying_key"
@@ -4255,7 +4235,7 @@
         },
         {
           "name": "vault_program",
-          "address": "Cp154M1oxXYJDbrgg9f57ytuthW8X8WNe73NQ7kQQr4Q"
+          "address": "AuFnb2FWz1W8ozcpSGc9RYbgSaon7bwtB5w9bPJnHkqH"
         },
         {
           "name": "token_program"
@@ -4680,7 +4660,7 @@
         },
         {
           "name": "verifier_program",
-          "address": "geepCeZMrQu1Fh8mXYTxUcZhkw858R2joYXwqRQVS9S"
+          "address": "2V5XN9rpubXdK3cdWBBjZwjxMpMzQBKTaN3moEJ59a8K"
         },
         {
           "name": "verifying_key"
@@ -5006,7 +4986,7 @@
         },
         {
           "name": "verifier_program",
-          "address": "geepCeZMrQu1Fh8mXYTxUcZhkw858R2joYXwqRQVS9S"
+          "address": "2V5XN9rpubXdK3cdWBBjZwjxMpMzQBKTaN3moEJ59a8K"
         },
         {
           "name": "verifying_key"
@@ -5030,7 +5010,7 @@
         },
         {
           "name": "vault_program",
-          "address": "Cp154M1oxXYJDbrgg9f57ytuthW8X8WNe73NQ7kQQr4Q"
+          "address": "AuFnb2FWz1W8ozcpSGc9RYbgSaon7bwtB5w9bPJnHkqH"
         },
         {
           "name": "factory_state",
@@ -5127,7 +5107,7 @@
         },
         {
           "name": "factory_program",
-          "address": "6uruFJACS8n2H28vWA39XqnPwRinL3P1DPLipySZfAuM"
+          "address": "94XEJsvLbTNYit4mXowjhqkDpwqtnXnKs2KtF3PNW2oK"
         },
         {
           "name": "token_program"
@@ -5365,7 +5345,7 @@
         },
         {
           "name": "verifier_program",
-          "address": "geepCeZMrQu1Fh8mXYTxUcZhkw858R2joYXwqRQVS9S"
+          "address": "2V5XN9rpubXdK3cdWBBjZwjxMpMzQBKTaN3moEJ59a8K"
         },
         {
           "name": "verifying_key"
@@ -5389,7 +5369,7 @@
         },
         {
           "name": "vault_program",
-          "address": "Cp154M1oxXYJDbrgg9f57ytuthW8X8WNe73NQ7kQQr4Q"
+          "address": "AuFnb2FWz1W8ozcpSGc9RYbgSaon7bwtB5w9bPJnHkqH"
         },
         {
           "name": "factory_state",
@@ -5486,7 +5466,7 @@
         },
         {
           "name": "factory_program",
-          "address": "6uruFJACS8n2H28vWA39XqnPwRinL3P1DPLipySZfAuM"
+          "address": "94XEJsvLbTNYit4mXowjhqkDpwqtnXnKs2KtF3PNW2oK"
         },
         {
           "name": "token_program"
@@ -5575,7 +5555,7 @@
         },
         {
           "name": "vault_program",
-          "address": "Cp154M1oxXYJDbrgg9f57ytuthW8X8WNe73NQ7kQQr4Q"
+          "address": "AuFnb2FWz1W8ozcpSGc9RYbgSaon7bwtB5w9bPJnHkqH"
         },
         {
           "name": "token_program"

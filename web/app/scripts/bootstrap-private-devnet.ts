@@ -37,10 +37,10 @@ import { resolveRepoPath } from '../lib/server/paths';
 ensureFetchPolyfill();
 
 const PROGRAM_IDS = {
-  factory: new PublicKey('6uruFJACS8n2H28vWA39XqnPwRinL3P1DPLipySZfAuM'),
-  vault: new PublicKey('Cp154M1oxXYJDbrgg9f57ytuthW8X8WNe73NQ7kQQr4Q'),
-  pool: new PublicKey('F8bEMyP6Yt3SMGVT9jKL6m13Sn6mc1Z5AeuuJPNCR8to'),
-  verifier: new PublicKey('geepCeZMrQu1Fh8mXYTxUcZhkw858R2joYXwqRQVS9S')
+  factory: new PublicKey('94XEJsvLbTNYit4mXowjhqkDpwqtnXnKs2KtF3PNW2oK'),
+  vault: new PublicKey('AuFnb2FWz1W8ozcpSGc9RYbgSaon7bwtB5w9bPJnHkqH'),
+  pool: new PublicKey('ESbKkBQ9P7pavvFPejBXhguBY3BSLtf1LyEQqBNRDHqb'),
+  verifier: new PublicKey('2V5XN9rpubXdK3cdWBBjZwjxMpMzQBKTaN3moEJ59a8K')
 } as const;
 
 const FEATURE_PRIVATE_TRANSFER_ENABLED = 0x01;

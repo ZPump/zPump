@@ -63,10 +63,10 @@ log "Deploying programs to ${RPC_URL}..."
 # Deploy using solana program deploy for each program
 log "Deploying all programs..."
 PROGRAMS=(
-  "ptf_factory:YNZGqPEsKkMcUopmXThpigDdxfCYPE6jS1QtsXfRzjV"
-  "ptf_vault:ABUQvsF8kdY9HCFrVEomafg9ABbq4zVQuxLfevpwGnvb"
-  "ptf_pool:GBfBiuyXm5YZjnCPkZNjakht41rxEkMRxawQcocowwdi"
-  "ptf_verifier_groth16:3aCv39mCRFH9BGJskfXqwQoWzW1ULq2yXEbEwGgKtLgg"
+  "ptf_factory:94XEJsvLbTNYit4mXowjhqkDpwqtnXnKs2KtF3PNW2oK"
+  "ptf_vault:AuFnb2FWz1W8ozcpSGc9RYbgSaon7bwtB5w9bPJnHkqH"
+  "ptf_pool:ESbKkBQ9P7pavvFPejBXhguBY3BSLtf1LyEQqBNRDHqb"
+  "ptf_verifier_groth16:2V5XN9rpubXdK3cdWBBjZwjxMpMzQBKTaN3moEJ59a8K"
   "ptf_dex:8PMDczNoSdVhj5DsphLD1TrLAUtrZFpqMVThHQo8m12n"
 )
 
