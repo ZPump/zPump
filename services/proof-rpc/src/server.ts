@@ -425,7 +425,20 @@ function deriveTransferPublic(input: TransferInput) {
   
   const outputCommitment0Hex = fieldToHex(outputCommitment0Value);
   const outputCommitment1Hex = fieldToHex(outputCommitment1Value);
+  
+  // CRITICAL: Validate outputs before adding to array
+  if (!outputCommitment0Hex || typeof outputCommitment0Hex !== 'string') {
+    throw new Error(`Invalid outputCommitment0Hex: ${outputCommitment0Hex}`);
+  }
+  if (!outputCommitment1Hex || typeof outputCommitment1Hex !== 'string') {
+    throw new Error(`Invalid outputCommitment1Hex: ${outputCommitment1Hex}`);
+  }
+  
   const outputs = [outputCommitment0Hex, outputCommitment1Hex];
+  
+  if (outputs.length !== 2) {
+    throw new Error(`Expected 2 outputs, got ${outputs.length}`);
+  }
   
   // Compute roots
   const oldRootHex = canonicalizeHex(input.oldRoot);
@@ -449,6 +462,18 @@ function deriveTransferPublic(input: TransferInput) {
     throw new Error(`Invalid poolHex: ${poolHex}`);
   }
   
+  // CRITICAL: Log before array construction
+  console.log('[deriveTransferPublic] BEFORE array construction:', {
+    oldRootHex: oldRootHex?.substring(0, 20),
+    newRoot: newRoot?.substring(0, 20),
+    nullifiersCount: nullifiers.length,
+    nullifiers: nullifiers.map(n => n?.substring(0, 20)),
+    outputsCount: outputs.length,
+    outputs: outputs.map(o => o?.substring(0, 20)),
+    mintHex: mintHex?.substring(0, 20),
+    poolHex: poolHex?.substring(0, 20)
+  });
+  
   const publicInputs = [
     oldRootHex,
     newRoot,
@@ -458,8 +483,15 @@ function deriveTransferPublic(input: TransferInput) {
     poolHex
   ];
   
+  console.log('[deriveTransferPublic] AFTER array construction:', {
+    length: publicInputs.length,
+    elements: publicInputs.map((p, i) => ({ i, value: p?.substring(0, 30), type: typeof p }))
+  });
+  
   if (publicInputs.length !== 8) {
-    throw new Error(`Expected 8 public inputs, got ${publicInputs.length}: ${JSON.stringify(publicInputs.map((p, i) => ({ i, value: p?.substring(0, 20) })))}`);
+    const errorMsg = `Expected 8 public inputs, got ${publicInputs.length}: ${JSON.stringify(publicInputs.map((p, i) => ({ i, value: p?.substring(0, 20) })))}`;
+    console.error('[deriveTransferPublic] VALIDATION FAILED:', errorMsg);
+    throw new Error(errorMsg);
   }
   
   console.log('[deriveTransferPublic]', JSON.stringify({
