@@ -448,6 +448,17 @@ function deriveTransferPublic(input: TransferInput) {
   const mintHex = fieldToHex(mintFieldValue);
   const poolHex = fieldToHex(poolFieldValue);
   
+  // CRITICAL: Validate poolHex explicitly
+  console.log('[deriveTransferPublic] poolHex validation:', {
+    poolFieldValue: poolFieldValue?.toString(),
+    poolHex: poolHex,
+    poolHexType: typeof poolHex,
+    poolHexLength: poolHex?.length,
+    poolHexEmpty: poolHex === '',
+    poolHexUndefined: poolHex === undefined,
+    poolHexNull: poolHex === null
+  });
+  
   // CRITICAL: Ensure we have exactly 8 fields
   if (nullifiers.length !== 2) {
     throw new Error(`Expected 2 nullifiers, got ${nullifiers.length}`);
@@ -455,11 +466,11 @@ function deriveTransferPublic(input: TransferInput) {
   if (outputs.length !== 2) {
     throw new Error(`Expected 2 outputs, got ${outputs.length}`);
   }
-  if (!mintHex || typeof mintHex !== 'string') {
-    throw new Error(`Invalid mintHex: ${mintHex}`);
+  if (!mintHex || typeof mintHex !== 'string' || mintHex === '') {
+    throw new Error(`Invalid mintHex: ${mintHex} (type: ${typeof mintHex}, length: ${mintHex?.length})`);
   }
-  if (!poolHex || typeof poolHex !== 'string') {
-    throw new Error(`Invalid poolHex: ${poolHex}`);
+  if (!poolHex || typeof poolHex !== 'string' || poolHex === '') {
+    throw new Error(`Invalid poolHex: ${poolHex} (type: ${typeof poolHex}, length: ${poolHex?.length})`);
   }
   
   // CRITICAL: Log before array construction
@@ -1120,12 +1131,29 @@ async function main() {
       const circuit = req.params.circuit as ProofRequestPayload['circuit'];
       const request = ProofRequestSchema.parse({ circuit, payload: req.body });
       const proof = await generateProof(request, verifyingKeys, indexerClient);
+      
+      // CRITICAL: Validate proof response before sending
+      if (circuit === 'transfer' && proof.publicInputs.length !== 8) {
+        console.error('[HTTP] Transfer proof has invalid publicInputs count:', {
+          expected: 8,
+          actual: proof.publicInputs.length,
+          publicInputs: proof.publicInputs
+        });
+        res.status(500).json({ 
+          error: 'invalid_proof', 
+          message: `Expected 8 public inputs, got ${proof.publicInputs.length}`,
+          publicInputs: proof.publicInputs
+        });
+        return;
+      }
+      
       res.json(proof);
     } catch (error) {
       if (error instanceof z.ZodError) {
         res.status(400).json({ error: 'invalid_payload', details: error.flatten() });
         return;
       }
+      console.error('[HTTP] Proof generation error:', error);
       res.status(500).json({ error: 'proof_failed', message: (error as Error).message });
     }
   });
