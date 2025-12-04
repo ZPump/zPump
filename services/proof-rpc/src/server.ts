@@ -427,17 +427,40 @@ function deriveTransferPublic(input: TransferInput) {
   const outputCommitment1Hex = fieldToHex(outputCommitment1Value);
   
   // CRITICAL: Validate outputs before adding to array
-  if (!outputCommitment0Hex || typeof outputCommitment0Hex !== 'string') {
-    throw new Error(`Invalid outputCommitment0Hex: ${outputCommitment0Hex}`);
+  console.log('[deriveTransferPublic] Output commitments:', {
+    outputCommitment0Value: outputCommitment0Value?.toString(),
+    outputCommitment1Value: outputCommitment1Value?.toString(),
+    outputCommitment0Hex: outputCommitment0Hex?.substring(0, 50),
+    outputCommitment1Hex: outputCommitment1Hex?.substring(0, 50),
+    outputCommitment0HexType: typeof outputCommitment0Hex,
+    outputCommitment1HexType: typeof outputCommitment1Hex,
+    outputCommitment0HexLength: outputCommitment0Hex?.length,
+    outputCommitment1HexLength: outputCommitment1Hex?.length,
+    outputCommitment0HexEmpty: outputCommitment0Hex === '',
+    outputCommitment1HexEmpty: outputCommitment1Hex === ''
+  });
+  
+  if (!outputCommitment0Hex || typeof outputCommitment0Hex !== 'string' || outputCommitment0Hex === '') {
+    throw new Error(`Invalid outputCommitment0Hex: ${outputCommitment0Hex} (type: ${typeof outputCommitment0Hex}, length: ${outputCommitment0Hex?.length})`);
   }
-  if (!outputCommitment1Hex || typeof outputCommitment1Hex !== 'string') {
-    throw new Error(`Invalid outputCommitment1Hex: ${outputCommitment1Hex}`);
+  if (!outputCommitment1Hex || typeof outputCommitment1Hex !== 'string' || outputCommitment1Hex === '') {
+    throw new Error(`Invalid outputCommitment1Hex: ${outputCommitment1Hex} (type: ${typeof outputCommitment1Hex}, length: ${outputCommitment1Hex?.length})`);
   }
   
   const outputs = [outputCommitment0Hex, outputCommitment1Hex];
   
+  console.log('[deriveTransferPublic] Outputs array:', {
+    length: outputs.length,
+    outputs: outputs.map((o, i) => ({ i, value: o?.substring(0, 50), type: typeof o }))
+  });
+  
   if (outputs.length !== 2) {
-    throw new Error(`Expected 2 outputs, got ${outputs.length}`);
+    throw new Error(`Expected 2 outputs, got ${outputs.length}: ${JSON.stringify(outputs.map((o, i) => ({ i, value: o?.substring(0, 30) })))}`);
+  }
+  
+  // CRITICAL: Verify both outputs are actually in the array
+  if (outputs[0] !== outputCommitment0Hex || outputs[1] !== outputCommitment1Hex) {
+    throw new Error(`Outputs array mismatch! Expected [${outputCommitment0Hex?.substring(0, 30)}, ${outputCommitment1Hex?.substring(0, 30)}], Got [${outputs[0]?.substring(0, 30)}, ${outputs[1]?.substring(0, 30)}]`);
   }
   
   // Compute roots
@@ -494,6 +517,18 @@ function deriveTransferPublic(input: TransferInput) {
     throw new Error(`[deriveTransferPublic] poolHex became invalid before array construction! Value: ${poolHex}`);
   }
   
+  // CRITICAL: Verify mintHex is valid before adding to array
+  if (!mintHex || typeof mintHex !== 'string' || mintHex === '' || !mintHex.startsWith('0x')) {
+    throw new Error(`[deriveTransferPublic] mintHex is invalid! Value: ${mintHex}, Type: ${typeof mintHex}`);
+  }
+  
+  console.log('[deriveTransferPublic] BEFORE array - mintHex:', {
+    mintHex: mintHex.substring(0, 50),
+    mintHexLength: mintHex.length,
+    mintHexType: typeof mintHex,
+    mintHexValid: mintHex && typeof mintHex === 'string' && mintHex.startsWith('0x')
+  });
+  
   const publicInputs = [
     oldRootHex,
     newRoot,
@@ -502,6 +537,11 @@ function deriveTransferPublic(input: TransferInput) {
     mintHex,
     poolHex
   ];
+  
+  // CRITICAL: Verify mintHex is at index 6
+  if (publicInputs[6] !== mintHex) {
+    throw new Error(`[deriveTransferPublic] mintHex not at index 6! Expected: ${mintHex?.substring(0, 30)}, Got: ${publicInputs[6]?.substring(0, 30)}`);
+  }
   
   // CRITICAL: Verify poolHex is actually in the array
   if (publicInputs[7] !== poolHex) {
