@@ -448,15 +448,19 @@ function deriveTransferPublic(input: TransferInput) {
   const mintHex = fieldToHex(mintFieldValue);
   const poolHex = fieldToHex(poolFieldValue);
   
-  // CRITICAL: Validate poolHex explicitly
-  console.log('[deriveTransferPublic] poolHex validation:', {
+  // CRITICAL: Validate poolHex explicitly - throw immediately if invalid
+  if (!poolHex || typeof poolHex !== 'string' || poolHex === '' || poolHex === '0x' || !poolHex.startsWith('0x')) {
+    const errorMsg = `[deriveTransferPublic] CRITICAL: Invalid poolHex! Value: ${poolHex}, Type: ${typeof poolHex}, Length: ${poolHex?.length}, poolFieldValue: ${poolFieldValue?.toString()}`;
+    console.error(errorMsg);
+    throw new Error(errorMsg);
+  }
+  
+  console.log('[deriveTransferPublic] poolHex validation PASSED:', {
     poolFieldValue: poolFieldValue?.toString(),
-    poolHex: poolHex,
+    poolHex: poolHex.substring(0, 50),
     poolHexType: typeof poolHex,
-    poolHexLength: poolHex?.length,
-    poolHexEmpty: poolHex === '',
-    poolHexUndefined: poolHex === undefined,
-    poolHexNull: poolHex === null
+    poolHexLength: poolHex.length,
+    poolHexStartsWith0x: poolHex.startsWith('0x')
   });
   
   // CRITICAL: Ensure we have exactly 8 fields
@@ -485,6 +489,11 @@ function deriveTransferPublic(input: TransferInput) {
     poolHex: poolHex?.substring(0, 20)
   });
   
+  // CRITICAL: Verify poolHex is still valid before adding to array
+  if (!poolHex || typeof poolHex !== 'string' || poolHex === '' || !poolHex.startsWith('0x')) {
+    throw new Error(`[deriveTransferPublic] poolHex became invalid before array construction! Value: ${poolHex}`);
+  }
+  
   const publicInputs = [
     oldRootHex,
     newRoot,
@@ -494,15 +503,32 @@ function deriveTransferPublic(input: TransferInput) {
     poolHex
   ];
   
+  // CRITICAL: Verify poolHex is actually in the array
+  if (publicInputs[7] !== poolHex) {
+    throw new Error(`[deriveTransferPublic] poolHex not at index 7! Expected: ${poolHex?.substring(0, 30)}, Got: ${publicInputs[7]?.substring(0, 30)}`);
+  }
+  
   console.log('[deriveTransferPublic] AFTER array construction:', {
     length: publicInputs.length,
-    elements: publicInputs.map((p, i) => ({ i, value: p?.substring(0, 30), type: typeof p }))
+    elements: publicInputs.map((p, i) => ({ 
+      i, 
+      value: p?.substring(0, 30), 
+      type: typeof p,
+      isPoolHex: i === 7 && p === poolHex
+    })),
+    poolHexAtIndex7: publicInputs[7] === poolHex,
+    poolHexValue: poolHex.substring(0, 30)
   });
   
   if (publicInputs.length !== 8) {
     const errorMsg = `Expected 8 public inputs, got ${publicInputs.length}: ${JSON.stringify(publicInputs.map((p, i) => ({ i, value: p?.substring(0, 20) })))}`;
     console.error('[deriveTransferPublic] VALIDATION FAILED:', errorMsg);
     throw new Error(errorMsg);
+  }
+  
+  // CRITICAL: Final check - ensure poolHex is still at index 7
+  if (publicInputs[7] !== poolHex || !publicInputs[7] || typeof publicInputs[7] !== 'string') {
+    throw new Error(`[deriveTransferPublic] poolHex lost from array! Array length: ${publicInputs.length}, Index 7: ${publicInputs[7]?.substring(0, 30)}`);
   }
   
   console.log('[deriveTransferPublic]', JSON.stringify({
@@ -550,13 +576,38 @@ function deriveTransferPublic(input: TransferInput) {
     out_blinding_1: paddedOutNotes[1]!.blinding
   };
   
-  return {
+  // CRITICAL: Final validation before return
+  if (publicInputs.length !== 8) {
+    throw new Error(`[deriveTransferPublic] RETURN VALIDATION: Expected 8, got ${publicInputs.length}`);
+  }
+  if (publicInputs[7] !== poolHex) {
+    throw new Error(`[deriveTransferPublic] RETURN VALIDATION: poolHex missing at index 7! Expected: ${poolHex?.substring(0, 30)}, Got: ${publicInputs[7]?.substring(0, 30)}`);
+  }
+  
+  console.log('[deriveTransferPublic] RETURNING:', {
+    publicInputsLength: publicInputs.length,
+    publicInputs: publicInputs.map((p, i) => ({ i, value: p?.substring(0, 30) })),
+    poolHexAt7: publicInputs[7] === poolHex,
+    poolHexValue: poolHex.substring(0, 30)
+  });
+  
+  const returnValue = {
     publicInputs,
     newRoot,
     nullifiers,
     outputs,
     payload: paddedPayload
   };
+  
+  // CRITICAL: Validate return value
+  if (returnValue.publicInputs.length !== 8) {
+    throw new Error(`[deriveTransferPublic] RETURN VALUE VALIDATION: Expected 8, got ${returnValue.publicInputs.length}`);
+  }
+  if (returnValue.publicInputs[7] !== poolHex) {
+    throw new Error(`[deriveTransferPublic] RETURN VALUE VALIDATION: poolHex missing!`);
+  }
+  
+  return returnValue;
 }
 
 function deriveBatchTransferPublic(input: BatchTransferInput) {
