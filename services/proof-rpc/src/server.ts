@@ -449,19 +449,26 @@ function deriveTransferPublic(input: TransferInput) {
   
   const outputs = [outputCommitment0Hex, outputCommitment1Hex];
   
-  console.log('[deriveTransferPublic] Outputs array:', {
-    length: outputs.length,
-    outputs: outputs.map((o, i) => ({ i, value: o?.substring(0, 50), type: typeof o }))
-  });
-  
+  // CRITICAL: Force error if outputs array doesn't have 2 elements
   if (outputs.length !== 2) {
-    throw new Error(`Expected 2 outputs, got ${outputs.length}: ${JSON.stringify(outputs.map((o, i) => ({ i, value: o?.substring(0, 30) })))}`);
+    const errorMsg = `[deriveTransferPublic] CRITICAL ERROR: Expected 2 outputs, got ${outputs.length}! outputCommitment0Hex: ${outputCommitment0Hex?.substring(0, 30)}, outputCommitment1Hex: ${outputCommitment1Hex?.substring(0, 30)}, outputs: ${JSON.stringify(outputs.map((o, i) => ({ i, value: o?.substring(0, 30) })))}`;
+    console.error(errorMsg);
+    throw new Error(errorMsg);
   }
   
-  // CRITICAL: Verify both outputs are actually in the array
-  if (outputs[0] !== outputCommitment0Hex || outputs[1] !== outputCommitment1Hex) {
-    throw new Error(`Outputs array mismatch! Expected [${outputCommitment0Hex?.substring(0, 30)}, ${outputCommitment1Hex?.substring(0, 30)}], Got [${outputs[0]?.substring(0, 30)}, ${outputs[1]?.substring(0, 30)}]`);
+  // CRITICAL: Force error if outputs[1] is not outputCommitment1Hex
+  if (outputs[1] !== outputCommitment1Hex) {
+    const errorMsg = `[deriveTransferPublic] CRITICAL ERROR: outputs[1] mismatch! Expected: ${outputCommitment1Hex?.substring(0, 30)}, Got: ${outputs[1]?.substring(0, 30)}`;
+    console.error(errorMsg);
+    throw new Error(errorMsg);
   }
+  
+  console.log('[deriveTransferPublic] Outputs array VALIDATED:', {
+    length: outputs.length,
+    outputs: outputs.map((o, i) => ({ i, value: o?.substring(0, 50), type: typeof o })),
+    outputCommitment0Hex: outputCommitment0Hex?.substring(0, 30),
+    outputCommitment1Hex: outputCommitment1Hex?.substring(0, 30)
+  });
   
   // Compute roots
   const oldRootHex = canonicalizeHex(input.oldRoot);
