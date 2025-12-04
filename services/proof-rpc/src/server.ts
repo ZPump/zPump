@@ -632,20 +632,29 @@ function deriveTransferPublic(input: TransferInput) {
     out_blinding_1: paddedOutNotes[1]!.blinding
   };
   
-  // CRITICAL: Final validation before return
+  // CRITICAL: Final validation before return - FORCE ERROR
+  logger.info({
+    publicInputsLength: publicInputs.length,
+    outputsLength: outputs.length,
+    publicInputs: publicInputs.map((p, i) => ({ i, value: p?.substring(0, 30), type: typeof p })),
+    outputs: outputs.map((o, i) => ({ i, value: o?.substring(0, 30) }))
+  }, '[deriveTransferPublic] BEFORE RETURN VALIDATION');
+  
   if (publicInputs.length !== 8) {
-    throw new Error(`[deriveTransferPublic] RETURN VALIDATION: Expected 8, got ${publicInputs.length}`);
+    const errorMsg = `[deriveTransferPublic] RETURN VALIDATION FAILED: Expected 8, got ${publicInputs.length}! publicInputs: ${JSON.stringify(publicInputs.map((p, i) => ({ i, value: p?.substring(0, 30) })))}`;
+    logger.error({ errorMsg, publicInputs }, '[deriveTransferPublic] Return validation failed');
+    throw new Error(errorMsg);
+  }
+  if (outputs.length !== 2) {
+    const errorMsg = `[deriveTransferPublic] RETURN VALIDATION FAILED: outputs array has ${outputs.length} elements, expected 2!`;
+    logger.error({ errorMsg, outputs }, '[deriveTransferPublic] Outputs validation failed');
+    throw new Error(errorMsg);
   }
   if (publicInputs[7] !== poolHex) {
-    throw new Error(`[deriveTransferPublic] RETURN VALIDATION: poolHex missing at index 7! Expected: ${poolHex?.substring(0, 30)}, Got: ${publicInputs[7]?.substring(0, 30)}`);
+    const errorMsg = `[deriveTransferPublic] RETURN VALIDATION: poolHex missing at index 7! Expected: ${poolHex?.substring(0, 30)}, Got: ${publicInputs[7]?.substring(0, 30)}`;
+    logger.error({ errorMsg }, '[deriveTransferPublic] PoolHex validation failed');
+    throw new Error(errorMsg);
   }
-  
-  console.log('[deriveTransferPublic] RETURNING:', {
-    publicInputsLength: publicInputs.length,
-    publicInputs: publicInputs.map((p, i) => ({ i, value: p?.substring(0, 30) })),
-    poolHexAt7: publicInputs[7] === poolHex,
-    poolHexValue: poolHex.substring(0, 30)
-  });
   
   const returnValue = {
     publicInputs,
@@ -655,13 +664,19 @@ function deriveTransferPublic(input: TransferInput) {
     payload: paddedPayload
   };
   
-  // CRITICAL: Validate return value
+  // CRITICAL: Validate return value - FORCE ERROR
   if (returnValue.publicInputs.length !== 8) {
-    throw new Error(`[deriveTransferPublic] RETURN VALUE VALIDATION: Expected 8, got ${returnValue.publicInputs.length}`);
+    const errorMsg = `[deriveTransferPublic] RETURN VALUE VALIDATION FAILED: Expected 8, got ${returnValue.publicInputs.length}`;
+    logger.error({ errorMsg, returnValue }, '[deriveTransferPublic] Return value validation failed');
+    throw new Error(errorMsg);
   }
-  if (returnValue.publicInputs[7] !== poolHex) {
-    throw new Error(`[deriveTransferPublic] RETURN VALUE VALIDATION: poolHex missing!`);
+  if (returnValue.outputs.length !== 2) {
+    const errorMsg = `[deriveTransferPublic] RETURN VALUE VALIDATION FAILED: outputs has ${returnValue.outputs.length} elements, expected 2`;
+    logger.error({ errorMsg, returnValue }, '[deriveTransferPublic] Return value outputs validation failed');
+    throw new Error(errorMsg);
   }
+  
+  logger.info({ publicInputsLength: returnValue.publicInputs.length, outputsLength: returnValue.outputs.length }, '[deriveTransferPublic] RETURNING VALIDATED');
   
   return returnValue;
 }
