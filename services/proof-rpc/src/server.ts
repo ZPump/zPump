@@ -1245,19 +1245,50 @@ async function main() {
       const request = ProofRequestSchema.parse({ circuit, payload: req.body });
       const proof = await generateProof(request, verifyingKeys, indexerClient);
       
-      // CRITICAL: Validate proof response before sending
-      if (circuit === 'transfer' && proof.publicInputs.length !== 8) {
-        console.error('[HTTP] Transfer proof has invalid publicInputs count:', {
-          expected: 8,
-          actual: proof.publicInputs.length,
-          publicInputs: proof.publicInputs
+      // CRITICAL: Validate proof response before sending - FORCE ERROR if invalid
+      if (circuit === 'transfer') {
+        // Log the actual proof object before validation
+        console.log('[HTTP] Transfer proof received:', {
+          publicInputsLength: proof.publicInputs.length,
+          publicInputs: proof.publicInputs.map((p, i) => ({ i, value: p?.substring(0, 30), type: typeof p, isNull: p === null, isUndefined: p === undefined }))
         });
-        res.status(500).json({ 
-          error: 'invalid_proof', 
-          message: `Expected 8 public inputs, got ${proof.publicInputs.length}`,
-          publicInputs: proof.publicInputs
+        
+        if (proof.publicInputs.length !== 8) {
+          const errorMsg = `[HTTP] CRITICAL: Transfer proof has ${proof.publicInputs.length} public inputs, expected 8! publicInputs: ${JSON.stringify(proof.publicInputs.map((p, i) => ({ i, value: p?.substring(0, 30) })))}`;
+          console.error(errorMsg);
+          res.status(500).json({ 
+            error: 'invalid_proof', 
+            message: errorMsg,
+            publicInputs: proof.publicInputs,
+            publicInputsCount: proof.publicInputs.length
+          });
+          return;
+        }
+        // Additional validation: check if we have the expected fields
+        const expectedFields = ['oldRoot', 'newRoot', 'nullifier0', 'nullifier1', 'output0', 'output1', 'mint', 'pool'];
+        if (proof.publicInputs.length !== expectedFields.length) {
+          const errorMsg = `[HTTP] CRITICAL: Field count mismatch! Expected ${expectedFields.length}, got ${proof.publicInputs.length}`;
+          console.error(errorMsg);
+          res.status(500).json({ 
+            error: 'invalid_proof', 
+            message: errorMsg,
+            publicInputs: proof.publicInputs
+          });
+          return;
+        }
+        
+        // Log before sending response
+        console.log('[HTTP] Transfer proof validated, sending response with', proof.publicInputs.length, 'fields');
+      }
+      
+      // Log the actual JSON that will be sent
+      const jsonResponse = JSON.stringify(proof);
+      const parsedResponse = JSON.parse(jsonResponse);
+      if (circuit === 'transfer') {
+        console.log('[HTTP] JSON response parsed:', {
+          publicInputsLength: parsedResponse.publicInputs?.length,
+          publicInputs: parsedResponse.publicInputs?.map((p: string, i: number) => ({ i, value: p?.substring(0, 30) }))
         });
-        return;
       }
       
       res.json(proof);
