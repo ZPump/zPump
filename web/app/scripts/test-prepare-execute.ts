@@ -921,10 +921,18 @@ async function testPrepareExecuteTransferFrom() {
     console.log('   ✓ TransferFrom proof generated');
     
     console.log('   Preparing transferFrom...');
-    // Convert Uint8Array[] to hex strings for prepareTransferFrom
-    const nullifiersHex = transferProof.nullifiers.map(n => Buffer.from(n).toString('hex'));
-    const outputCommitmentsHex = transferProof.outputCommitments.map(c => Buffer.from(c).toString('hex'));
-    const outputAmountCommitmentsHex = transferProof.outputAmountCommitments.map(c => Buffer.from(c).toString('hex'));
+    // CRITICAL FIX: Use nullifiers and output commitments directly from proof.publicInputs
+    // The proof.publicInputs format is: [oldRoot, newRoot, nullifier0, nullifier1, output0, output1, mint, pool]
+    // Extract nullifiers and commitments directly from publicInputs to ensure they match what the program expects
+    const nullifiersHex = transferProof.publicInputs.slice(2, 4); // nullifier0, nullifier1
+    const outputCommitmentsHex = transferProof.publicInputs.slice(4, 6); // output0, output1
+    // For outputAmountCommitments, use the computed values from transferProof (they're not in publicInputs)
+    const { canonicalizeHex } = await import('../lib/onchain/utils');
+    const outputAmountCommitmentsHex = transferProof.outputAmountCommitments.map(c => {
+      // Convert Uint8Array to hex string, then canonicalize to ensure consistency
+      const hex = Buffer.from(c).toString('hex');
+      return canonicalizeHex(hex);
+    });
     const { operationId: transferFromOpId, signature: prepareTransferFromSig } = await prepareTransferFrom({
       wallet,
       connection,
