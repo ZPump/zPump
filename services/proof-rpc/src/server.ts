@@ -973,14 +973,29 @@ async function produceProof(
         proofBytes: proofBytes.length,
         publicInputBytes: publicInputBytes.length
       }, 'Serialized Groth16 artifacts');
+      // CRITICAL: Validate derivedInputs before using
+      if (circuit === 'transfer' && derivedInputs.length !== 8) {
+        const errorMsg = `[produceProof] Transfer derivedInputs has ${derivedInputs.length} elements, expected 8: ${JSON.stringify(derivedInputs.map((p, i) => ({ i, value: p?.substring(0, 30) })))}`;
+        console.error(errorMsg);
+        throw new Error(errorMsg);
+      }
+      
       const result = {
         proof: proofBytes.toString('base64'),
         publicInputs: derivedInputs,
         verifyingKeyHash: entry.hash
       };
+      
+      // CRITICAL: Validate result before returning
+      if (circuit === 'transfer' && result.publicInputs.length !== 8) {
+        const errorMsg = `[produceProof] Transfer result.publicInputs has ${result.publicInputs.length} elements, expected 8: ${JSON.stringify(result.publicInputs.map((p, i) => ({ i, value: p?.substring(0, 30) })))}`;
+        console.error(errorMsg);
+        throw new Error(errorMsg);
+      }
+      
       console.log('[produceProof] returning', JSON.stringify({
         publicInputsCount: result.publicInputs.length,
-        publicInputs: result.publicInputs
+        publicInputs: result.publicInputs.map((p, i) => ({ i, value: p?.substring(0, 30) }))
       }, null, 2));
       return result;
     } catch (error) {
