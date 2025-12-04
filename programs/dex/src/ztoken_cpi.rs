@@ -884,8 +884,8 @@ pub fn invoke_transfer_for_add_liquidity_ctx<'info, 'a, 'b, 'c>(
 /// using a single batch proof. This solves the transaction size issue.
 /// 
 /// Returns: ((commitment_a, new_reserve_a_amount), (commitment_b, new_reserve_b_amount))
-pub fn invoke_batch_transfer_for_add_liquidity<'info>(
-    remaining_accounts: &'info [AccountInfo<'info>],
+pub fn invoke_batch_transfer_for_add_liquidity(
+    remaining_accounts: &'static [AccountInfo<'static>],
     token_a: &Pubkey,
     token_b: &Pubkey,
     batch_transfer_args: BatchTransferArgs,
@@ -903,9 +903,7 @@ pub fn invoke_batch_transfer_for_add_liquidity<'info>(
     
     // Parse first pool accounts (explicit in BatchPrivateTransfer)
     // SAFETY: AccountInfo from remaining_accounts has a different lifetime, but we validate it before use
-    let remaining_accounts_transmuted: &'info [AccountInfo<'info>] = unsafe {
-        std::mem::transmute(remaining_accounts)
-    };
+    let remaining_accounts_transmuted: &'static [AccountInfo<'static>] = remaining_accounts;
     let ztoken_accounts_a = parse_ztoken_accounts(
         remaining_accounts_transmuted,
         token_a,
@@ -937,7 +935,7 @@ pub fn invoke_batch_transfer_for_add_liquidity<'info>(
     //        verifier_program, verifying_key, payer, system_program, rent,
     //        remaining_accounts: pool_state_1, nullifier_set_1, commitment_tree_1, note_ledger_1, mint_mapping_1
     let mut account_metas = Vec::new();
-    let mut account_infos: Vec<AccountInfo<'info>> = Vec::new();
+    let mut account_infos: Vec<AccountInfo<'static>> = Vec::new();
     
     // First pool accounts (explicit)
     account_metas.push(anchor_lang::solana_program::instruction::AccountMeta::new(

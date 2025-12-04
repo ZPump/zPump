@@ -50,10 +50,11 @@ import { getWrappedSolAccount, createWrapSolInstructions, checkWrappedSolBalance
 import { ProofClient } from '../lib/proofClient';
 import { createWalletAdapter } from './utils/walletAdapter';
 import { ensureFetchPolyfill } from './utils/fetch-polyfill';
-import { AnchorProvider, BN, Program } from '@coral-xyz/anchor';
-import { FACTORY_PROGRAM_ID } from '../lib/onchain/programIds';
+import { AnchorProvider, BN, Program, BorshCoder } from '@coral-xyz/anchor';
+import { FACTORY_PROGRAM_ID, POOL_PROGRAM_ID } from '../lib/onchain/programIds';
 import factoryIdl from '../idl/ptf_factory.json';
 import { deriveVaultState } from '../lib/onchain/pdas';
+import poolIdl from '../idl/ptf_pool.json';
 
 ensureFetchPolyfill();
 
@@ -261,6 +262,44 @@ async function testPrepareExecuteShield() {
     });
     console.log(`   ✓ Prepare signature: ${prepareSig}`);
     console.log(`   ✓ Operation ID: ${operationId}`);
+    
+    // Step 3.5: Ensure vault token account exists
+    console.log('3.5. Ensuring vault token account exists...');
+    const { deriveVaultState } = await import('../lib/onchain/pdas');
+    const vaultState = deriveVaultState(testMint);
+    const { isNativeSol, NATIVE_SOL_MINT } = await import('../lib/solWrapping');
+    const actualShieldMint = isNativeSol(testMint) ? NATIVE_SOL_MINT : testMint;
+    const tokenProgramId = TOKEN_PROGRAM_ID;
+    const vaultTokenAccount = await getAssociatedTokenAddress(
+      actualShieldMint,
+      vaultState,
+      true, // allowOwnerOffCurve
+      tokenProgramId,
+      ASSOCIATED_TOKEN_PROGRAM_ID
+    );
+    const vaultTokenAccountInfo = await connection.getAccountInfo(vaultTokenAccount, 'confirmed');
+    if (!vaultTokenAccountInfo) {
+      console.log('   Creating vault token account...');
+      const createVaultTx = new Transaction().add(
+        createAssociatedTokenAccountInstruction(
+          keypair.publicKey,
+          vaultTokenAccount,
+          vaultState,
+          actualShieldMint,
+          tokenProgramId,
+          ASSOCIATED_TOKEN_PROGRAM_ID
+        )
+      );
+      createVaultTx.feePayer = keypair.publicKey;
+      const createVaultBlockhash = await connection.getLatestBlockhash('confirmed');
+      createVaultTx.recentBlockhash = createVaultBlockhash.blockhash;
+      createVaultTx.sign(keypair);
+      const createVaultSig = await connection.sendRawTransaction(createVaultTx.serialize(), { skipPreflight: false });
+      await connection.confirmTransaction(createVaultSig, 'confirmed');
+      console.log(`   ✓ Vault token account created: ${createVaultSig}`);
+    } else {
+      console.log('   ✓ Vault token account already exists');
+    }
     
     // Step 4: Execute shield (pool must be initialized first)
     console.log('4. Executing shield...');
@@ -652,15 +691,19 @@ async function testPrepareExecuteTransfer() {
     
     // Prepare transfer
     console.log('   Preparing transfer...');
+    // Convert Uint8Array[] to hex strings for prepareTransfer
+    const nullifiersHex = transferProof.nullifiers.map(n => Buffer.from(n).toString('hex'));
+    const outputCommitmentsHex = transferProof.outputCommitments.map(c => Buffer.from(c).toString('hex'));
+    const outputAmountCommitmentsHex = transferProof.outputAmountCommitments.map(c => Buffer.from(c).toString('hex'));
     const { operationId: transferOpId, signature: prepareTransferSig } = await prepareTransfer({
       wallet,
       connection,
       originMint,
-      nullifiers: transferProof.nullifiers,
-      outputCommitments: transferProof.outputCommitments,
-      outputAmountCommitments: transferProof.outputAmountCommitments,
-      proof: transferProof.proof,
-      proofClient
+      poolId: poolState.toBase58(),
+      nullifiers: nullifiersHex,
+      outputCommitments: outputCommitmentsHex,
+      outputAmountCommitments: outputAmountCommitmentsHex,
+      proof: transferProof
     });
     console.log(`   ✓ Transfer prepared: ${prepareTransferSig}`);
     console.log(`   ✓ Operation ID: ${transferOpId}`);
@@ -759,6 +802,43 @@ async function testPrepareExecuteTransferFrom() {
     });
     console.log(`   ✓ Shield prepared: ${prepareShieldSig}`);
     
+    // Ensure vault token account exists before executeShield
+    const { deriveVaultState } = await import('../lib/onchain/pdas');
+    const vaultState = deriveVaultState(testMint);
+    const { isNativeSol, NATIVE_SOL_MINT } = await import('../lib/solWrapping');
+    const actualShieldMint = isNativeSol(testMint) ? NATIVE_SOL_MINT : testMint;
+    const tokenProgramId = TOKEN_PROGRAM_ID;
+    const vaultTokenAccount = await getAssociatedTokenAddress(
+      actualShieldMint,
+      vaultState,
+      true, // allowOwnerOffCurve
+      tokenProgramId,
+      ASSOCIATED_TOKEN_PROGRAM_ID
+    );
+    const vaultTokenAccountInfo = await connection.getAccountInfo(vaultTokenAccount, 'confirmed');
+    if (!vaultTokenAccountInfo) {
+      console.log('   Creating vault token account...');
+      const createVaultTx = new Transaction().add(
+        createAssociatedTokenAccountInstruction(
+          allowanceOwner.publicKey,
+          vaultTokenAccount,
+          vaultState,
+          actualShieldMint,
+          tokenProgramId,
+          ASSOCIATED_TOKEN_PROGRAM_ID
+        )
+      );
+      createVaultTx.feePayer = allowanceOwner.publicKey;
+      const createVaultBlockhash = await connection.getLatestBlockhash('confirmed');
+      createVaultTx.recentBlockhash = createVaultBlockhash.blockhash;
+      createVaultTx.sign(allowanceOwner);
+      const createVaultSig = await connection.sendRawTransaction(createVaultTx.serialize(), { skipPreflight: false });
+      await connection.confirmTransaction(createVaultSig, 'confirmed');
+      console.log(`   ✓ Vault token account created: ${createVaultSig}`);
+    } else {
+      console.log('   ✓ Vault token account already exists');
+    }
+    
     const executeShieldSig = await executeShield({
       wallet: ownerWallet,
       connection,
@@ -775,12 +855,46 @@ async function testPrepareExecuteTransferFrom() {
     await new Promise(resolve => setTimeout(resolve, 3000));
     console.log('   ✓ Shield completed - notes created for allowance owner');
     
-    // Step 2: Create allowance (simplified - assume allowance already exists or create it)
+    // Step 2: Create allowance
     console.log('2. Setting up allowance...');
-    // Note: In a real scenario, you'd need to call approve_allowance first
-    // For this test, we'll assume the allowance is already set up
     const allowanceAmount = BigInt(50_000_000); // 0.05 SOL
     const spendAmount = allowanceAmount; // For simplicity, spend all allowance
+    
+    // Approve allowance - owner approves spender to spend on their behalf
+    console.log('   Approving allowance...');
+    const { deriveAllowanceAccount } = await import('../lib/onchain/pdas');
+    const allowanceKey = deriveAllowanceAccount(poolState, allowanceOwner.publicKey, keypair.publicKey);
+    
+    // Build approve_allowance instruction
+    const poolCoder = new BorshCoder(poolIdl as any);
+    const approveData = poolCoder.instruction.encode('approve_allowance', {
+      args: {
+        amount: new BN(allowanceAmount.toString()),
+        expires_at: null
+      }
+    });
+    
+    const approveIx = new TransactionInstruction({
+      programId: POOL_PROGRAM_ID,
+      keys: [
+        { pubkey: poolState, isSigner: false, isWritable: true },
+        { pubkey: allowanceKey, isSigner: false, isWritable: true },
+        { pubkey: allowanceOwner.publicKey, isSigner: true, isWritable: true },
+        { pubkey: keypair.publicKey, isSigner: false, isWritable: false },
+        { pubkey: testMint, isSigner: false, isWritable: false },
+        { pubkey: SystemProgram.programId, isSigner: false, isWritable: false }
+      ],
+      data: approveData
+    });
+    
+    const approveTx = new Transaction().add(approveIx);
+    approveTx.feePayer = allowanceOwner.publicKey;
+    const approveBlockhash = await connection.getLatestBlockhash('confirmed');
+    approveTx.recentBlockhash = approveBlockhash.blockhash;
+    approveTx.sign(allowanceOwner);
+    const approveSig = await connection.sendRawTransaction(approveTx.serialize(), { skipPreflight: false });
+    await connection.confirmTransaction(approveSig, 'confirmed');
+    console.log(`   ✓ Allowance approved: ${approveSig}`);
     
     // Step 3: Test transferFrom
     console.log('3. Testing transferFrom...');
@@ -807,19 +921,22 @@ async function testPrepareExecuteTransferFrom() {
     console.log('   ✓ TransferFrom proof generated');
     
     console.log('   Preparing transferFrom...');
+    // Convert Uint8Array[] to hex strings for prepareTransferFrom
+    const nullifiersHex = transferProof.nullifiers.map(n => Buffer.from(n).toString('hex'));
+    const outputCommitmentsHex = transferProof.outputCommitments.map(c => Buffer.from(c).toString('hex'));
+    const outputAmountCommitmentsHex = transferProof.outputAmountCommitments.map(c => Buffer.from(c).toString('hex'));
     const { operationId: transferFromOpId, signature: prepareTransferFromSig } = await prepareTransferFrom({
       wallet,
       connection,
       originMint,
       poolId: poolState.toBase58(),
-      nullifiers: transferProof.nullifiers,
-      outputCommitments: transferProof.outputCommitments,
-      outputAmountCommitments: transferProof.outputAmountCommitments,
-      proof: transferProof.proof,
+      nullifiers: nullifiersHex,
+      outputCommitments: outputCommitmentsHex,
+      outputAmountCommitments: outputAmountCommitmentsHex,
+      proof: transferProof,
       allowanceOwner: allowanceOwner.publicKey.toBase58(),
       allowanceAmount,
-      spendAmount,
-      proofClient
+      spendAmount
     });
     console.log(`   ✓ TransferFrom prepared: ${prepareTransferFromSig}`);
     console.log(`   ✓ Operation ID: ${transferFromOpId}`);
@@ -952,48 +1069,50 @@ async function testVaultCapacity() {
 
 async function main() {
   console.log('🧪 Testing Prepare/Execute Pattern\n');
-  console.log('=' .repeat(50));
+  console.log('='.repeat(50));
+
+  const onlyArg = (process.env.ONLY_TEST ?? process.argv[2] ?? '').trim().toLowerCase();
+  const tests: Array<{ name: string; fn: () => Promise<boolean> }> = [
+    { name: 'shield', fn: testPrepareExecuteShield },
+    { name: 'unshield', fn: testPrepareExecuteUnshield },
+    { name: 'transfer', fn: testPrepareExecuteTransfer },
+    { name: 'transferfrom', fn: testPrepareExecuteTransferFrom },
+    { name: 'batchtransfer', fn: testPrepareExecuteBatchTransfer },
+    { name: 'batchtransferfrom', fn: testPrepareExecuteBatchTransferFrom },
+    { name: 'expiry', fn: testOperationExpiry },
+    { name: 'cleanup', fn: testCleanupExpiredOperations },
+    { name: 'vaultcapacity', fn: testVaultCapacity }
+  ];
   
   const results: boolean[] = [];
-  
-  // Test prepare/execute shield
-  results.push(await testPrepareExecuteShield());
-  
-  // Test prepare/execute unshield (partial)
-  results.push(await testPrepareExecuteUnshield());
-  
-  // Test prepare/execute transfer
-  results.push(await testPrepareExecuteTransfer());
-  
-  // Test prepare/execute transferFrom
-  results.push(await testPrepareExecuteTransferFrom());
-  
-  // Test prepare/execute batchTransfer (skipped)
-  results.push(await testPrepareExecuteBatchTransfer());
-  
-  // Test prepare/execute batchTransferFrom (skipped)
-  results.push(await testPrepareExecuteBatchTransferFrom());
-  
-  // Test operation expiry (skipped)
-  results.push(await testOperationExpiry());
-  
-  // Test cleanup
-  results.push(await testCleanupExpiredOperations());
-  
-  // Test vault capacity (skipped)
-  results.push(await testVaultCapacity());
+  const executed: string[] = [];
+
+  for (const test of tests) {
+    if (onlyArg && test.name !== onlyArg) {
+      console.log(`Skipping ${test.name} (ONLY_TEST=${onlyArg})`);
+      continue;
+    }
+    const result = await test.fn();
+    results.push(result);
+    executed.push(test.name);
+  }
+
+  if (results.length === 0) {
+    console.error(`No tests were executed. Set ONLY_TEST to one of: ${tests.map(t => t.name).join(', ')}`);
+    process.exit(1);
+  }
   
   // Summary
   console.log('\n' + '='.repeat(50));
-  const passed = results.filter(r => r).length;
+  const passed = results.filter(Boolean).length;
   const total = results.length;
   console.log(`\n📊 Results: ${passed}/${total} tests passed`);
   
   if (passed === total) {
-    console.log('✅ All tests passed!');
+    console.log('✅ Selected tests passed!');
     process.exit(0);
   } else {
-    console.log('⚠️  Some tests were skipped or failed');
+    console.log('⚠️  Some selected tests were skipped or failed');
     process.exit(1);
   }
 }

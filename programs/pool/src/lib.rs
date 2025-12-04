@@ -1242,10 +1242,10 @@ pub mod ptf_pool {
         if hook_whitelist_info.owner == &anchor_lang::solana_program::system_program::ID {
             // Account doesn't exist - initialize it manually
             let mut whitelist_data = hook_whitelist_info.try_borrow_mut_data()?;
-            require!(
-                whitelist_data.len() >= 8 + HookWhitelist::SPACE,
-                PoolError::AccountDataTooShort
-            );
+        require!(
+            whitelist_data.len() >= HookWhitelist::SPACE,
+            PoolError::AccountDataTooShort
+        );
             let hook_whitelist: &mut HookWhitelist = unsafe {
                 &mut *(whitelist_data.as_mut_ptr().add(8) as *mut HookWhitelist)
             };
@@ -2363,12 +2363,11 @@ pub mod ptf_pool {
         msg!("execute_shield: operation found at idx={}", operation_idx);
         
         // Mark as executing - use proof_vault_info_ref (same pattern as execute_unshield)
+        drop(proof_vault_account);
         {
-            let mut vault_data = proof_vault_info_ref.try_borrow_mut_data()?;
-            let vault: &mut UserProofVault = unsafe {
-                &mut *(vault_data.as_mut_ptr().add(8) as *mut UserProofVault)
-            };
-            if let Some(operation) = vault.prepared_operations.get_mut(operation_idx) {
+            let mut proof_vault_account_mut: Account<'info, UserProofVault> =
+                Account::try_from(proof_vault_info_ref)?;
+            if let Some(operation) = proof_vault_account_mut.prepared_operations.get_mut(operation_idx) {
                 if let PreparedOperation::Shield { status, .. } = operation {
                     *status = OperationStatus::Executing;
                 }
@@ -2453,6 +2452,7 @@ pub mod ptf_pool {
         let mut note_ledger_info: Option<&AccountInfo<'info>> = None;
         let mut vault_state_info: Option<&AccountInfo<'info>> = None;
         let mut shield_claim_info: Option<&AccountInfo<'info>> = None;
+        let mut shield_claim_index: Option<usize> = None;
         let mut mint_mapping_info: Option<&AccountInfo<'info>> = None;
         let mut factory_state_info: Option<&AccountInfo<'info>> = None;
         let mut verifying_key_info: Option<&AccountInfo<'info>> = None;
@@ -2482,6 +2482,7 @@ pub mod ptf_pool {
                 vault_state_info = Some(account);
             } else if key == expected_shield_claim {
                 shield_claim_info = Some(account);
+                shield_claim_index = Some(idx);
             } else if key == expected_mint_mapping {
                 mint_mapping_info = Some(account);
             } else if key == expected_factory_state {
@@ -2563,10 +2564,6 @@ pub mod ptf_pool {
         // This ensures the reference remains valid when passed to process_shield_finalize_ledger
         // The issue is that shield_claim_info is extracted from remaining_accounts, and we need
         // to ensure it doesn't conflict with the remaining_accounts slice passed to the function
-        // CRITICAL FIX: Store shield_claim_info in a variable that lives for the entire function
-        // This ensures the reference remains valid when passed to process_shield_finalize_ledger
-        // The issue is that shield_claim_info is extracted from remaining_accounts, and we need
-        // to ensure it doesn't conflict with the remaining_accounts slice passed to the function
         let shield_claim_info_stable = shield_claim_info.ok_or(PoolError::InvalidAccountOwner)?;
         let mint_mapping_info = mint_mapping_info.ok_or(PoolError::InvalidAccountOwner)?;
         let factory_state_info = factory_state_info.ok_or(PoolError::InvalidAccountOwner)?;
@@ -2586,6 +2583,64 @@ pub mod ptf_pool {
         require_keys_eq!(vault_state_info.key(), expected_vault_state, PoolError::InvalidAccountOwner);
         msg!("execute_shield: shield_claim {} expected {}", shield_claim_info_stable.key(), expected_shield_claim);
         require_keys_eq!(shield_claim_info_stable.key(), expected_shield_claim, PoolError::ShieldClaimMismatch);
+        // Initialize shield_claim account if it's still owned by the system program (lazy init)
+        if shield_claim_info_stable.owner == &system_program::ID {
+            msg!("execute_shield: initializing shield_claim account");
+            let rent = Rent::get()?;
+            let required_lamports = rent.minimum_balance(ShieldClaim::SPACE);
+            let payer_info = ctx.accounts.payer.to_account_info();
+            let system_program_info = ctx.accounts.system_program.to_account_info();
+            let current_lamports = shield_claim_info_stable.lamports();
+            if required_lamports > current_lamports {
+                let lamports_needed = required_lamports - current_lamports;
+                invoke(
+                    &anchor_lang::solana_program::system_instruction::transfer(
+                        &payer_info.key(),
+                        shield_claim_info_stable.key,
+                        lamports_needed,
+                    ),
+                    &[
+                        payer_info.clone(),
+                        shield_claim_info_stable.clone(),
+                        system_program_info.clone(),
+                    ],
+                )?;
+            }
+            let pool_state_key = ctx.accounts.pool_state.key();
+            let (_, claim_bump_for_init) = AddressDeriver::derive_shield_claim(&pool_state_key, ctx.program_id);
+            let claim_seeds: &[&[u8]] = &[seeds::CLAIM, pool_state_key.as_ref(), &[claim_bump_for_init]];
+            invoke_signed(
+                &anchor_lang::solana_program::system_instruction::allocate(
+                    shield_claim_info_stable.key,
+                    ShieldClaim::SPACE as u64,
+                ),
+                &[
+                    shield_claim_info_stable.clone(),
+                    system_program_info.clone(),
+                ],
+                &[claim_seeds],
+            )?;
+            invoke_signed(
+                &anchor_lang::solana_program::system_instruction::assign(
+                    shield_claim_info_stable.key,
+                    ctx.program_id,
+                ),
+                &[
+                    shield_claim_info_stable.clone(),
+                    system_program_info.clone(),
+                ],
+                &[claim_seeds],
+            )?;
+            // Initialize discriminator and zero the rest of the account data
+            {
+                let mut data = shield_claim_info_stable.try_borrow_mut_data()?;
+                for byte in data.iter_mut() {
+                    *byte = 0;
+                }
+                let disc = ShieldClaim::DISCRIMINATOR;
+                data[..disc.len()].copy_from_slice(&disc);
+            }
+        }
         msg!("execute_shield: mint_mapping {} expected {}", mint_mapping_info.key(), expected_mint_mapping);
         require_keys_eq!(mint_mapping_info.key(), expected_mint_mapping, PoolError::OriginMintMismatch);
         msg!("execute_shield: factory_state {} expected {}", factory_state_info.key(), expected_factory_state);
@@ -2649,7 +2704,7 @@ pub mod ptf_pool {
         // Lazy initialization removed due to transmute issues with &AccountInfo references
         msg!("execute_shield: checking hook_whitelist, data_len={}", hook_whitelist_info.data_len());
         require!(
-            hook_whitelist_info.data_len() >= 8 + HookWhitelist::SPACE,
+            hook_whitelist_info.data_len() >= HookWhitelist::SPACE,
             PoolError::AccountDataTooShort
         );
         require_keys_eq!(
@@ -2767,12 +2822,34 @@ pub mod ptf_pool {
         let origin_mint_wrapper_stored_final = origin_mint_wrapper_stored;
         let origin_mint_wrapper: &InterfaceAccount<'info, Mint> = unsafe { mem::transmute(&origin_mint_wrapper_stored_final) };
         
+        // Build remaining_accounts slice that excludes shield_claim to avoid overlapping borrows
+        let mut remaining_accounts_filtered_storage: Option<Vec<AccountInfo<'info>>> = None;
+        let remaining_accounts_for_impl: &[AccountInfo<'info>] = if let Some(idx) = shield_claim_index {
+            let mut filtered = Vec::with_capacity(ctx.remaining_accounts.len().saturating_sub(1));
+            for (i, account) in ctx.remaining_accounts.iter().enumerate() {
+                if i == idx {
+                    continue;
+                }
+                filtered.push(account.clone());
+            }
+            remaining_accounts_filtered_storage = Some(filtered);
+            remaining_accounts_filtered_storage
+                .as_ref()
+                .map(|vec| vec.as_slice())
+                .unwrap_or(ctx.remaining_accounts)
+        } else {
+            ctx.remaining_accounts
+        };
+        
         // Call execute_shield_impl with validated accounts
         // execute_shield_impl accepts 'info lifetimes, so we can pass references directly
         // All wrappers are now using 'info lifetime instead of 'static to avoid access violations
         
+        // Ensure program_id has 'info lifetime
+        let program_id_ref: &'info Pubkey = unsafe { mem::transmute(ctx.program_id) };
+        
         let result = execute_shield_impl(
-            ctx.program_id,
+            program_id_ref,
             &pool_state_loader, // AccountLoader<'info, PoolState> -> &AccountLoader<'info, PoolState>
             &hook_config_wrapper,
             &hook_whitelist_account,
@@ -2792,17 +2869,15 @@ pub mod ptf_pool {
             &factory_state_wrapper,
             &vault_program_wrapper,
             &token_program_wrapper,
-            ctx.remaining_accounts, // Filtered to exclude shield_claim_info
+            remaining_accounts_for_impl, // Filtered to exclude shield_claim_info
             &shield_args,
         );
         
-        // Update vault status after execution - use proof_vault_info_ref (same pattern as execute_unshield)
+        // Update vault status after execution
         {
-            let mut vault_data = proof_vault_info_ref.try_borrow_mut_data()?;
-            let vault: &mut UserProofVault = unsafe {
-                &mut *(vault_data.as_mut_ptr().add(8) as *mut UserProofVault)
-            };
-            if let Some(operation) = vault.prepared_operations.get_mut(operation_idx) {
+            let mut proof_vault_account_mut: Account<'info, UserProofVault> =
+                Account::try_from(proof_vault_info_ref)?;
+            if let Some(operation) = proof_vault_account_mut.prepared_operations.get_mut(operation_idx) {
                 if let PreparedOperation::Shield { status, .. } = operation {
                     *status = match &result {
                         Ok(_) => OperationStatus::Completed,
@@ -2811,7 +2886,7 @@ pub mod ptf_pool {
                 }
             }
             if result.is_ok() {
-                vault.last_used = clock.unix_timestamp;
+                proof_vault_account_mut.last_used = clock.unix_timestamp;
             }
         }
         
@@ -3469,7 +3544,8 @@ pub mod ptf_pool {
         let verifying_key_info = verifying_key_info.ok_or(PoolError::InvalidAccountOwner)?;
 
         // Validate ownership and executability
-        require_keys_eq!(*verifier_program_info.owner, system_program::ID, PoolError::InvalidAccountOwner);
+        // CRITICAL FIX: Verifier program is upgradeable, so owned by BPFLoaderUpgradeable, not SystemProgram
+        require_keys_eq!(*verifier_program_info.owner, anchor_lang::solana_program::bpf_loader_upgradeable::ID, PoolError::InvalidAccountOwner);
         require!(verifier_program_info.executable, PoolError::InvalidAccountOwner);
 
         // Create typed wrappers
@@ -3608,22 +3684,28 @@ pub mod ptf_pool {
 
         // Validate proof_vault manually
         msg!("execute_transfer_from: validating proof_vault");
+        // CRITICAL FIX: Store proof_vault account info in a variable that lives for the entire function
+        // This is critical - the variable must live for the entire function scope
         let proof_vault_account_info = ctx.accounts.proof_vault.to_account_info();
-        let proof_vault_info_ref: &'info AccountInfo<'info> = unsafe { mem::transmute(&proof_vault_account_info) };
+        let proof_vault_key = proof_vault_account_info.key();
         let (expected_vault, _) = derive_proof_vault(&spender_key, ctx.program_id);
         require_keys_eq!(
-            proof_vault_info_ref.key(),
+            proof_vault_key,
             expected_vault,
             PoolError::Unauthorized
         );
         require_keys_eq!(
-            *proof_vault_info_ref.owner,
+            *proof_vault_account_info.owner,
             *ctx.program_id,
             PoolError::Unauthorized
         );
-
-        // Deserialize proof_vault
-        let proof_vault_account: Account<'_, UserProofVault> = Account::try_from(proof_vault_info_ref)
+        
+        // Use unsafe transmute to extend lifetime to 'info, matching the function signature
+        // CRITICAL: proof_vault_account_info must live for the entire function scope
+        let proof_vault_info_ref: &AccountInfo<'info> = unsafe { mem::transmute(&proof_vault_account_info) };
+        
+        // Deserialize proof_vault using Account<'info, UserProofVault> for mutable access
+        let mut proof_vault_account: Account<'info, UserProofVault> = Account::try_from(proof_vault_info_ref)
             .map_err(|_| PoolError::AccountDataTooShort)?;
 
         // Find operation and extract args
@@ -3645,16 +3727,10 @@ pub mod ptf_pool {
             }
             };
 
-        // Mark as executing
-        {
-            let mut vault_data = proof_vault_info_ref.try_borrow_mut_data()?;
-            let vault: &mut UserProofVault = unsafe {
-                &mut *(vault_data.as_mut_ptr().add(8) as *mut UserProofVault)
-            };
-            if let Some(operation) = vault.prepared_operations.get_mut(operation_idx) {
-                if let PreparedOperation::TransferFrom { status, .. } = operation {
-                    *status = OperationStatus::Executing;
-                }
+        // Mark as executing - use the mutable Account directly
+        if let Some(operation) = proof_vault_account.prepared_operations.get_mut(operation_idx) {
+            if let PreparedOperation::TransferFrom { status, .. } = operation {
+                *status = OperationStatus::Executing;
             }
         }
         msg!("execute_transfer_from: operation found at idx={}", operation_idx);
@@ -3679,6 +3755,9 @@ pub mod ptf_pool {
         let mut allowance_info: Option<&AccountInfo> = None;
         let mut allowance_owner_info: Option<&AccountInfo> = None;
 
+        let verifier_program_in_list = ctx.remaining_accounts.iter().any(|a| a.key() == ptf_verifier_groth16::ID);
+        msg!("execute_transfer_from: verifier_program_in_list={}", verifier_program_in_list);
+
         for account in ctx.remaining_accounts.iter() {
             let key = account.key();
             let account_static: &'static AccountInfo = unsafe { mem::transmute(account) };
@@ -3698,10 +3777,9 @@ pub mod ptf_pool {
                 if mint_mapping_info.is_none() {
                     mint_mapping_info = Some(account_static);
                 }
-            } else if *account.owner == system_program::ID && account.executable {
-                if key == ptf_verifier_groth16::ID {
-                    verifier_program_info = Some(account_static);
-                }
+            } else if key == ptf_verifier_groth16::ID {
+                // verifier_program - match by key only (like execute_transfer)
+                verifier_program_info = Some(account_static);
             } else if *account.owner == ptf_verifier_groth16::ID {
                 // Could be verifying_key
                 if verifying_key_info.is_none() {
@@ -3744,24 +3822,41 @@ pub mod ptf_pool {
             version,
             &ptf_verifier_groth16::ID,
         );
+        msg!("execute_transfer_from: expected_verifying_key={}", expected_verifying_key);
 
-        // Derive allowance PDA (need allowance_owner from args or remaining_accounts)
-        // For now, we'll identify it by matching the expected pattern
+        // Derive allowance PDA - we need allowance_owner first
         // The allowance PDA is: [seeds::ALLOWANCE, pool_state.key(), allowance_owner.key(), spender.key()]
-        // We need to find allowance_owner first, then derive allowance
-
+        // We'll find allowance_owner in the first pass, then derive expected_allowance for second pass
+        let allowance_owner_info = allowance_owner_info.ok_or(PoolError::InvalidAccountOwner)?;
+        let verifier_program_info_preserved = verifier_program_info;
+        let (expected_allowance, _) = Pubkey::find_program_address(
+            &[
+                seeds::ALLOWANCE,
+                pool_state_info.key().as_ref(),
+                allowance_owner_info.key().as_ref(),
+                spender_key.as_ref(),
+            ],
+            ctx.program_id,
+        );
+        msg!("execute_transfer_from: expected_allowance={}, allowance_owner={}, spender={}", expected_allowance, allowance_owner_info.key(), spender_key);
         // Second pass: identify accounts by matching derived addresses
+        // Preserve verifying_key_info from first pass as fallback (will be overwritten if found by key)
+        let verifying_key_info_first_pass = verifying_key_info;
+        msg!("execute_transfer_from: verifying_key_info_first_pass.is_some()={}", verifying_key_info_first_pass.is_some());
         nullifier_set_info = None;
         commitment_tree_info = None;
         note_ledger_info = None;
+        verifying_key_info = None; // Reset to find by key in second pass
         allowance_info = None;
-        allowance_owner_info = None;
         
         for account in ctx.remaining_accounts.iter() {
             let key = account.key();
             let account_static: &'static AccountInfo = unsafe { mem::transmute(account) };
-
-            if key == pool_addresses.nullifier_set {
+            
+            if key == expected_verifying_key {
+                msg!("execute_transfer_from: found verifying_key account key={}", key);
+                verifying_key_info = Some(account_static);
+            } else if key == pool_addresses.nullifier_set {
                 nullifier_set_info = Some(account_static);
             } else if key == pool_addresses.commitment_tree {
                 commitment_tree_info = Some(account_static);
@@ -3769,34 +3864,73 @@ pub mod ptf_pool {
                 note_ledger_info = Some(account_static);
             } else if key == expected_mint_mapping {
                 mint_mapping_info = Some(account_static);
-            } else if key == expected_verifying_key {
-                verifying_key_info = Some(account_static);
-            } else if *account.owner == *ctx.program_id && account.data_len() >= 8 {
-                // Could be allowance - we'll validate by checking it's owned by pool program
-                // and has the right structure
-                if allowance_info.is_none() {
-                    allowance_info = Some(account_static);
-                }
-            } else if *account.owner != system_program::ID && !account.executable && *account.owner != ptf_verifier_groth16::ID && *account.owner != ptf_factory::ID {
-                // Could be allowance_owner (any non-program account)
-                if allowance_owner_info.is_none() {
-                    allowance_owner_info = Some(account_static);
-                }
+            } else if key == expected_allowance {
+                // CRITICAL FIX: Match allowance by derived key, not just owner
+                msg!("execute_transfer_from: found allowance account key={}", key);
+                allowance_info = Some(account_static);
             }
         }
 
         // Validate all required accounts are provided
-        let nullifier_set_info = nullifier_set_info.ok_or(PoolError::InvalidAccountOwner)?;
-        let commitment_tree_info = commitment_tree_info.ok_or(PoolError::InvalidAccountOwner)?;
-        let note_ledger_info = note_ledger_info.ok_or(PoolError::InvalidAccountOwner)?;
-        let mint_mapping_info = mint_mapping_info.ok_or(PoolError::InvalidAccountOwner)?;
-        let verifier_program_info = verifier_program_info.ok_or(PoolError::InvalidAccountOwner)?;
-        let verifying_key_info = verifying_key_info.ok_or(PoolError::InvalidAccountOwner)?;
-        let allowance_info = allowance_info.ok_or(PoolError::InvalidAccountOwner)?;
-        let allowance_owner_info = allowance_owner_info.ok_or(PoolError::InvalidAccountOwner)?;
+        let nullifier_set_info = nullifier_set_info.ok_or_else(|| {
+            msg!("execute_transfer_from: missing nullifier_set account");
+            PoolError::InvalidAccountOwner
+        })?;
+        let commitment_tree_info = commitment_tree_info.ok_or_else(|| {
+            msg!("execute_transfer_from: missing commitment_tree account");
+            PoolError::InvalidAccountOwner
+        })?;
+        let note_ledger_info = note_ledger_info.ok_or_else(|| {
+            msg!("execute_transfer_from: missing note_ledger account");
+            PoolError::InvalidAccountOwner
+        })?;
+        let mint_mapping_info = mint_mapping_info.ok_or_else(|| {
+            msg!("execute_transfer_from: missing mint_mapping account");
+            PoolError::InvalidAccountOwner
+        })?;
+        // CRITICAL FIX: Use preserved verifier_program_info from first pass
+        let verifier_program_info = verifier_program_info_preserved.ok_or_else(|| {
+            msg!("execute_transfer_from: missing verifier_program account");
+            PoolError::InvalidAccountOwner
+        })?;
+        // Use verifying_key from second pass if found, otherwise fall back to first pass
+        msg!("execute_transfer_from: verifying_key_info after second pass is_some()={}", verifying_key_info.is_some());
+        let verifying_key_info = verifying_key_info.or(verifying_key_info_first_pass).ok_or_else(|| {
+            msg!("execute_transfer_from: missing verifying_key account (expected={}, first_pass_found={})", expected_verifying_key, verifying_key_info_first_pass.is_some());
+            PoolError::InvalidAccountOwner
+        })?;
+        let allowance_info = allowance_info.ok_or_else(|| {
+            msg!("execute_transfer_from: missing allowance account (expected={})", expected_allowance);
+            PoolError::InvalidAccountOwner
+        })?;
+
+        // Debug logging to trace account selection
+        msg!(
+            "execute_transfer_from: verifier_program={}, owner={}, executable={}, allowance={}, allowance_owner={}, expected_allowance={}",
+            verifier_program_info.key(),
+            verifier_program_info.owner,
+            verifier_program_info.executable,
+            allowance_info.key(),
+            allowance_owner_info.key(),
+            expected_allowance
+        );
+        msg!(
+            "execute_transfer_from: pool_state={} expected={} nullifier_set={} expected={} commitment_tree={} expected={} note_ledger={} expected={} mint_mapping={} expected={}",
+            pool_state_info.key(),
+            pool_addresses.pool_state,
+            nullifier_set_info.key(),
+            pool_addresses.nullifier_set,
+            commitment_tree_info.key(),
+            pool_addresses.commitment_tree,
+            note_ledger_info.key(),
+            pool_addresses.note_ledger,
+            mint_mapping_info.key(),
+            expected_mint_mapping
+        );
 
         // Validate ownership and executability
-        require_keys_eq!(*verifier_program_info.owner, system_program::ID, PoolError::InvalidAccountOwner);
+        // CRITICAL FIX: Verifier program is upgradeable, so owned by BPFLoaderUpgradeable, not SystemProgram
+        require_keys_eq!(*verifier_program_info.owner, anchor_lang::solana_program::bpf_loader_upgradeable::ID, PoolError::InvalidAccountOwner);
         require!(verifier_program_info.executable, PoolError::InvalidAccountOwner);
 
         // Validate allowance PDA derivation
@@ -3908,23 +4042,17 @@ pub mod ptf_pool {
             result
         };
 
-        // Update vault status after execution
-        {
-            let mut vault_data = proof_vault_info_ref.try_borrow_mut_data()?;
-            let vault: &mut UserProofVault = unsafe {
-                &mut *(vault_data.as_mut_ptr().add(8) as *mut UserProofVault)
-            };
-            if let Some(operation) = vault.prepared_operations.get_mut(operation_idx) {
-                if let PreparedOperation::TransferFrom { status, .. } = operation {
-                    *status = match &result {
-                        Ok(_) => OperationStatus::Completed,
-                        Err(_) => OperationStatus::Failed,
-                    };
-                }
+        // Update vault status after execution - use the mutable Account directly
+        if let Some(operation) = proof_vault_account.prepared_operations.get_mut(operation_idx) {
+            if let PreparedOperation::TransferFrom { status, .. } = operation {
+                *status = match &result {
+                    Ok(_) => OperationStatus::Completed,
+                    Err(_) => OperationStatus::Failed,
+                };
             }
-            if result.is_ok() {
-                vault.last_used = clock.unix_timestamp;
-            }
+        }
+        if result.is_ok() {
+            proof_vault_account.last_used = clock.unix_timestamp;
         }
 
         result
@@ -4130,7 +4258,8 @@ pub mod ptf_pool {
         let verifying_key_info = verifying_key_info.ok_or(PoolError::InvalidAccountOwner)?;
         
         // Validate ownership and executability
-        require_keys_eq!(*verifier_program_info.owner, system_program::ID, PoolError::InvalidAccountOwner);
+        // CRITICAL FIX: Verifier program is upgradeable, so owned by BPFLoaderUpgradeable, not SystemProgram
+        require_keys_eq!(*verifier_program_info.owner, anchor_lang::solana_program::bpf_loader_upgradeable::ID, PoolError::InvalidAccountOwner);
         require!(verifier_program_info.executable, PoolError::InvalidAccountOwner);
         
         // Create typed wrappers for pool 0
@@ -4475,7 +4604,8 @@ pub mod ptf_pool {
         let verifying_key_info = verifying_key_info.ok_or(PoolError::InvalidAccountOwner)?;
         
         // Validate ownership and executability
-        require_keys_eq!(*verifier_program_info.owner, system_program::ID, PoolError::InvalidAccountOwner);
+        // CRITICAL FIX: Verifier program is upgradeable, so owned by BPFLoaderUpgradeable, not SystemProgram
+        require_keys_eq!(*verifier_program_info.owner, anchor_lang::solana_program::bpf_loader_upgradeable::ID, PoolError::InvalidAccountOwner);
         require!(verifier_program_info.executable, PoolError::InvalidAccountOwner);
         
         // Validate allowance PDAs
@@ -5907,12 +6037,12 @@ fn process_nullifiers<'info>(
 
 // Internal implementation that accepts individual account references
 // This avoids unsafe transmute when called from execute_shield with flattened ExecuteShield accounts
-fn execute_shield_impl<'info>(
+fn execute_shield_impl<'info, 'accs>(
     program_id: &'info Pubkey,
     pool_loader: &AccountLoader<'info, PoolState>,
     hook_config: &UncheckedAccount<'info>,
     hook_whitelist: &Account<'info, HookWhitelist>,
-    nullifier_set: &UncheckedAccount<'info>,
+    _nullifier_set: &UncheckedAccount<'info>,
     commitment_tree: &AccountLoader<'info, CommitmentTree>,
     note_ledger: &UncheckedAccount<'info>,
     vault_state: &UncheckedAccount<'info>,
@@ -5924,11 +6054,11 @@ fn execute_shield_impl<'info>(
     shield_claim_info: &AccountInfo<'info>,
     payer: &Signer<'info>,
     origin_mint: &InterfaceAccount<'info, Mint>,
-    mint_mapping: &Account<'info, MintMapping>,
-    factory_state: &UncheckedAccount<'info>,
+    _mint_mapping: &Account<'info, MintMapping>,
+    _factory_state: &UncheckedAccount<'info>,
     vault_program: &Program<'info, PtfVault>,
     token_program: &Interface<'info, TokenInterface>,
-    remaining_accounts: &[AccountInfo<'info>],
+    remaining_accounts: &'accs [AccountInfo<'info>],
     args: &ShieldArgs,
 ) -> Result<()> {
     msg!("execute_shield_impl: start");
@@ -6010,6 +6140,7 @@ fn execute_shield_impl<'info>(
         deposit_accounts,
     );
     ptf_vault::cpi::deposit(deposit_ctx, args.amount)?;
+    msg!("execute_shield_impl: deposit complete");
 
     pool_state.pending_shield = PendingShield {
         active: 1,
@@ -6021,6 +6152,7 @@ fn execute_shield_impl<'info>(
         depositor: payer.key(),
         next_index: commitment_tree_next_index,
     };
+    msg!("execute_shield_impl: pending shield stored");
     
     // CRITICAL FIX: Manually deserialize and validate shield_claim from AccountInfo
     let (expected_claim, claim_bump) = AddressDeriver::derive_shield_claim(
@@ -6038,33 +6170,38 @@ fn execute_shield_impl<'info>(
         PoolError::InvalidAccountOwner
     );
     
-    // Manually deserialize shield_claim
-    let mut claim_data = shield_claim_info.try_borrow_mut_data()?;
-    require!(
-        claim_data.len() >= 8 + ShieldClaim::SPACE,
-        PoolError::AccountDataTooShort
-    );
-    let claim: &mut ShieldClaim = unsafe {
-        &mut *(claim_data.as_mut_ptr().add(8) as *mut ShieldClaim)
-    };
-    
-    // Activate shield claim with status set to AWAITING_LEDGER
-    claim.activate(
-            pool_loader.key(),
-        payer.key(),
-            commitment_bytes,
-            args.amount_commit,
-            old_root_bytes,
-            new_root_bytes,
-            args.amount,
-            commitment_tree_next_index,
-            claim_bump,
-        )?;
-        msg!(
-            "shield: claim activated new_root={} next_index={}",
-            hex::encode(new_root_bytes),
-            commitment_tree_next_index
+    {
+        // Manually deserialize shield_claim
+        let mut claim_data = shield_claim_info.try_borrow_mut_data()?;
+        require!(
+            claim_data.len() >= ShieldClaim::SPACE,
+            PoolError::AccountDataTooShort
         );
+        let claim: &mut ShieldClaim = unsafe {
+            &mut *(claim_data.as_mut_ptr().add(8) as *mut ShieldClaim)
+        };
+        
+        // Activate shield claim with status set to AWAITING_LEDGER
+        claim.activate(
+                pool_loader.key(),
+            payer.key(),
+                commitment_bytes,
+                args.amount_commit,
+                old_root_bytes,
+                new_root_bytes,
+                args.amount,
+                commitment_tree_next_index,
+                claim_bump,
+            )?;
+            msg!(
+                "shield: claim activated new_root={} next_index={}",
+                hex::encode(new_root_bytes),
+                commitment_tree_next_index
+            );
+        // claim_data (and the underlying RefMut) must drop before we borrow again in
+        // process_shield_finalize_ledger to avoid overlapping mutable references.
+    }
+    msg!("execute_shield_impl: claim activated");
 
     // CRITICAL: Check if hooks are enabled before accessing hook_config to avoid access violations
     let hooks_feature_enabled = pool_state.features.contains(FeatureFlags::from(FEATURE_HOOKS_ENABLED));
@@ -6085,13 +6222,8 @@ fn execute_shield_impl<'info>(
     } else {
         None
     };
-    // SAFETY: Transmute remaining_accounts to match function signature
-    // This is safe because the Context lives for the entire instruction execution
-    // We use transmute to convert the lifetime - the actual lifetime is 'info from the function
-    let remaining_accounts_ref = unsafe {
-        mem::transmute::<&[AccountInfo], &[AccountInfo]>(remaining_accounts)
-    };
     // Pass shield_claim_info and hook_whitelist to process_shield_finalize_ledger
+    msg!("execute_shield_impl: calling process_shield_finalize_ledger");
     process_shield_finalize_ledger(
         pool_loader,
         hook_config_account_opt,
@@ -6100,7 +6232,7 @@ fn execute_shield_impl<'info>(
         note_ledger,
         shield_claim_info,
         hook_whitelist,
-        remaining_accounts_ref,
+        remaining_accounts,
     )?;
     
     Ok(())
@@ -9971,6 +10103,7 @@ fn validate_transfer_public_inputs(
     
     // Minimum fields: old_root, new_root, nullifiers, output_commitments, mint, pool
     let min_fields = 2 + num_nullifiers + num_outputs + 2;
+    msg!("validate_transfer_public_inputs: fields.len()={}, min_fields={}, num_nullifiers={}, num_outputs={}", fields.len(), min_fields, num_nullifiers, num_outputs);
     require!(
         fields.len() >= min_fields,
         PoolError::InvalidPublicInputs
@@ -10093,7 +10226,7 @@ fn validate_transfer_public_inputs(
     Ok(())
 }
 
-fn process_shield_finalize_ledger<'info>(
+fn process_shield_finalize_ledger<'info, 'accs>(
     pool_loader: &AccountLoader<'info, PoolState>,
     hook_config_account: Option<&UncheckedAccount<'info>>,
     hook_config_info: Option<&AccountInfo<'info>>,
@@ -10101,12 +10234,17 @@ fn process_shield_finalize_ledger<'info>(
     note_ledger: &UncheckedAccount<'info>,
     shield_claim_info: &AccountInfo<'info>,
     hook_whitelist: &Account<'info, HookWhitelist>,
-    remaining_accounts: &[AccountInfo<'info>],
+    remaining_accounts: &'accs [AccountInfo<'info>],
 ) -> Result<()> {
+    msg!("process_shield_finalize_ledger: start");
     // Manually deserialize shield_claim from AccountInfo
     let mut claim_data = shield_claim_info.try_borrow_mut_data()?;
+    msg!(
+        "process_shield_finalize_ledger: claim_data_len={}",
+        claim_data.len()
+    );
     require!(
-        claim_data.len() >= 8 + ShieldClaim::SPACE,
+        claim_data.len() >= ShieldClaim::SPACE,
         PoolError::AccountDataTooShort
     );
     let shield_claim: &mut ShieldClaim = unsafe {
@@ -10252,8 +10390,15 @@ fn process_shield_finalize_ledger<'info>(
                 metas.push(AccountMeta::new_readonly(pool_key_for_meta, false));
                 infos.push(hook_config_info_unwrapped.clone());
                 infos.push(pool_info.clone());
-
+                
+                // CRITICAL FIX: Skip shield_claim_info when iterating remaining_accounts
+                // to avoid borrow conflicts since it's passed as a separate parameter
+                let shield_claim_key = shield_claim_info.key();
                 for account in remaining_accounts.iter() {
+                    // Skip shield_claim_info if it's in remaining_accounts to avoid borrow conflicts
+                    if account.key() == shield_claim_key {
+                        continue;
+                    }
                     let meta = if account.is_writable {
                         AccountMeta::new(account.key(), account.is_signer)
                     } else {
@@ -10567,6 +10712,7 @@ impl AllowanceAccount {
     pub const MAX_ALLOWANCE: u64 = 1_000_000_000_000; // 1 trillion max allowance (1 billion with 6 decimals)
 }
 
+#[cfg(feature = "idl-build")]
 mod idl_build_impls {
     use super::*;
     use anchor_lang::IdlBuild;

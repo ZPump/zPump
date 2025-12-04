@@ -3061,7 +3061,7 @@ export async function prepareTransferFrom(params: PrepareTransferFromParams): Pr
   return sendPrepareInstruction(
     params.connection,
     params.wallet,
-    poolCoder.instruction.encode('prepare_transfer_from', { transfer_from_args: transferFromArgs })
+    poolCoder.instruction.encode('prepare_transfer_from', { transfer_args: transferFromArgs })
   );
 }
 

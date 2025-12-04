@@ -6,6 +6,7 @@ use spl_associated_token_account_client::{
     address::get_associated_token_address_with_program_id,
     instruction as ata_instruction,
 };
+use std::mem;
 
 use crate::errors::DexError;
 use crate::state::DEX_POOL_SEED;
@@ -100,8 +101,9 @@ pub fn create_pool(
     if !is_empty_pool {
         // Shield token A to pool PDA
         msg!("[create_pool] Token A is zToken - invoking shield CPI");
+        let remaining_accounts_info: &'static [anchor_lang::prelude::AccountInfo<'static>] = unsafe { mem::transmute(ctx.remaining_accounts) };
         let commitment_a = handle_ztoken_shield_for_create_pool(
-            ctx.remaining_accounts.to_vec(),
+            remaining_accounts_info,
             &payer_pubkey,
             &token_a,
             &POOL_PROGRAM_ID,
@@ -125,7 +127,7 @@ pub fn create_pool(
         let account_offset = 14;
         
         let commitment_b = handle_ztoken_shield_for_create_pool(
-            ctx.remaining_accounts.to_vec(),
+            remaining_accounts_info,
             &payer_pubkey,
             &token_b,
             &POOL_PROGRAM_ID,
@@ -275,8 +277,8 @@ pub fn create_pool(
 /// 
 /// This performs a full shield CPI invocation, parsing all required accounts
 /// and invoking ptf_pool::shield to create zTokens for the pool PDA.
-fn handle_ztoken_shield_for_create_pool<'info>(
-    remaining_accounts: Vec<AccountInfo<'info>>,
+fn handle_ztoken_shield_for_create_pool(
+    remaining_accounts: &'static [AccountInfo<'static>],
     payer_pubkey: &Pubkey,
     token_mint: &Pubkey,
     pool_program_id: &Pubkey,
@@ -289,7 +291,7 @@ fn handle_ztoken_shield_for_create_pool<'info>(
 ) -> Result<Option<[u8; 32]>> {
     msg!("[create_pool] Starting shield CPI for token_mint={}, pool_state_key={}", token_mint, pool_state_key);
     
-    let ra = remaining_accounts.as_slice();
+    let ra = remaining_accounts;
     require!(ra.len() > account_offset, DexError::InvalidAccount);
     
     // Parse zToken pool accounts - now includes vault_token_account and depositor_token_account
@@ -302,9 +304,9 @@ fn handle_ztoken_shield_for_create_pool<'info>(
     )?;
     
     // Find additional accounts needed for shield CPI
-    let mut origin_mint_account: Option<AccountInfo<'info>> = None;
-    let mut vault_program_account: Option<AccountInfo<'info>> = None;
-    let mut token_program_account: Option<AccountInfo<'info>> = None;
+    let mut origin_mint_account: Option<AccountInfo<'static>> = None;
+    let mut vault_program_account: Option<AccountInfo<'static>> = None;
+    let mut token_program_account: Option<AccountInfo<'static>> = None;
     
     // Find accounts by matching keys
     for account in ra.iter() {

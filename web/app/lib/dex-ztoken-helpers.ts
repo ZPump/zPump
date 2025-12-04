@@ -253,9 +253,20 @@ export async function generateDexTransferProof(
     outputCommitments.push(commitment);
   }
   
-  // Extract nullifiers from proof (will be in publicInputs)
-  // TODO: Parse publicInputs to extract actual nullifiers
+  // Extract nullifiers from proof public inputs
+  // Transfer public inputs format: [oldRoot, newRoot, nullifier0, nullifier1, outputCommit0, outputCommit1, ...]
   const nullifiers: Uint8Array[] = [];
+  if (proof.publicInputs.length >= 4) {
+    // nullifiers are at indices 2 and 3 (after oldRoot and newRoot)
+    const nullifier0Hex = proof.publicInputs[2];
+    const nullifier1Hex = proof.publicInputs[3];
+    if (nullifier0Hex && typeof nullifier0Hex === 'string') {
+      nullifiers.push(canonicalHexToBytesLE(canonicalizeHex(nullifier0Hex)));
+    }
+    if (nullifier1Hex && typeof nullifier1Hex === 'string') {
+      nullifiers.push(canonicalHexToBytesLE(canonicalizeHex(nullifier1Hex)));
+    }
+  }
   
   return {
     ...proof,

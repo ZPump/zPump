@@ -1,5 +1,6 @@
 use anchor_lang::prelude::*;
 use anchor_spl::token_interface::{Burn, Transfer, TokenAccount};
+use std::mem;
 
 use crate::errors::DexError;
 use crate::state::DEX_POOL_SEED;
@@ -105,8 +106,9 @@ pub fn remove_liquidity(
     // ====================================================================
     // Both tokens are always zTokens - use private transfer CPIs
     msg!("[remove_liquidity] Token A is zToken - invoking private_transfer CPI (pool PDA → user)");
+    let remaining_accounts_info: &'static [anchor_lang::prelude::AccountInfo<'static>] = unsafe { mem::transmute(ctx.remaining_accounts) };
     let (commitment_a, amount_a_result) = handle_ztoken_remove_liquidity(
-        ctx.remaining_accounts.to_vec(),
+        remaining_accounts_info,
         &payer_pubkey,
         &token_a,
         &POOL_PROGRAM_ID,
@@ -136,7 +138,7 @@ pub fn remove_liquidity(
     // Token A uses first 7 accounts, Token B uses next 7
     let account_offset = 7;
     let (commitment_b, amount_b_result) = handle_ztoken_remove_liquidity(
-        ctx.remaining_accounts.to_vec(),
+        remaining_accounts_info,
         &payer_pubkey,
         &token_b,
         &POOL_PROGRAM_ID,
@@ -222,8 +224,8 @@ pub fn remove_liquidity(
 /// 
 /// Pool PDA is the sender (signs with seeds), user is the recipient
 /// Returns (commitment, new_reserve_amount) for updating pool state
-fn handle_ztoken_remove_liquidity<'info>(
-    remaining_accounts: Vec<AccountInfo<'info>>,
+fn handle_ztoken_remove_liquidity(
+    remaining_accounts: &'static [AccountInfo<'static>],
     payer_pubkey: &Pubkey,
     token_mint: &Pubkey,
     pool_program_id: &Pubkey,
@@ -236,7 +238,7 @@ fn handle_ztoken_remove_liquidity<'info>(
     amount: u64,
     account_offset: usize,
 ) -> Result<(Option<[u8; 32]>, Option<u64>)> {
-    let ra = remaining_accounts.as_slice();
+    let ra = remaining_accounts;
 
     require!(ra.len() > account_offset, DexError::InvalidAccount);
 

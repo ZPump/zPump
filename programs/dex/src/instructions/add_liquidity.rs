@@ -6,6 +6,7 @@ use spl_associated_token_account_client::{
     address::get_associated_token_address_with_program_id,
     instruction as ata_instruction,
 };
+use std::mem;
 
 use crate::errors::DexError;
 use crate::state::DEX_POOL_SEED;
@@ -111,8 +112,9 @@ pub fn add_liquidity(
         DexError::InvalidAccount
     );
     
+    let remaining_accounts_info: &'static [anchor_lang::prelude::AccountInfo<'static>] = unsafe { mem::transmute(ctx.remaining_accounts) };
     let ((commitment_a, amount_a_result), (commitment_b, amount_b_result)) = invoke_batch_transfer_for_add_liquidity(
-        ctx.remaining_accounts,
+        remaining_accounts_info,
         &token_a,
         &token_b,
         batch_transfer_args,
@@ -202,8 +204,8 @@ pub fn add_liquidity(
     Ok(())
 }
 
-fn handle_ztoken_liquidity<'info>(
-    remaining_accounts: Vec<AccountInfo<'info>>,
+fn handle_ztoken_liquidity(
+    remaining_accounts: &'static [AccountInfo<'static>],
     payer_pubkey: &Pubkey,
     token_mint: &Pubkey,
     pool_program_id: &Pubkey,
@@ -213,7 +215,7 @@ fn handle_ztoken_liquidity<'info>(
     amount: u64,
     account_offset: usize,
 ) -> Result<(Option<[u8; 32]>, Option<u64>)> {
-    let ra = remaining_accounts.as_slice();
+    let ra = remaining_accounts;
 
     require!(ra.len() > account_offset, DexError::InvalidAccount);
 

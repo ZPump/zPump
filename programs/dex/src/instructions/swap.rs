@@ -1,5 +1,6 @@
 use anchor_lang::prelude::*;
 use anchor_spl::token_interface::Transfer;
+use std::mem;
 
 use crate::errors::DexError;
 use crate::state::DEX_POOL_SEED;
@@ -157,8 +158,9 @@ pub fn swap(
         current_private_reserve_b_amount
     };
     
+    let remaining_accounts_info: &'static [anchor_lang::prelude::AccountInfo<'static>] = unsafe { mem::transmute(ctx.remaining_accounts) };
     let (commitment, amount_result) = handle_ztoken_swap_input(
-        ctx.remaining_accounts.to_vec(),
+        remaining_accounts_info,
         &payer_pubkey,
         &token_in_mint,
         &POOL_PROGRAM_ID,
@@ -199,7 +201,7 @@ pub fn swap(
     };
     
     let (commitment, amount_result) = handle_ztoken_swap_output(
-        ctx.remaining_accounts.to_vec(),
+        remaining_accounts_info,
         &payer_pubkey,
         &token_out_mint,
         &POOL_PROGRAM_ID,
@@ -249,8 +251,8 @@ pub fn swap(
 
 /// Helper function to handle zToken input transfer for swap (user → pool PDA)
 /// Similar to handle_ztoken_liquidity from add_liquidity
-fn handle_ztoken_swap_input<'info>(
-    remaining_accounts: Vec<AccountInfo<'info>>,
+fn handle_ztoken_swap_input(
+    remaining_accounts: &'static [AccountInfo<'static>],
     payer_pubkey: &Pubkey,
     token_mint: &Pubkey,
     pool_program_id: &Pubkey,
@@ -260,7 +262,7 @@ fn handle_ztoken_swap_input<'info>(
     amount: u64,
     account_offset: usize,
 ) -> Result<(Option<[u8; 32]>, Option<u64>)> {
-    let ra = remaining_accounts.as_slice();
+    let ra = remaining_accounts;
 
     require!(ra.len() > account_offset, DexError::InvalidAccount);
 
@@ -372,8 +374,8 @@ fn handle_ztoken_swap_input<'info>(
 
 /// Helper function to handle zToken output transfer for swap (pool PDA → user)
 /// Similar to handle_ztoken_remove_liquidity
-fn handle_ztoken_swap_output<'info>(
-    remaining_accounts: Vec<AccountInfo<'info>>,
+fn handle_ztoken_swap_output(
+    remaining_accounts: &'static [AccountInfo<'static>],
     payer_pubkey: &Pubkey,
     token_mint: &Pubkey,
     pool_program_id: &Pubkey,
@@ -386,7 +388,7 @@ fn handle_ztoken_swap_output<'info>(
     amount: u64,
     account_offset: usize,
 ) -> Result<(Option<[u8; 32]>, Option<u64>)> {
-    let ra = remaining_accounts.as_slice();
+    let ra = remaining_accounts;
 
     require!(ra.len() > account_offset, DexError::InvalidAccount);
 
