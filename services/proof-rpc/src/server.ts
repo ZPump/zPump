@@ -450,6 +450,12 @@ function deriveTransferPublic(input: TransferInput) {
     throw new Error(`Invalid outputCommitment1Hex: ${outputCommitment1Hex} (type: ${typeof outputCommitment1Hex}, length: ${outputCommitment1Hex?.length})`);
   }
   
+  // CRITICAL: TEMPORARY - Force throw to verify code path is executing
+  // TODO: Remove after debugging
+  if (outputCommitment1Hex === undefined || outputCommitment1Hex === null) {
+    throw new Error(`[deriveTransferPublic] outputCommitment1Hex is ${outputCommitment1Hex}! This should never happen.`);
+  }
+  
   const outputs = [outputCommitment0Hex, outputCommitment1Hex];
   
   // CRITICAL: Force error if outputs array doesn't have 2 elements
