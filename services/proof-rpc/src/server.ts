@@ -1068,6 +1068,17 @@ async function produceProof(
   payload: unknown,
   derivedInputs: string[]
 ): Promise<{ proof: string; publicInputs: string[]; verifyingKeyHash: string }> {
+  // CRITICAL: Log immediately when produceProof is called
+  console.log('[produceProof] Called with:', {
+    circuit,
+    derivedInputsLength: derivedInputs.length,
+    derivedInputs: derivedInputs.map((p, i) => ({ i, value: p?.substring(0, 30) }))
+  });
+  logger.info({
+    circuit,
+    derivedInputsLength: derivedInputs.length,
+    derivedInputs: derivedInputs.map((p, i) => ({ i, value: p?.substring(0, 30) }))
+  }, '[produceProof] Called');
   if (entry.mode === 'groth16' && entry.wasmPath && entry.zkeyPath) {
     try {
       logger.info({ circuit, payload }, 'Invoking groth16.fullProve');
@@ -1156,30 +1167,48 @@ async function generateProof(
     }
     case 'transfer': {
       const payload = TransferInputSchema.parse(request.payload);
+      // Use both logger and console.log to ensure logs are captured
       logger.info({ payload }, '[generateProof] Calling deriveTransferPublic for transfer');
+      console.log('[generateProof] Calling deriveTransferPublic for transfer');
+      
       const derived = deriveTransferPublic(payload);
+      
+      // CRITICAL: Log immediately after deriveTransferPublic returns
+      console.log('[generateProof] deriveTransferPublic returned:', {
+        publicInputsLength: derived.publicInputs.length,
+        outputsLength: derived.outputs.length,
+        publicInputs: derived.publicInputs.map((p, i) => ({ i, value: p?.substring(0, 30) }))
+      });
       logger.info({
         publicInputsLength: derived.publicInputs.length,
         outputsLength: derived.outputs.length,
         publicInputs: derived.publicInputs.map((p, i) => ({ i, value: p?.substring(0, 30) }))
       }, '[generateProof] deriveTransferPublic returned');
       
-      // CRITICAL: Validate derived result before using
+      // CRITICAL: Validate derived result before using - FORCE ERROR
       if (derived.publicInputs.length !== 8) {
         const errorMsg = `[generateProof] CRITICAL: derived.publicInputs has ${derived.publicInputs.length} elements, expected 8!`;
+        console.error(errorMsg, derived);
         logger.error({ errorMsg, derived }, '[generateProof] Derived validation failed');
         throw new Error(errorMsg);
       }
       if (derived.outputs.length !== 2) {
         const errorMsg = `[generateProof] CRITICAL: derived.outputs has ${derived.outputs.length} elements, expected 2!`;
+        console.error(errorMsg, derived);
         logger.error({ errorMsg, derived }, '[generateProof] Derived outputs validation failed');
         throw new Error(errorMsg);
       }
       
       await validateAgainstIndexer(indexer, payload.mintId, canonicalizeHex(payload.oldRoot), derived.nullifiers);
       // CRITICAL FIX: Use padded payload for circuit execution (circuit requires exactly 2 input/output notes)
+      console.log('[generateProof] Calling produceProof with', derived.publicInputs.length, 'publicInputs');
       logger.info({ publicInputsLength: derived.publicInputs.length }, '[generateProof] Calling produceProof');
-      return produceProof(entry, request.circuit, derived.payload, derived.publicInputs);
+      const result = await produceProof(entry, request.circuit, derived.payload, derived.publicInputs);
+      console.log('[generateProof] produceProof returned:', {
+        publicInputsLength: result.publicInputs.length,
+        publicInputs: result.publicInputs.map((p, i) => ({ i, value: p?.substring(0, 30) }))
+      });
+      return result;
     }
     case 'unshield': {
       const payload = UnshieldInputSchema.parse(request.payload);
