@@ -378,29 +378,141 @@ function deriveShieldPublic(input: ShieldInput) {
 function deriveTransferPublic(input: TransferInput) {
   const mintFieldValue = parsePubkeyField(input.mintId);
   const poolFieldValue = parsePubkeyField(input.poolId);
-  const nullifierValues = input.inNotes.map((note) =>
-    poseidonValue([note.noteId, note.spendingKey])
-  );
-  const nullifiers = nullifierValues.map(fieldToHex);
-  const outputs = input.outNotes.map((note) =>
-    poseidonHex([note.amount, note.recipient, mintFieldValue, poolFieldValue, note.blinding])
-  );
+  
+  // CRITICAL FIX: Pad to exactly 2 input notes (circuit requires exactly 2 nullifiers)
+  const paddedInNotes = [...input.inNotes];
+  while (paddedInNotes.length < 2) {
+    paddedInNotes.push({ noteId: '0', spendingKey: '0', amount: '0' });
+  }
+  
+  // CRITICAL FIX: Pad to exactly 2 output notes (circuit requires exactly 2 output commitments)
+  const paddedOutNotes = [...input.outNotes];
+  while (paddedOutNotes.length < 2) {
+    paddedOutNotes.push({ amount: '0', recipient: '0', blinding: '0' });
+  }
+  
+  // Compute nullifiers (exactly 2)
+  const nullifier0Value = paddedInNotes[0]!.noteId === '0' && paddedInNotes[0]!.spendingKey === '0'
+    ? 0n
+    : poseidonValue([paddedInNotes[0]!.noteId, paddedInNotes[0]!.spendingKey]);
+  const nullifier1Value = paddedInNotes[1]!.noteId === '0' && paddedInNotes[1]!.spendingKey === '0'
+    ? 0n
+    : poseidonValue([paddedInNotes[1]!.noteId, paddedInNotes[1]!.spendingKey]);
+  
+  const nullifier0Hex = fieldToHex(nullifier0Value);
+  const nullifier1Hex = fieldToHex(nullifier1Value);
+  const nullifiers = [nullifier0Hex, nullifier1Hex];
+  
+  // Compute output commitments (exactly 2)
+  const outputCommitment0Value = paddedOutNotes[0]!.amount === '0' && paddedOutNotes[0]!.recipient === '0'
+    ? 0n
+    : poseidonValue([
+        paddedOutNotes[0]!.amount,
+        parsePubkeyField(paddedOutNotes[0]!.recipient),
+        mintFieldValue,
+        poolFieldValue,
+        paddedOutNotes[0]!.blinding
+      ]);
+  const outputCommitment1Value = paddedOutNotes[1]!.amount === '0' && paddedOutNotes[1]!.recipient === '0'
+    ? 0n
+    : poseidonValue([
+        paddedOutNotes[1]!.amount,
+        parsePubkeyField(paddedOutNotes[1]!.recipient),
+        mintFieldValue,
+        poolFieldValue,
+        paddedOutNotes[1]!.blinding
+      ]);
+  
+  const outputCommitment0Hex = fieldToHex(outputCommitment0Value);
+  const outputCommitment1Hex = fieldToHex(outputCommitment1Value);
+  const outputs = [outputCommitment0Hex, outputCommitment1Hex];
+  
+  // Compute roots
   const oldRootHex = canonicalizeHex(input.oldRoot);
-  const newRoot = poseidonHex([oldRootHex, ...nullifierValues]);
+  const oldRootField = bigIntify(oldRootHex);
+  const newRootValue = poseidonValue([oldRootField, nullifier0Value, nullifier1Value]);
+  const newRoot = fieldToHex(newRootValue);
   const mintHex = fieldToHex(mintFieldValue);
   const poolHex = fieldToHex(poolFieldValue);
+  
+  // CRITICAL: Ensure we have exactly 8 fields
+  if (nullifiers.length !== 2) {
+    throw new Error(`Expected 2 nullifiers, got ${nullifiers.length}`);
+  }
+  if (outputs.length !== 2) {
+    throw new Error(`Expected 2 outputs, got ${outputs.length}`);
+  }
+  if (!mintHex || typeof mintHex !== 'string') {
+    throw new Error(`Invalid mintHex: ${mintHex}`);
+  }
+  if (!poolHex || typeof poolHex !== 'string') {
+    throw new Error(`Invalid poolHex: ${poolHex}`);
+  }
+  
+  const publicInputs = [
+    oldRootHex,
+    newRoot,
+    ...nullifiers,
+    ...outputs,
+    mintHex,
+    poolHex
+  ];
+  
+  if (publicInputs.length !== 8) {
+    throw new Error(`Expected 8 public inputs, got ${publicInputs.length}: ${JSON.stringify(publicInputs.map((p, i) => ({ i, value: p?.substring(0, 20) })))}`);
+  }
+  
+  console.log('[deriveTransferPublic]', JSON.stringify({
+    inputNotesCount: input.inNotes.length,
+    outputNotesCount: input.outNotes.length,
+    paddedInNotesCount: paddedInNotes.length,
+    paddedOutNotesCount: paddedOutNotes.length,
+    nullifiersCount: nullifiers.length,
+    outputsCount: outputs.length,
+    mintHex: mintHex,
+    poolHex: poolHex,
+    publicInputsCount: publicInputs.length,
+    publicInputs: publicInputs,
+    publicInputsBreakdown: {
+      oldRoot: publicInputs[0],
+      newRoot: publicInputs[1],
+      nullifier0: publicInputs[2],
+      nullifier1: publicInputs[3],
+      output0: publicInputs[4],
+      output1: publicInputs[5],
+      mint: publicInputs[6],
+      pool: publicInputs[7]
+    }
+  }, null, 2));
+  
+  // CRITICAL FIX: Return padded payload in circuit format for circuit execution
+  // The circuit requires exactly 2 input notes and 2 output notes
+  // Circuit expects: old_root, mint_id, pool_id, in_note_amount_0/1, in_note_id_0/1, in_spending_key_0/1, out_amount_0/1, out_recipient_0/1, out_blinding_0/1
+  const oldRootFieldForPayload = bigIntify(canonicalizeHex(input.oldRoot));
+  const paddedPayload = {
+    old_root: fieldToString(oldRootFieldForPayload),
+    mint_id: fieldToString(mintFieldValue),
+    pool_id: fieldToString(poolFieldValue),
+    in_note_amount_0: paddedInNotes[0]!.amount,
+    in_note_amount_1: paddedInNotes[1]!.amount,
+    in_note_id_0: paddedInNotes[0]!.noteId,
+    in_note_id_1: paddedInNotes[1]!.noteId,
+    in_spending_key_0: paddedInNotes[0]!.spendingKey,
+    in_spending_key_1: paddedInNotes[1]!.spendingKey,
+    out_amount_0: paddedOutNotes[0]!.amount,
+    out_amount_1: paddedOutNotes[1]!.amount,
+    out_recipient_0: paddedOutNotes[0]!.recipient,
+    out_recipient_1: paddedOutNotes[1]!.recipient,
+    out_blinding_0: paddedOutNotes[0]!.blinding,
+    out_blinding_1: paddedOutNotes[1]!.blinding
+  };
+  
   return {
-    publicInputs: [
-      oldRootHex,
-      newRoot,
-      ...nullifiers,
-      ...outputs,
-      mintHex,
-      poolHex
-    ],
+    publicInputs,
     newRoot,
     nullifiers,
-    outputs
+    outputs,
+    payload: paddedPayload
   };
 }
 
@@ -799,6 +911,13 @@ async function produceProof(
       const publicSignalsArray = Array.isArray(publicSignals)
         ? publicSignals.map((value) => value.toString())
         : [];
+      console.log('[produceProof]', JSON.stringify({
+        circuit,
+        derivedInputsCount: derivedInputs.length,
+        publicSignalsArrayCount: publicSignalsArray.length,
+        derivedInputs,
+        publicSignalsArray
+      }, null, 2));
       if (publicSignalsArray.length !== derivedInputs.length) {
         logger.warn(
           { circuit, expected: derivedInputs.length, actual: publicSignalsArray.length },
@@ -811,21 +930,31 @@ async function produceProof(
         proofBytes: proofBytes.length,
         publicInputBytes: publicInputBytes.length
       }, 'Serialized Groth16 artifacts');
-      return {
+      const result = {
         proof: proofBytes.toString('base64'),
         publicInputs: derivedInputs,
         verifyingKeyHash: entry.hash
       };
+      console.log('[produceProof] returning', JSON.stringify({
+        publicInputsCount: result.publicInputs.length,
+        publicInputs: result.publicInputs
+      }, null, 2));
+      return result;
     } catch (error) {
       logger.warn({ err: error, circuit }, 'Groth16 proving failed, falling back to mock proof');
     }
   }
 
-  return {
+  const result = {
     proof: mockProof(circuit, payload, entry.hash),
     publicInputs: derivedInputs,
     verifyingKeyHash: entry.hash
   };
+  console.log('[produceProof] mock mode returning', JSON.stringify({
+    publicInputsCount: result.publicInputs.length,
+    publicInputs: result.publicInputs
+  }, null, 2));
+  return result;
 }
 
 async function generateProof(
@@ -849,7 +978,8 @@ async function generateProof(
       const payload = TransferInputSchema.parse(request.payload);
       const derived = deriveTransferPublic(payload);
       await validateAgainstIndexer(indexer, payload.mintId, canonicalizeHex(payload.oldRoot), derived.nullifiers);
-      return produceProof(entry, request.circuit, payload, derived.publicInputs);
+      // CRITICAL FIX: Use padded payload for circuit execution (circuit requires exactly 2 input/output notes)
+      return produceProof(entry, request.circuit, derived.payload, derived.publicInputs);
     }
     case 'unshield': {
       const payload = UnshieldInputSchema.parse(request.payload);
