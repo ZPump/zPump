@@ -1156,9 +1156,29 @@ async function generateProof(
     }
     case 'transfer': {
       const payload = TransferInputSchema.parse(request.payload);
+      logger.info({ payload }, '[generateProof] Calling deriveTransferPublic for transfer');
       const derived = deriveTransferPublic(payload);
+      logger.info({
+        publicInputsLength: derived.publicInputs.length,
+        outputsLength: derived.outputs.length,
+        publicInputs: derived.publicInputs.map((p, i) => ({ i, value: p?.substring(0, 30) }))
+      }, '[generateProof] deriveTransferPublic returned');
+      
+      // CRITICAL: Validate derived result before using
+      if (derived.publicInputs.length !== 8) {
+        const errorMsg = `[generateProof] CRITICAL: derived.publicInputs has ${derived.publicInputs.length} elements, expected 8!`;
+        logger.error({ errorMsg, derived }, '[generateProof] Derived validation failed');
+        throw new Error(errorMsg);
+      }
+      if (derived.outputs.length !== 2) {
+        const errorMsg = `[generateProof] CRITICAL: derived.outputs has ${derived.outputs.length} elements, expected 2!`;
+        logger.error({ errorMsg, derived }, '[generateProof] Derived outputs validation failed');
+        throw new Error(errorMsg);
+      }
+      
       await validateAgainstIndexer(indexer, payload.mintId, canonicalizeHex(payload.oldRoot), derived.nullifiers);
       // CRITICAL FIX: Use padded payload for circuit execution (circuit requires exactly 2 input/output notes)
+      logger.info({ publicInputsLength: derived.publicInputs.length }, '[generateProof] Calling produceProof');
       return produceProof(entry, request.circuit, derived.payload, derived.publicInputs);
     }
     case 'unshield': {
