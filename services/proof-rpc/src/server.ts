@@ -1167,11 +1167,6 @@ async function generateProof(
     }
     case 'transfer': {
       const payload = TransferInputSchema.parse(request.payload);
-      // TEMPORARY: Force throw to verify code path is executing
-      // TODO: Remove after debugging
-      console.error('[generateProof] TRANSFER CASE EXECUTING - THIS SHOULD APPEAR IN LOGS');
-      throw new Error('[generateProof] TEMPORARY TEST ERROR - If you see this, the code path is executing');
-      
       // Use both logger and console.log to ensure logs are captured
       logger.info({ payload }, '[generateProof] Calling deriveTransferPublic for transfer');
       console.log('[generateProof] Calling deriveTransferPublic for transfer');
