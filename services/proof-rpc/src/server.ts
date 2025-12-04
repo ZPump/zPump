@@ -1242,6 +1242,80 @@ async function main() {
     res.json({ ok: true, circuits: verifyingKeys.map((entry) => entry.circuit), indexer: Boolean(indexerClient) });
   });
 
+  // DEBUG: Test endpoint to verify output commitment computation
+  app.post('/test/transfer-outputs', async (req, res) => {
+    try {
+      const input = req.body;
+      const paddedOutNotes = [...input.outNotes];
+      while (paddedOutNotes.length < 2) {
+        paddedOutNotes.push({ amount: '0', recipient: '0', blinding: '0' });
+      }
+      
+      // Simulate the computation
+      const { PublicKey } = await import('@solana/web3.js');
+      const parsePubkeyField = (value: string): bigint => {
+        const key = new PublicKey(value);
+        const hex = Buffer.from(key.toBytes()).toString('hex');
+        return BigInt(`0x${hex}`);
+      };
+      
+      const mintFieldValue = parsePubkeyField(input.mintId);
+      const poolFieldValue = parsePubkeyField(input.poolId);
+      
+      // Compute output commitments
+      const poseidon = await circomlibjs.buildPoseidon();
+      const poseidonValue = (values: (string | bigint)[]): bigint => {
+        const inputs = values.map(v => (typeof v === 'string' ? BigInt(v) : v));
+        return BigInt(poseidon.F.toString(poseidon(inputs)));
+      };
+      
+      const fieldToHex = (value: bigint): string => {
+        const hex = value.toString(16);
+        return `0x${hex.padStart(64, '0')}`;
+      };
+      
+      const outputCommitment0Value = paddedOutNotes[0]!.amount === '0' && paddedOutNotes[0]!.recipient === '0'
+        ? 0n
+        : poseidonValue([
+            paddedOutNotes[0]!.amount,
+            parsePubkeyField(paddedOutNotes[0]!.recipient),
+            mintFieldValue,
+            poolFieldValue,
+            paddedOutNotes[0]!.blinding
+          ]);
+      const outputCommitment1Value = paddedOutNotes[1]!.amount === '0' && paddedOutNotes[1]!.recipient === '0'
+        ? 0n
+        : poseidonValue([
+            paddedOutNotes[1]!.amount,
+            parsePubkeyField(paddedOutNotes[1]!.recipient),
+            mintFieldValue,
+            poolFieldValue,
+            paddedOutNotes[1]!.blinding
+          ]);
+      
+      const outputCommitment0Hex = fieldToHex(outputCommitment0Value);
+      const outputCommitment1Hex = fieldToHex(outputCommitment1Value);
+      
+      const outputs = [outputCommitment0Hex, outputCommitment1Hex];
+      
+      res.json({
+        paddedOutNotes,
+        outputCommitment0Value: outputCommitment0Value.toString(),
+        outputCommitment1Value: outputCommitment1Value.toString(),
+        outputCommitment0Hex,
+        outputCommitment1Hex,
+        outputs,
+        outputsLength: outputs.length,
+        outputCommitment0HexLength: outputCommitment0Hex.length,
+        outputCommitment1HexLength: outputCommitment1Hex.length,
+        outputCommitment0HexType: typeof outputCommitment0Hex,
+        outputCommitment1HexType: typeof outputCommitment1Hex
+      });
+    } catch (error) {
+      res.status(500).json({ error: (error as Error).message });
+    }
+  });
+
   app.post('/prove/:circuit', async (req, res) => {
     try {
       const circuit = req.params.circuit as ProofRequestPayload['circuit'];
