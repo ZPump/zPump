@@ -427,7 +427,7 @@ function deriveTransferPublic(input: TransferInput) {
   const outputCommitment1Hex = fieldToHex(outputCommitment1Value);
   
   // CRITICAL: Validate outputs before adding to array
-  console.log('[deriveTransferPublic] Output commitments:', {
+  logger.info({
     outputCommitment0Value: outputCommitment0Value?.toString(),
     outputCommitment1Value: outputCommitment1Value?.toString(),
     outputCommitment0Hex: outputCommitment0Hex?.substring(0, 50),
@@ -437,8 +437,11 @@ function deriveTransferPublic(input: TransferInput) {
     outputCommitment0HexLength: outputCommitment0Hex?.length,
     outputCommitment1HexLength: outputCommitment1Hex?.length,
     outputCommitment0HexEmpty: outputCommitment0Hex === '',
-    outputCommitment1HexEmpty: outputCommitment1Hex === ''
-  });
+    outputCommitment1HexEmpty: outputCommitment1Hex === '',
+    paddedOutNotesCount: paddedOutNotes.length,
+    paddedOutNote0: paddedOutNotes[0],
+    paddedOutNote1: paddedOutNotes[1]
+  }, '[deriveTransferPublic] Output commitments computed');
   
   if (!outputCommitment0Hex || typeof outputCommitment0Hex !== 'string' || outputCommitment0Hex === '') {
     throw new Error(`Invalid outputCommitment0Hex: ${outputCommitment0Hex} (type: ${typeof outputCommitment0Hex}, length: ${outputCommitment0Hex?.length})`);
@@ -452,23 +455,23 @@ function deriveTransferPublic(input: TransferInput) {
   // CRITICAL: Force error if outputs array doesn't have 2 elements
   if (outputs.length !== 2) {
     const errorMsg = `[deriveTransferPublic] CRITICAL ERROR: Expected 2 outputs, got ${outputs.length}! outputCommitment0Hex: ${outputCommitment0Hex?.substring(0, 30)}, outputCommitment1Hex: ${outputCommitment1Hex?.substring(0, 30)}, outputs: ${JSON.stringify(outputs.map((o, i) => ({ i, value: o?.substring(0, 30) })))}`;
-    console.error(errorMsg);
+    logger.error({ errorMsg, outputs }, '[deriveTransferPublic] Outputs array length mismatch');
     throw new Error(errorMsg);
   }
   
   // CRITICAL: Force error if outputs[1] is not outputCommitment1Hex
   if (outputs[1] !== outputCommitment1Hex) {
     const errorMsg = `[deriveTransferPublic] CRITICAL ERROR: outputs[1] mismatch! Expected: ${outputCommitment1Hex?.substring(0, 30)}, Got: ${outputs[1]?.substring(0, 30)}`;
-    console.error(errorMsg);
+    logger.error({ errorMsg, expected: outputCommitment1Hex?.substring(0, 30), actual: outputs[1]?.substring(0, 30) }, '[deriveTransferPublic] Outputs array element mismatch');
     throw new Error(errorMsg);
   }
   
-  console.log('[deriveTransferPublic] Outputs array VALIDATED:', {
+  logger.info({
     length: outputs.length,
     outputs: outputs.map((o, i) => ({ i, value: o?.substring(0, 50), type: typeof o })),
     outputCommitment0Hex: outputCommitment0Hex?.substring(0, 30),
     outputCommitment1Hex: outputCommitment1Hex?.substring(0, 30)
-  });
+  }, '[deriveTransferPublic] Outputs array VALIDATED');
   
   // Compute roots
   const oldRootHex = canonicalizeHex(input.oldRoot);
@@ -1248,14 +1251,18 @@ async function main() {
       // CRITICAL: Validate proof response before sending - FORCE ERROR if invalid
       if (circuit === 'transfer') {
         // Log the actual proof object before validation
-        console.log('[HTTP] Transfer proof received:', {
+        logger.info({
           publicInputsLength: proof.publicInputs.length,
           publicInputs: proof.publicInputs.map((p, i) => ({ i, value: p?.substring(0, 30), type: typeof p, isNull: p === null, isUndefined: p === undefined }))
-        });
+        }, '[HTTP] Transfer proof received');
         
         if (proof.publicInputs.length !== 8) {
-          const errorMsg = `[HTTP] CRITICAL: Transfer proof has ${proof.publicInputs.length} public inputs, expected 8! publicInputs: ${JSON.stringify(proof.publicInputs.map((p, i) => ({ i, value: p?.substring(0, 30) })))}`;
-          console.error(errorMsg);
+          const errorMsg = `[HTTP] CRITICAL: Transfer proof has ${proof.publicInputs.length} public inputs, expected 8!`;
+          logger.error({
+            errorMsg,
+            publicInputs: proof.publicInputs.map((p, i) => ({ i, value: p?.substring(0, 30) })),
+            publicInputsCount: proof.publicInputs.length
+          }, '[HTTP] Transfer proof validation failed');
           res.status(500).json({ 
             error: 'invalid_proof', 
             message: errorMsg,
@@ -1268,7 +1275,7 @@ async function main() {
         const expectedFields = ['oldRoot', 'newRoot', 'nullifier0', 'nullifier1', 'output0', 'output1', 'mint', 'pool'];
         if (proof.publicInputs.length !== expectedFields.length) {
           const errorMsg = `[HTTP] CRITICAL: Field count mismatch! Expected ${expectedFields.length}, got ${proof.publicInputs.length}`;
-          console.error(errorMsg);
+          logger.error({ errorMsg, publicInputs: proof.publicInputs }, '[HTTP] Transfer proof field count mismatch');
           res.status(500).json({ 
             error: 'invalid_proof', 
             message: errorMsg,
@@ -1278,17 +1285,17 @@ async function main() {
         }
         
         // Log before sending response
-        console.log('[HTTP] Transfer proof validated, sending response with', proof.publicInputs.length, 'fields');
+        logger.info({ publicInputsLength: proof.publicInputs.length }, '[HTTP] Transfer proof validated, sending response');
       }
       
       // Log the actual JSON that will be sent
       const jsonResponse = JSON.stringify(proof);
       const parsedResponse = JSON.parse(jsonResponse);
       if (circuit === 'transfer') {
-        console.log('[HTTP] JSON response parsed:', {
+        logger.info({
           publicInputsLength: parsedResponse.publicInputs?.length,
           publicInputs: parsedResponse.publicInputs?.map((p: string, i: number) => ({ i, value: p?.substring(0, 30) }))
-        });
+        }, '[HTTP] JSON response parsed');
       }
       
       res.json(proof);
