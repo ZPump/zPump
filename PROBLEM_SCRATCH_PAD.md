@@ -16,9 +16,9 @@ For each problem:
 
 ## Problem: Access Violation in ExecuteShield
 
-**Status:** 🔴 BLOCKED - Anchor Validation Bug (CONFIRMED)  
+**Status:** 🔴 ACTIVE - Access violation inside execute_shield function  
 **Date Started:** 2024-12-07  
-**Last Attempt:** 2024-12-07 - Matched ExecuteTransfer pattern exactly (struct, function signature, Clock::get() first)
+**Last Attempt:** 2024-12-07 - Fixed factory/verifier program IDs, bootstrap succeeded, wSOL registered, but access violation persists at 0x2000057e8
 
 ### Description
 After fixing `AccountNotSigner`, pool initialization succeeds, but `ExecuteShield` fails with:
