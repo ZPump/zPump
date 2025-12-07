@@ -73,9 +73,11 @@ After fixing `AccountNotSigner`, pool initialization succeeds, but `ExecuteShiel
 3. ✅ Check for stack overflow warnings - Found warnings for `execute_unshield_core_impl`, but not for `execute_shield`
 4. ✅ Investigate if Anchor accesses account data for `UncheckedAccount` with `#[account(mut)]` - Removed mut from system_program and rent, didn't help
 5. ✅ Verify all accounts exist before instruction is called - All accounts exist, not the issue
-6. **Investigate Anchor's account struct validation** - The error at `0x200005f28` in stack frame 5 suggests Anchor is accessing a specific field or offset in the account struct, causing a stack overflow
-7. **Consider using raw Solana instructions instead of Anchor's account validation** - This would bypass Anchor's validation entirely, but requires significant refactoring
-8. **Check if there's a known Anchor bug with `UncheckedAccount` and `#[account(mut)]`** - This might be a bug in Anchor itself
+6. ✅ Remove PDA constraint from pool_state - Changed to UncheckedAccount with manual validation, access violation persists
+7. **CRITICAL HYPOTHESIS: The error occurs in Anchor's account struct validation, not PDA validation** - The consistent error at `0x200005f28` in stack frame 5 suggests Anchor is accessing a specific field or offset in the account struct during validation, causing a stack overflow. This might be a bug in Anchor's validation code when there are multiple UncheckedAccount fields.
+8. **Consider using raw Solana instructions instead of Anchor's account validation** - This would bypass Anchor's validation entirely, but requires significant refactoring
+9. **Check Anchor's GitHub issues for similar bugs** - Search for "access violation" or "stack frame" errors with UncheckedAccount
+10. **Try reducing ExecuteShield to match ExecuteTransfer's pattern exactly** - ExecuteTransfer has only 4 accounts and works. Maybe we can restructure ExecuteShield to have fewer accounts in the struct.
 
 ---
 

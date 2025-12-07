@@ -2481,14 +2481,14 @@ pub mod ptf_pool {
         require!(vault_token_data.len() >= 165, PoolError::AccountDataTooShort);
         let vault_token_mint = Pubkey::try_from(&vault_token_data[0..32])
             .map_err(|_| PoolError::AccountDataCorrupt)?;
-        require_keys_eq!(vault_token_mint, validation.origin_mint_key, PoolError::OriginMintMismatch);
+        require_keys_eq!(vault_token_mint, origin_mint_key, PoolError::OriginMintMismatch);
         drop(vault_token_data);
         
         let depositor_token_data = depositor_token_account_info.try_borrow_data()?;
         require!(depositor_token_data.len() >= 165, PoolError::AccountDataTooShort);
         let depositor_token_mint = Pubkey::try_from(&depositor_token_data[0..32])
             .map_err(|_| PoolError::AccountDataCorrupt)?;
-        require_keys_eq!(depositor_token_mint, validation.origin_mint_key, PoolError::OriginMintMismatch);
+        require_keys_eq!(depositor_token_mint, origin_mint_key, PoolError::OriginMintMismatch);
         drop(depositor_token_data);
         
         // Validate hook_whitelist
@@ -2521,15 +2521,15 @@ pub mod ptf_pool {
             mint_mapping_info,
         )?;
         
-        // CRITICAL FIX: Use AccountLoader directly from ctx.accounts.pool_state (now AccountLoader instead of UncheckedAccount)
-        let pool_state_loader = &ctx.accounts.pool_state;
+        // CRITICAL FIX: pool_state_loader_ref is already created above after manual PDA validation
+        // No need to recreate it - use the existing pool_state_loader_ref that was created at line 2293
         
         // Create AccountLoader wrapper for commitment_tree using helper function
         // CRITICAL: Store AccountInfo in variables that live for the entire function
         let commitment_tree_account_info = ctx.accounts.commitment_tree.to_account_info();
         let commitment_tree_info_ref: &'info AccountInfo<'info> = unsafe { mem::transmute(&commitment_tree_account_info) };
-        let commitment_tree_loader_box = AccountLoader::try_from(commitment_tree_info_ref)
-            .map_err(|_| PoolError::AccountDataTooShort)?;
+        let commitment_tree_loader_box: Box<AccountLoader<'info, CommitmentTree>> = Box::new(AccountLoader::try_from(commitment_tree_info_ref)
+            .map_err(|_| PoolError::AccountDataTooShort)?);
         let commitment_tree_loader: &'info AccountLoader<'info, CommitmentTree> = unsafe { mem::transmute(commitment_tree_loader_box.as_ref()) };
         
         msg!("execute_shield: calling execute_shield_impl");
