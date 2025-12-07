@@ -53,10 +53,12 @@ After fixing `AccountNotSigner`, pool initialization succeeds, but `ExecuteShiel
 
 ### Next Steps
 
-1. Add `#[inline(never)]` to `execute_shield` to prevent inlining and reduce stack usage
-2. Add debug logs at the very start of `execute_shield` to see if they're reached
-3. Check if there are any stack overflow warnings during compilation
-4. Review `validate_shield_basic_accounts` for potential stack issues
+1. ✅ Add `#[inline(never)]` to `execute_shield` - Done
+2. ✅ Add debug logs at the very start of `execute_shield` - Done (logs not visible, error happens before our code)
+3. ✅ Check for stack overflow warnings - Found warnings for `execute_unshield_core_impl`, but not for `execute_shield`
+4. **Investigate if Anchor accesses account data for `UncheckedAccount` with `#[account(mut)]`** - The `#[account(mut)]` attribute might cause Anchor to validate mutability, which could access account data
+5. **Verify all accounts exist before instruction is called** - Check if any account is missing or invalid
+6. **Consider removing `#[account(mut)]` and handling mutability manually** - This might reduce Anchor's validation overhead
 
 ---
 
