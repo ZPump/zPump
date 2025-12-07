@@ -52,6 +52,33 @@ import {
   derivePoolState,
   deriveDexPoolState
 } from './onchain/pdas';
+import { CIRCUIT_TAGS } from './onchain/programIds';
+
+// Re-export deriveDexPoolState for convenience
+export { deriveDexPoolState };
+
+/**
+ * Resolve a public key from string or PublicKey, with optional fallback
+ */
+export async function resolvePublicKey(
+  key: string | PublicKey | null | undefined,
+  fallback?: PublicKey | null
+): Promise<PublicKey> {
+  if (key instanceof PublicKey) {
+    return key;
+  }
+  if (typeof key === 'string' && key) {
+    try {
+      return new PublicKey(key);
+    } catch {
+      // Invalid public key string
+    }
+  }
+  if (fallback) {
+    return fallback;
+  }
+  throw new Error('Invalid public key and no fallback provided');
+}
 import { decodeCommitmentTree } from './onchain/commitmentTree';
 import {
   bytesToBigIntLE,
@@ -158,7 +185,11 @@ async function fetchOperationIdFromReturnData(
     commitment: 'confirmed',
     maxSupportedTransactionVersion: 0
   });
-  const returnData = tx?.meta?.returnData;
+  // In newer versions of @solana/web3.js, returnData might be on the transaction or meta
+  // Try both locations for compatibility
+  const returnData = (tx?.transaction as any)?.message?.returnData || 
+                     (tx?.meta as any)?.returnData ||
+                     (tx as any)?.returnData;
   if (!returnData) {
     throw new Error('prepare transaction did not return operation id');
   }
@@ -536,13 +567,13 @@ interface BatchTransferParams {
 
 type PrepareShieldParams = WrapParams;
 
-interface ExecuteShieldParams extends Omit<WrapParams, 'proof'> {
+export interface ExecuteShieldParams extends Omit<WrapParams, 'proof'> {
   operationId: string;
 }
 
 type PrepareUnshieldParams = UnwrapParams;
 
-interface ExecuteUnshieldParams extends Omit<UnwrapParams, 'proof'> {
+export interface ExecuteUnshieldParams extends Omit<UnwrapParams, 'proof'> {
   operationId: string;
 }
 
@@ -554,15 +585,11 @@ export interface ExecuteTransferParams extends Omit<TransferParams, 'proof'> {
 
 type PrepareTransferFromParams = TransferFromParams;
 
-interface ExecuteTransferFromParams extends Omit<TransferFromParams, 'proof'> {
+export interface ExecuteTransferFromParams extends Omit<TransferFromParams, 'proof'> {
   operationId: string;
 }
 
 type PrepareBatchTransferParams = BatchTransferParams;
-
-interface ExecuteBatchTransferParams extends Omit<BatchTransferParams, 'batchProof'> {
-  operationId: string;
-}
 
 interface BatchTransferFromParams extends BatchTransferParams {
   allowances: Array<{
@@ -574,7 +601,7 @@ interface BatchTransferFromParams extends BatchTransferParams {
 
 type PrepareBatchTransferFromParams = BatchTransferFromParams;
 
-interface ExecuteBatchTransferFromParams extends Omit<BatchTransferFromParams, 'batchProof'> {
+export interface ExecuteBatchTransferFromParams extends Omit<BatchTransferFromParams, 'batchProof'> {
   operationId: string;
 }
 
@@ -724,13 +751,16 @@ export async function fetchMintMappingAccount(
   originMint: PublicKey
 ): Promise<{ key: PublicKey; decoded: MintMappingAccount }> {
   const key = deriveMintMapping(originMint);
+  console.log('[fetchMintMappingAccount] Looking for mint mapping:', { originMint: originMint.toBase58(), mintMappingKey: key.toBase58() });
   // Try multiple times with increasing confirmation levels in case of timing issues
   let account = await connection.getAccountInfo(key, 'confirmed');
   if (!account) {
+    console.log('[fetchMintMappingAccount] Account not found with confirmed, trying finalized...');
     // Retry with 'finalized' confirmation level
     account = await connection.getAccountInfo(key, 'finalized');
   }
   if (!account) {
+    console.error('[fetchMintMappingAccount] Account not found after retries:', { key: key.toBase58(), originMint: originMint.toBase58() });
     // Check if this is wSOL (native SOL mint) and provide a helpful error message
     if (isNativeSol(originMint)) {
       throw new Error(
@@ -742,6 +772,7 @@ export async function fetchMintMappingAccount(
     }
     throw new Error(`Mint mapping account missing on chain for mint: ${originMint.toBase58()}`);
   }
+  console.log('[fetchMintMappingAccount] ✅ Account found:', { key: key.toBase58(), owner: account.owner.toBase58(), dataLen: account.data.length });
   
   // Decode MintMapping account
   // Note: Old accounts were 81 bytes (without lookup_table), new are 114 bytes (with lookup_table Option<Pubkey>)
@@ -914,6 +945,7 @@ function buildInitializePoolInstruction(args: {
   factoryState: PublicKey;
   verifyingKey: PublicKey;
   tokenProgramId: PublicKey;
+  poolCoder?: any; // Optional Anchor coder for building instruction
 }): TransactionInstruction {
   const FEATURE_PRIVATE_TRANSFER_ENABLED = 1;
   const FEATURE_ALLOWANCES_ENABLED = 2;
@@ -925,6 +957,9 @@ function buildInitializePoolInstruction(args: {
     features
   });
 
+  // CRITICAL FIX: Match bootstrap script behavior exactly
+  // The bootstrap script only includes accounts that exist in the mapping
+  // Optional accounts are skipped entirely (not included in the instruction)
   const poolAccounts: Record<string, PublicKey> = {
     authority: args.wallet.publicKey!,
     pool_state: args.poolState,
@@ -937,7 +972,7 @@ function buildInitializePoolInstruction(args: {
     origin_mint: args.originMint,
     mint_mapping: args.mintMapping,
     factory_state: args.factoryState,
-    twin_mint: POOL_PROGRAM_ID,
+    // twin_mint is NOT included - matches bootstrap script (only added if twinMintKey exists)
     verifier_program: VERIFIER_PROGRAM_ID,
     verifying_key: args.verifyingKey,
     payer: args.wallet.publicKey!,
@@ -950,20 +985,39 @@ function buildInitializePoolInstruction(args: {
     throw new Error('initialize_pool instruction not found in IDL');
   }
 
+  // CRITICAL FIX: Use exact same logic as bootstrap script's buildAccountMetas
+  // This ensures account order matches what the deployed program expects
   const accounts = ixDef.accounts as InitializePoolAccountDef[];
-  const keys = accounts.map((account) => {
+  const keys: Array<{ pubkey: PublicKey; isSigner: boolean; isWritable: boolean }> = [];
+  
+  for (const account of accounts) {
     const pubkey = poolAccounts[account.name];
     if (!pubkey) {
       if (account.optional) {
-        return { pubkey: POOL_PROGRAM_ID, isSigner: false, isWritable: false };
+        // CRITICAL FIX: For Option<UncheckedAccount<'info>>, skip the account entirely when not provided
+        // Anchor's Option<> type works by presence/absence - if account is in instruction, it's Some(...), if not, it's None
+        // The bootstrap script also skips optional accounts (see buildAccountMetas line 200: return;)
+        // This matches Anchor's expected behavior for Option<> types
+        console.log(`[buildInitializePoolInstruction] Skipping optional account ${account.name} (not provided)`);
+        continue;
       }
       throw new Error(`Missing account mapping for ${account.name}`);
     }
-    return {
-      pubkey,
-      isSigner: account.signer ?? false,
-      isWritable: account.writable ?? false
-    };
+    // Match bootstrap script: use writable/isMut and signer/isSigner logic
+    const isWritable = account.writable ?? false;
+    // CRITICAL: payer must be a signer (it pays for account initialization)
+    // Also check isSigner as fallback for IDL compatibility
+    const isSigner = account.name === 'payer' ? true : (account.signer ?? account.isSigner ?? false);
+    keys.push({ pubkey, isSigner, isWritable });
+  }
+  
+  // CRITICAL DEBUG: Log account positions and count
+  console.log(`[buildInitializePoolInstruction] Total accounts: ${keys.length} (IDL expects ${accounts.length}, skipped ${accounts.length - keys.length} optional)`);
+  console.log('[buildInitializePoolInstruction] Account positions:');
+  keys.forEach((key, i) => {
+    if (key.pubkey.equals(args.originMint) || key.pubkey.equals(args.mintMapping)) {
+      console.log(`  [${i}] ${key.pubkey.toBase58()}${key.pubkey.equals(args.originMint) ? ' <- origin_mint' : ' <- mint_mapping'}`);
+    }
   });
 
   return new TransactionInstruction({
@@ -1121,27 +1175,50 @@ export async function preparePool(params: PreparePoolParams): Promise<PreparePoo
     );
     
     if (missingAddresses.length > 0) {
-      // Extend ALT with missing addresses
-      const recentSlot = await connection.getSlot('confirmed');
-      const extendIx = AddressLookupTableProgram.extendLookupTable({
-        authority: wallet.publicKey!,
-        payer: wallet.publicKey!,
-        lookupTable: lookupTableAddress,
-        addresses: missingAddresses
-      });
+      // Check if we're the authority for this lookup table
+      const lookupTableInfo = await connection.getAccountInfo(lookupTableAddress);
+      if (!lookupTableInfo) {
+        throw new Error(`Lookup table ${lookupTableAddress.toBase58()} not found`);
+      }
       
-      const extendBlockhash = await connection.getLatestBlockhash('confirmed');
-      const extendTx = new Transaction().add(extendIx);
-      extendTx.feePayer = wallet.publicKey!;
-      extendTx.recentBlockhash = extendBlockhash.blockhash;
-      const extendSig = await wallet.sendTransaction(extendTx, connection, { skipPreflight: false });
-      await waitForSignatureConfirmation(
-        connection,
-        extendSig,
-        extendBlockhash.blockhash,
-        extendBlockhash.lastValidBlockHeight
-      );
-      result.actions.push('alt-extended');
+      // Parse lookup table authority (first 32 bytes after discriminator)
+      // AddressLookupTable layout: discriminator[8] + deactivationSlot[8] + lastExtendedSlot[8] + authority[32] + ...
+      if (lookupTableInfo.data.length < 8 + 8 + 8 + 32) {
+        throw new Error(`Invalid lookup table data length: ${lookupTableInfo.data.length}`);
+      }
+      const authorityBytes = lookupTableInfo.data.slice(24, 56);
+      const tableAuthority = new PublicKey(authorityBytes);
+      
+      // Only extend if we're the authority
+      if (tableAuthority.equals(wallet.publicKey!)) {
+        // Extend ALT with missing addresses
+        const recentSlot = await connection.getSlot('confirmed');
+        const extendIx = AddressLookupTableProgram.extendLookupTable({
+          authority: wallet.publicKey!,
+          payer: wallet.publicKey!,
+          lookupTable: lookupTableAddress,
+          addresses: missingAddresses
+        });
+        
+        const extendBlockhash = await connection.getLatestBlockhash('confirmed');
+        const extendTx = new Transaction().add(extendIx);
+        extendTx.feePayer = wallet.publicKey!;
+        extendTx.recentBlockhash = extendBlockhash.blockhash;
+        const extendSig = await wallet.sendTransaction(extendTx, connection, { skipPreflight: false });
+        await waitForSignatureConfirmation(
+          connection,
+          extendSig,
+          extendBlockhash.blockhash,
+          extendBlockhash.lastValidBlockHeight
+        );
+        result.actions.push('alt-extended');
+      } else {
+        // We're not the authority - log warning and skip extension
+        console.warn(`[preparePool] Lookup table ${lookupTableAddress.toBase58()} authority is ${tableAuthority.toBase58()}, but wallet is ${wallet.publicKey!.toBase58()}. Skipping extension.`);
+        console.warn(`[preparePool] Missing addresses: ${missingAddresses.map(a => a.toBase58()).join(', ')}`);
+        // Continue anyway - the lookup table might already have the addresses we need
+        result.actions.push('alt-extension-skipped');
+      }
     }
   } else {
     // ALT doesn't exist - create it
@@ -1321,7 +1398,28 @@ export async function preparePool(params: PreparePoolParams): Promise<PreparePoo
     result.actions.push('vault');
   }
 
+  // CRITICAL VALIDATION: Check if pool exists and verify its origin_mint matches
+  // If pool exists but was initialized with a different mint, we need to handle it
+  if (poolAccount && poolAccount.data.length >= 72) {
+    const poolData = Buffer.from(poolAccount.data);
+    // PoolState layout: discriminator[8] + authority[32] + origin_mint[32] + ...
+    const poolOriginMint = new PublicKey(poolData.slice(40, 72));
+    if (!poolOriginMint.equals(originMintKey)) {
+      throw new Error(
+        `Pool state exists but was initialized with different origin_mint: ` +
+        `pool has ${poolOriginMint.toBase58()}, but we need ${originMintKey.toBase58()}. ` +
+        `When shielding SOL, ensure the pool is initialized for wSOL (${NATIVE_SOL_MINT.toBase58()}), not native SOL.`
+      );
+    }
+  }
+  
   if (!poolAccount) {
+    // CRITICAL DEBUG: Log what we're passing to ensure correctness
+    console.log('[preparePool] Initializing pool with:');
+    console.log(`  originMint: ${originMintKey.toBase58()}`);
+    console.log(`  mintMapping: ${mintMappingKey.toBase58()}`);
+    console.log(`  poolState: ${poolState.toBase58()}`);
+    
     const initPoolIx = buildInitializePoolInstruction({
       wallet,
       poolState,
@@ -1337,6 +1435,20 @@ export async function preparePool(params: PreparePoolParams): Promise<PreparePoo
       verifyingKey,
       tokenProgramId
     });
+    
+    // CRITICAL DEBUG: Verify the instruction accounts match what we expect
+    console.log('[preparePool] Instruction accounts (full list):');
+    initPoolIx.keys.forEach((key, i) => {
+      const isOriginMint = key.pubkey.equals(originMintKey);
+      const isMintMapping = key.pubkey.equals(mintMappingKey);
+      const isPayer = key.pubkey.equals(wallet.publicKey!);
+      if (isOriginMint || isMintMapping || isPayer || i < 3 || i > 15) {
+        console.log(`  [${i}] ${key.pubkey.toBase58()} (signer=${key.isSigner}, writable=${key.isWritable})${isOriginMint ? ' <- origin_mint' : ''}${isMintMapping ? ' <- mint_mapping' : ''}${isPayer ? ' <- payer' : ''}`);
+      }
+    });
+    console.log(`[preparePool] Fee payer: ${wallet.publicKey!.toBase58()}`);
+    console.log(`[preparePool] Payer in instruction: ${initPoolIx.keys.find(k => k.pubkey.equals(wallet.publicKey!))?.pubkey.toBase58() || 'NOT FOUND'} (signer=${initPoolIx.keys.find(k => k.pubkey.equals(wallet.publicKey!))?.isSigner || false})`);
+    
     const initBlockhash = await connection.getLatestBlockhash('confirmed');
     const initTx = new Transaction().add(
       ComputeBudgetProgram.setComputeUnitLimit({ units: 1_400_000 }),
@@ -1345,7 +1457,57 @@ export async function preparePool(params: PreparePoolParams): Promise<PreparePoo
     );
     initTx.feePayer = wallet.publicKey!;
     initTx.recentBlockhash = initBlockhash.blockhash;
-    const initSig = await wallet.sendTransaction(initTx, connection, { skipPreflight: false });
+    
+    // CRITICAL FIX: Match bootstrap script approach exactly
+    // The bootstrap script uses transaction.sign(ctx.payer) which signs the transaction
+    // and then sends it via sendRawTransaction
+    // We need to do the same to ensure all signer accounts are properly signed
+    if (!wallet.signTransaction) {
+      throw new Error('Wallet must support signTransaction for pool initialization');
+    }
+    
+    // Sign the transaction explicitly (matching bootstrap script: transaction.sign(ctx.payer))
+    // This signs all accounts marked as signers that match the keypair
+    const signedTx = await wallet.signTransaction(initTx);
+    console.log('[preparePool] Transaction signed explicitly - all signer accounts should be signed');
+    
+    // CRITICAL DEBUG: Verify signatures and account positions before sending
+    console.log(`[preparePool] Transaction has ${signedTx.signatures.length} signature(s)`);
+    signedTx.signatures.forEach((sig, i) => {
+      console.log(`  [${i}] ${sig.publicKey.toBase58()}: ${sig.signature ? 'SIGNED' : 'NOT SIGNED'}`);
+    });
+    
+    // CRITICAL DEBUG: Verify payer account position in instruction
+    const payerKeyIndex = initPoolIx.keys.findIndex(k => k.pubkey.equals(wallet.publicKey!) && k.isSigner);
+    console.log(`[preparePool] Payer account found at instruction key index: ${payerKeyIndex >= 0 ? payerKeyIndex : 'NOT FOUND'}`);
+    if (payerKeyIndex >= 0) {
+      const payerKey = initPoolIx.keys[payerKeyIndex];
+      console.log(`[preparePool] Payer key details: signer=${payerKey.isSigner}, writable=${payerKey.isWritable}`);
+    }
+    
+    // CRITICAL DEBUG: Simulate first to see what the program receives
+    try {
+      const simulation = await connection.simulateTransaction(signedTx, {
+        replaceRecentBlockhash: true,
+        sigVerify: false
+      });
+      if (simulation.value.err) {
+        console.error('[preparePool] Simulation error:', simulation.value.err);
+        console.error('[preparePool] Simulation logs:', simulation.value.logs);
+        // Check if the error is specifically about payer not being a signer
+        const logs = simulation.value.logs || [];
+        const payerError = logs.find((log: string) => log.includes('payer') && log.includes('AccountNotSigner'));
+        if (payerError) {
+          console.error('[preparePool] CRITICAL: Payer AccountNotSigner error detected in simulation');
+          console.error('[preparePool] This suggests the transaction is not properly signed for the payer account');
+        }
+      }
+    } catch (simError) {
+      console.warn('[preparePool] Simulation failed (non-fatal):', simError);
+    }
+    
+    // Send raw transaction (matching bootstrap script approach: sendRawTransaction)
+    const initSig = await connection.sendRawTransaction(signedTx.serialize(), { skipPreflight: false });
     await waitForSignatureConfirmation(
       connection,
       initSig,
@@ -1431,7 +1593,11 @@ export async function executeShield(params: ExecuteShieldParams): Promise<string
   }
   
   // Use actualShieldMint for all pool/account derivations (will be wSOL mint if SOL was detected)
-  const poolState = new PublicKey(params.poolId);
+  // CRITICAL FIX: When shielding SOL, derive poolState from wSOL mint, not from params.poolId
+  // params.poolId might be for native SOL, but we need wSOL pool
+  const poolState = isShieldingSOL 
+    ? derivePoolState(actualShieldMint) // Use wSOL pool when shielding SOL
+    : new PublicKey(params.poolId); // Use provided poolId for other tokens
   const commitmentTreeKey = deriveCommitmentTree(actualShieldMint);
   const nullifierSet = deriveNullifierSet(actualShieldMint);
   const noteLedger = deriveNoteLedger(actualShieldMint);
@@ -1443,10 +1609,23 @@ export async function executeShield(params: ExecuteShieldParams): Promise<string
   const shieldClaim = deriveShieldClaim(poolState);
   const factoryState = deriveFactoryState(); // Needed for lazy initialization
   const twinMintKey = params.twinMint ? new PublicKey(params.twinMint) : null;
+  
+  // CRITICAL: Fetch mint mapping using actualShieldMint (wSOL if SOL was detected)
+  // This ensures we get the correct mint mapping for the pool we're actually using
   const { key: mintMappingKey, decoded: mintMapping } = await fetchMintMappingAccount(
     connection,
     actualShieldMint // Use actualShieldMint (wSOL if SOL was detected)
   );
+  
+  // CRITICAL VALIDATION: Ensure poolState matches the derived pool for actualShieldMint
+  // This prevents using a pool initialized for a different mint (e.g., native SOL vs wSOL)
+  const expectedPoolState = derivePoolState(actualShieldMint);
+  if (!poolState.equals(expectedPoolState)) {
+    throw new Error(
+      `Pool state mismatch: provided poolId ${poolState.toBase58()} does not match expected pool for mint ${actualShieldMint.toBase58()} (expected: ${expectedPoolState.toBase58()}). ` +
+      `When shielding SOL, ensure you use the wSOL pool, not the native SOL pool.`
+    );
+  }
   ensureMintActive(mintMapping);
   
   // Store mintMapping for later use (ALT lookup)
@@ -1742,7 +1921,7 @@ export async function executeShield(params: ExecuteShieldParams): Promise<string
         lookupTableAccount = lookupTableResult.value;
       }
     } catch (error) {
-      console.warn(`[wrap] Failed to fetch lookup table ${lookupTableAddress.toBase58()}:`, error.message);
+      console.warn(`[wrap] Failed to fetch lookup table ${lookupTableAddress.toBase58()}:`, error instanceof Error ? error.message : String(error));
       // Continue without lookup table - will use regular Transaction
       lookupTableAddress = null;
       lookupTableAccount = null;
@@ -2498,7 +2677,7 @@ export async function prepareUnshield(params: PrepareUnshieldParams): Promise<Pr
   return sendPrepareInstruction(
     connection,
     wallet,
-    poolCoder.instruction.encode('prepare_unshield', { unshieldArgs })
+    poolCoder.instruction.encode('prepare_unshield', { unshield_args: unshieldArgs })
   );
 }
 
@@ -2522,7 +2701,7 @@ export async function executeUnshield(params: ExecuteUnshieldParams): Promise<st
   const hookWhitelistKey = deriveHookWhitelist(originMintKey);
   const vaultStateKey = deriveVaultState(originMintKey);
   const factoryStateKey = deriveFactoryState();
-  const verifyingKey = deriveVerifyingKey();
+  const verifyingKey = deriveVerifyingKey(CIRCUIT_TAGS.unshield);
 
   const originMintInfo = await connection.getAccountInfo(originMintKey, 'confirmed');
   if (!originMintInfo) {
@@ -2619,9 +2798,20 @@ export async function executeUnshield(params: ExecuteUnshieldParams): Promise<st
     );
   }
 
+  // CRITICAL: Account order must match IDL exactly:
+  // 1. pool_state (writable)
+  // 2. payer (writable, signer)
+  // 3. proof_vault (writable)
+  // 4. system_program
+  // 5. rent
+  // Then remaining_accounts in the order expected by the program
   const keys: { pubkey: PublicKey; isSigner: boolean; isWritable: boolean }[] = [
-    { pubkey: proofVault, isSigner: false, isWritable: true },
-    { pubkey: poolStateKey, isSigner: false, isWritable: true },
+    { pubkey: poolStateKey, isSigner: false, isWritable: true }, // 1. pool_state
+    { pubkey: wallet.publicKey, isSigner: true, isWritable: true }, // 2. payer
+    { pubkey: proofVault, isSigner: false, isWritable: true }, // 3. proof_vault
+    { pubkey: SystemProgram.programId, isSigner: false, isWritable: false }, // 4. system_program
+    { pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false }, // 5. rent
+    // Remaining accounts (remaining_accounts)
     { pubkey: hookConfigKey, isSigner: false, isWritable: false },
     { pubkey: hookWhitelistKey, isSigner: false, isWritable: false },
     { pubkey: nullifierSetKey, isSigner: false, isWritable: true },
@@ -2649,10 +2839,7 @@ export async function executeUnshield(params: ExecuteUnshieldParams): Promise<st
     { pubkey: VAULT_PROGRAM_ID, isSigner: false, isWritable: false },
     { pubkey: factoryStateKey, isSigner: false, isWritable: false },
     { pubkey: FACTORY_PROGRAM_ID, isSigner: false, isWritable: false },
-    { pubkey: originTokenProgram, isSigner: false, isWritable: false },
-    { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
-    { pubkey: wallet.publicKey, isSigner: true, isWritable: true },
-    { pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false }
+    { pubkey: originTokenProgram, isSigner: false, isWritable: false }
   );
 
   instructions.push(
@@ -2661,7 +2848,7 @@ export async function executeUnshield(params: ExecuteUnshieldParams): Promise<st
       keys,
       data: poolCoder.instruction.encode('execute_unshield', {
         operation_id: operationIdHexToArray(params.operationId),
-        mode: mode === 'ptkn' ? { twin: {} } : { origin: {} }
+        mode: mode === 'ptkn' ? { Twin: {} } : { Origin: {} }
       })
     })
   );
@@ -2684,7 +2871,7 @@ export async function executeUnshield(params: ExecuteUnshieldParams): Promise<st
 
 export async function unwrap(params: UnwrapParams): Promise<string> {
   const { operationId } = await prepareUnshield(params);
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  // eslint-disable-next-line no-unused-vars
   const { proof: _proof, ...executeParams } = params;
   
   const signature = await executeUnshield({ ...executeParams, operationId });
@@ -2720,9 +2907,10 @@ export async function unwrap(params: UnwrapParams): Promise<string> {
       );
       
       const unwrapBlockhash = await connection.getLatestBlockhash('confirmed');
-      const unwrapTransaction = new Transaction().add(unwrapInstruction);
-      unwrapTransaction.feePayer = wallet.publicKey;
-      unwrapTransaction.recentBlockhash = unwrapBlockhash.blockhash;
+      const unwrapTransaction = new Transaction({
+        feePayer: wallet.publicKey || undefined,
+        recentBlockhash: unwrapBlockhash.blockhash
+      }).add(unwrapInstruction);
       
       console.log('[unwrap] 💰 Unwrapping wSOL to native SOL');
       const unwrapSignature = await wallet.sendTransaction(unwrapTransaction, connection, {
@@ -2756,42 +2944,27 @@ export async function wrap(params: WrapParams): Promise<string> {
   const connection = params.connection;
   let originMintKey = new PublicKey(params.originMint);
   const isShieldingSOL = isNativeSol(originMintKey);
+  // Use wSOL mint if shielding SOL, otherwise use original mint
+  const actualShieldMint = isShieldingSOL ? NATIVE_SOL_MINT : originMintKey;
   
   // If shielding SOL, wrap it to wSOL first in a separate transaction
   // This reduces the size and compute cost of executeShield
   if (isShieldingSOL) {
     const wsolTokenAccount = await getWrappedSolAccount(wallet.publicKey!);
     
-    // Check if wSOL token account exists
-    const wsolAccountInfo = await connection.getAccountInfo(wsolTokenAccount, 'confirmed');
-    const wrapInstructions: TransactionInstruction[] = [];
-    
-    if (!wsolAccountInfo) {
-      // Create wSOL token account if it doesn't exist
-      const createAtaIx = createAssociatedTokenAccountInstruction(
-        wallet.publicKey!,
-        wsolTokenAccount,
-        wallet.publicKey!,
-        NATIVE_SOL_MINT,
-        TOKEN_PROGRAM_ID,
-        ASSOCIATED_TOKEN_PROGRAM_ID
-      );
-      wrapInstructions.push(createAtaIx);
-    }
-    
-    // Add wrap instructions (transfer SOL + sync native)
-    const solWrapInstructions = await createWrapSolInstructions(
+    // Get wrap instructions (createWrapSolInstructions handles ATA creation if needed)
+    const wrapInstructions = await createWrapSolInstructions(
       wsolTokenAccount,
       params.amount,
       wallet.publicKey!,
       connection
     );
-    wrapInstructions.push(...solWrapInstructions);
     
     // Send wrapping transaction separately
     if (wrapInstructions.length > 0) {
-      const wrapTx = new Transaction().add(...wrapInstructions);
-      wrapTx.feePayer = wallet.publicKey;
+      const wrapTx = new Transaction({
+        feePayer: wallet.publicKey || undefined
+      }).add(...wrapInstructions);
       const wrapBlockhash = await connection.getLatestBlockhash('confirmed');
       wrapTx.recentBlockhash = wrapBlockhash.blockhash;
       
@@ -2805,6 +2978,16 @@ export async function wrap(params: WrapParams): Promise<string> {
       console.log('[wrap] ✅ SOL wrapped to wSOL in separate transaction:', wrapSig);
     }
   }
+  
+  // Derive vault state and determine token program
+  const vaultState = deriveVaultState(actualShieldMint);
+  const mintAccount = await connection.getAccountInfo(actualShieldMint, 'confirmed');
+  if (!mintAccount) {
+    throw new Error('Mint account not found');
+  }
+  const tokenProgramId = mintAccount.owner.equals(TOKEN_2022_PROGRAM_ID) 
+    ? TOKEN_2022_PROGRAM_ID 
+    : TOKEN_PROGRAM_ID;
   
   // Ensure vault token account exists before executeShield (reduces executeShield transaction size)
   // This matches the old behavior where wrap did everything in one transaction
@@ -2830,7 +3013,7 @@ export async function wrap(params: WrapParams): Promise<string> {
         ASSOCIATED_TOKEN_PROGRAM_ID
       )
     );
-    createVaultTx.feePayer = wallet.publicKey;
+    createVaultTx.feePayer = wallet.publicKey || undefined;
     const createVaultBlockhash = await connection.getLatestBlockhash('confirmed');
     createVaultTx.recentBlockhash = createVaultBlockhash.blockhash;
     const createVaultSig = await wallet.sendTransaction(createVaultTx, connection, { skipPreflight: false });
@@ -2845,7 +3028,7 @@ export async function wrap(params: WrapParams): Promise<string> {
   
   // Now prepare and execute shield (executeShield won't need to create accounts or wrap SOL)
   const { operationId } = await prepareShield(params);
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  // eslint-disable-next-line no-unused-vars
   const { proof: _proof, ...executeParams } = params;
   return executeShield({ ...executeParams, operationId });
 }
@@ -2888,7 +3071,7 @@ export async function prepareTransfer(params: PrepareTransferParams): Promise<Pr
   return sendPrepareInstruction(
     params.connection,
     params.wallet,
-    poolCoder.instruction.encode('prepare_transfer', { transferArgs })
+    poolCoder.instruction.encode('prepare_transfer', { transfer_args: transferArgs })
   );
 }
 
@@ -2905,7 +3088,7 @@ export async function executeTransfer(params: ExecuteTransferParams): Promise<st
   const commitmentTreeKey = deriveCommitmentTree(originMintKey);
   const nullifierSetKey = deriveNullifierSet(originMintKey);
   const noteLedgerKey = deriveNoteLedger(originMintKey);
-  const verifyingKey = deriveVerifyingKey();
+  const verifyingKey = deriveVerifyingKey(CIRCUIT_TAGS.transfer);
   const { key: mintMappingKey, decoded: mintMapping } = await fetchMintMappingAccount(
     connection,
     originMintKey
@@ -2988,6 +3171,13 @@ export async function executeTransfer(params: ExecuteTransferParams): Promise<st
   );
   
   return signature;
+}
+
+export async function transfer(params: TransferParams): Promise<string> {
+  const { operationId } = await prepareTransfer(params);
+  // eslint-disable-next-line no-unused-vars
+  const { proof: _proof, ...executeParams } = params;
+  return executeTransfer({ ...executeParams, operationId });
 }
 
 export type PrepareTransferFromResult = PrepareResult;
@@ -3148,7 +3338,7 @@ export async function executeTransferFrom(params: ExecuteTransferFromParams): Pr
 
 export async function transferFrom(params: TransferFromParams): Promise<string> {
   const { operationId } = await prepareTransferFrom(params);
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  // eslint-disable-next-line no-unused-vars
   const { proof: _proof, ...executeParams } = params;
   return executeTransferFrom({ ...executeParams, operationId });
 }
@@ -3386,6 +3576,13 @@ export async function executeBatchTransfer(
   );
   
   return signature;
+}
+
+export async function batchTransfer(params: BatchTransferParams): Promise<string> {
+  const { operationId } = await prepareBatchTransfer(params);
+  // eslint-disable-next-line no-unused-vars
+  const { batchProof: _batchProof, ...executeParams } = params;
+  return executeBatchTransfer({ ...executeParams, operationId });
 }
 
 export type PrepareBatchTransferFromResult = PrepareResult;
@@ -3631,6 +3828,13 @@ export async function executeBatchTransferFrom(
   return signature;
 }
 
+export async function batchTransferFrom(params: BatchTransferFromParams): Promise<string> {
+  const { operationId } = await prepareBatchTransferFrom(params);
+  // eslint-disable-next-line no-unused-vars
+  const { batchProof: _batchProof, ...executeParams } = params;
+  return executeBatchTransferFrom({ ...executeParams, operationId });
+}
+
 export interface CleanupExpiredOperationsParams {
   connection: Connection;
   wallet: WalletContextState;
@@ -3677,4 +3881,159 @@ export async function cleanupExpiredOperations(
   );
   
   return signature;
+}
+
+
+/**
+ * Get token metadata from TokenMetadata account
+ */
+export async function getTokenMetadata(
+  connection: Connection,
+  mint: PublicKey
+): Promise<{ name: string; symbol: string; uri: string } | null> {
+  try {
+    const metadataKey = deriveTokenMetadata(mint);
+    const metadataInfo = await connection.getAccountInfo(metadataKey, 'confirmed');
+    if (!metadataInfo) {
+      return null;
+    }
+    const metadata = factoryCoder.accounts.decode('TokenMetadata', metadataInfo.data) as {
+      name: string;
+      symbol: string;
+      uri: string;
+    };
+    return {
+      name: metadata.name,
+      symbol: metadata.symbol,
+      uri: metadata.uri
+    };
+  } catch (error) {
+    console.warn('[getTokenMetadata] Failed to fetch metadata:', error);
+    return null;
+  }
+}
+
+/**
+ * Mint a native zToken (creates a new token with metadata)
+ */
+export async function mintNativeZToken(params: MintNativeZTokenParams): Promise<MintNativeZTokenResult> {
+  assertWallet(params.wallet);
+  const wallet = params.wallet;
+  const connection = params.connection;
+  const payer = wallet.publicKey;
+  if (!payer) {
+    throw new Error('Wallet public key missing');
+  }
+
+  // Create mint keypair
+  const mintKeypair = Keypair.generate();
+  const originMint = mintKeypair.publicKey;
+
+  // Derive accounts
+  const factoryState = deriveFactoryState();
+  const metadataKey = deriveTokenMetadata(originMint);
+  const mintMappingKey = deriveMintMapping(originMint);
+  const poolState = derivePoolState(originMint);
+  const vaultState = deriveVaultState(originMint);
+  const commitmentTree = deriveCommitmentTree(originMint);
+  const nullifierSet = deriveNullifierSet(originMint);
+  const noteLedger = deriveNoteLedger(originMint);
+  const hookConfig = deriveHookConfig(originMint);
+  const hookWhitelist = deriveHookWhitelist(originMint);
+  const verifyingKey = deriveVerifyingKey();
+
+  // Get user token account
+  const userTokenAccount = await getAssociatedTokenAddress(
+    originMint,
+    payer,
+    false,
+    TOKEN_PROGRAM_ID,
+    ASSOCIATED_TOKEN_PROGRAM_ID
+  );
+
+  // Build instruction
+  const instructionData = factoryCoder.instruction.encode('mint_native_ztoken', {
+    name: params.name,
+    symbol: params.symbol,
+    uri: params.uri,
+    decimals: params.decimals,
+    initialSupply: typeof params.initialSupply === 'bigint' 
+      ? new BN(params.initialSupply.toString())
+      : new BN(params.initialSupply.toString()),
+    featureFlags: params.featureFlags ? params.featureFlags : null,
+    feeBpsOverride: params.feeBpsOverride ? params.feeBpsOverride : null
+  });
+
+  const instruction = new TransactionInstruction({
+    programId: FACTORY_PROGRAM_ID,
+    keys: [
+      { pubkey: factoryState, isSigner: false, isWritable: true },
+      { pubkey: payer, isSigner: true, isWritable: true },
+      { pubkey: originMint, isSigner: true, isWritable: true },
+      { pubkey: metadataKey, isSigner: false, isWritable: true },
+      { pubkey: mintMappingKey, isSigner: false, isWritable: true },
+      { pubkey: poolState, isSigner: false, isWritable: true },
+      { pubkey: vaultState, isSigner: false, isWritable: true },
+      { pubkey: commitmentTree, isSigner: false, isWritable: true },
+      { pubkey: nullifierSet, isSigner: false, isWritable: true },
+      { pubkey: noteLedger, isSigner: false, isWritable: true },
+      { pubkey: hookConfig, isSigner: false, isWritable: true },
+      { pubkey: hookWhitelist, isSigner: false, isWritable: true },
+      { pubkey: VERIFIER_PROGRAM_ID, isSigner: false, isWritable: false },
+      { pubkey: verifyingKey, isSigner: false, isWritable: false },
+      { pubkey: userTokenAccount, isSigner: false, isWritable: true },
+      { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
+      { pubkey: ASSOCIATED_TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
+      { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+      { pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false }
+    ],
+    data: instructionData
+  });
+
+  const latestBlockhash = await connection.getLatestBlockhash('confirmed');
+  const tx = new Transaction().add(instruction);
+  tx.feePayer = payer;
+  tx.recentBlockhash = latestBlockhash.blockhash;
+  tx.sign(mintKeypair); // Sign with mint keypair
+
+  const signature = await wallet.sendTransaction(tx, connection, { skipPreflight: false });
+  
+  await waitForSignatureConfirmation(
+    connection,
+    signature,
+    latestBlockhash.blockhash,
+    latestBlockhash.lastValidBlockHeight
+  );
+
+  return {
+    signature,
+    originMint: originMint.toBase58(),
+    poolId: poolState.toBase58(),
+    metadataAccount: metadataKey.toBase58(),
+    mintMapping: mintMappingKey.toBase58(),
+    decimals: params.decimals,
+    symbol: params.symbol,
+    uri: params.uri
+  };
+}
+
+// DEX functions - TODO: Implement these (separate from Proof Account Abstraction)
+export async function createDexPool(params: any): Promise<string> {
+  throw new Error('createDexPool not yet implemented');
+}
+
+export async function addDexLiquidity(params: any): Promise<string> {
+  throw new Error('addDexLiquidity not yet implemented');
+}
+
+export async function removeDexLiquidity(params: any): Promise<string> {
+  throw new Error('removeDexLiquidity not yet implemented');
+}
+
+export async function getDexPoolState(connection: Connection, tokenA: PublicKey, tokenB: PublicKey): Promise<any> {
+  throw new Error('getDexPoolState not yet implemented');
+}
+
+export async function swapDex(params: any): Promise<string> {
+  throw new Error('swapDex not yet implemented');
 }

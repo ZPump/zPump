@@ -3711,6 +3711,7 @@ name = "program-test-harness"
 version = "0.1.0"
 dependencies = [
  "anchor-lang",
+ "hex",
  "ptf-factory",
  "sha2 0.10.9",
  "solana-program 3.0.0",
@@ -3811,6 +3812,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha3",
+ "solana-bn254 2.2.2",
 ]
 
 [[package]]

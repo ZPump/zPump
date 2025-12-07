@@ -11,6 +11,14 @@ name = "ptf_verifier_groth16"
 anchor-lang = { workspace = true }
 sha3 = { workspace = true }
 ptf-common = { path = "../common" }
+solana-bn254 = "2"
+
+# Arkworks dependencies for BPF builds (needed for parsing verifying keys and proofs)
+# We use a minimal set to avoid pulling in std dependencies
+[target.'cfg(any(target_arch = "bpf", target_arch = "sbf"))'.dependencies]
+ark-bn254 = { version = "0.4", default-features = false }
+ark-groth16 = { version = "0.4", default-features = false }
+ark-serialize = { version = "0.4", default-features = false }
 
 [target.'cfg(not(target_arch = "bpf"))'.dependencies]
 ark-bn254 = { version = "0.4", default-features = false, features = ["std", "curve"] }
@@ -25,12 +33,13 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 
 [features]
-# NOTE: groth16-syscall requires Solana runtime support for sol_groth16_verify syscall
-# The syscall IS available on mainnet (Solana 1.18.x+) but NOT in local validator
+# NOTE: groth16-syscall uses Solana's alt_bn128 syscalls (alt_bn128_addition, 
+# alt_bn128_multiplication, alt_bn128_pairing) to implement Groth16 verification.
+# These syscalls are available on mainnet/testnet (Solana 1.18.x+) but NOT in local validator.
 # 
 # For PRODUCTION (mainnet/testnet): Use groth16-syscall feature
 #   anchor build --features groth16-syscall
-#   This enables full security and decentralization
+#   This enables full security and decentralization using real ZK syscalls
 #
 # For LOCAL DEVELOPMENT: Use groth16-dev-skip feature (default)
 #   anchor build  (uses dev-skip by default)

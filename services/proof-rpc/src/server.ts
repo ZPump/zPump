@@ -247,7 +247,42 @@ function normalizeBigInt(value: string | number | bigint): bigint {
   if (/^[0-9a-fA-F]+$/.test(trimmed)) {
     return BigInt(`0x${trimmed}`);
   }
-  return BigInt(trimmed);
+  // If it looks like a base58 public key (Solana addresses are base58), try to parse it
+  const isBase58Pubkey = trimmed.length >= 32 && trimmed.length <= 44 && /^[1-9A-HJ-NP-Za-km-z]+$/.test(trimmed);
+  if (isBase58Pubkey) {
+    logger.info({ value: trimmed, length: trimmed.length }, 'normalizeBigInt: Detected base58 public key, attempting conversion');
+    try {
+      const key = new PublicKey(trimmed);
+      const hex = Buffer.from(key.toBytes()).toString('hex');
+      const result = BigInt(`0x${hex}`);
+      logger.info({ value: trimmed, result: result.toString() }, 'normalizeBigInt: Successfully converted via PublicKey');
+      return result;
+    } catch (e) {
+      // Log the error but still try bs58.decode as fallback
+      logger.warn({ value: trimmed, error: String(e) }, 'normalizeBigInt: PublicKey constructor failed, trying bs58.decode');
+      try {
+        const decoded = bs58.decode(trimmed);
+        const hex = Buffer.from(decoded).toString('hex');
+        const result = BigInt(`0x${hex}`);
+        logger.info({ value: trimmed, result: result.toString() }, 'normalizeBigInt: Successfully converted via bs58.decode');
+        return result;
+      } catch (e2) {
+        logger.error({ value: trimmed, error1: String(e), error2: String(e2), stack: new Error().stack }, 'normalizeBigInt: Both PublicKey and bs58.decode failed');
+        throw new Error(`Cannot convert ${trimmed} to a BigInt (PublicKey error: ${e}, bs58 error: ${e2})`);
+      }
+    }
+  }
+  // If we can't convert it, throw a more helpful error with stack trace
+  const error = new Error(`Cannot convert ${trimmed} to a BigInt`);
+  logger.error({ 
+    value: trimmed, 
+    isBase58Pubkey, 
+    length: trimmed.length,
+    matchesPattern: /^[1-9A-HJ-NP-Za-km-z]+$/.test(trimmed),
+    charCodes: trimmed.split('').map(c => c.charCodeAt(0)),
+    stack: error.stack 
+  }, 'normalizeBigInt: Failed to convert value');
+  throw error;
 }
 
 function bigIntToBeBuffer(value: string | number | bigint, length = 32): Buffer {
@@ -300,18 +335,36 @@ function serializePublicInputs(values: string[]): Buffer {
 }
 
 function parsePubkeyField(value: string): bigint {
+  if (!value || typeof value !== 'string') {
+    throw new Error(`parsePubkeyField: invalid input type: ${typeof value}, value: ${value}`);
+  }
+  const trimmed = value.trim();
+  logger.debug({ value: trimmed, length: trimmed.length }, 'parsePubkeyField: Attempting to parse');
   try {
-    const key = new PublicKey(value);
+    const key = new PublicKey(trimmed);
     const hex = Buffer.from(key.toBytes()).toString('hex');
-    return BigInt(`0x${hex}`);
-  } catch {
+    const result = BigInt(`0x${hex}`);
+    logger.debug({ value: trimmed, result: result.toString() }, 'parsePubkeyField: Successfully parsed via PublicKey');
+    return result;
+  } catch (e1) {
+    logger.debug({ value: trimmed, error: String(e1) }, 'parsePubkeyField: PublicKey constructor failed, trying bs58.decode');
     try {
-      const decoded = bs58.decode(value);
+      const decoded = bs58.decode(trimmed);
       const hex = Buffer.from(decoded).toString('hex');
-      return BigInt(`0x${hex}`);
-    } catch {
-      logger.warn({ value }, 'Failed to parse pubkey via bs58; falling back to raw BigInt');
-      return bigIntify(value);
+      const result = BigInt(`0x${hex}`);
+      logger.debug({ value: trimmed, result: result.toString() }, 'parsePubkeyField: Successfully parsed via bs58.decode');
+      return result;
+    } catch (e2) {
+      // If it's already a hex string or numeric string, try normalizeBigInt directly
+      // But first check if it looks like a public key that we should be able to parse
+      const looksLikePubkey = trimmed.length >= 32 && trimmed.length <= 44 && /^[1-9A-HJ-NP-Za-km-z]+$/.test(trimmed);
+      logger.debug({ value: trimmed, looksLikePubkey, e1: String(e1), e2: String(e2) }, 'parsePubkeyField: Both PublicKey and bs58.decode failed');
+      if (looksLikePubkey) {
+        logger.error({ value: trimmed, e1: String(e1), e2: String(e2) }, 'parsePubkeyField: Failed to parse what looks like a base58 public key');
+        throw new Error(`Cannot parse public key: ${trimmed} (PublicKey error: ${e1}, bs58 error: ${e2})`);
+      }
+      logger.warn({ value: trimmed }, 'parsePubkeyField: Not a public key, falling back to normalizeBigInt');
+      return normalizeBigInt(trimmed);
     }
   }
 }
@@ -806,7 +859,40 @@ function deriveUnshieldPublic(input: UnshieldInput) {
   }
 
   const changeCommitmentValue = hasChange
-    ? poseidonValue([changeAmount, changeRecipient!, input.mintId, input.poolId, changeBlinding!])
+    ? (() => {
+        try {
+          logger.info({ changeRecipient: changeRecipient, type: typeof changeRecipient }, 'Computing changeCommitmentValue - parsing changeRecipient');
+          const recipientField = parsePubkeyField(changeRecipient!);
+          logger.info({ mintId: input.mintId, type: typeof input.mintId }, 'Computing changeCommitmentValue - parsing mintId');
+          const mintField = parsePubkeyField(input.mintId);
+          logger.info({ poolId: input.poolId, type: typeof input.poolId }, 'Computing changeCommitmentValue - parsing poolId');
+          const poolField = parsePubkeyField(input.poolId);
+          logger.info({ changeBlinding: changeBlinding, type: typeof changeBlinding }, 'Computing changeCommitmentValue - parsing changeBlinding');
+          const blindingField = bigIntify(changeBlinding!);
+          logger.info({ recipientField: recipientField.toString(), mintField: mintField.toString(), poolField: poolField.toString(), blindingField: blindingField.toString() }, 'Computing changeCommitmentValue - calling poseidonValue');
+          return poseidonValue([
+            changeAmount,
+            recipientField,
+            mintField,
+            poolField,
+            blindingField
+          ]);
+        } catch (e) {
+          logger.error({ 
+            error: String(e), 
+            errorStack: e instanceof Error ? e.stack : undefined,
+            changeRecipient: changeRecipient,
+            changeRecipientType: typeof changeRecipient,
+            mintId: input.mintId,
+            mintIdType: typeof input.mintId,
+            poolId: input.poolId,
+            poolIdType: typeof input.poolId,
+            changeBlinding: changeBlinding,
+            changeBlindingType: typeof changeBlinding
+          }, 'Error computing changeCommitmentValue');
+          throw e;
+        }
+      })()
     : 0n;
 
   const changeAmountCommitmentValue = hasChange
@@ -849,17 +935,31 @@ function deriveUnshieldPublic(input: UnshieldInput) {
       noteAmount: fieldToHex(noteAmount)
     },
     payload: {
-      ...input,
-      noteAmount: noteAmount.toString(),
-      change: hasChange
-        ? {
-            ...(input.change ?? {}),
-            amount: changeAmount.toString(),
-            recipient: changeRecipient!,
-            blinding: changeBlinding!,
-            amountBlinding: changeAmountBlinding!
-          }
-        : { amount: '0', recipient: '0', blinding: '0', amountBlinding: '0' }
+      old_root: fieldToString(bigIntify(canonicalizeHex(input.oldRoot))),
+      amount: amount.toString(),
+      fee: fee.toString(),
+      dest_pubkey: fieldToString(parsePubkeyField(input.destPubkey)),
+      mode: input.mode === 'origin' ? '0' : '1',
+      mint_id: fieldToString(parsePubkeyField(input.mintId)),
+      pool_id: fieldToString(parsePubkeyField(input.poolId)),
+      note_amount: noteAmount.toString(),
+      note_id: input.noteId,
+      spending_key: input.spendingKey,
+      change_amount: hasChange ? changeAmount.toString() : '0',
+      change_recipient: hasChange ? (() => {
+        try {
+          return fieldToString(parsePubkeyField(changeRecipient!));
+        } catch (e) {
+          logger.error({ 
+            error: String(e), 
+            changeRecipient: changeRecipient,
+            stack: new Error().stack 
+          }, 'Error converting change_recipient in payload');
+          throw e;
+        }
+      })() : '0',
+      change_blinding: hasChange ? changeBlinding! : '0',
+      change_amount_blinding: hasChange ? changeAmountBlinding! : '0'
     }
   };
 }
@@ -1081,8 +1181,25 @@ async function produceProof(
   }, '[produceProof] Called');
   if (entry.mode === 'groth16' && entry.wasmPath && entry.zkeyPath) {
     try {
-      logger.info({ circuit, payload }, 'Invoking groth16.fullProve');
-      const { proof, publicSignals } = await groth16.fullProve(payload, entry.wasmPath, entry.zkeyPath);
+      // CRITICAL: Validate payload structure and ensure all public key strings are converted to BigInt strings
+      const validatedPayload = JSON.parse(JSON.stringify(payload)); // Deep clone to ensure no references
+      if (circuit === 'unshield' && validatedPayload.change_recipient && validatedPayload.change_recipient !== '0') {
+        // Ensure change_recipient is a BigInt string, not a base58 public key
+        if (validatedPayload.change_recipient.length > 20 && !validatedPayload.change_recipient.startsWith('0x')) {
+          // Looks like a base58 public key, convert it
+          try {
+            const key = new PublicKey(validatedPayload.change_recipient);
+            const hex = Buffer.from(key.toBytes()).toString('hex');
+            validatedPayload.change_recipient = `0x${hex}`;
+            logger.info({ original: payload.change_recipient, converted: validatedPayload.change_recipient }, 'Converted change_recipient from base58 to hex');
+          } catch (e) {
+            logger.error({ error: e, change_recipient: validatedPayload.change_recipient }, 'Failed to convert change_recipient');
+            throw new Error(`Invalid change_recipient format: ${validatedPayload.change_recipient}`);
+          }
+        }
+      }
+      logger.info({ circuit, payload: validatedPayload }, 'Invoking groth16.fullProve');
+      const { proof, publicSignals } = await groth16.fullProve(validatedPayload, entry.wasmPath, entry.zkeyPath);
       const proofBytes = serializeGroth16Proof(proof);
       const publicSignalsArray = Array.isArray(publicSignals)
         ? publicSignals.map((value) => value.toString())
@@ -1212,9 +1329,20 @@ async function generateProof(
     }
     case 'unshield': {
       const payload = UnshieldInputSchema.parse(request.payload);
-      const derived = deriveUnshieldPublic(payload);
-      await validateAgainstIndexer(indexer, payload.mintId, canonicalizeHex(payload.oldRoot), derived.nullifiers);
-      return produceProof(entry, request.circuit, derived.payload, derived.publicInputs);
+      try {
+        logger.info({ payload: payload as Record<string, unknown>, changeRecipient: (payload as { change?: { recipient?: string } }).change?.recipient }, 'generateProof: Calling deriveUnshieldPublic');
+        const derived = deriveUnshieldPublic(payload);
+        await validateAgainstIndexer(indexer, payload.mintId, canonicalizeHex(payload.oldRoot), derived.nullifiers);
+        return produceProof(entry, request.circuit, derived.payload, derived.publicInputs);
+      } catch (e) {
+        logger.error({ 
+          error: String(e), 
+          stack: e instanceof Error ? e.stack : undefined,
+          payload,
+          changeRecipient: payload.change?.recipient 
+        }, 'generateProof: Error in unshield flow');
+        throw e;
+      }
     }
     case 'batch_transfer': {
       const payload = BatchTransferInputSchema.parse(request.payload);

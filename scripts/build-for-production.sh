@@ -19,6 +19,7 @@ log_error() {
 cd "${PROJECT_ROOT}"
 
 log "Building Anchor programs with groth16-syscall feature for production..."
+log "This uses Solana's alt_bn128 syscalls (alt_bn128_addition, alt_bn128_multiplication, alt_bn128_pairing) for Groth16 verification"
 
 # Note: build-all-programs.sh builds all programs individually
 # For production builds with features, we need to build each program with the feature
@@ -48,6 +49,7 @@ fi
 
 log_success "Production build completed successfully"
 log "Programs built with groth16-syscall feature - ready for mainnet deployment"
+log "The verifier uses Solana's alt_bn128 syscalls for Groth16 verification (available on mainnet/testnet Solana 1.18.x+)"
 log "Binary location: ${PROJECT_ROOT}/target/deploy/"
 exit 0
 

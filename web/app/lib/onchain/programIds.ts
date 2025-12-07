@@ -2,8 +2,8 @@ import { PublicKey } from '@solana/web3.js';
 import { AddressLookupTableProgram } from '@solana/web3.js';
 
 export const FACTORY_PROGRAM_ID = new PublicKey('94XEJsvLbTNYit4mXowjhqkDpwqtnXnKs2KtF3PNW2oK');
-export const POOL_PROGRAM_ID = new PublicKey('ESbKkBQ9P7pavvFPejBXhguBY3BSLtf1LyEQqBNRDHqb');
-export const VAULT_PROGRAM_ID = new PublicKey('9KZsNopijkAmER6EUWcfS3pKa8iTvZt7M7nMoU7nn1e3');
+export const POOL_PROGRAM_ID = new PublicKey('Av2D8ADegRt1zTfqEABidkcMH2zzusrDLwAeDFgfdQ1k');
+export const VAULT_PROGRAM_ID = new PublicKey('7Wr9XMjYfPm6HTN3ZV7r4wHnoV2zospvNN5A1xgoER8m');
 export const VERIFIER_PROGRAM_ID = new PublicKey('2V5XN9rpubXdK3cdWBBjZwjxMpMzQBKTaN3moEJ59a8K');
 export const DEX_PROGRAM_ID = new PublicKey('4HKwSSZXkVMo5JKk92sMNhhUfcHCWzXYG8eVj6aPymar');
 
@@ -20,6 +20,16 @@ export const CIRCUIT_TAGS = {
   shield: (() => {
     const bytes = new Uint8Array(32);
     bytes.set(textEncoder.encode('shield'));
+    return bytes;
+  })(),
+  unshield: (() => {
+    const bytes = new Uint8Array(32);
+    bytes.set(textEncoder.encode('unshield'));
+    return bytes;
+  })(),
+  transfer: (() => {
+    const bytes = new Uint8Array(32);
+    bytes.set(textEncoder.encode('transfer'));
     return bytes;
   })()
 } as const;

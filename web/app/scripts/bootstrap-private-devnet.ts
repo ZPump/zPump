@@ -56,6 +56,11 @@ const CIRCUIT_TAGS: Record<string, Buffer> = {
     const buffer = Buffer.alloc(32);
     buffer.write('unshield');
     return buffer;
+  })(),
+  transfer: (() => {
+    const buffer = Buffer.alloc(32);
+    buffer.write('transfer');
+    return buffer;
   })()
 };
 
@@ -63,7 +68,8 @@ const DEFAULT_MINTS_PATH = resolveRepoPath('web', 'app', 'config', 'mints.genera
 const VERIFYING_KEY_DIR = resolveRepoPath('circuits', 'keys');
 const VERIFYING_KEY_CONFIG: Record<string, string> = {
   shield: 'shield.json',
-  unshield: 'unshield.json'
+  unshield: 'unshield.json',
+  transfer: 'transfer.json'
 };
 const TARGET_IDL_DIR = resolveRepoPath('target', 'idl');
 const INDEXER_URL =

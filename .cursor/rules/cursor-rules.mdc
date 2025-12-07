@@ -1,7 +1,4 @@
 ---
-alwaysApply: true
----
----
 description: How to add or edit Cursor rules in your project
 globs:
 alwaysApply: false

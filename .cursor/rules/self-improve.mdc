@@ -1,7 +1,4 @@
 ---
-alwaysApply: true
----
----
 description: Guidelines for continuously improving Cursor rules based on emerging code patterns and best practices.
 globs: **/*
 alwaysApply: true
@@ -78,5 +75,15 @@ alwaysApply: true
 - Update references to external docs
 - Maintain links between related rules
 - Document breaking changes
+
+## Debugging and Problem Tracking:
+
+- **Always use [use-scratch-pad.mdc](mdc:.cursor/rules/use-scratch-pad.mdc)** - Track all problems in `PROBLEM_SCRATCH_PAD.md`
+- Use [debugging-tracker.mdc](mdc:.cursor/rules/debugging-tracker.mdc) for persistent issues that need detailed technical tracking
+- Follow [maintain-debugging-tracker.mdc](mdc:.cursor/rules/maintain-debugging-tracker.mdc) guidelines
+- Document all debugging attempts to avoid repeating failed approaches
+- Update scratch pad after each attempt with results and analysis
+- Formulate new hypotheses based on failed attempts
+- Check scratch pad before starting any debugging work
 
 Follow [cursor-rules.mdc](mdc:.cursor/rules/cursor-rules.mdc) for proper rule formatting and structure.

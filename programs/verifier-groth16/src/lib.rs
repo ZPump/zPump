@@ -1,5 +1,4 @@
 use anchor_lang::prelude::*;
-use anchor_lang::solana_program::pubkey;
 use sha3::{Digest, Keccak256};
 
 declare_id!("2V5XN9rpubXdK3cdWBBjZwjxMpMzQBKTaN3moEJ59a8K");
@@ -808,7 +807,151 @@ fn validate_proof_format(proof: &[u8]) -> Result<()> {
     any(target_arch = "bpf", target_arch = "sbf")
 ))]
 fn groth16_verify(verifying_key: &[u8], proof: &[u8], public_inputs: &[u8]) -> bool {
-    unsafe { groth16_verify_syscall(verifying_key, proof, public_inputs) }
+    // Implement Groth16 verification using Solana's alt_bn128 syscalls
+    // (alt_bn128_addition, alt_bn128_multiplication, alt_bn128_pairing)
+    
+    // Parse verifying key from Arkworks 0.4 format (uncompressed)
+    let vk = match parse_arkworks_vk_to_groth16_solana(verifying_key) {
+        Ok(vk) => vk,
+        Err(_) => {
+            #[cfg(debug_assertions)]
+            msg!("Failed to parse verifying key");
+            return false;
+        }
+    };
+    
+    // Parse proof from Arkworks 0.4 format (uncompressed)
+    // Proof format: proof_a (G1, 64 bytes) + proof_b (G2, 128 bytes) + proof_c (G1, 64 bytes) = 256 bytes
+    // But Arkworks serializes as: proof_a (64) + proof_b (128) + proof_c (64) = 256 bytes uncompressed
+    let (proof_a, proof_b, proof_c) = match parse_arkworks_proof_to_groth16_solana(proof) {
+        Ok(parsed) => parsed,
+        Err(_) => {
+            #[cfg(debug_assertions)]
+            msg!("Failed to parse proof");
+            return false;
+        }
+    };
+    
+    // Parse public inputs: Vec<Fr> serialized uncompressed (little-endian, 32 bytes each)
+    // Convert to big-endian 32-byte arrays as expected by groth16-solana
+    let public_inputs_be = match parse_arkworks_public_inputs_to_groth16_solana(public_inputs) {
+        Ok(inputs) => inputs,
+        Err(_) => {
+            #[cfg(debug_assertions)]
+            msg!("Failed to parse public inputs");
+            return false;
+        }
+    };
+    
+    // groth16-solana uses const generics for the number of public inputs
+    // We need to handle this dynamically. Since we can't use const generics at runtime,
+    // we'll implement the verification logic ourselves using solana-bn254 syscalls,
+    // following groth16-solana's approach
+    
+    verify_groth16_with_solana_syscalls(&vk, &proof_a, &proof_b, &proof_c, &public_inputs_be)
+}
+
+// Implement Groth16 verification using Solana's alt_bn128 syscalls
+// This follows the same algorithm as groth16-solana but handles variable numbers of public inputs
+#[cfg(all(
+    feature = "groth16-syscall",
+    any(target_arch = "bpf", target_arch = "sbf")
+))]
+fn verify_groth16_with_solana_syscalls(
+    vk: &ParsedVerifyingKey,
+    proof_a: &[u8; 64],
+    proof_b: &[u8; 128],
+    proof_c: &[u8; 64],
+    public_inputs: &[[u8; 32]],
+) -> bool {
+    use solana_bn254::prelude::{alt_bn128_addition, alt_bn128_multiplication, alt_bn128_pairing};
+    
+    // Step 1: Prepare public inputs
+    // Compute: vk_ic[0] + sum(public_inputs[i] * vk_ic[i+1] for i in 0..len(public_inputs))
+    if public_inputs.len() + 1 != vk.ic.len() {
+        #[cfg(debug_assertions)]
+        msg!("Public inputs length mismatch: {} inputs, {} IC points", public_inputs.len(), vk.ic.len());
+        return false;
+    }
+    
+    // Start with vk_ic[0]
+    let mut prepared_inputs = vk.ic[0];
+    
+    // Add each public input multiplied by its corresponding IC point
+    for (i, input) in public_inputs.iter().enumerate() {
+        // Multiply vk_ic[i+1] by input[i]
+        let mul_input = [&vk.ic[i + 1][..], &input[..]].concat();
+        let mul_result = match alt_bn128_multiplication(&mul_input) {
+            Ok(result) => result,
+            Err(_) => {
+                #[cfg(debug_assertions)]
+                msg!("G1 multiplication failed for input {}", i);
+                return false;
+            }
+        };
+        
+        // Add to prepared_inputs
+        let add_input = [&mul_result[..], &prepared_inputs[..]].concat();
+        prepared_inputs = match alt_bn128_addition(&add_input) {
+            Ok(result) => {
+                let mut output = [0u8; 64];
+                output.copy_from_slice(&result[..64]);
+                output
+            }
+            Err(_) => {
+                #[cfg(debug_assertions)]
+                msg!("G1 addition failed for input {}", i);
+                return false;
+            }
+        };
+    }
+    
+    // Step 2: Perform pairing check
+    // Groth16 verification equation:
+    // e(proof_a, proof_b) * e(prepared_inputs, vk_gamma_g2) * e(proof_c, vk_delta_g2) 
+    // == e(vk_alpha_g1, vk_beta_g2)
+    // Which we rearrange as:
+    // e(proof_a, proof_b) * e(prepared_inputs, vk_gamma_g2) * e(proof_c, vk_delta_g2) 
+    // * e(-vk_alpha_g1, vk_beta_g2) == 1
+    // Or equivalently:
+    // e(proof_a, proof_b) * e(prepared_inputs, vk_gamma_g2) * e(proof_c, vk_delta_g2) 
+    // * e(vk_alpha_g1, -vk_beta_g2) == 1
+    
+    // For the pairing, we need to negate proof_a and vk_alpha_g1
+    // In uncompressed format, negation is done by flipping the sign bit (bit 0 of byte 31 for G1)
+    let mut proof_a_neg = *proof_a;
+    proof_a_neg[31] ^= 0x80; // Flip sign bit
+    
+    let mut vk_alpha_g1_neg = vk.alpha_g1;
+    vk_alpha_g1_neg[31] ^= 0x80; // Flip sign bit
+    
+    // Construct pairing input: [proof_a_neg, proof_b, prepared_inputs, vk_gamma_g2, proof_c, vk_delta_g2, vk_alpha_g1_neg, vk_beta_g2]
+    let pairing_input = [
+        proof_a_neg.as_slice(),
+        proof_b.as_slice(),
+        prepared_inputs.as_slice(),
+        vk.gamma_g2.as_slice(),
+        proof_c.as_slice(),
+        vk.delta_g2.as_slice(),
+        vk_alpha_g1_neg.as_slice(),
+        vk.beta_g2.as_slice(),
+    ]
+    .concat();
+    
+    // Perform pairing
+    let pairing_result = match alt_bn128_pairing(&pairing_input) {
+        Ok(result) => result,
+        Err(_) => {
+            #[cfg(debug_assertions)]
+            msg!("Pairing operation failed");
+            return false;
+        }
+    };
+    
+    // Check if pairing result is 1 (in GT, this means the last byte should be 1)
+    // The pairing result is in GT, and we check if it equals the identity (1)
+    // In practice, we check if the result indicates the pairing equation holds
+    pairing_result[31] == 1
 }
 
 // CRITICAL FIX: Dev-skip allowed for local development (test/debug builds)
@@ -1245,34 +1388,141 @@ mod tests {
     }
 }
 
-#[cfg(any(target_arch = "bpf", target_arch = "sbf"))]
-#[allow(improper_ctypes)]
-unsafe fn groth16_verify_syscall(verifying_key: &[u8], proof: &[u8], public_inputs: &[u8]) -> bool {
-    extern "C" {
-        fn sol_groth16_verify(
-            verifying_key: *const u8,
-            verifying_key_len: u64,
-            proof: *const u8,
-            proof_len: u64,
-            public_inputs: *const u8,
-            public_inputs_len: u64,
-        ) -> u64;
-    }
+// Helper struct to hold parsed verifying key data for Groth16 verification
+#[cfg(all(
+    feature = "groth16-syscall",
+    any(target_arch = "bpf", target_arch = "sbf")
+))]
+struct ParsedVerifyingKey {
+    alpha_g1: [u8; 64],
+    beta_g2: [u8; 128],
+    gamma_g2: [u8; 128],
+    delta_g2: [u8; 128],
+    ic: Vec<[u8; 64]>, // gamma_abc_g1 points
+}
 
-    let result = sol_groth16_verify(
-        verifying_key.as_ptr(),
-        verifying_key.len() as u64,
-        proof.as_ptr(),
-        proof.len() as u64,
-        public_inputs.as_ptr(),
-        public_inputs.len() as u64,
-    );
+#[cfg(all(
+    feature = "groth16-syscall",
+    any(target_arch = "bpf", target_arch = "sbf")
+))]
+fn parse_arkworks_vk_to_groth16_solana(
+    verifying_key: &[u8],
+) -> Result<ParsedVerifyingKey, ()> {
+    use ark_bn254::Bn254;
+    use ark_groth16::VerifyingKey;
+    use ark_serialize::CanonicalDeserialize;
+    use std::io::Cursor;
     
-    // CRITICAL FIX: Log error codes for debugging (be careful not to spam)
-    if result != 0 {
-        #[cfg(debug_assertions)]
-        msg!("Groth16 syscall returned error code: {}", result);
+    let mut cursor = Cursor::new(verifying_key);
+    let vk: VerifyingKey<Bn254> = VerifyingKey::deserialize_uncompressed(&mut cursor)
+        .map_err(|_| ())?;
+    
+    // Convert G1 points to uncompressed big-endian format
+    let alpha_g1 = g1_to_uncompressed_be(&vk.alpha_g1);
+    
+    // Convert G2 points to uncompressed big-endian format
+    let beta_g2 = g2_to_uncompressed_be(&vk.beta_g2);
+    let gamma_g2 = g2_to_uncompressed_be(&vk.gamma_g2);
+    let delta_g2 = g2_to_uncompressed_be(&vk.delta_g2);
+    
+    // Convert gamma_abc_g1 (IC) array
+    let mut ic = Vec::new();
+    for g1 in &vk.gamma_abc_g1 {
+        ic.push(g1_to_uncompressed_be(g1));
     }
     
-    result == 0
+    Ok(ParsedVerifyingKey {
+        alpha_g1,
+        beta_g2,
+        gamma_g2,
+        delta_g2,
+        ic,
+    })
+}
+
+#[cfg(all(
+    feature = "groth16-syscall",
+    any(target_arch = "bpf", target_arch = "sbf")
+))]
+fn parse_arkworks_proof_to_groth16_solana(proof: &[u8]) -> Result<([u8; 64], [u8; 128], [u8; 64]), ()> {
+    use ark_bn254::Bn254;
+    use ark_groth16::Proof;
+    use ark_serialize::CanonicalDeserialize;
+    use std::io::Cursor;
+    
+    let mut cursor = Cursor::new(proof);
+    let proof: Proof<Bn254> = Proof::deserialize_uncompressed(&mut cursor)
+        .map_err(|_| ())?;
+    
+    let proof_a = g1_to_uncompressed_be(&proof.a);
+    let proof_b = g2_to_uncompressed_be(&proof.b);
+    let proof_c = g1_to_uncompressed_be(&proof.c);
+    
+    Ok((proof_a, proof_b, proof_c))
+}
+
+#[cfg(all(
+    feature = "groth16-syscall",
+    any(target_arch = "bpf", target_arch = "sbf")
+))]
+fn parse_arkworks_public_inputs_to_groth16_solana(public_inputs: &[u8]) -> Result<Vec<[u8; 32]>, ()> {
+    use ark_bn254::Fr;
+    use ark_serialize::CanonicalDeserialize;
+    use std::io::Cursor;
+    
+    let mut cursor = Cursor::new(public_inputs);
+    let inputs: Vec<Fr> = Vec::<Fr>::deserialize_uncompressed(&mut cursor)
+        .map_err(|_| ())?;
+    
+    let mut result = Vec::new();
+    for input in inputs {
+        // Convert Fr to big-endian bytes
+        let mut bytes = [0u8; 32];
+        // Fr serialization in Arkworks is little-endian, we need big-endian
+        let le_bytes = input.into_bigint().to_bytes_le();
+        if le_bytes.len() > 32 {
+            return Err(());
+        }
+        // Convert to big-endian
+        for (i, byte) in le_bytes.iter().enumerate() {
+            bytes[31 - i] = *byte;
+        }
+        result.push(bytes);
+    }
+    
+    Ok(result)
+}
+
+#[cfg(all(
+    feature = "groth16-syscall",
+    any(target_arch = "bpf", target_arch = "sbf")
+))]
+fn g1_to_uncompressed_be(g1: &ark_bn254::G1Affine) -> [u8; 64] {
+    use ark_serialize::CanonicalSerialize;
+    use solana_bn254::compression::prelude::convert_endianness;
+    
+    let mut bytes = Vec::new();
+    g1.serialize_uncompressed(&mut bytes).unwrap();
+    // Arkworks uses little-endian, groth16-solana expects big-endian
+    let be_bytes: [u8; 64] = convert_endianness::<32, 64>(&bytes[0..64].try_into().unwrap())
+        .try_into()
+        .unwrap();
+    be_bytes
+}
+
+#[cfg(all(
+    feature = "groth16-syscall",
+    any(target_arch = "bpf", target_arch = "sbf")
+))]
+fn g2_to_uncompressed_be(g2: &ark_bn254::G2Affine) -> [u8; 128] {
+    use ark_serialize::CanonicalSerialize;
+    use solana_bn254::compression::prelude::convert_endianness;
+    
+    let mut bytes = Vec::new();
+    g2.serialize_uncompressed(&mut bytes).unwrap();
+    // Arkworks uses little-endian, groth16-solana expects big-endian
+    let be_bytes: [u8; 128] = convert_endianness::<64, 128>(&bytes[0..128].try_into().unwrap())
+        .try_into()
+        .unwrap();
+    be_bytes
 }

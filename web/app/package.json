@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "bootstrap:devnet": "ts-node --transpile-only scripts/bootstrap-private-devnet.ts",
+    "bootstrap:devnet": "tsx scripts/bootstrap-private-devnet.ts",
     "prepare:pool": "tsx scripts/prepare-pool.ts",
     "test:lazy-init": "tsx scripts/test-lazy-initialization.ts",
     "test:comprehensive": "tsx scripts/comprehensive-e2e.ts",

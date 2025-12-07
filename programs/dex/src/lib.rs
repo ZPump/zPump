@@ -10,7 +10,7 @@ pub use errors::DexError;
 pub use state::{PoolState, DEX_POOL_SEED};
 pub use ztoken_cpi::{ShieldArgs, TransferArgs, BatchTransferArgs, ZTokenPoolAccounts, parse_ztoken_accounts, parse_cpi_common_accounts, invoke_shield_cpi, invoke_transfer_cpi, invoke_transfer_cpi_with_accounts, invoke_transfer_for_add_liquidity_ctx, invoke_batch_transfer_for_add_liquidity};
 
-declare_id!("4HKwSSZXkVMo5JKk92sMNhhUfcHCWzXYG8eVj6aPymar");
+declare_id!("GaXoieE6tdHx8ueDCcGheqZoUKFnreTjbjV9o1c7gWFT");
 
 #[program]
 pub mod ptf_dex {

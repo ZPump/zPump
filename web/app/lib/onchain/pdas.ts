@@ -65,9 +65,9 @@ export function deriveFactoryConfig(): PublicKey {
   )[0];
 }
 
-export function deriveVerifyingKey(): PublicKey {
+export function deriveVerifyingKey(circuitTag: Uint8Array = CIRCUIT_TAGS.shield): PublicKey {
   return PublicKey.findProgramAddressSync(
-    [textEncoder.encode('vk'), CIRCUIT_TAGS.shield, new Uint8Array([VERIFIER_VERSION])],
+    [textEncoder.encode('vk'), circuitTag, new Uint8Array([VERIFIER_VERSION])],
     VERIFIER_PROGRAM_ID
   )[0];
 }

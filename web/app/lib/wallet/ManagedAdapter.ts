@@ -64,7 +64,10 @@ export class ManagedKeypairWalletAdapter extends BaseSignInMessageSignerWalletAd
     if (isVersionedTransaction(transaction)) {
       transaction.sign([this._keypair]);
     } else {
-      transaction.partialSign(this._keypair);
+      // CRITICAL FIX: Use transaction.sign() instead of partialSign() to sign ALL accounts marked as signers
+      // partialSign() only signs the fee payer, but we need to sign all accounts marked as signers in instruction keys
+      // transaction.sign() signs all accounts that are marked as signers and match the provided keypair
+      transaction.sign(this._keypair);
     }
 
     return transaction;

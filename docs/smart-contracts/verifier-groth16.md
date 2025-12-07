@@ -1,6 +1,6 @@
 # `ptf_verifier_groth16` Program Documentation
 
-The `ptf_verifier_groth16` program verifies Groth16 zero-knowledge proofs produced by the off-chain proof service. It is a thin wrapper around the Solana Groth16 verification syscall.
+The `ptf_verifier_groth16` program verifies Groth16 zero-knowledge proofs produced by the off-chain proof service. It implements Groth16 verification using Solana's alt_bn128 syscalls (alt_bn128_addition, alt_bn128_multiplication, alt_bn128_pairing).
 
 ## Program ID
 
@@ -32,8 +32,12 @@ Accounts:
 - `verifier_program` – `ptf_verifier_groth16` itself (for CPI).
 
 Behaviour:
-- Loads verifying key bytes from PDA data.
-- On-chain (BPF/SBF) builds invoke Solana's `sol_groth16_verify` syscall directly; there is no longer a stub that can be bypassed.
+- Loads verifying key bytes from PDA data (stored in uncompressed Arkworks format).
+- On-chain (BPF/SBF) builds with `groth16-syscall` feature use Solana's alt_bn128 syscalls to perform Groth16 verification:
+  - Parses verifying key and proof from Arkworks format
+  - Prepares public inputs using alt_bn128_multiplication and alt_bn128_addition
+  - Performs pairing check using alt_bn128_pairing
+  - Verifies the pairing equation holds
 - Host builds (used for unit tests) fall back to Arkworks and include regression tests that ensure tampered proofs fail.
 - Returns `Ok(())` if the proof is valid; errors bubble up to the caller.
 - **Security Warning**: If `groth16-dev-skip` feature is enabled, a warning is logged. This feature bypasses all proof verification and MUST NOT be used in production. CI/CD must verify production builds use `groth16-syscall`, not `groth16-dev-skip`.
@@ -57,8 +61,16 @@ Behaviour:
 
 ## Build Features
 
-- **`groth16-syscall`**: Production feature that uses Solana's native Groth16 verification syscall. Required for mainnet/testnet deployments.
+- **`groth16-syscall`**: Production feature that uses Solana's alt_bn128 syscalls (alt_bn128_addition, alt_bn128_multiplication, alt_bn128_pairing) to implement Groth16 verification. These syscalls are available on mainnet/testnet (Solana 1.18.x+) but NOT in local validator. Required for mainnet/testnet deployments.
 - **`groth16-dev-skip`**: Development-only feature that bypasses verification for local testing. MUST NOT be used in production. The program logs a warning when this feature is enabled.
+
+## Implementation Details
+
+The verifier implements the standard Groth16 verification equation:
+- Prepares public inputs: `vk_ic[0] + sum(public_inputs[i] * vk_ic[i+1])`
+- Performs pairing check: `e(proof_a, proof_b) * e(prepared_inputs, vk_gamma_g2) * e(proof_c, vk_delta_g2) * e(-vk_alpha_g1, vk_beta_g2) == 1`
+
+This is implemented using Solana's alt_bn128 syscalls, which provide efficient elliptic curve operations on the BN254 curve. The implementation follows the same approach as the `groth16-solana` library but handles variable numbers of public inputs dynamically.
 
 ## References
 

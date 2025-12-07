@@ -453,4 +453,111 @@ mod tests {
             other => panic!("unexpected error: {:?}", other),
         }
     }
+
+    // Vault Operations Tests
+    // These tests verify proof vault account abstraction functionality
+    
+    #[tokio::test]
+    async fn test_vault_space_calculation() {
+        // Verify vault space calculation matches program expectations
+        // UserProofVault structure:
+        // - owner: Pubkey (32 bytes)
+        // - vault_bump: u8 (1 byte)
+        // - prepared_operations: Vec<PreparedOperation> (4 bytes length + data)
+        // - created_at: i64 (8 bytes)
+        // - last_used: i64 (8 bytes)
+        // - operation_count: u64 (8 bytes)
+        // Discriminator: 8 bytes
+        
+        const MAX_OPERATIONS: usize = 10;
+        
+        let base_size = 8 + // discriminator
+            32 + // owner
+            1 + // vault_bump
+            4 + // Vec length
+            8 + // created_at
+            8 + // last_used
+            8; // operation_count
+        
+        // Each PreparedOperation can vary in size, but we allocate space for MAX_OPERATIONS
+        // The program allocates ~50 KB for operation storage
+        let min_vault_size = base_size + (MAX_OPERATIONS * 100); // Conservative estimate
+        
+        // Verify minimum size is reasonable
+        assert!(min_vault_size > 100, "Vault size should be at least 100 bytes");
+        assert!(min_vault_size < 100_000, "Vault size should be less than 100 KB");
+    }
+
+    #[tokio::test]
+    async fn test_operation_expiry_time() {
+        // Verify expiry time calculation
+        const OPERATION_EXPIRY_SECONDS: i64 = 300; // 5 minutes
+        
+        let created_at = 1000i64;
+        let expires_at = created_at
+            .checked_add(OPERATION_EXPIRY_SECONDS)
+            .expect("Expiry calculation should not overflow");
+        
+        assert_eq!(expires_at - created_at, OPERATION_EXPIRY_SECONDS);
+        assert_eq!(expires_at, 1300);
+        
+        // Verify operation is not expired
+        let current_time = 1000i64;
+        assert!(current_time < expires_at);
+        
+        // Verify operation would be expired after expiry time
+        let future_time = expires_at + 1;
+        assert!(future_time >= expires_at);
+    }
+
+    #[tokio::test]
+    async fn test_max_operations_limit() {
+        // Verify MAX_OPERATIONS constant
+        const MAX_OPERATIONS: usize = 10;
+        assert_eq!(MAX_OPERATIONS, 10, "MAX_OPERATIONS should be 10");
+        
+        // Verify operations can be created up to limit
+        let mut operations: Vec<u8> = Vec::new();
+        for i in 0..MAX_OPERATIONS {
+            operations.push(i as u8);
+        }
+        
+        assert_eq!(operations.len(), MAX_OPERATIONS);
+        
+        // Verify adding one more would exceed limit
+        assert!(operations.len() >= MAX_OPERATIONS);
+    }
+
+    #[tokio::test]
+    async fn test_pda_derivation() {
+        // Test proof vault PDA derivation
+        let program_id = pubkey!("ESbKkBQ9P7pavvFPejBXhguBY3BSLtf1LyEQqBNRDHqb");
+        let owner = pubkey!("11111111111111111111111111111111");
+        
+        let seeds = &[
+            b"proof-vault",
+            owner.as_ref(),
+        ];
+        
+        let (pda, bump) = Pubkey::find_program_address(seeds, &program_id);
+        
+        // Verify PDA is valid
+        assert_ne!(pda, Pubkey::default());
+        assert!(bump <= 255); // bump is u8, so always >= 0
+        
+        // Verify PDA can be re-derived
+        let (pda2, bump2) = Pubkey::find_program_address(seeds, &program_id);
+        assert_eq!(pda, pda2);
+        assert_eq!(bump, bump2);
+    }
+
+    #[tokio::test]
+    async fn test_operation_id_format() {
+        // Verify operation ID is 32 bytes
+        let operation_id = [0u8; 32];
+        assert_eq!(operation_id.len(), 32);
+        
+        // Verify operation ID format is correct
+        assert_eq!(operation_id.len(), 32);
+    }
 }

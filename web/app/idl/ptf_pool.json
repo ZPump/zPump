@@ -1,5 +1,5 @@
 {
-  "address": "ESbKkBQ9P7pavvFPejBXhguBY3BSLtf1LyEQqBNRDHqb",
+  "address": "Av2D8ADegRt1zTfqEABidkcMH2zzusrDLwAeDFgfdQ1k",
   "metadata": {
     "name": "ptf_pool",
     "version": "0.1.0",
@@ -292,45 +292,45 @@
             "program": {
               "kind": "const",
               "value": [
-                87,
-                213,
-                15,
-                73,
-                201,
-                172,
-                77,
-                55,
-                209,
-                250,
-                7,
-                165,
-                196,
-                83,
-                37,
-                182,
-                238,
-                15,
-                106,
-                4,
-                123,
-                215,
-                4,
-                255,
-                128,
+                28,
+                146,
+                202,
+                161,
+                24,
                 35,
-                164,
-                16,
+                216,
+                65,
+                148,
+                21,
+                82,
+                1,
+                6,
+                61,
                 149,
-                228,
-                189,
-                48
+                37,
+                20,
+                113,
+                152,
+                114,
+                229,
+                30,
+                232,
+                172,
+                201,
+                7,
+                104,
+                176,
+                177,
+                8,
+                2,
+                31
               ]
             }
           }
         },
         {
           "name": "verifier_program",
-          "address": "2V5XN9rpubXdK3cdWBBjZwjxMpMzQBKTaN3moEJ59a8K"
+          "address": "CruPD16nnF8B9xW3kso3LES8QHMgEkauYkYGhqBTUGpM"
         },
         {
           "name": "verifying_key"
@@ -479,38 +479,38 @@
             "program": {
               "kind": "const",
               "value": [
-                87,
-                213,
-                15,
-                73,
-                201,
-                172,
-                77,
-                55,
-                209,
-                250,
-                7,
-                165,
-                196,
-                83,
-                37,
-                182,
-                238,
-                15,
-                106,
-                4,
-                123,
-                215,
-                4,
-                255,
-                128,
+                28,
+                146,
+                202,
+                161,
+                24,
                 35,
-                164,
-                16,
+                216,
+                65,
+                148,
+                21,
+                82,
+                1,
+                6,
+                61,
                 149,
-                228,
-                189,
-                48
+                37,
+                20,
+                113,
+                152,
+                114,
+                229,
+                30,
+                232,
+                172,
+                201,
+                7,
+                104,
+                176,
+                177,
+                8,
+                2,
+                31
               ]
             }
           }
@@ -550,7 +550,7 @@
         },
         {
           "name": "verifier_program",
-          "address": "2V5XN9rpubXdK3cdWBBjZwjxMpMzQBKTaN3moEJ59a8K"
+          "address": "CruPD16nnF8B9xW3kso3LES8QHMgEkauYkYGhqBTUGpM"
         },
         {
           "name": "verifying_key"
@@ -1025,200 +1025,21 @@
       ],
       "accounts": [
         {
-          "name": "proof_vault",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  112,
-                  114,
-                  111,
-                  111,
-                  102,
-                  45,
-                  118,
-                  97,
-                  117,
-                  108,
-                  116
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "transfer.payer",
-                "account": "BatchPrivateTransfer"
-              }
-            ]
-          }
+          "name": "payer",
+          "writable": true
         },
         {
-          "name": "transfer",
-          "accounts": [
-            {
-              "name": "pool_state_0",
-              "writable": true,
-              "pda": {
-                "seeds": [
-                  {
-                    "kind": "const",
-                    "value": [
-                      112,
-                      111,
-                      111,
-                      108
-                    ]
-                  },
-                  {
-                    "kind": "account",
-                    "path": "pool_state_0"
-                  }
-                ]
-              }
-            },
-            {
-              "name": "nullifier_set_0",
-              "writable": true,
-              "pda": {
-                "seeds": [
-                  {
-                    "kind": "const",
-                    "value": [
-                      110,
-                      117,
-                      108,
-                      108,
-                      115
-                    ]
-                  },
-                  {
-                    "kind": "account",
-                    "path": "pool_state_0"
-                  }
-                ]
-              }
-            },
-            {
-              "name": "commitment_tree_0",
-              "writable": true,
-              "pda": {
-                "seeds": [
-                  {
-                    "kind": "const",
-                    "value": [
-                      116,
-                      114,
-                      101,
-                      101
-                    ]
-                  },
-                  {
-                    "kind": "account",
-                    "path": "pool_state_0"
-                  }
-                ]
-              }
-            },
-            {
-              "name": "note_ledger_0",
-              "writable": true,
-              "pda": {
-                "seeds": [
-                  {
-                    "kind": "const",
-                    "value": [
-                      110,
-                      111,
-                      116,
-                      101,
-                      115
-                    ]
-                  },
-                  {
-                    "kind": "account",
-                    "path": "pool_state_0"
-                  }
-                ]
-              }
-            },
-            {
-              "name": "mint_mapping_0",
-              "pda": {
-                "seeds": [
-                  {
-                    "kind": "const",
-                    "value": [
-                      109,
-                      97,
-                      112
-                    ]
-                  },
-                  {
-                    "kind": "account",
-                    "path": "pool_state_0"
-                  }
-                ],
-                "program": {
-                  "kind": "const",
-                  "value": [
-                    87,
-                    213,
-                    15,
-                    73,
-                    201,
-                    172,
-                    77,
-                    55,
-                    209,
-                    250,
-                    7,
-                    165,
-                    196,
-                    83,
-                    37,
-                    182,
-                    238,
-                    15,
-                    106,
-                    4,
-                    123,
-                    215,
-                    4,
-                    255,
-                    128,
-                    35,
-                    164,
-                    16,
-                    149,
-                    228,
-                    189,
-                    48
-                  ]
-                }
-              }
-            },
-            {
-              "name": "verifier_program",
-              "address": "2V5XN9rpubXdK3cdWBBjZwjxMpMzQBKTaN3moEJ59a8K"
-            },
-            {
-              "name": "verifying_key"
-            },
-            {
-              "name": "payer",
-              "writable": true,
-              "signer": true
-            },
-            {
-              "name": "system_program",
-              "address": "11111111111111111111111111111111"
-            },
-            {
-              "name": "rent",
-              "address": "SysvarRent111111111111111111111111111111111"
-            }
-          ]
+          "name": "proof_vault",
+          "docs": [
+            "Proof vault for storing prepared operations"
+          ],
+          "writable": true
+        },
+        {
+          "name": "system_program"
+        },
+        {
+          "name": "rent"
         }
       ],
       "args": [
@@ -1247,233 +1068,21 @@
       ],
       "accounts": [
         {
-          "name": "proof_vault",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  112,
-                  114,
-                  111,
-                  111,
-                  102,
-                  45,
-                  118,
-                  97,
-                  117,
-                  108,
-                  116
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "transfer.spender",
-                "account": "BatchTransferFrom"
-              }
-            ]
-          }
+          "name": "spender",
+          "writable": true
         },
         {
-          "name": "transfer",
-          "accounts": [
-            {
-              "name": "pool_state_0",
-              "writable": true,
-              "pda": {
-                "seeds": [
-                  {
-                    "kind": "const",
-                    "value": [
-                      112,
-                      111,
-                      111,
-                      108
-                    ]
-                  },
-                  {
-                    "kind": "account",
-                    "path": "pool_state_0"
-                  }
-                ]
-              }
-            },
-            {
-              "name": "nullifier_set_0",
-              "writable": true,
-              "pda": {
-                "seeds": [
-                  {
-                    "kind": "const",
-                    "value": [
-                      110,
-                      117,
-                      108,
-                      108,
-                      115
-                    ]
-                  },
-                  {
-                    "kind": "account",
-                    "path": "pool_state_0"
-                  }
-                ]
-              }
-            },
-            {
-              "name": "commitment_tree_0",
-              "writable": true,
-              "pda": {
-                "seeds": [
-                  {
-                    "kind": "const",
-                    "value": [
-                      116,
-                      114,
-                      101,
-                      101
-                    ]
-                  },
-                  {
-                    "kind": "account",
-                    "path": "pool_state_0"
-                  }
-                ]
-              }
-            },
-            {
-              "name": "note_ledger_0",
-              "writable": true,
-              "pda": {
-                "seeds": [
-                  {
-                    "kind": "const",
-                    "value": [
-                      110,
-                      111,
-                      116,
-                      101,
-                      115
-                    ]
-                  },
-                  {
-                    "kind": "account",
-                    "path": "pool_state_0"
-                  }
-                ]
-              }
-            },
-            {
-              "name": "mint_mapping_0",
-              "pda": {
-                "seeds": [
-                  {
-                    "kind": "const",
-                    "value": [
-                      109,
-                      97,
-                      112
-                    ]
-                  },
-                  {
-                    "kind": "account",
-                    "path": "pool_state_0"
-                  }
-                ],
-                "program": {
-                  "kind": "const",
-                  "value": [
-                    87,
-                    213,
-                    15,
-                    73,
-                    201,
-                    172,
-                    77,
-                    55,
-                    209,
-                    250,
-                    7,
-                    165,
-                    196,
-                    83,
-                    37,
-                    182,
-                    238,
-                    15,
-                    106,
-                    4,
-                    123,
-                    215,
-                    4,
-                    255,
-                    128,
-                    35,
-                    164,
-                    16,
-                    149,
-                    228,
-                    189,
-                    48
-                  ]
-                }
-              }
-            },
-            {
-              "name": "allowance_0",
-              "writable": true,
-              "pda": {
-                "seeds": [
-                  {
-                    "kind": "const",
-                    "value": [
-                      97,
-                      108,
-                      108,
-                      111,
-                      119
-                    ]
-                  },
-                  {
-                    "kind": "account",
-                    "path": "pool_state_0"
-                  },
-                  {
-                    "kind": "account",
-                    "path": "allowance_owner_0"
-                  },
-                  {
-                    "kind": "account",
-                    "path": "spender"
-                  }
-                ]
-              }
-            },
-            {
-              "name": "allowance_owner_0"
-            },
-            {
-              "name": "verifier_program",
-              "address": "2V5XN9rpubXdK3cdWBBjZwjxMpMzQBKTaN3moEJ59a8K"
-            },
-            {
-              "name": "verifying_key"
-            },
-            {
-              "name": "spender",
-              "writable": true,
-              "signer": true
-            },
-            {
-              "name": "system_program",
-              "address": "11111111111111111111111111111111"
-            },
-            {
-              "name": "rent",
-              "address": "SysvarRent111111111111111111111111111111111"
-            }
-          ]
+          "name": "proof_vault",
+          "docs": [
+            "Proof vault for storing prepared operations"
+          ],
+          "writable": true
+        },
+        {
+          "name": "system_program"
+        },
+        {
+          "name": "rent"
         }
       ],
       "args": [
@@ -1502,292 +1111,32 @@
       ],
       "accounts": [
         {
-          "name": "shield",
-          "accounts": [
-            {
-              "name": "pool_state",
-              "docs": [
-                "LAZY INITIALIZATION: Pool will be initialized on first shield if it doesn't exist"
-              ],
-              "writable": true,
-              "pda": {
-                "seeds": [
-                  {
-                    "kind": "const",
-                    "value": [
-                      112,
-                      111,
-                      111,
-                      108
-                    ]
-                  },
-                  {
-                    "kind": "account",
-                    "path": "origin_mint"
-                  }
-                ]
-              }
-            },
-            {
-              "name": "hook_config",
-              "pda": {
-                "seeds": [
-                  {
-                    "kind": "const",
-                    "value": [
-                      104,
-                      111,
-                      111,
-                      107,
-                      115
-                    ]
-                  },
-                  {
-                    "kind": "account",
-                    "path": "origin_mint"
-                  }
-                ]
-              }
-            },
-            {
-              "name": "hook_whitelist",
-              "writable": true,
-              "pda": {
-                "seeds": [
-                  {
-                    "kind": "const",
-                    "value": [
-                      104,
-                      111,
-                      111,
-                      107,
-                      45,
-                      119,
-                      104,
-                      105,
-                      116,
-                      101,
-                      108,
-                      105,
-                      115,
-                      116
-                    ]
-                  },
-                  {
-                    "kind": "account",
-                    "path": "origin_mint"
-                  }
-                ]
-              }
-            },
-            {
-              "name": "nullifier_set",
-              "docs": [
-                "CRITICAL SECURITY FIX: Use init_if_needed to prevent race conditions",
-                "Anchor handles initialization atomically, preventing concurrent initialization attempts"
-              ],
-              "pda": {
-                "seeds": [
-                  {
-                    "kind": "const",
-                    "value": [
-                      110,
-                      117,
-                      108,
-                      108,
-                      115
-                    ]
-                  },
-                  {
-                    "kind": "account",
-                    "path": "origin_mint"
-                  }
-                ]
-              }
-            },
-            {
-              "name": "commitment_tree",
-              "docs": [
-                "CRITICAL SECURITY FIX: Use init_if_needed to prevent race conditions",
-                "Anchor handles initialization atomically, preventing concurrent initialization attempts"
-              ],
-              "writable": true,
-              "pda": {
-                "seeds": [
-                  {
-                    "kind": "const",
-                    "value": [
-                      116,
-                      114,
-                      101,
-                      101
-                    ]
-                  },
-                  {
-                    "kind": "account",
-                    "path": "origin_mint"
-                  }
-                ]
-              }
-            },
-            {
-              "name": "note_ledger",
-              "pda": {
-                "seeds": [
-                  {
-                    "kind": "const",
-                    "value": [
-                      110,
-                      111,
-                      116,
-                      101,
-                      115
-                    ]
-                  },
-                  {
-                    "kind": "account",
-                    "path": "origin_mint"
-                  }
-                ]
-              }
-            },
-            {
-              "name": "vault_state",
-              "writable": true
-            },
-            {
-              "name": "vault_token_account",
-              "writable": true
-            },
-            {
-              "name": "depositor_token_account",
-              "writable": true
-            },
-            {
-              "name": "twin_mint",
-              "writable": true,
-              "optional": true
-            },
-            {
-              "name": "verifier_program"
-            },
-            {
-              "name": "verifying_key"
-            },
-            {
-              "name": "shield_claim",
-              "writable": true,
-              "pda": {
-                "seeds": [
-                  {
-                    "kind": "const",
-                    "value": [
-                      99,
-                      108,
-                      97,
-                      105,
-                      109
-                    ]
-                  },
-                  {
-                    "kind": "account",
-                    "path": "pool_state"
-                  }
-                ]
-              }
-            },
-            {
-              "name": "payer",
-              "writable": true,
-              "signer": true
-            },
-            {
-              "name": "origin_mint"
-            },
-            {
-              "name": "mint_mapping",
-              "pda": {
-                "seeds": [
-                  {
-                    "kind": "const",
-                    "value": [
-                      109,
-                      97,
-                      112
-                    ]
-                  },
-                  {
-                    "kind": "account",
-                    "path": "origin_mint"
-                  }
-                ],
-                "program": {
-                  "kind": "const",
-                  "value": [
-                    87,
-                    213,
-                    15,
-                    73,
-                    201,
-                    172,
-                    77,
-                    55,
-                    209,
-                    250,
-                    7,
-                    165,
-                    196,
-                    83,
-                    37,
-                    182,
-                    238,
-                    15,
-                    106,
-                    4,
-                    123,
-                    215,
-                    4,
-                    255,
-                    128,
-                    35,
-                    164,
-                    16,
-                    149,
-                    228,
-                    189,
-                    48
-                  ]
-                }
-              }
-            },
-            {
-              "name": "factory_state"
-            },
-            {
-              "name": "vault_program",
-              "address": "AuFnb2FWz1W8ozcpSGc9RYbgSaon7bwtB5w9bPJnHkqH"
-            },
-            {
-              "name": "token_program"
-            },
-            {
-              "name": "system_program",
-              "address": "11111111111111111111111111111111"
-            },
-            {
-              "name": "rent",
-              "address": "SysvarRent111111111111111111111111111111111"
-            }
-          ]
+          "name": "pool_state",
+          "writable": true
+        },
+        {
+          "name": "commitment_tree",
+          "writable": true
+        },
+        {
+          "name": "payer",
+          "writable": true
+        },
+        {
+          "name": "origin_mint"
         },
         {
           "name": "proof_vault",
           "docs": [
-            "Proof vault for storing prepared operations",
-            "We validate PDA derivation and owner manually in the handler"
+            "Proof vault for storing prepared operations"
           ],
-          "writable": true,
-          "optional": true
+          "writable": true
+        },
+        {
+          "name": "system_program"
+        },
+        {
+          "name": "rent"
         }
       ],
       "args": [
@@ -1816,200 +1165,21 @@
       ],
       "accounts": [
         {
-          "name": "proof_vault",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  112,
-                  114,
-                  111,
-                  111,
-                  102,
-                  45,
-                  118,
-                  97,
-                  117,
-                  108,
-                  116
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "transfer.payer",
-                "account": "PrivateTransfer"
-              }
-            ]
-          }
+          "name": "payer",
+          "writable": true
         },
         {
-          "name": "transfer",
-          "accounts": [
-            {
-              "name": "pool_state",
-              "writable": true,
-              "pda": {
-                "seeds": [
-                  {
-                    "kind": "const",
-                    "value": [
-                      112,
-                      111,
-                      111,
-                      108
-                    ]
-                  },
-                  {
-                    "kind": "account",
-                    "path": "pool_state"
-                  }
-                ]
-              }
-            },
-            {
-              "name": "nullifier_set",
-              "writable": true,
-              "pda": {
-                "seeds": [
-                  {
-                    "kind": "const",
-                    "value": [
-                      110,
-                      117,
-                      108,
-                      108,
-                      115
-                    ]
-                  },
-                  {
-                    "kind": "account",
-                    "path": "pool_state"
-                  }
-                ]
-              }
-            },
-            {
-              "name": "commitment_tree",
-              "writable": true,
-              "pda": {
-                "seeds": [
-                  {
-                    "kind": "const",
-                    "value": [
-                      116,
-                      114,
-                      101,
-                      101
-                    ]
-                  },
-                  {
-                    "kind": "account",
-                    "path": "pool_state"
-                  }
-                ]
-              }
-            },
-            {
-              "name": "note_ledger",
-              "writable": true,
-              "pda": {
-                "seeds": [
-                  {
-                    "kind": "const",
-                    "value": [
-                      110,
-                      111,
-                      116,
-                      101,
-                      115
-                    ]
-                  },
-                  {
-                    "kind": "account",
-                    "path": "pool_state"
-                  }
-                ]
-              }
-            },
-            {
-              "name": "mint_mapping",
-              "pda": {
-                "seeds": [
-                  {
-                    "kind": "const",
-                    "value": [
-                      109,
-                      97,
-                      112
-                    ]
-                  },
-                  {
-                    "kind": "account",
-                    "path": "pool_state"
-                  }
-                ],
-                "program": {
-                  "kind": "const",
-                  "value": [
-                    87,
-                    213,
-                    15,
-                    73,
-                    201,
-                    172,
-                    77,
-                    55,
-                    209,
-                    250,
-                    7,
-                    165,
-                    196,
-                    83,
-                    37,
-                    182,
-                    238,
-                    15,
-                    106,
-                    4,
-                    123,
-                    215,
-                    4,
-                    255,
-                    128,
-                    35,
-                    164,
-                    16,
-                    149,
-                    228,
-                    189,
-                    48
-                  ]
-                }
-              }
-            },
-            {
-              "name": "verifier_program",
-              "address": "2V5XN9rpubXdK3cdWBBjZwjxMpMzQBKTaN3moEJ59a8K"
-            },
-            {
-              "name": "verifying_key"
-            },
-            {
-              "name": "payer",
-              "writable": true,
-              "signer": true
-            },
-            {
-              "name": "system_program",
-              "address": "11111111111111111111111111111111"
-            },
-            {
-              "name": "rent",
-              "address": "SysvarRent111111111111111111111111111111111"
-            }
-          ]
+          "name": "proof_vault",
+          "docs": [
+            "Proof vault for storing prepared operations"
+          ],
+          "writable": true
+        },
+        {
+          "name": "system_program"
+        },
+        {
+          "name": "rent"
         }
       ],
       "args": [
@@ -2038,232 +1208,21 @@
       ],
       "accounts": [
         {
-          "name": "proof_vault",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  112,
-                  114,
-                  111,
-                  111,
-                  102,
-                  45,
-                  118,
-                  97,
-                  117,
-                  108,
-                  116
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "transfer.spender",
-                "account": "TransferFrom"
-              }
-            ]
-          }
+          "name": "spender",
+          "writable": true
         },
         {
-          "name": "transfer",
-          "accounts": [
-            {
-              "name": "pool_state",
-              "writable": true,
-              "pda": {
-                "seeds": [
-                  {
-                    "kind": "const",
-                    "value": [
-                      112,
-                      111,
-                      111,
-                      108
-                    ]
-                  },
-                  {
-                    "kind": "account",
-                    "path": "pool_state"
-                  }
-                ]
-              }
-            },
-            {
-              "name": "nullifier_set",
-              "writable": true,
-              "pda": {
-                "seeds": [
-                  {
-                    "kind": "const",
-                    "value": [
-                      110,
-                      117,
-                      108,
-                      108,
-                      115
-                    ]
-                  },
-                  {
-                    "kind": "account",
-                    "path": "pool_state"
-                  }
-                ]
-              }
-            },
-            {
-              "name": "commitment_tree",
-              "writable": true,
-              "pda": {
-                "seeds": [
-                  {
-                    "kind": "const",
-                    "value": [
-                      116,
-                      114,
-                      101,
-                      101
-                    ]
-                  },
-                  {
-                    "kind": "account",
-                    "path": "pool_state"
-                  }
-                ]
-              }
-            },
-            {
-              "name": "note_ledger",
-              "writable": true,
-              "pda": {
-                "seeds": [
-                  {
-                    "kind": "const",
-                    "value": [
-                      110,
-                      111,
-                      116,
-                      101,
-                      115
-                    ]
-                  },
-                  {
-                    "kind": "account",
-                    "path": "pool_state"
-                  }
-                ]
-              }
-            },
-            {
-              "name": "verifier_program",
-              "address": "2V5XN9rpubXdK3cdWBBjZwjxMpMzQBKTaN3moEJ59a8K"
-            },
-            {
-              "name": "verifying_key"
-            },
-            {
-              "name": "mint_mapping",
-              "pda": {
-                "seeds": [
-                  {
-                    "kind": "const",
-                    "value": [
-                      109,
-                      97,
-                      112
-                    ]
-                  },
-                  {
-                    "kind": "account",
-                    "path": "pool_state"
-                  }
-                ],
-                "program": {
-                  "kind": "const",
-                  "value": [
-                    87,
-                    213,
-                    15,
-                    73,
-                    201,
-                    172,
-                    77,
-                    55,
-                    209,
-                    250,
-                    7,
-                    165,
-                    196,
-                    83,
-                    37,
-                    182,
-                    238,
-                    15,
-                    106,
-                    4,
-                    123,
-                    215,
-                    4,
-                    255,
-                    128,
-                    35,
-                    164,
-                    16,
-                    149,
-                    228,
-                    189,
-                    48
-                  ]
-                }
-              }
-            },
-            {
-              "name": "allowance",
-              "writable": true,
-              "pda": {
-                "seeds": [
-                  {
-                    "kind": "const",
-                    "value": [
-                      97,
-                      108,
-                      108,
-                      111,
-                      119
-                    ]
-                  },
-                  {
-                    "kind": "account",
-                    "path": "pool_state"
-                  },
-                  {
-                    "kind": "account",
-                    "path": "allowance_owner"
-                  },
-                  {
-                    "kind": "account",
-                    "path": "spender"
-                  }
-                ]
-              }
-            },
-            {
-              "name": "allowance_owner"
-            },
-            {
-              "name": "spender",
-              "signer": true
-            },
-            {
-              "name": "system_program",
-              "address": "11111111111111111111111111111111"
-            },
-            {
-              "name": "rent",
-              "address": "SysvarRent111111111111111111111111111111111"
-            }
-          ]
+          "name": "proof_vault",
+          "docs": [
+            "Proof vault for storing prepared operations"
+          ],
+          "writable": true
+        },
+        {
+          "name": "system_program"
+        },
+        {
+          "name": "rent"
         }
       ],
       "args": [
@@ -2292,7 +1251,7 @@
       ],
       "accounts": [
         {
-          "name": "proof_vault",
+          "name": "pool_state",
           "writable": true,
           "pda": {
             "seeds": [
@@ -2300,364 +1259,336 @@
                 "kind": "const",
                 "value": [
                   112,
-                  114,
                   111,
                   111,
-                  102,
-                  45,
-                  118,
-                  97,
-                  117,
-                  108,
-                  116
+                  108
                 ]
               },
               {
                 "kind": "account",
-                "path": "unshield.payer",
-                "account": "Unshield"
+                "path": "pool_state"
               }
             ]
           }
         },
         {
-          "name": "unshield",
-          "accounts": [
-            {
-              "name": "pool_state",
-              "writable": true,
-              "pda": {
-                "seeds": [
-                  {
-                    "kind": "const",
-                    "value": [
-                      112,
-                      111,
-                      111,
-                      108
-                    ]
-                  },
-                  {
-                    "kind": "account",
-                    "path": "pool_state"
-                  }
+          "name": "hook_config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  104,
+                  111,
+                  111,
+                  107,
+                  115
                 ]
+              },
+              {
+                "kind": "account",
+                "path": "pool_state"
               }
-            },
-            {
-              "name": "hook_config",
-              "pda": {
-                "seeds": [
-                  {
-                    "kind": "const",
-                    "value": [
-                      104,
-                      111,
-                      111,
-                      107,
-                      115
-                    ]
-                  },
-                  {
-                    "kind": "account",
-                    "path": "pool_state"
-                  }
+            ]
+          }
+        },
+        {
+          "name": "hook_whitelist",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  104,
+                  111,
+                  111,
+                  107,
+                  45,
+                  119,
+                  104,
+                  105,
+                  116,
+                  101,
+                  108,
+                  105,
+                  115,
+                  116
                 ]
+              },
+              {
+                "kind": "account",
+                "path": "pool_state"
               }
-            },
-            {
-              "name": "hook_whitelist",
-              "pda": {
-                "seeds": [
-                  {
-                    "kind": "const",
-                    "value": [
-                      104,
-                      111,
-                      111,
-                      107,
-                      45,
-                      119,
-                      104,
-                      105,
-                      116,
-                      101,
-                      108,
-                      105,
-                      115,
-                      116
-                    ]
-                  },
-                  {
-                    "kind": "account",
-                    "path": "pool_state"
-                  }
+            ]
+          }
+        },
+        {
+          "name": "nullifier_set",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  110,
+                  117,
+                  108,
+                  108,
+                  115
                 ]
+              },
+              {
+                "kind": "account",
+                "path": "pool_state"
               }
-            },
-            {
-              "name": "nullifier_set",
-              "writable": true,
-              "pda": {
-                "seeds": [
-                  {
-                    "kind": "const",
-                    "value": [
-                      110,
-                      117,
-                      108,
-                      108,
-                      115
-                    ]
-                  },
-                  {
-                    "kind": "account",
-                    "path": "pool_state"
-                  }
+            ]
+          }
+        },
+        {
+          "name": "commitment_tree",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  114,
+                  101,
+                  101
                 ]
+              },
+              {
+                "kind": "account",
+                "path": "pool_state"
               }
-            },
-            {
-              "name": "commitment_tree",
-              "writable": true,
-              "pda": {
-                "seeds": [
-                  {
-                    "kind": "const",
-                    "value": [
-                      116,
-                      114,
-                      101,
-                      101
-                    ]
-                  },
-                  {
-                    "kind": "account",
-                    "path": "pool_state"
-                  }
+            ]
+          }
+        },
+        {
+          "name": "note_ledger",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  110,
+                  111,
+                  116,
+                  101,
+                  115
                 ]
+              },
+              {
+                "kind": "account",
+                "path": "pool_state"
               }
-            },
-            {
-              "name": "note_ledger",
-              "writable": true,
-              "pda": {
-                "seeds": [
-                  {
-                    "kind": "const",
-                    "value": [
-                      110,
-                      111,
-                      116,
-                      101,
-                      115
-                    ]
-                  },
-                  {
-                    "kind": "account",
-                    "path": "pool_state"
-                  }
+            ]
+          }
+        },
+        {
+          "name": "mint_mapping",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  109,
+                  97,
+                  112
                 ]
+              },
+              {
+                "kind": "account",
+                "path": "pool_state"
               }
-            },
-            {
-              "name": "mint_mapping",
-              "pda": {
-                "seeds": [
-                  {
-                    "kind": "const",
-                    "value": [
-                      109,
-                      97,
-                      112
-                    ]
-                  },
-                  {
-                    "kind": "account",
-                    "path": "pool_state"
-                  }
-                ],
-                "program": {
-                  "kind": "const",
-                  "value": [
-                    87,
-                    213,
-                    15,
-                    73,
-                    201,
-                    172,
-                    77,
-                    55,
-                    209,
-                    250,
-                    7,
-                    165,
-                    196,
-                    83,
-                    37,
-                    182,
-                    238,
-                    15,
-                    106,
-                    4,
-                    123,
-                    215,
-                    4,
-                    255,
-                    128,
-                    35,
-                    164,
-                    16,
-                    149,
-                    228,
-                    189,
-                    48
-                  ]
-                }
-              }
-            },
-            {
-              "name": "verifier_program",
-              "address": "2V5XN9rpubXdK3cdWBBjZwjxMpMzQBKTaN3moEJ59a8K"
-            },
-            {
-              "name": "verifying_key"
-            },
-            {
-              "name": "vault_state",
-              "writable": true
-            },
-            {
-              "name": "vault_token_account",
-              "writable": true
-            },
-            {
-              "name": "destination_token_account",
-              "writable": true
-            },
-            {
-              "name": "twin_mint",
-              "writable": true,
-              "optional": true
-            },
-            {
-              "name": "vault_program",
-              "address": "AuFnb2FWz1W8ozcpSGc9RYbgSaon7bwtB5w9bPJnHkqH"
-            },
-            {
-              "name": "factory_state",
-              "pda": {
-                "seeds": [
-                  {
-                    "kind": "const",
-                    "value": [
-                      102,
-                      97,
-                      99,
-                      116,
-                      111,
-                      114,
-                      121
-                    ]
-                  },
-                  {
-                    "kind": "const",
-                    "value": [
-                      87,
-                      213,
-                      15,
-                      73,
-                      201,
-                      172,
-                      77,
-                      55,
-                      209,
-                      250,
-                      7,
-                      165,
-                      196,
-                      83,
-                      37,
-                      182,
-                      238,
-                      15,
-                      106,
-                      4,
-                      123,
-                      215,
-                      4,
-                      255,
-                      128,
-                      35,
-                      164,
-                      16,
-                      149,
-                      228,
-                      189,
-                      48
-                    ]
-                  }
-                ],
-                "program": {
-                  "kind": "const",
-                  "value": [
-                    87,
-                    213,
-                    15,
-                    73,
-                    201,
-                    172,
-                    77,
-                    55,
-                    209,
-                    250,
-                    7,
-                    165,
-                    196,
-                    83,
-                    37,
-                    182,
-                    238,
-                    15,
-                    106,
-                    4,
-                    123,
-                    215,
-                    4,
-                    255,
-                    128,
-                    35,
-                    164,
-                    16,
-                    149,
-                    228,
-                    189,
-                    48
-                  ]
-                }
-              }
-            },
-            {
-              "name": "factory_program",
-              "address": "94XEJsvLbTNYit4mXowjhqkDpwqtnXnKs2KtF3PNW2oK"
-            },
-            {
-              "name": "token_program"
-            },
-            {
-              "name": "system_program",
-              "address": "11111111111111111111111111111111"
-            },
-            {
-              "name": "payer",
-              "writable": true,
-              "signer": true
-            },
-            {
-              "name": "rent",
-              "address": "SysvarRent111111111111111111111111111111111"
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                28,
+                146,
+                202,
+                161,
+                24,
+                35,
+                216,
+                65,
+                148,
+                21,
+                82,
+                1,
+                6,
+                61,
+                149,
+                37,
+                20,
+                113,
+                152,
+                114,
+                229,
+                30,
+                232,
+                172,
+                201,
+                7,
+                104,
+                176,
+                177,
+                8,
+                2,
+                31
+              ]
             }
-          ]
+          }
+        },
+        {
+          "name": "verifier_program",
+          "address": "CruPD16nnF8B9xW3kso3LES8QHMgEkauYkYGhqBTUGpM"
+        },
+        {
+          "name": "verifying_key"
+        },
+        {
+          "name": "vault_state",
+          "writable": true
+        },
+        {
+          "name": "vault_token_account",
+          "writable": true
+        },
+        {
+          "name": "destination_token_account",
+          "writable": true
+        },
+        {
+          "name": "twin_mint",
+          "writable": true,
+          "optional": true
+        },
+        {
+          "name": "vault_program"
+        },
+        {
+          "name": "factory_state",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  102,
+                  97,
+                  99,
+                  116,
+                  111,
+                  114,
+                  121
+                ]
+              },
+              {
+                "kind": "const",
+                "value": [
+                  28,
+                  146,
+                  202,
+                  161,
+                  24,
+                  35,
+                  216,
+                  65,
+                  148,
+                  21,
+                  82,
+                  1,
+                  6,
+                  61,
+                  149,
+                  37,
+                  20,
+                  113,
+                  152,
+                  114,
+                  229,
+                  30,
+                  232,
+                  172,
+                  201,
+                  7,
+                  104,
+                  176,
+                  177,
+                  8,
+                  2,
+                  31
+                ]
+              }
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                28,
+                146,
+                202,
+                161,
+                24,
+                35,
+                216,
+                65,
+                148,
+                21,
+                82,
+                1,
+                6,
+                61,
+                149,
+                37,
+                20,
+                113,
+                152,
+                114,
+                229,
+                30,
+                232,
+                172,
+                201,
+                7,
+                104,
+                176,
+                177,
+                8,
+                2,
+                31
+              ]
+            }
+          }
+        },
+        {
+          "name": "factory_program"
+        },
+        {
+          "name": "token_program"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        },
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "rent",
+          "address": "SysvarRent111111111111111111111111111111111"
+        },
+        {
+          "name": "proof_vault",
+          "docs": [
+            "Proof vault for storing prepared operations"
+          ],
+          "writable": true
         }
       ],
       "args": [
@@ -3411,45 +2342,45 @@
             "program": {
               "kind": "const",
               "value": [
-                87,
-                213,
-                15,
-                73,
-                201,
-                172,
-                77,
-                55,
-                209,
-                250,
-                7,
-                165,
-                196,
-                83,
-                37,
-                182,
-                238,
-                15,
-                106,
-                4,
-                123,
-                215,
-                4,
-                255,
-                128,
+                28,
+                146,
+                202,
+                161,
+                24,
                 35,
-                164,
-                16,
+                216,
+                65,
+                148,
+                21,
+                82,
+                1,
+                6,
+                61,
                 149,
-                228,
-                189,
-                48
+                37,
+                20,
+                113,
+                152,
+                114,
+                229,
+                30,
+                232,
+                172,
+                201,
+                7,
+                104,
+                176,
+                177,
+                8,
+                2,
+                31
               ]
             }
           }
         },
         {
           "name": "verifier_program",
-          "address": "2V5XN9rpubXdK3cdWBBjZwjxMpMzQBKTaN3moEJ59a8K"
+          "address": "CruPD16nnF8B9xW3kso3LES8QHMgEkauYkYGhqBTUGpM"
         },
         {
           "name": "verifying_key"
@@ -4194,38 +3125,38 @@
             "program": {
               "kind": "const",
               "value": [
-                87,
-                213,
-                15,
-                73,
-                201,
-                172,
-                77,
-                55,
-                209,
-                250,
-                7,
-                165,
-                196,
-                83,
-                37,
-                182,
-                238,
-                15,
-                106,
-                4,
-                123,
-                215,
-                4,
-                255,
-                128,
+                28,
+                146,
+                202,
+                161,
+                24,
                 35,
-                164,
-                16,
+                216,
+                65,
+                148,
+                21,
+                82,
+                1,
+                6,
+                61,
                 149,
-                228,
-                189,
-                48
+                37,
+                20,
+                113,
+                152,
+                114,
+                229,
+                30,
+                232,
+                172,
+                201,
+                7,
+                104,
+                176,
+                177,
+                8,
+                2,
+                31
               ]
             }
           }
@@ -4235,7 +3166,7 @@
         },
         {
           "name": "vault_program",
-          "address": "AuFnb2FWz1W8ozcpSGc9RYbgSaon7bwtB5w9bPJnHkqH"
+          "address": "7Wr9XMjYfPm6HTN3ZV7r4wHnoV2zospvNN5A1xgoER8m"
         },
         {
           "name": "token_program"
@@ -4660,7 +3591,7 @@
         },
         {
           "name": "verifier_program",
-          "address": "2V5XN9rpubXdK3cdWBBjZwjxMpMzQBKTaN3moEJ59a8K"
+          "address": "CruPD16nnF8B9xW3kso3LES8QHMgEkauYkYGhqBTUGpM"
         },
         {
           "name": "verifying_key"
@@ -4685,38 +3616,38 @@
             "program": {
               "kind": "const",
               "value": [
-                87,
-                213,
-                15,
-                73,
-                201,
-                172,
-                77,
-                55,
-                209,
-                250,
-                7,
-                165,
-                196,
-                83,
-                37,
-                182,
-                238,
-                15,
-                106,
-                4,
-                123,
-                215,
-                4,
-                255,
-                128,
+                28,
+                146,
+                202,
+                161,
+                24,
                 35,
-                164,
-                16,
+                216,
+                65,
+                148,
+                21,
+                82,
+                1,
+                6,
+                61,
                 149,
-                228,
-                189,
-                48
+                37,
+                20,
+                113,
+                152,
+                114,
+                229,
+                30,
+                232,
+                172,
+                201,
+                7,
+                104,
+                176,
+                177,
+                8,
+                2,
+                31
               ]
             }
           }
@@ -4948,45 +3879,45 @@
             "program": {
               "kind": "const",
               "value": [
-                87,
-                213,
-                15,
-                73,
-                201,
-                172,
-                77,
-                55,
-                209,
-                250,
-                7,
-                165,
-                196,
-                83,
-                37,
-                182,
-                238,
-                15,
-                106,
-                4,
-                123,
-                215,
-                4,
-                255,
-                128,
+                28,
+                146,
+                202,
+                161,
+                24,
                 35,
-                164,
-                16,
+                216,
+                65,
+                148,
+                21,
+                82,
+                1,
+                6,
+                61,
                 149,
-                228,
-                189,
-                48
+                37,
+                20,
+                113,
+                152,
+                114,
+                229,
+                30,
+                232,
+                172,
+                201,
+                7,
+                104,
+                176,
+                177,
+                8,
+                2,
+                31
               ]
             }
           }
         },
         {
           "name": "verifier_program",
-          "address": "2V5XN9rpubXdK3cdWBBjZwjxMpMzQBKTaN3moEJ59a8K"
+          "address": "CruPD16nnF8B9xW3kso3LES8QHMgEkauYkYGhqBTUGpM"
         },
         {
           "name": "verifying_key"
@@ -5010,7 +3941,7 @@
         },
         {
           "name": "vault_program",
-          "address": "AuFnb2FWz1W8ozcpSGc9RYbgSaon7bwtB5w9bPJnHkqH"
+          "address": "7Wr9XMjYfPm6HTN3ZV7r4wHnoV2zospvNN5A1xgoER8m"
         },
         {
           "name": "factory_state",
@@ -5031,83 +3962,83 @@
               {
                 "kind": "const",
                 "value": [
-                  87,
-                  213,
-                  15,
-                  73,
-                  201,
-                  172,
-                  77,
-                  55,
-                  209,
-                  250,
-                  7,
-                  165,
-                  196,
-                  83,
-                  37,
-                  182,
-                  238,
-                  15,
-                  106,
-                  4,
-                  123,
-                  215,
-                  4,
-                  255,
-                  128,
+                  28,
+                  146,
+                  202,
+                  161,
+                  24,
                   35,
-                  164,
-                  16,
+                  216,
+                  65,
+                  148,
+                  21,
+                  82,
+                  1,
+                  6,
+                  61,
                   149,
-                  228,
-                  189,
-                  48
+                  37,
+                  20,
+                  113,
+                  152,
+                  114,
+                  229,
+                  30,
+                  232,
+                  172,
+                  201,
+                  7,
+                  104,
+                  176,
+                  177,
+                  8,
+                  2,
+                  31
                 ]
               }
             ],
             "program": {
               "kind": "const",
               "value": [
-                87,
-                213,
-                15,
-                73,
-                201,
-                172,
-                77,
-                55,
-                209,
-                250,
-                7,
-                165,
-                196,
-                83,
-                37,
-                182,
-                238,
-                15,
-                106,
-                4,
-                123,
-                215,
-                4,
-                255,
-                128,
+                28,
+                146,
+                202,
+                161,
+                24,
                 35,
-                164,
-                16,
+                216,
+                65,
+                148,
+                21,
+                82,
+                1,
+                6,
+                61,
                 149,
-                228,
-                189,
-                48
+                37,
+                20,
+                113,
+                152,
+                114,
+                229,
+                30,
+                232,
+                172,
+                201,
+                7,
+                104,
+                176,
+                177,
+                8,
+                2,
+                31
               ]
             }
           }
         },
         {
           "name": "factory_program",
-          "address": "94XEJsvLbTNYit4mXowjhqkDpwqtnXnKs2KtF3PNW2oK"
+          "address": "2vYEqzgPNSxGxnQCEGqJb8vqZKSs2h183NtzCzW1i4LW"
         },
         {
           "name": "token_program"
@@ -5307,45 +4238,45 @@
             "program": {
               "kind": "const",
               "value": [
-                87,
-                213,
-                15,
-                73,
-                201,
-                172,
-                77,
-                55,
-                209,
-                250,
-                7,
-                165,
-                196,
-                83,
-                37,
-                182,
-                238,
-                15,
-                106,
-                4,
-                123,
-                215,
-                4,
-                255,
-                128,
+                28,
+                146,
+                202,
+                161,
+                24,
                 35,
-                164,
-                16,
+                216,
+                65,
+                148,
+                21,
+                82,
+                1,
+                6,
+                61,
                 149,
-                228,
-                189,
-                48
+                37,
+                20,
+                113,
+                152,
+                114,
+                229,
+                30,
+                232,
+                172,
+                201,
+                7,
+                104,
+                176,
+                177,
+                8,
+                2,
+                31
               ]
             }
           }
         },
         {
           "name": "verifier_program",
-          "address": "2V5XN9rpubXdK3cdWBBjZwjxMpMzQBKTaN3moEJ59a8K"
+          "address": "CruPD16nnF8B9xW3kso3LES8QHMgEkauYkYGhqBTUGpM"
         },
         {
           "name": "verifying_key"
@@ -5369,7 +4300,7 @@
         },
         {
           "name": "vault_program",
-          "address": "AuFnb2FWz1W8ozcpSGc9RYbgSaon7bwtB5w9bPJnHkqH"
+          "address": "7Wr9XMjYfPm6HTN3ZV7r4wHnoV2zospvNN5A1xgoER8m"
         },
         {
           "name": "factory_state",
@@ -5390,83 +4321,83 @@
               {
                 "kind": "const",
                 "value": [
-                  87,
-                  213,
-                  15,
-                  73,
-                  201,
-                  172,
-                  77,
-                  55,
-                  209,
-                  250,
-                  7,
-                  165,
-                  196,
-                  83,
-                  37,
-                  182,
-                  238,
-                  15,
-                  106,
-                  4,
-                  123,
-                  215,
-                  4,
-                  255,
-                  128,
+                  28,
+                  146,
+                  202,
+                  161,
+                  24,
                   35,
-                  164,
-                  16,
+                  216,
+                  65,
+                  148,
+                  21,
+                  82,
+                  1,
+                  6,
+                  61,
                   149,
-                  228,
-                  189,
-                  48
+                  37,
+                  20,
+                  113,
+                  152,
+                  114,
+                  229,
+                  30,
+                  232,
+                  172,
+                  201,
+                  7,
+                  104,
+                  176,
+                  177,
+                  8,
+                  2,
+                  31
                 ]
               }
             ],
             "program": {
               "kind": "const",
               "value": [
-                87,
-                213,
-                15,
-                73,
-                201,
-                172,
-                77,
-                55,
-                209,
-                250,
-                7,
-                165,
-                196,
-                83,
-                37,
-                182,
-                238,
-                15,
-                106,
-                4,
-                123,
-                215,
-                4,
-                255,
-                128,
+                28,
+                146,
+                202,
+                161,
+                24,
                 35,
-                164,
-                16,
+                216,
+                65,
+                148,
+                21,
+                82,
+                1,
+                6,
+                61,
                 149,
-                228,
-                189,
-                48
+                37,
+                20,
+                113,
+                152,
+                114,
+                229,
+                30,
+                232,
+                172,
+                201,
+                7,
+                104,
+                176,
+                177,
+                8,
+                2,
+                31
               ]
             }
           }
         },
         {
           "name": "factory_program",
-          "address": "94XEJsvLbTNYit4mXowjhqkDpwqtnXnKs2KtF3PNW2oK"
+          "address": "2vYEqzgPNSxGxnQCEGqJb8vqZKSs2h183NtzCzW1i4LW"
         },
         {
           "name": "token_program"
@@ -5555,7 +4486,7 @@
         },
         {
           "name": "vault_program",
-          "address": "AuFnb2FWz1W8ozcpSGc9RYbgSaon7bwtB5w9bPJnHkqH"
+          "address": "7Wr9XMjYfPm6HTN3ZV7r4wHnoV2zospvNN5A1xgoER8m"
         },
         {
           "name": "token_program"
@@ -8754,6 +7685,15 @@
             "type": "u8"
           },
           {
+            "name": "_padding1",
+            "type": {
+              "array": [
+                "u8",
+                7
+              ]
+            }
+          },
+          {
             "name": "old_root",
             "type": {
               "array": [
@@ -8790,12 +7730,12 @@
             }
           },
           {
-            "name": "amount",
-            "type": "u64"
-          },
-          {
             "name": "depositor",
             "type": "pubkey"
+          },
+          {
+            "name": "amount",
+            "type": "u64"
           },
           {
             "name": "next_index",

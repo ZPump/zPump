@@ -50,6 +50,15 @@ export function LocalWalletProvider({ adapter, children }: LocalWalletProviderPr
     [state]
   );
 
+  // Auto-create account if none exists (shouldn't happen, but safety check)
+  useEffect(() => {
+    if (state.accounts.length === 0) {
+      console.log('[LocalWalletProvider] No accounts found, auto-creating default account...');
+      const newState = addAccount({ accounts: [], activeId: '' });
+      setState(newState);
+    }
+  }, [state.accounts.length]);
+
   useEffect(() => {
     writeWalletState(state);
   }, [state]);

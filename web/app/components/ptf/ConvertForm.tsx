@@ -418,10 +418,8 @@ export function ConvertForm() {
     
     const walletKey = wallet.publicKey;
 
-    if (!mints.length) {
-      setTokenOptions([]);
-      return [];
-    }
+    // Note: We don't return early even if mints.length is 0, because we still want to show SOL
+    // SOL is always available and should be shown even when no other mints are registered
 
     // Get current tokenMetadataMap state to use in buildOptions
     const currentMetadataMap = tokenMetadataMap;
