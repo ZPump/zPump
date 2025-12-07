@@ -2296,7 +2296,7 @@ pub mod ptf_pool {
         let operation_data = extract_shield_operation(proof_vault_info_ref, operation_id, &clock)?;
         
         // Derive expected addresses using helper function
-        let pool_state_key = pool_state_loader.key();
+        let pool_state_key = pool_state_info.key();
         let addresses = derive_shield_addresses(&origin_mint_key, &pool_state_key, ctx.program_id)?;
         
         msg!(
@@ -2315,7 +2315,7 @@ pub mod ptf_pool {
             addresses.expected_factory_state,
             addresses.expected_verifying_key,
             addresses.expected_vault_token,
-            origin_mint_key,
+            &origin_mint_key,
         )?;
         
         // Validate all required accounts are present
@@ -8189,15 +8189,12 @@ pub struct PrepareBatchTransferFrom<'info> {
 // Using UncheckedAccount for pool_state and commitment_tree to avoid init_if_needed overhead
 #[derive(Accounts)]
 pub struct ExecuteShield<'info> {
-    /// CRITICAL FIX: Use AccountLoader like ExecuteUnshield to see if that avoids the access violation
-    /// This matches the pattern used in ExecuteUnshield which works
-    /// NOTE: We use origin_mint.key() instead of pool_state.load()?.origin_mint because origin_mint is provided as a separate account
-    #[account(
-        mut,
-        seeds = [seeds::POOL, origin_mint.key().as_ref()],
-        bump
-    )]
-    pub pool_state: AccountLoader<'info, PoolState>,
+    /// CRITICAL FIX: Use UncheckedAccount and validate PDA manually to avoid Anchor's PDA validation
+    /// The PDA constraint `seeds = [seeds::POOL, origin_mint.key().as_ref()]` causes Anchor to call origin_mint.key()
+    /// during validation, which might be causing the access violation at 0x200005f28
+    /// We validate the PDA manually in the handler instead
+    #[account(mut)]
+    pub pool_state: UncheckedAccount<'info>,
     /// CHECK: Validated and initialized manually in handler to avoid init_if_needed stack overhead
     /// CRITICAL FIX: Remove #[account(mut)] to avoid Anchor's mut validation overhead
     /// Mutability is handled manually in the handler - accounts are marked writable in instruction
