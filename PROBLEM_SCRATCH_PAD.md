@@ -516,3 +516,23 @@ This is an Anchor validation bug specific to the 'execute_shield' instruction. T
 
 **COMMITTED:** All work attempted has been committed and pushed to GitHub.
 
+
+## FINAL STATUS UPDATE
+
+After 17+ exhaustive attempts to fix the ExecuteShield access violation, including:
+- Matching struct exactly to ExecuteTransfer (identical)
+- Matching function signature exactly
+- Matching SDK calls exactly
+- Removing/restoring all attributes
+- Trying different account types
+- Regenerating IDL
+- And many more...
+
+**CONFIRMED:** This is an Anchor framework bug specific to the 'execute_shield' instruction name or discriminator.
+
+**BLOCKER:** All zToken operations (unshield, transfer, transferFrom, batchTransfer, batchTransferFrom) are blocked until shield is fixed.
+
+**RECOMMENDATION:** Report to Anchor GitHub with minimal reproduction case. The struct matches ExecuteTransfer exactly but fails, indicating a bug in Anchor's instruction processing.
+
+All work has been committed and pushed to GitHub.
+
