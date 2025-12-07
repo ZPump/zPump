@@ -1112,12 +1112,16 @@
       "accounts": [
         {
           "name": "payer",
+          "docs": [
+            "CRITICAL: Restored #[account(mut)] to match IDL and ExecuteTransfer exactly"
+          ],
           "writable": true
         },
         {
           "name": "proof_vault",
           "docs": [
-            "Proof vault for storing prepared operations"
+            "Proof vault for storing prepared operations",
+            "CRITICAL: Restored #[account(mut)] to match IDL and ExecuteTransfer exactly"
           ],
           "writable": true
         },
