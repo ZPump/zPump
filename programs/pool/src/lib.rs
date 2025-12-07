@@ -2184,29 +2184,33 @@ pub mod ptf_pool {
     ) -> Result<()> {
         // CRITICAL: Add debug log at the very start to see if we reach this point
         msg!("execute_shield: ENTRY POINT REACHED");
+        msg!("execute_shield: about to get clock");
         let clock = Clock::get()?;
-        msg!("execute_shield: got clock");
-        msg!("execute_shield: start");
+        msg!("execute_shield: got clock successfully");
+        msg!("execute_shield: about to access ctx.accounts.payer");
         
         // Validate basic accounts inline (replacing validate_shield_basic_accounts to avoid unused variable)
         let payer_info = ctx.accounts.payer.to_account_info();
         require!(payer_info.is_signer, PoolError::Unauthorized);
         let payer_key = payer_info.key();
         
+        msg!("execute_shield: step 1e - validating system_program");
         require_keys_eq!(
             ctx.accounts.system_program.key(),
             system_program::ID,
             PoolError::InvalidAccountOwner
         );
-        
+        msg!("execute_shield: step 1f - validating rent");
         require_keys_eq!(
             ctx.accounts.rent.key(),
             anchor_lang::solana_program::sysvar::rent::ID,
             PoolError::InvalidAccountOwner
         );
+        msg!("execute_shield: step 1g - getting origin_mint key");
         
         // Validate origin_mint
         let origin_mint_key = ctx.accounts.origin_mint.key();
+        msg!("execute_shield: step 1h - origin_mint key obtained");
         let origin_mint_info_ref = &ctx.accounts.origin_mint.to_account_info();
         require_keys_eq!(
             *origin_mint_info_ref.owner,
@@ -2218,8 +2222,10 @@ pub mod ptf_pool {
             PoolError::AccountDataTooShort
         );
         
+        msg!("execute_shield: step 1i - getting proof_vault AccountInfo");
         // Validate proof_vault
         let proof_vault_account_info = ctx.accounts.proof_vault.to_account_info();
+        msg!("execute_shield: step 1j - proof_vault AccountInfo obtained");
         let proof_vault_key = proof_vault_account_info.key();
         let (expected_vault, _) = derive_proof_vault(&payer_key, ctx.program_id);
         require_keys_eq!(
@@ -2236,10 +2242,13 @@ pub mod ptf_pool {
         // CRITICAL: Create proof_vault_info_ref in main function so it lives for entire function scope
         // Store in a variable that lives for the entire function to prevent access violations
         // Keep AccountInfo alive for the entire function scope
+        msg!("execute_shield: step 2 - creating proof_vault_info_ref");
         let _keep_alive_proof_vault = &proof_vault_account_info;
         let proof_vault_info_ref: &'info AccountInfo<'info> = unsafe { mem::transmute(&proof_vault_account_info) };
+        msg!("execute_shield: step 2b - proof_vault_info_ref created");
         
         // CRITICAL FIX: Validate pool_state PDA manually and load it
+        msg!("execute_shield: step 3 - validating pool_state PDA");
         // Extract origin_mint from remaining_accounts (moved from struct to reduce account count)
         let origin_mint_info = ctx.remaining_accounts.iter()
             .find(|acc| {
@@ -2320,8 +2329,10 @@ pub mod ptf_pool {
             addresses.expected_vault_token,
             origin_mint_key, // Function expects Pubkey, not &Pubkey
         )?;
+        msg!("execute_shield: step 6b - extract_shield_accounts completed");
         
         // Validate all required accounts are present
+        msg!("execute_shield: step 7 - validating account presence");
         msg!(
             "execute_shield: account presence hook_config={} hook_whitelist={} nullifier_set={} note_ledger={} vault_state={} vault_token={} depositor_token={} verifier_program={} verifying_key={} shield_claim={} mint_mapping={} factory_state={} vault_program={} token_program={}",
             extracted.hook_config_info.is_some(),
