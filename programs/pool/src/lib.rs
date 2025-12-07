@@ -2188,47 +2188,80 @@ pub mod ptf_pool {
         msg!("execute_shield: got clock");
         msg!("execute_shield: start");
         
-        // Validate basic accounts using helper function
-        let validation = validate_shield_basic_accounts(&ctx)?;
+        // Validate basic accounts inline (replacing validate_shield_basic_accounts to avoid unused variable)
+        let payer_info = ctx.accounts.payer.to_account_info();
+        require!(payer_info.is_signer, PoolError::Unauthorized);
+        let payer_key = payer_info.key();
+        
+        require_keys_eq!(
+            ctx.accounts.system_program.key(),
+            system_program::ID,
+            PoolError::InvalidAccountOwner
+        );
+        
+        require_keys_eq!(
+            ctx.accounts.rent.key(),
+            anchor_lang::solana_program::sysvar::rent::ID,
+            PoolError::InvalidAccountOwner
+        );
+        
+        // Validate origin_mint
+        let origin_mint_key = ctx.accounts.origin_mint.key();
+        let origin_mint_info_ref = &ctx.accounts.origin_mint.to_account_info();
+        require_keys_eq!(
+            *origin_mint_info_ref.owner,
+            anchor_spl::token::ID,
+            PoolError::InvalidAccountOwner
+        );
+        require!(
+            origin_mint_info_ref.data_len() >= 82,
+            PoolError::AccountDataTooShort
+        );
+        
+        // Validate proof_vault
+        let proof_vault_account_info = ctx.accounts.proof_vault.to_account_info();
+        let proof_vault_key = proof_vault_account_info.key();
+        let (expected_vault, _) = derive_proof_vault(&payer_key, ctx.program_id);
+        require_keys_eq!(
+            proof_vault_key,
+            expected_vault,
+            PoolError::Unauthorized
+        );
+        require_keys_eq!(
+            *proof_vault_account_info.owner,
+            *ctx.program_id,
+            PoolError::Unauthorized
+        );
         
         // CRITICAL: Create proof_vault_info_ref in main function so it lives for entire function scope
         // Store in a variable that lives for the entire function to prevent access violations
-        let proof_vault_account_info = ctx.accounts.proof_vault.to_account_info();
         // Keep AccountInfo alive for the entire function scope
         let _keep_alive_proof_vault = &proof_vault_account_info;
         let proof_vault_info_ref: &'info AccountInfo<'info> = unsafe { mem::transmute(&proof_vault_account_info) };
         
-        // Check if pool is initialized
-        let pool_state_info = ctx.accounts.pool_state.to_account_info();
-        let needs_pool_init = check_pool_initialized(&pool_state_info)?;
-        if needs_pool_init {
-            msg!("execute_shield: pool_state not initialized");
-            msg!("execute_shield: Pool must be initialized via init_pool or first shield call before execute_shield can be used");
-            return err!(PoolError::AccountDataTooShort);
-        }
+        // CRITICAL FIX: Use AccountLoader like ExecuteUnshield
+        // Check if pool is initialized and validate origin_mint matches
+        let pool_state_loader = &ctx.accounts.pool_state;
+        let pool_state = pool_state_loader.load()?;
+        let pool_state_origin_mint = pool_state.origin_mint;
+        drop(pool_state);
         
         // CRITICAL VALIDATION: Ensure pool_state.origin_mint matches the origin_mint account passed
         // This prevents using a pool_state initialized for a different mint (e.g., native SOL vs wSOL)
-        // PoolState layout: discriminator[8] + authority[32] + origin_mint[32] + ...
-        let pool_state_data = pool_state_info.try_borrow_data()?;
-        require!(pool_state_data.len() >= 8 + 32 + 32, PoolError::AccountDataTooShort); // discriminator + authority + origin_mint
-        let pool_state_origin_mint = Pubkey::try_from(&pool_state_data[40..72]) // offset 8 (discriminator) + 32 (authority) = 40
-            .map_err(|_| PoolError::AccountDataCorrupt)?;
-        drop(pool_state_data);
         require_keys_eq!(
             pool_state_origin_mint,
-            validation.origin_mint_key,
+            origin_mint_key,
             PoolError::OriginMintMismatch,
         );
         msg!("execute_shield: validated pool_state.origin_mint={} matches origin_mint={}", 
-             pool_state_origin_mint, validation.origin_mint_key);
+             pool_state_origin_mint, origin_mint_key);
         
         // Extract shield operation using helper function
         let operation_data = extract_shield_operation(proof_vault_info_ref, operation_id, &clock)?;
         
         // Derive expected addresses using helper function
         let pool_state_key = pool_state_loader.key();
-        let addresses = derive_shield_addresses(&validation.origin_mint_key, &pool_state_key, ctx.program_id)?;
+        let addresses = derive_shield_addresses(&origin_mint_key, &pool_state_key, ctx.program_id)?;
         
         msg!(
             "execute_shield: extracting accounts from remaining_accounts (len={})",
@@ -2246,7 +2279,7 @@ pub mod ptf_pool {
             addresses.expected_factory_state,
             addresses.expected_verifying_key,
             addresses.expected_vault_token,
-            validation.origin_mint_key,
+            origin_mint_key,
         )?;
         
         // Validate all required accounts are present
@@ -6085,8 +6118,8 @@ fn execute_shield_impl<'info, 'accs>(
     verifying_key_info: &'info AccountInfo<'info>, // Pass AccountInfo directly, create Account right before CPI call
     shield_claim_info: &AccountInfo<'info>,
     payer: &Signer<'info>,
-    payer_info: &'info AccountInfo<'info>, // Pass payer AccountInfo separately for deposit CPI
-    origin_mint: &InterfaceAccount<'info, Mint>,
+    _payer_info: &'info AccountInfo<'info>, // Pass payer AccountInfo separately for deposit CPI (unused, kept for API consistency)
+    _origin_mint: &InterfaceAccount<'info, Mint>,
     origin_mint_info: &'info AccountInfo<'info>, // Pass origin_mint AccountInfo separately (InterfaceAccount has invalid internal reference)
     _mint_mapping: &Account<'info, MintMapping>,
     _factory_state: &UncheckedAccount<'info>,
