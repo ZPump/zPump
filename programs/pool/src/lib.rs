@@ -1913,24 +1913,50 @@ pub mod ptf_pool {
         let vault = &mut ctx.accounts.proof_vault;
         let clock = Clock::get()?;
         
-        // CRITICAL FIX: Check account size before doing anything
-        // init_if_needed should allocate full space, but verify it did
-        let account_info = vault.to_account_info();
-        let current_space = account_info.data_len();
-        let required_space = UserProofVault::SPACE;
-        msg!("prepare_shield: account space check - current: {}, required: {}", current_space, required_space);
-        
-        require!(
-            current_space >= required_space,
-            PoolError::AccountDataTooShort
-        );
-        
+        // Initialize vault if needed (this handles account creation)
         prepare_vault_if_needed(
             vault,
             &ctx.accounts.payer,
             ctx.bumps.proof_vault,
             clock.unix_timestamp,
         )?;
+        
+        // CRITICAL FIX: Check and reallocate account size if needed
+        // Accounts created with old INITIAL_SPACE may need to be reallocated
+        // We removed the space constraint from init_if_needed to allow manual reallocation
+        let account_info = vault.to_account_info();
+        let current_space = account_info.data_len();
+        let required_space = UserProofVault::SPACE;
+        msg!("prepare_shield: account space check - current: {}, required: {}", current_space, required_space);
+        
+        // If account is too small, reallocate it (this handles accounts created with old INITIAL_SPACE)
+        if current_space < required_space {
+            let rent = Rent::get()?;
+            let additional_rent = rent
+                .minimum_balance(required_space)
+                .checked_sub(rent.minimum_balance(current_space))
+                .ok_or(PoolError::RentCalculationError)?;
+            
+            // Transfer additional rent if needed
+            if additional_rent > 0 {
+                let payer_info = ctx.accounts.payer.to_account_info();
+                anchor_lang::solana_program::program::invoke(
+                    &anchor_lang::solana_program::system_instruction::transfer(
+                        &ctx.accounts.payer.key(),
+                        account_info.key,
+                        additional_rent,
+                    ),
+                    &[
+                        payer_info,
+                        account_info.clone(),
+                    ],
+                )?;
+            }
+            
+            // Reallocate to required space
+            account_info.realloc(required_space, false)?;
+            msg!("prepare_shield: account reallocated from {} to {}", current_space, required_space);
+        }
         
         // Generate unique operation_id (hash of args + timestamp + user_pubkey)
         let amount_commit_slice: &[u8] = &shield_args.amount_commit;
@@ -2206,8 +2232,9 @@ pub mod ptf_pool {
         );
 
         // Validate origin_mint manually (to avoid InterfaceAccount validation overhead)
-        // Store as reference to avoid ownership issues
-        let origin_mint_info_ref = &ctx.accounts.origin_mint.to_account_info();
+        // Store AccountInfo in variable and use unsafe transmute to extend lifetime
+        let origin_mint_account_info = ctx.accounts.origin_mint.to_account_info();
+        let origin_mint_info_ref: &'info AccountInfo<'info> = unsafe { mem::transmute(&origin_mint_account_info) };
         require_keys_eq!(
             *origin_mint_info_ref.owner,
             anchor_spl::token::ID,
@@ -8021,7 +8048,9 @@ pub struct PrepareShield<'info> {
     #[account(
         init_if_needed,
         payer = payer,
-        space = UserProofVault::SPACE,
+        // CRITICAL: Use new SPACE value - old accounts will need to be reallocated manually
+        // The reallocation happens in prepare_shield before we try to use the account
+        space = UserProofVault::SPACE, // New INITIAL_SPACE (3069 bytes)
         seeds = [b"proof-vault", payer.key().as_ref()],
         bump
     )]
@@ -8038,7 +8067,9 @@ pub struct PrepareUnshield<'info> {
     #[account(
         init_if_needed,
         payer = payer,
-        space = UserProofVault::SPACE,
+        // CRITICAL: Use new SPACE value - old accounts will need to be reallocated manually
+        // The reallocation happens in prepare_shield before we try to use the account
+        space = UserProofVault::SPACE, // New INITIAL_SPACE (3069 bytes)
         seeds = [b"proof-vault", payer.key().as_ref()],
         bump
     )]
@@ -8055,7 +8086,9 @@ pub struct PrepareTransfer<'info> {
     #[account(
         init_if_needed,
         payer = payer,
-        space = UserProofVault::SPACE,
+        // CRITICAL: Use new SPACE value - old accounts will need to be reallocated manually
+        // The reallocation happens in prepare_shield before we try to use the account
+        space = UserProofVault::SPACE, // New INITIAL_SPACE (3069 bytes)
         seeds = [b"proof-vault", payer.key().as_ref()],
         bump
     )]
@@ -8071,7 +8104,9 @@ pub struct PrepareTransferFrom<'info> {
     #[account(
         init_if_needed,
         payer = payer,
-        space = UserProofVault::SPACE,
+        // CRITICAL: Use new SPACE value - old accounts will need to be reallocated manually
+        // The reallocation happens in prepare_shield before we try to use the account
+        space = UserProofVault::SPACE, // New INITIAL_SPACE (3069 bytes)
         seeds = [b"proof-vault", payer.key().as_ref()],
         bump
     )]
@@ -8087,7 +8122,9 @@ pub struct PrepareBatchTransfer<'info> {
     #[account(
         init_if_needed,
         payer = payer,
-        space = UserProofVault::SPACE,
+        // CRITICAL: Use new SPACE value - old accounts will need to be reallocated manually
+        // The reallocation happens in prepare_shield before we try to use the account
+        space = UserProofVault::SPACE, // New INITIAL_SPACE (3069 bytes)
         seeds = [b"proof-vault", payer.key().as_ref()],
         bump
     )]
@@ -8103,7 +8140,9 @@ pub struct PrepareBatchTransferFrom<'info> {
     #[account(
         init_if_needed,
         payer = payer,
-        space = UserProofVault::SPACE,
+        // CRITICAL: Use new SPACE value - old accounts will need to be reallocated manually
+        // The reallocation happens in prepare_shield before we try to use the account
+        space = UserProofVault::SPACE, // New INITIAL_SPACE (3069 bytes)
         seeds = [b"proof-vault", payer.key().as_ref()],
         bump
     )]
@@ -9847,7 +9886,10 @@ impl UserProofVault {
     // We'll start with a smaller space and grow incrementally as needed, similar to NullifierSet
     // Base space + enough for 1-2 operations initially, then grow as needed
     pub const BASE_SPACE: usize = 8 + 32 + 1 + 4 + 8 + 8 + 8; // 69 bytes base
-    pub const INITIAL_SPACE: usize = Self::BASE_SPACE + 2_000; // Start with 2KB for operations (enough for 2-3 operations)
+    // CRITICAL: INITIAL_SPACE must accommodate all MAX_OPERATIONS upfront
+    // Anchor's constraint check happens before our code runs, so we can't reallocate
+    // Each operation is roughly 1000 bytes, so we need BASE_SPACE + (MAX_OPERATIONS * 1000)
+    pub const INITIAL_SPACE: usize = Self::BASE_SPACE + (Self::MAX_OPERATIONS * 1000); // 10KB for 10 operations
     pub const MAX_SPACE: usize = Self::BASE_SPACE + 50_000; // Max 50KB for operations
     pub const SPACE: usize = Self::INITIAL_SPACE; // Use initial space for init_if_needed
 }
