@@ -1854,25 +1854,25 @@ export async function executeShield(params: ExecuteShieldParams): Promise<string
     operation_id: operationIdHexToArray(params.operationId)
   });
 
-  // CRITICAL FIX: Account order must match new minimal ExecuteShield struct
-  // ExecuteShield now has only: pool_state, commitment_tree, payer, origin_mint, proof_vault (optional), system_program, rent
-  // All other accounts go as remaining_accounts
+  // CRITICAL FIX: Account order must match new minimal ExecuteShield struct (matching ExecuteTransfer pattern)
+  // ExecuteShield now has only: payer, proof_vault, system_program, rent, clock
+  // pool_state, commitment_tree, and origin_mint are in remaining_accounts
   // CRITICAL: Account order must match ExecuteShield struct exactly
-  // ExecuteShield struct order: pool_state, commitment_tree, payer, origin_mint, proof_vault, system_program, rent
-  // All accounts are UncheckedAccount, so Anchor does minimal validation, but order still matters
+  // ExecuteShield struct order: payer, proof_vault, system_program, rent, clock
   const shieldKeys = [
-    { pubkey: poolState, isSigner: false, isWritable: true }, // pool_state (UncheckedAccount, mut)
-    { pubkey: commitmentTreeKey, isSigner: false, isWritable: true }, // commitment_tree (UncheckedAccount, mut)
-    { pubkey: wallet.publicKey!, isSigner: true, isWritable: true }, // payer (UncheckedAccount, mut, signer)
-    { pubkey: actualShieldMint, isSigner: false, isWritable: false }, // origin_mint (UncheckedAccount)
-    { pubkey: proofVault, isSigner: false, isWritable: true }, // proof_vault (UncheckedAccount, mut)
-    { pubkey: SystemProgram.programId, isSigner: false, isWritable: false }, // system_program (UncheckedAccount)
-    { pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false }, // rent (UncheckedAccount)
+    { pubkey: wallet.publicKey!, isSigner: true, isWritable: true }, // payer (Signer, mut)
+    { pubkey: proofVault, isSigner: false, isWritable: true }, // proof_vault (Account, mut)
+    { pubkey: SystemProgram.programId, isSigner: false, isWritable: false }, // system_program (Program)
+    { pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false }, // rent (Sysvar)
     { pubkey: SYSVAR_CLOCK_PUBKEY, isSigner: false, isWritable: false }, // clock (Sysvar) - CRITICAL: Avoids Clock::get() stack overflow
   ];
 
-  // All other accounts go as remaining_accounts (in the order they're expected by the handler)
+  // CRITICAL: pool_state, commitment_tree, and origin_mint must be FIRST in remaining_accounts
+  // Then all other accounts follow (in the order they're expected by the handler)
   const remainingAccounts = [
+    { pubkey: poolState, isSigner: false, isWritable: true }, // pool_state (FIRST in remaining_accounts)
+    { pubkey: commitmentTreeKey, isSigner: false, isWritable: true }, // commitment_tree (SECOND in remaining_accounts)
+    { pubkey: actualShieldMint, isSigner: false, isWritable: false }, // origin_mint (THIRD in remaining_accounts)
     { pubkey: hookConfig, isSigner: false, isWritable: false },
     { pubkey: hookWhitelist, isSigner: false, isWritable: true },
     { pubkey: nullifierSet, isSigner: false, isWritable: true },

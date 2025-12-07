@@ -2187,12 +2187,13 @@ pub mod ptf_pool {
         msg!("execute_shield: using clock from context (avoiding Clock::get() stack overflow)");
         let clock = &ctx.accounts.clock;
         msg!("execute_shield: clock obtained from context successfully");
-        msg!("execute_shield: about to access ctx.accounts.payer");
-        
-        // Validate basic accounts inline (replacing validate_shield_basic_accounts to avoid unused variable)
+        msg!("execute_shield: about to access ctx.accounts.payer (now Signer type)");
+        // CRITICAL: Signer is zero-sized and doesn't require to_account_info() - just get key directly
+        let payer_key = ctx.accounts.payer.key();
+        msg!("execute_shield: payer_key obtained: {}", payer_key);
+        // Get AccountInfo for later use (Signer.to_account_info() is safe)
         let payer_info = ctx.accounts.payer.to_account_info();
-        require!(payer_info.is_signer, PoolError::Unauthorized);
-        let payer_key = payer_info.key();
+        msg!("execute_shield: payer_info obtained successfully");
         
         msg!("execute_shield: step 1e - validating system_program");
         require_keys_eq!(
@@ -8213,10 +8214,10 @@ pub struct ExecuteShield<'info> {
     /// CRITICAL FIX: Remove #[account(mut)] to avoid Anchor's mut validation overhead
     /// Mutability is handled manually in the handler - accounts are marked writable in instruction
     pub commitment_tree: UncheckedAccount<'info>,
-    /// CHECK: Validated manually in handler (must be signer)
-    /// CRITICAL FIX: Remove #[account(mut)] to avoid Anchor's mut validation overhead
-    /// Mutability is handled manually in the handler - accounts are marked writable in instruction
-    pub payer: UncheckedAccount<'info>,
+    /// CRITICAL FIX: Use Signer instead of UncheckedAccount to avoid access violation
+    /// Signer is a zero-sized type that doesn't cause stack issues like UncheckedAccount.to_account_info()
+    #[account(mut)]
+    pub payer: Signer<'info>,
     /// CHECK: Validated manually in handler to avoid InterfaceAccount validation overhead
     pub origin_mint: UncheckedAccount<'info>,
     /// Proof vault for storing prepared operations
@@ -8224,12 +8225,10 @@ pub struct ExecuteShield<'info> {
     /// CRITICAL FIX: Remove #[account(mut)] to avoid Anchor's mut validation overhead
     /// Mutability is handled manually in the handler - accounts are marked writable in instruction
     pub proof_vault: UncheckedAccount<'info>,
-    /// CHECK: Validated manually in handler (must be System Program)
-    /// NOTE: System program is never writable, so no mut needed
-    pub system_program: UncheckedAccount<'info>,
-    /// CHECK: Validated manually in handler (must be Rent sysvar)
-    /// NOTE: Rent sysvar is never writable, so no mut needed
-    pub rent: UncheckedAccount<'info>,
+    /// CRITICAL: Use Program type for system_program to avoid UncheckedAccount stack issues
+    pub system_program: Program<'info, System>,
+    /// CRITICAL: Use Sysvar type for rent to avoid UncheckedAccount stack issues
+    pub rent: Sysvar<'info, Rent>,
     /// CHECK: Clock sysvar for timestamp checks
     /// CRITICAL: Add Clock to struct to avoid Clock::get() stack overflow
     pub clock: Sysvar<'info, Clock>,
