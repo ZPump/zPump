@@ -1854,27 +1854,21 @@ export async function executeShield(params: ExecuteShieldParams): Promise<string
     operation_id: operationIdHexToArray(params.operationId)
   });
 
-  // CRITICAL FIX: Account order must match new minimal ExecuteShield struct (matching ExecuteTransfer pattern)
-  // ExecuteShield now has only: payer, proof_vault, system_program, rent, clock
-  // pool_state, commitment_tree, and origin_mint are in remaining_accounts
-  // CRITICAL: Account order must match ExecuteShield struct exactly
-  // ExecuteShield struct order: payer, proof_vault, system_program, rent, clock
-  // CRITICAL: Match ExecuteTransfer minimal pattern - only 4 accounts in struct:
-  // 1. payer, 2. proof_vault, 3. system_program, 4. rent
-  // All other accounts go in remaining_accounts
-  // CRITICAL: Match ExecuteTransfer pattern exactly - both have #[account(mut)] on payer and proof_vault
+  // CRITICAL FIX: Restore working structure from before gas optimization refactor
+  // ExecuteShield struct has 7 accounts: pool_state, commitment_tree, payer, origin_mint, proof_vault, system_program, rent
+  // This matches the working version from commit 1d077d3
   const shieldKeys = [
-    { pubkey: wallet.publicKey!, isSigner: true, isWritable: true }, // payer (mut in struct, matches ExecuteTransfer)
-    { pubkey: proofVault, isSigner: false, isWritable: true }, // proof_vault (mut in struct, matches ExecuteTransfer)
-    { pubkey: SystemProgram.programId, isSigner: false, isWritable: false }, // system_program
-    { pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false }, // rent
+    { pubkey: poolState, isSigner: false, isWritable: true }, // pool_state (FIRST in struct)
+    { pubkey: commitmentTreeKey, isSigner: false, isWritable: true }, // commitment_tree (SECOND in struct)
+    { pubkey: wallet.publicKey!, isSigner: true, isWritable: true }, // payer (THIRD in struct)
+    { pubkey: actualShieldMint, isSigner: false, isWritable: false }, // origin_mint (FOURTH in struct)
+    { pubkey: proofVault, isSigner: false, isWritable: true }, // proof_vault (FIFTH in struct)
+    { pubkey: SystemProgram.programId, isSigner: false, isWritable: false }, // system_program (SIXTH in struct)
+    { pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false }, // rent (SEVENTH in struct)
   ];
 
-  // Remaining accounts - order: pool_state, commitment_tree, origin_mint, then all others
+  // Remaining accounts - all other accounts go here
   const remainingAccounts = [
-    { pubkey: poolState, isSigner: false, isWritable: true }, // pool_state (FIRST in remaining_accounts)
-    { pubkey: commitmentTreeKey, isSigner: false, isWritable: true }, // commitment_tree (SECOND in remaining_accounts)
-    { pubkey: actualShieldMint, isSigner: false, isWritable: false }, // origin_mint (THIRD in remaining_accounts)
     { pubkey: hookConfig, isSigner: false, isWritable: false },
     { pubkey: hookWhitelist, isSigner: false, isWritable: true },
     { pubkey: nullifierSet, isSigner: false, isWritable: true },
@@ -1901,44 +1895,14 @@ export async function executeShield(params: ExecuteShieldParams): Promise<string
   // CRITICAL: shieldKeys now contains all struct accounts in IDL order:
   // 1. pool_state, 2. commitment_tree, 3. payer, 4. origin_mint, 5. proof_vault, 6. system_program, 7. rent, 8. clock
   // remainingAccounts contains all accounts after the struct accounts
-  // CRITICAL: Try using Anchor's Program interface instead of manual instruction building
-  // This might handle account validation differently and bypass the access violation
-  let shieldInstruction: TransactionInstruction;
-  
-  try {
-    // Create Anchor provider and program
-    const provider = new AnchorProvider(connection, wallet as any, {});
-    const program = new Program(poolIdl as Idl, POOL_PROGRAM_ID, provider);
-    
-    // Try using program.methods which might handle account validation differently
-    const shieldIx = await program.methods
-      .executeShield(operationIdHexToArray(params.operationId))
-      .accounts({
-        payer: wallet.publicKey!,
-        proofVault: proofVault,
-        systemProgram: SystemProgram.programId,
-        rent: SYSVAR_RENT_PUBKEY,
-      })
-      .remainingAccounts(remainingAccounts.map(acc => ({
-        pubkey: acc.pubkey,
-        isSigner: false,
-        isWritable: acc.isWritable,
-      })))
-      .instruction();
-    
-    // Use the instruction from Program interface
-    shieldInstruction = shieldIx;
-    console.log('[executeShield] Using Anchor Program interface for instruction building');
-  } catch (programError) {
-    // Fallback to manual instruction building if Program interface fails
-    console.warn('[executeShield] Program interface failed, using manual instruction building:', programError);
-    const allShieldKeys = [...shieldKeys, ...remainingAccounts];
-    shieldInstruction = new TransactionInstruction({
-      programId: POOL_PROGRAM_ID,
-      keys: allShieldKeys,
-      data: shieldData
-    });
-  }
+  // CRITICAL: Restore working pattern - use manual instruction building matching the restored struct
+  // The struct now has 7 accounts: pool_state, commitment_tree, payer, origin_mint, proof_vault, system_program, rent
+  const allShieldKeys = [...shieldKeys, ...remainingAccounts];
+  const shieldInstruction = new TransactionInstruction({
+    programId: POOL_PROGRAM_ID,
+    keys: allShieldKeys,
+    data: shieldData
+  });
 
   // Add finalize_ledger instruction to the same transaction as shield (required for security)
   const finalizeLedgerKeys = [
