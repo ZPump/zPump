@@ -2239,15 +2239,47 @@ pub mod ptf_pool {
         let _keep_alive_proof_vault = &proof_vault_account_info;
         let proof_vault_info_ref: &'info AccountInfo<'info> = unsafe { mem::transmute(&proof_vault_account_info) };
         
-        // CRITICAL FIX: Use AccountLoader like ExecuteUnshield
-        // Check if pool is initialized and validate origin_mint matches
-        let pool_state_loader = &ctx.accounts.pool_state;
+        // CRITICAL FIX: Validate pool_state PDA manually and load it
+        // Extract origin_mint from remaining_accounts (moved from struct to reduce account count)
+        let origin_mint_info = ctx.remaining_accounts.iter()
+            .find(|acc| {
+                // Find the account that's owned by token program and has mint discriminator
+                acc.owner == &anchor_spl::token::ID && acc.data_len() >= 82
+            })
+            .ok_or(PoolError::AccountDataTooShort)?;
+        let origin_mint_key = origin_mint_info.key();
+        
+        // Validate origin_mint
+        require_keys_eq!(
+            *origin_mint_info.owner,
+            anchor_spl::token::ID,
+            PoolError::InvalidAccountOwner
+        );
+        require!(
+            origin_mint_info.data_len() >= 82,
+            PoolError::AccountDataTooShort
+        );
+        
+        // Validate pool_state PDA manually
+        let pool_state_info = ctx.accounts.pool_state.to_account_info();
+        let (expected_pool_state, expected_bump) = Pubkey::find_program_address(
+            &[seeds::POOL, origin_mint_key.as_ref()],
+            ctx.program_id,
+        );
+        require_keys_eq!(
+            pool_state_info.key(),
+            expected_pool_state,
+            PoolError::Unauthorized
+        );
+        
+        // Load pool_state and validate origin_mint matches
+        let pool_state_loader = AccountLoader::try_from(&pool_state_info)
+            .map_err(|_| PoolError::AccountDataTooShort)?;
         let pool_state = pool_state_loader.load()?;
         let pool_state_origin_mint = pool_state.origin_mint;
         drop(pool_state);
         
-        // CRITICAL VALIDATION: Ensure pool_state.origin_mint matches the origin_mint account passed
-        // This prevents using a pool_state initialized for a different mint (e.g., native SOL vs wSOL)
+        // CRITICAL VALIDATION: Ensure pool_state.origin_mint matches the origin_mint account
         require_keys_eq!(
             pool_state_origin_mint,
             origin_mint_key,
@@ -2255,6 +2287,10 @@ pub mod ptf_pool {
         );
         msg!("execute_shield: validated pool_state.origin_mint={} matches origin_mint={}", 
              pool_state_origin_mint, origin_mint_key);
+        
+        // Keep pool_state_loader alive for later use
+        let pool_state_loader_box = Box::new(pool_state_loader);
+        let pool_state_loader_ref: &'info AccountLoader<'info, PoolState> = unsafe { mem::transmute(pool_state_loader_box.as_ref()) };
         
         // Extract shield operation using helper function
         let operation_data = extract_shield_operation(proof_vault_info_ref, operation_id, &clock)?;
