@@ -1422,55 +1422,12 @@ export async function preparePool(params: PreparePoolParams): Promise<PreparePoo
     console.log(`  mintMapping: ${mintMappingKey.toBase58()}`);
     console.log(`  poolState: ${poolState.toBase58()}`);
     
-    // CRITICAL FIX: Use Anchor's Program interface to build instruction with optional accounts
-    // Anchor's methods API handles optional accounts correctly (matches by name, not position)
-    // Create a wallet adapter matching bootstrap script pattern
-    const anchorWallet = {
-      publicKey: wallet.publicKey!,
-      async signTransaction(tx: Transaction | VersionedTransaction): Promise<Transaction | VersionedTransaction> {
-        if (params.keypair) {
-          if ('sign' in tx && Array.isArray((tx as VersionedTransaction).sign)) {
-            (tx as VersionedTransaction).sign([params.keypair]);
-          } else {
-            (tx as Transaction).partialSign(params.keypair);
-          }
-          return tx;
-        }
-        if (wallet.signTransaction) {
-          return await wallet.signTransaction(tx);
-        }
-        throw new Error('Cannot sign transaction without keypair or wallet.signTransaction');
-      },
-      async signAllTransactions(txs: (Transaction | VersionedTransaction)[]): Promise<(Transaction | VersionedTransaction)[]> {
-        if (params.keypair) {
-          txs.forEach((tx) => {
-            if ('sign' in tx && Array.isArray((tx as VersionedTransaction).sign)) {
-              (tx as VersionedTransaction).sign([params.keypair!]);
-            } else {
-              (tx as Transaction).partialSign(params.keypair!);
-            }
-          });
-          return txs;
-        }
-        if (wallet.signAllTransactions) {
-          return await wallet.signAllTransactions(txs);
-        }
-        throw new Error('Cannot sign transactions without keypair or wallet.signAllTransactions');
-      }
-    };
-    
-    const provider = new AnchorProvider(connection, anchorWallet as any, AnchorProvider.defaultOptions());
-    const poolProgram = new Program(poolIdl as Idl, POOL_PROGRAM_ID, provider);
-    
-    const FEATURE_PRIVATE_TRANSFER_ENABLED = 1;
-    const FEATURE_ALLOWANCES_ENABLED = 2;
-    const features = FEATURE_PRIVATE_TRANSFER_ENABLED | FEATURE_ALLOWANCES_ENABLED;
-    const feeBps = 0;
-    
-    // Build accounts object - Anchor's methods API handles optional accounts automatically
-    // twin_mint is NOT included - Anchor's Option<> will handle it as None
-    const initPoolAccounts = {
-      authority: wallet.publicKey!,
+    // CRITICAL FIX: Use manual instruction building matching bootstrap script exactly
+    // The bootstrap script uses buildAccountMetas which skips optional accounts
+    // This causes position shifts, but Anchor's Option<> type handles this correctly
+    // by matching accounts by name/type, not strictly by position
+    const initPoolIx = buildInitializePoolInstruction({
+      wallet,
       poolState,
       nullifierSet,
       noteLedger,
@@ -1481,18 +1438,10 @@ export async function preparePool(params: PreparePoolParams): Promise<PreparePoo
       originMint: originMintKey,
       mintMapping: mintMappingKey,
       factoryState,
-      verifierProgram: VERIFIER_PROGRAM_ID,
       verifyingKey,
-      payer: wallet.publicKey!,
-      systemProgram: SystemProgram.programId,
-      tokenProgram: tokenProgramId
-    };
-    
-    // Use Anchor's methods API to build instruction (handles optional accounts correctly)
-    const initPoolIx = await poolProgram.methods
-      .initializePool(new BN(feeBps), features)
-      .accounts(initPoolAccounts)
-      .instruction();
+      tokenProgramId,
+      poolCoder
+    });
     
     // CRITICAL DEBUG: Verify the instruction accounts match what we expect
     console.log('[preparePool] Instruction accounts (full list):');

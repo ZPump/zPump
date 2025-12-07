@@ -130,6 +130,7 @@ Most E2E tests are failing with generic "Simulation failed" errors without detai
      - Tried using Anchor's Program interface → Error: "Cannot read properties of undefined (reading 'size')" (likely AnchorProvider setup issue)
    - **Root Cause:** Anchor's `Option<>` type expects accounts to be omitted when `None`, but this causes position shifts that break account matching. Anchor matches accounts by position, not by name.
    - **Next:** Investigate how bootstrap script handles this (it also skips optional accounts but may work differently), or find a way to make Anchor accept the position shift
+   - **Key Finding:** Payer appears at position 0 (as authority) and position 13 (as payer). When twin_mint is skipped, payer is at position 13, but Anchor's Signer constraint checks position 14 (the original position in struct definition). This is a fundamental limitation of Anchor's position-based account matching.
 
 ### Hypotheses
 
