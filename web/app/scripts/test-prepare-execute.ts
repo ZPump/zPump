@@ -257,7 +257,8 @@ async function testPrepareExecuteShield() {
       const poolResult = await preparePool({
         connection,
         wallet,
-        originMint
+        originMint,
+        keypair // Pass keypair for direct transaction signing (matches bootstrap script)
       });
       console.log(`   ✓ Pool initialization result: ${poolResult.actions.join(', ')}`);
       if (poolResult.poolInitialized) {
@@ -403,7 +404,8 @@ async function testPrepareExecuteUnshield() {
       const poolResult = await preparePool({
         connection,
         wallet,
-        originMint
+        originMint,
+        keypair // Pass keypair for direct transaction signing (matches bootstrap script)
       });
       if (poolResult.poolInitialized) {
         console.log('   ✓ Pool initialized successfully');
@@ -591,7 +593,8 @@ async function testPrepareExecuteTransfer() {
       const poolResult = await preparePool({
         connection,
         wallet,
-        originMint
+        originMint,
+        keypair // Pass keypair for direct transaction signing (matches bootstrap script)
       });
       if (poolResult.poolInitialized) {
         console.log('   ✓ Pool initialized successfully');
@@ -829,7 +832,8 @@ async function testPrepareExecuteTransferFrom() {
       const poolResult = await preparePool({
         connection,
         wallet: ownerWallet,
-        originMint
+        originMint,
+        keypair: allowanceOwner // Pass keypair for direct transaction signing
       });
       if (poolResult.poolInitialized) {
         console.log('   ✓ Pool initialized successfully');
@@ -1079,7 +1083,7 @@ async function testPrepareExecuteBatchTransfer() {
     
     const poolAccount1 = await connection.getAccountInfo(poolState1, 'confirmed');
     if (!poolAccount1 || poolAccount1.data.length < 8 + 32) {
-      await preparePool({ connection, wallet, originMint: mint1.toBase58() });
+      await preparePool({ connection, wallet, originMint: mint1.toBase58(), keypair });
       console.log('   ✓ Pool 1 initialized');
     } else {
       console.log('   ✓ Pool 1 already exists');
@@ -1289,7 +1293,7 @@ async function testPrepareExecuteBatchTransferFrom() {
     
     const poolAccount1 = await connection.getAccountInfo(poolState1, 'confirmed');
     if (!poolAccount1 || poolAccount1.data.length < 8 + 32) {
-      await preparePool({ connection, wallet: ownerWallet, originMint: mint1.toBase58() });
+      await preparePool({ connection, wallet: ownerWallet, originMint: mint1.toBase58(), keypair: allowanceOwner });
       console.log('   ✓ Pool 1 initialized');
     } else {
       console.log('   ✓ Pool 1 already exists');

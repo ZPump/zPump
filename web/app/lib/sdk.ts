@@ -24,7 +24,7 @@ import {
   VersionedTransaction
 } from '@solana/web3.js';
 import { WalletContextState } from '@solana/wallet-adapter-react';
-import { BorshCoder, BN, Idl } from '@coral-xyz/anchor';
+import { BorshCoder, BN, Idl, Program, AnchorProvider } from '@coral-xyz/anchor';
 import {
   ASSOCIATED_TOKEN_PROGRAM_ID,
   TOKEN_PROGRAM_ID,
@@ -632,6 +632,7 @@ interface PreparePoolParams {
   connection: Connection;
   wallet: WalletContextState;
   originMint: string;
+  keypair?: Keypair; // Optional keypair for direct transaction signing (matches bootstrap script approach)
 }
 
 interface PreparePoolResult {
@@ -1421,8 +1422,55 @@ export async function preparePool(params: PreparePoolParams): Promise<PreparePoo
     console.log(`  mintMapping: ${mintMappingKey.toBase58()}`);
     console.log(`  poolState: ${poolState.toBase58()}`);
     
-    const initPoolIx = buildInitializePoolInstruction({
-      wallet,
+    // CRITICAL FIX: Use Anchor's Program interface to build instruction with optional accounts
+    // Anchor's methods API handles optional accounts correctly (matches by name, not position)
+    // Create a wallet adapter matching bootstrap script pattern
+    const anchorWallet = {
+      publicKey: wallet.publicKey!,
+      async signTransaction(tx: Transaction | VersionedTransaction): Promise<Transaction | VersionedTransaction> {
+        if (params.keypair) {
+          if ('sign' in tx && Array.isArray((tx as VersionedTransaction).sign)) {
+            (tx as VersionedTransaction).sign([params.keypair]);
+          } else {
+            (tx as Transaction).partialSign(params.keypair);
+          }
+          return tx;
+        }
+        if (wallet.signTransaction) {
+          return await wallet.signTransaction(tx);
+        }
+        throw new Error('Cannot sign transaction without keypair or wallet.signTransaction');
+      },
+      async signAllTransactions(txs: (Transaction | VersionedTransaction)[]): Promise<(Transaction | VersionedTransaction)[]> {
+        if (params.keypair) {
+          txs.forEach((tx) => {
+            if ('sign' in tx && Array.isArray((tx as VersionedTransaction).sign)) {
+              (tx as VersionedTransaction).sign([params.keypair!]);
+            } else {
+              (tx as Transaction).partialSign(params.keypair!);
+            }
+          });
+          return txs;
+        }
+        if (wallet.signAllTransactions) {
+          return await wallet.signAllTransactions(txs);
+        }
+        throw new Error('Cannot sign transactions without keypair or wallet.signAllTransactions');
+      }
+    };
+    
+    const provider = new AnchorProvider(connection, anchorWallet as any, AnchorProvider.defaultOptions());
+    const poolProgram = new Program(poolIdl as Idl, POOL_PROGRAM_ID, provider);
+    
+    const FEATURE_PRIVATE_TRANSFER_ENABLED = 1;
+    const FEATURE_ALLOWANCES_ENABLED = 2;
+    const features = FEATURE_PRIVATE_TRANSFER_ENABLED | FEATURE_ALLOWANCES_ENABLED;
+    const feeBps = 0;
+    
+    // Build accounts object - Anchor's methods API handles optional accounts automatically
+    // twin_mint is NOT included - Anchor's Option<> will handle it as None
+    const initPoolAccounts = {
+      authority: wallet.publicKey!,
       poolState,
       nullifierSet,
       noteLedger,
@@ -1433,9 +1481,18 @@ export async function preparePool(params: PreparePoolParams): Promise<PreparePoo
       originMint: originMintKey,
       mintMapping: mintMappingKey,
       factoryState,
+      verifierProgram: VERIFIER_PROGRAM_ID,
       verifyingKey,
-      tokenProgramId
-    });
+      payer: wallet.publicKey!,
+      systemProgram: SystemProgram.programId,
+      tokenProgram: tokenProgramId
+    };
+    
+    // Use Anchor's methods API to build instruction (handles optional accounts correctly)
+    const initPoolIx = await poolProgram.methods
+      .initializePool(new BN(feeBps), features)
+      .accounts(initPoolAccounts)
+      .instruction();
     
     // CRITICAL DEBUG: Verify the instruction accounts match what we expect
     console.log('[preparePool] Instruction accounts (full list):');
@@ -1460,16 +1517,20 @@ export async function preparePool(params: PreparePoolParams): Promise<PreparePoo
     initTx.recentBlockhash = initBlockhash.blockhash;
     
     // CRITICAL FIX: Match bootstrap script approach exactly
-    // The bootstrap script uses transaction.sign(ctx.payer) which signs the transaction
-    // and then sends it via sendRawTransaction
-    // We need to do the same to ensure all signer accounts are properly signed
-    if (!wallet.signTransaction) {
-      throw new Error('Wallet must support signTransaction for pool initialization');
+    // The bootstrap script uses transaction.sign(ctx.payer) which signs the transaction directly
+    // If keypair is provided, use direct signing (more reliable for optional account handling)
+    // Otherwise, fall back to wallet.signTransaction
+    let signedTx: Transaction;
+    if (params.keypair) {
+      // Direct signing with keypair (matches bootstrap script: transaction.sign(ctx.payer))
+      initTx.sign(params.keypair);
+      signedTx = initTx;
+    } else if (wallet.signTransaction) {
+      // Use wallet adapter signing
+      signedTx = await wallet.signTransaction(initTx);
+    } else {
+      throw new Error('Wallet must support signTransaction or provide keypair for pool initialization');
     }
-    
-    // Sign the transaction explicitly (matching bootstrap script: transaction.sign(ctx.payer))
-    // This signs all accounts marked as signers that match the keypair
-    const signedTx = await wallet.signTransaction(initTx);
     console.log('[preparePool] Transaction signed explicitly - all signer accounts should be signed');
     
     // CRITICAL DEBUG: Verify signatures and account positions before sending
