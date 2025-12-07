@@ -565,3 +565,22 @@ Cannot proceed with testing until shield is fixed. This is a confirmed Anchor fr
 
 All work has been committed and pushed to GitHub.
 
+
+## Attempt 20: Restored Working Structure from Before Gas Optimization
+
+**Date**: 2025-12-07
+**Approach**: Restored ExecuteShield struct to 7 accounts (pool_state, commitment_tree, payer, origin_mint, proof_vault, system_program, rent) matching commit 1d077d3
+**Code Pattern**:
+
+**Result**: ❌ Failed - Access violation persists at 0x200005c28
+**Analysis**: Even after restoring the exact working structure from before the gas optimization refactor, the access violation persists. This suggests:
+1. The program binary may need to be redeployed
+2. There may be a runtime environment difference
+3. The issue may not be in the struct definition but in how Anchor processes it
+4. The working version may have had different Anchor version or compiler flags
+
+**Next Steps**:
+- Redeploy the program with the restored structure
+- Check if Anchor version changed
+- Compare compiler flags between working and current versions
+

@@ -8,7 +8,7 @@ use anchor_spl::token_interface::{
 use solana_program::address_lookup_table::state::{AddressLookupTable, LOOKUP_TABLE_META_SIZE};
 use solana_program::program_option::COption;
 use solana_program::program_pack::Pack as Token2022Pack;
-use solana_program::{hash::hashv, program::invoke, system_program};
+use solana_program::{hash::hashv, program::invoke, system_instruction, system_program};
 use spl_associated_token_account_client::{
     address::get_associated_token_address_with_program_id, instruction as ata_instruction,
 };
