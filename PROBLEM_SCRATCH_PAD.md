@@ -47,6 +47,11 @@ After fixing `AccountNotSigner`, pool initialization succeeds, but `ExecuteShiel
    - **Date:** 2024-12-07
    - **Analysis:** All accounts exist, so missing accounts are not the cause. The error occurs at a specific address `0x200005f28` in stack frame 5, suggesting a stack overflow or corruption in Anchor's validation code.
 
+5. ✅ **Removed all #[account(mut)] from ExecuteShield** - Removed mut from pool_state, commitment_tree, payer, and proof_vault
+   - **Result:** Testing in progress
+   - **Date:** 2024-12-07
+   - **Hypothesis:** Multiple `#[account(mut)] UncheckedAccount` fields might cause Anchor to access account data for mutability validation, causing stack overflow. Removing mut attributes and handling mutability manually (accounts are still marked writable in instruction).
+
 ### Hypotheses
 
 1. **Stack overflow in Anchor account validation** - The access violation happens before our code runs, possibly in Anchor's account validation

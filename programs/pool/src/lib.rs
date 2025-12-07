@@ -2227,7 +2227,7 @@ pub mod ptf_pool {
         let operation_data = extract_shield_operation(proof_vault_info_ref, operation_id, &clock)?;
         
         // Derive expected addresses using helper function
-        let pool_state_key = ctx.accounts.pool_state.key();
+        let pool_state_key = pool_state_loader.key();
         let addresses = derive_shield_addresses(&validation.origin_mint_key, &pool_state_key, ctx.program_id)?;
         
         msg!(
@@ -2452,14 +2452,15 @@ pub mod ptf_pool {
             mint_mapping_info,
         )?;
         
-        // Create AccountLoader wrappers using helper function
+        // CRITICAL FIX: Use AccountLoader directly from ctx.accounts.pool_state (now AccountLoader instead of UncheckedAccount)
+        let pool_state_loader = &ctx.accounts.pool_state;
+        
+        // Create AccountLoader wrapper for commitment_tree using helper function
         // CRITICAL: Store AccountInfo in variables that live for the entire function
-        let pool_state_account_info = ctx.accounts.pool_state.to_account_info();
         let commitment_tree_account_info = ctx.accounts.commitment_tree.to_account_info();
-        let pool_state_info_ref: &'info AccountInfo<'info> = unsafe { mem::transmute(&pool_state_account_info) };
         let commitment_tree_info_ref: &'info AccountInfo<'info> = unsafe { mem::transmute(&commitment_tree_account_info) };
-        let (pool_state_loader_box, commitment_tree_loader_box) = create_shield_loaders(pool_state_info_ref, commitment_tree_info_ref)?;
-        let pool_state_loader: &'info AccountLoader<'info, PoolState> = unsafe { mem::transmute(pool_state_loader_box.as_ref()) };
+        let commitment_tree_loader_box = AccountLoader::try_from(commitment_tree_info_ref)
+            .map_err(|_| PoolError::AccountDataTooShort)?;
         let commitment_tree_loader: &'info AccountLoader<'info, CommitmentTree> = unsafe { mem::transmute(commitment_tree_loader_box.as_ref()) };
         
         msg!("execute_shield: calling execute_shield_impl");
@@ -8119,24 +8120,29 @@ pub struct PrepareBatchTransferFrom<'info> {
 // Using UncheckedAccount for pool_state and commitment_tree to avoid init_if_needed overhead
 #[derive(Accounts)]
 pub struct ExecuteShield<'info> {
+    /// CRITICAL FIX: Use AccountLoader like ExecuteUnshield to see if that avoids the access violation
+    /// This matches the pattern used in ExecuteUnshield which works
+    /// NOTE: We use origin_mint.key() instead of pool_state.load()?.origin_mint because origin_mint is provided as a separate account
+    #[account(
+        mut,
+        seeds = [seeds::POOL, origin_mint.key().as_ref()],
+        bump
+    )]
+    pub pool_state: AccountLoader<'info, PoolState>,
     /// CHECK: Validated and initialized manually in handler to avoid init_if_needed stack overhead
-    /// NOTE: mut handled manually - Anchor may access account data for mut validation
-    #[account(mut)]
-    pub pool_state: UncheckedAccount<'info>,
-    /// CHECK: Validated and initialized manually in handler to avoid init_if_needed stack overhead
-    /// NOTE: mut handled manually - Anchor may access account data for mut validation
-    #[account(mut)]
+    /// CRITICAL FIX: Remove #[account(mut)] to avoid Anchor's mut validation overhead
+    /// Mutability is handled manually in the handler - accounts are marked writable in instruction
     pub commitment_tree: UncheckedAccount<'info>,
     /// CHECK: Validated manually in handler (must be signer)
-    /// NOTE: mut handled manually - Anchor may access account data for mut validation
-    #[account(mut)]
+    /// CRITICAL FIX: Remove #[account(mut)] to avoid Anchor's mut validation overhead
+    /// Mutability is handled manually in the handler - accounts are marked writable in instruction
     pub payer: UncheckedAccount<'info>,
     /// CHECK: Validated manually in handler to avoid InterfaceAccount validation overhead
     pub origin_mint: UncheckedAccount<'info>,
     /// Proof vault for storing prepared operations
     /// CHECK: Validated manually in handler (PDA derivation and owner)
-    /// NOTE: mut handled manually - Anchor may access account data for mut validation
-    #[account(mut)]
+    /// CRITICAL FIX: Remove #[account(mut)] to avoid Anchor's mut validation overhead
+    /// Mutability is handled manually in the handler - accounts are marked writable in instruction
     pub proof_vault: UncheckedAccount<'info>,
     /// CHECK: Validated manually in handler (must be System Program)
     /// NOTE: System program is never writable, so no mut needed
