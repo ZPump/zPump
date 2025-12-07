@@ -38,9 +38,14 @@ After fixing `AccountNotSigner`, pool initialization succeeds, but `ExecuteShiel
    - **Analysis:** Error occurs in Anchor's account validation before our function code executes
 
 3. ✅ **Removed #[account(mut)] from system_program and rent** - These accounts are never writable, so mut attribute not needed
-   - **Result:** Testing in progress
+   - **Result:** ❌ Failed - Access violation persists
    - **Date:** 2024-12-07
-   - **Hypothesis:** `#[account(mut)]` might cause Anchor to access account data even for `UncheckedAccount`, causing the access violation
+   - **Analysis:** Removing `#[account(mut)]` from system_program and rent didn't help. The issue is not specific to those accounts.
+
+4. ✅ **Added account existence verification** - Verify proof_vault, system_program, and rent exist before instruction
+   - **Result:** ❌ Failed - Access violation persists, all accounts exist
+   - **Date:** 2024-12-07
+   - **Analysis:** All accounts exist, so missing accounts are not the cause. The error occurs at a specific address `0x200005f28` in stack frame 5, suggesting a stack overflow or corruption in Anchor's validation code.
 
 ### Hypotheses
 
@@ -61,9 +66,11 @@ After fixing `AccountNotSigner`, pool initialization succeeds, but `ExecuteShiel
 1. ✅ Add `#[inline(never)]` to `execute_shield` - Done
 2. ✅ Add debug logs at the very start of `execute_shield` - Done (logs not visible, error happens before our code)
 3. ✅ Check for stack overflow warnings - Found warnings for `execute_unshield_core_impl`, but not for `execute_shield`
-4. **Investigate if Anchor accesses account data for `UncheckedAccount` with `#[account(mut)]`** - The `#[account(mut)]` attribute might cause Anchor to validate mutability, which could access account data
-5. **Verify all accounts exist before instruction is called** - Check if any account is missing or invalid
-6. **Consider removing `#[account(mut)]` and handling mutability manually** - This might reduce Anchor's validation overhead
+4. ✅ Investigate if Anchor accesses account data for `UncheckedAccount` with `#[account(mut)]` - Removed mut from system_program and rent, didn't help
+5. ✅ Verify all accounts exist before instruction is called - All accounts exist, not the issue
+6. **Investigate Anchor's account struct validation** - The error at `0x200005f28` in stack frame 5 suggests Anchor is accessing a specific field or offset in the account struct, causing a stack overflow
+7. **Consider using raw Solana instructions instead of Anchor's account validation** - This would bypass Anchor's validation entirely, but requires significant refactoring
+8. **Check if there's a known Anchor bug with `UncheckedAccount` and `#[account(mut)]`** - This might be a bug in Anchor itself
 
 ---
 
