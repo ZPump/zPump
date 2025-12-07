@@ -584,3 +584,39 @@ All work has been committed and pushed to GitHub.
 - Check if Anchor version changed
 - Compare compiler flags between working and current versions
 
+
+### Research Summary (2024-12-07)
+
+**Sources Searched:**
+- GitHub (coral-xyz/anchor, solana-foundation/anchor)
+- Stack Overflow
+- Reddit (r/solana, r/solanadev)
+- Google general search
+
+**Key Findings:**
+
+1. **Common Solutions (All Already Tried):**
+   - ✅ Box large accounts - Doesn't work with `UncheckedAccount` (GitHub issue #2835)
+   - ✅ Reduce struct size - We reduced from 7 to 4 accounts
+   - ✅ Use AccountLoader - Already using for large accounts
+   - ✅ Move to remaining_accounts - Already done
+
+2. **Important References:**
+   - **GitHub Issue #2835** - Confirms Anchor doesn't support `Box<UncheckedAccount>`
+   - **Stack Overflow Discussion** - Having >9 accounts can trigger stack errors
+   - **Stack Overflow Q70757282** - Suggests boxing accounts (doesn't apply to our case)
+
+3. **Interesting Finding:**
+   - One search result mentioned: "In some cases, renaming the instruction has been suggested as a workaround"
+   - This suggests the issue might be instruction name/discriminator-specific
+
+4. **No Direct Fix Found:**
+   - No specific solution for access violations happening in Anchor validation before function runs
+   - All solutions assume the violation happens in user code, not Anchor's validation
+
+**Conclusion:**
+- We've tried all common solutions
+- Our case is unique: violation happens in Anchor validation, not user code
+- ExecuteTransfer works with identical pattern, strongly suggesting instruction-specific bug
+- Next: Try renaming instruction as workaround, then report to Anchor GitHub
+
