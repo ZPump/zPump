@@ -1679,6 +1679,26 @@ export async function executeShield(params: ExecuteShieldParams): Promise<string
     );
   }
   
+  // CRITICAL: Verify all accounts exist before calling execute_shield
+  // Anchor's validation might crash if accounts don't exist, even for UncheckedAccount
+  console.log('[executeShield] Verifying all accounts exist before instruction...');
+  const proofVaultAccount = await connection.getAccountInfo(proofVault, 'confirmed');
+  if (!proofVaultAccount) {
+    throw new Error(`Proof vault account does not exist: ${proofVault.toBase58()}. Run prepareShield first.`);
+  }
+  console.log('[executeShield] ✓ Proof vault exists');
+  
+  // Verify system_program and rent sysvar (these should always exist, but check anyway)
+  const systemProgramAccount = await connection.getAccountInfo(SystemProgram.programId, 'confirmed');
+  if (!systemProgramAccount) {
+    throw new Error('System program account not found - this should never happen');
+  }
+  const rentAccount = await connection.getAccountInfo(SYSVAR_RENT_PUBKEY, 'confirmed');
+  if (!rentAccount) {
+    throw new Error('Rent sysvar account not found - this should never happen');
+  }
+  console.log('[executeShield] ✓ System program and rent sysvar exist');
+  
   // CRITICAL: Program validates old_root against pool_state.current_root, not commitment tree root
   // Fetch root from pool_state if it exists, otherwise use default empty root
   let currentRootBytes: Uint8Array;

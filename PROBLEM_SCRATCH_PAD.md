@@ -37,6 +37,11 @@ After fixing `AccountNotSigner`, pool initialization succeeds, but `ExecuteShiel
    - **Date:** 2024-12-07
    - **Analysis:** Error occurs in Anchor's account validation before our function code executes
 
+3. ✅ **Removed #[account(mut)] from system_program and rent** - These accounts are never writable, so mut attribute not needed
+   - **Result:** Testing in progress
+   - **Date:** 2024-12-07
+   - **Hypothesis:** `#[account(mut)]` might cause Anchor to access account data even for `UncheckedAccount`, causing the access violation
+
 ### Hypotheses
 
 1. **Stack overflow in Anchor account validation** - The access violation happens before our code runs, possibly in Anchor's account validation

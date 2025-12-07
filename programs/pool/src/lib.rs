@@ -8120,23 +8120,29 @@ pub struct PrepareBatchTransferFrom<'info> {
 #[derive(Accounts)]
 pub struct ExecuteShield<'info> {
     /// CHECK: Validated and initialized manually in handler to avoid init_if_needed stack overhead
+    /// NOTE: mut handled manually - Anchor may access account data for mut validation
     #[account(mut)]
     pub pool_state: UncheckedAccount<'info>,
     /// CHECK: Validated and initialized manually in handler to avoid init_if_needed stack overhead
+    /// NOTE: mut handled manually - Anchor may access account data for mut validation
     #[account(mut)]
     pub commitment_tree: UncheckedAccount<'info>,
     /// CHECK: Validated manually in handler (must be signer)
+    /// NOTE: mut handled manually - Anchor may access account data for mut validation
     #[account(mut)]
     pub payer: UncheckedAccount<'info>,
     /// CHECK: Validated manually in handler to avoid InterfaceAccount validation overhead
     pub origin_mint: UncheckedAccount<'info>,
     /// Proof vault for storing prepared operations
     /// CHECK: Validated manually in handler (PDA derivation and owner)
+    /// NOTE: mut handled manually - Anchor may access account data for mut validation
     #[account(mut)]
     pub proof_vault: UncheckedAccount<'info>,
     /// CHECK: Validated manually in handler (must be System Program)
+    /// NOTE: System program is never writable, so no mut needed
     pub system_program: UncheckedAccount<'info>,
     /// CHECK: Validated manually in handler (must be Rent sysvar)
+    /// NOTE: Rent sysvar is never writable, so no mut needed
     pub rent: UncheckedAccount<'info>,
 }
 
