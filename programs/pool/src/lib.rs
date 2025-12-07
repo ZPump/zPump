@@ -2187,7 +2187,10 @@ pub mod ptf_pool {
         let validation = validate_shield_basic_accounts(&ctx)?;
         
         // CRITICAL: Create proof_vault_info_ref in main function so it lives for entire function scope
+        // Store in a variable that lives for the entire function to prevent access violations
         let proof_vault_account_info = ctx.accounts.proof_vault.to_account_info();
+        // Keep AccountInfo alive for the entire function scope
+        let _keep_alive_proof_vault = &proof_vault_account_info;
         let proof_vault_info_ref: &'info AccountInfo<'info> = unsafe { mem::transmute(&proof_vault_account_info) };
         
         // Check if pool is initialized

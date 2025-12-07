@@ -14,6 +14,47 @@ For each problem:
 
 ---
 
+## Problem: Access Violation in ExecuteShield
+
+**Status:** 🔴 Active  
+**Date Started:** 2024-12-07
+
+### Description
+After fixing `AccountNotSigner`, pool initialization succeeds, but `ExecuteShield` fails with:
+- "Access violation in stack frame 5 at address 0x200005f28 of size 8"
+- Error occurs immediately after "Instruction: ExecuteShield" is logged
+- No debug logs from `execute_shield` function are visible, suggesting error happens before first `msg!` call
+- Program consumes ~8260 compute units before failing
+
+### Attempts Made
+
+1. ✅ **Added keep-alive for proof_vault_account_info** - Added `_keep_alive_proof_vault` variable
+   - **Result:** ❌ Failed - Access violation persists
+   - **Date:** 2024-12-07
+
+### Hypotheses
+
+1. **Stack overflow in Anchor account validation** - The access violation happens before our code runs, possibly in Anchor's account validation
+   - **Test:** Add `#[inline(never)]` to `execute_shield` function
+   - **Priority:** High
+
+2. **Stack corruption from unsafe transmute** - The `mem::transmute` operations might be corrupting the stack
+   - **Test:** Review all `mem::transmute` usage in `execute_shield`
+   - **Priority:** Medium
+
+3. **Account validation issue** - The `validate_shield_basic_accounts` function might be accessing invalid memory
+   - **Test:** Add debug logs to `validate_shield_basic_accounts` to see if it's reached
+   - **Priority:** High
+
+### Next Steps
+
+1. Add `#[inline(never)]` to `execute_shield` to prevent inlining and reduce stack usage
+2. Add debug logs at the very start of `execute_shield` to see if they're reached
+3. Check if there are any stack overflow warnings during compilation
+4. Review `validate_shield_basic_accounts` for potential stack issues
+
+---
+
 ## Problem: E2E Tests Failing with "Simulation failed"
 
 **Status:** 🔴 Active  
