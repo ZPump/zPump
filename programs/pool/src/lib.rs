@@ -2231,22 +2231,6 @@ pub mod ptf_pool {
             PoolError::InvalidAccountOwner
         );
 
-        // Validate origin_mint manually (to avoid InterfaceAccount validation overhead)
-        // Store AccountInfo in variable and use unsafe transmute to extend lifetime
-        let origin_mint_account_info = ctx.accounts.origin_mint.to_account_info();
-        let origin_mint_info_ref: &'info AccountInfo<'info> = unsafe { mem::transmute(&origin_mint_account_info) };
-        require_keys_eq!(
-            *origin_mint_info_ref.owner,
-            anchor_spl::token::ID,
-            PoolError::InvalidAccountOwner
-        );
-        require!(
-            origin_mint_info_ref.data_len() >= 82, // Minimum mint account size
-            PoolError::AccountDataTooShort
-        );
-        let origin_mint_key = origin_mint_info_ref.key();
-        msg!("execute_shield: validated origin_mint, key={}", origin_mint_key);
-        
         // Validate proof_vault manually
         msg!("execute_shield: validating proof_vault");
         let proof_vault_account_info = ctx.accounts.proof_vault.to_account_info();
@@ -2264,23 +2248,50 @@ pub mod ptf_pool {
             PoolError::Unauthorized
         );
         
-        // CRITICAL: Restore working pattern - use pool_state and commitment_tree from struct
-        let pool_state_key = ctx.accounts.pool_state.key();
+        // CRITICAL FIX: Extract pool_state, commitment_tree, and origin_mint from remaining_accounts
+        // This reduces stack usage by moving them out of the struct (matching ExecuteTransfer pattern)
+        msg!("execute_shield: extracting pool_state, commitment_tree, origin_mint from remaining_accounts");
+        let mut pool_state_info: Option<&'info AccountInfo<'info>> = None;
+        let mut commitment_tree_info: Option<&'info AccountInfo<'info>> = None;
+        let mut origin_mint_info: Option<&'info AccountInfo<'info>> = None;
+        
+        // Derive expected addresses first (we'll need origin_mint for this)
+        // We'll extract origin_mint from remaining_accounts by checking for token program owner
+        for account in ctx.remaining_accounts.iter() {
+            if account.owner == &anchor_spl::token::ID || account.owner == &anchor_spl::token_2022::ID {
+                if account.data_len() >= 82 { // Minimum mint account size
+                    origin_mint_info = Some(account);
+                    break;
+                }
+            }
+        }
+        
+        let origin_mint_account_info = origin_mint_info.ok_or(PoolError::InvalidAccountOwner)?;
+        let origin_mint_key = origin_mint_account_info.key();
+        msg!("execute_shield: found origin_mint, key={}", origin_mint_key);
+        
+        // Derive pool addresses
         let pool_addresses = ptf_common::addresses::PoolAddresses::derive_all(
             &origin_mint_key,
             ctx.program_id,
         );
         
-        // Validate pool_state PDA manually
-        require_keys_eq!(
-            pool_state_key,
-            pool_addresses.pool_state,
-            PoolError::Unauthorized
-        );
+        // Extract pool_state and commitment_tree
+        for account in ctx.remaining_accounts.iter() {
+            let key = account.key();
+            if key == pool_addresses.pool_state {
+                pool_state_info = Some(account);
+            } else if key == pool_addresses.commitment_tree {
+                commitment_tree_info = Some(account);
+            }
+        }
+        
+        let pool_state_account_info = pool_state_info.ok_or(PoolError::InvalidAccountOwner)?;
+        let pool_state_key = pool_state_account_info.key();
+        msg!("execute_shield: found pool_state, key={}", pool_state_key);
         
         // Load pool_state and validate origin_mint matches
-        let pool_state_info = ctx.accounts.pool_state.to_account_info();
-        let pool_state_info_ref: &'info AccountInfo<'info> = unsafe { mem::transmute(&pool_state_info) };
+        let pool_state_info_ref: &'info AccountInfo<'info> = unsafe { mem::transmute(pool_state_account_info) };
         let pool_state_loader_box: Box<AccountLoader<'info, PoolState>> = Box::new(AccountLoader::try_from(pool_state_info_ref)
             .map_err(|_| PoolError::AccountDataTooShort)?);
         let pool_state = pool_state_loader_box.load()?;
@@ -2531,12 +2542,12 @@ pub mod ptf_pool {
         msg!("execute_shield: step 5a - wrappers created");
         
         // CRITICAL FIX: pool_state_loader_ref is already created above after manual PDA validation
-        // No need to recreate it - use the existing pool_state_loader_ref that was created at line 2293
+        // No need to recreate it - use the existing pool_state_loader_ref that was created above
         
-        // Create AccountLoader wrapper for commitment_tree from struct
-        // CRITICAL: Use commitment_tree from struct instead of extracting from remaining_accounts
-        let commitment_tree_info = ctx.accounts.commitment_tree.to_account_info();
-        let commitment_tree_info_ref: &'info AccountInfo<'info> = unsafe { mem::transmute(&commitment_tree_info) };
+        // Create AccountLoader wrapper for commitment_tree from extracted account
+        // CRITICAL: Use commitment_tree extracted from remaining_accounts (reduces stack usage)
+        let commitment_tree_account_info = commitment_tree_info.ok_or(PoolError::InvalidAccountOwner)?;
+        let commitment_tree_info_ref: &'info AccountInfo<'info> = unsafe { mem::transmute(commitment_tree_account_info) };
         let commitment_tree_loader_box: Box<AccountLoader<'info, CommitmentTree>> = Box::new(AccountLoader::try_from(commitment_tree_info_ref)
             .map_err(|_| PoolError::AccountDataTooShort)?);
         let commitment_tree_loader: &'info AccountLoader<'info, CommitmentTree> = unsafe { mem::transmute(commitment_tree_loader_box.as_ref()) };
@@ -2563,7 +2574,8 @@ pub mod ptf_pool {
         
         // CRITICAL FIX: Store origin_mint AccountInfo separately for deposit CPI
         // The InterfaceAccount wrapper's internal AccountInfo might become invalid after raw invoke
-        // Use origin_mint from struct - already have origin_mint_info_ref from validation above
+        // Use origin_mint extracted from remaining_accounts
+        let origin_mint_info_ref: &'info AccountInfo<'info> = unsafe { mem::transmute(origin_mint_account_info) };
         
         let origin_mint_wrapper: &'info InterfaceAccount<'info, Mint> = {
             let origin_mint_info_static: &'static AccountInfo<'static> = unsafe { mem::transmute(origin_mint_info_ref) };
@@ -8160,17 +8172,9 @@ pub struct PrepareBatchTransferFrom<'info> {
 // Restoring the working structure with these accounts in the struct.
 #[derive(Accounts)]
 pub struct ExecuteShield<'info> {
-    /// CHECK: Validated and initialized manually in handler to avoid init_if_needed stack overhead
-    #[account(mut)]
-    pub pool_state: UncheckedAccount<'info>,
-    /// CHECK: Validated and initialized manually in handler to avoid init_if_needed stack overhead
-    #[account(mut)]
-    pub commitment_tree: UncheckedAccount<'info>,
     /// CHECK: Validated manually in handler (must be signer)
     #[account(mut)]
     pub payer: UncheckedAccount<'info>,
-    /// CHECK: Validated manually in handler to avoid InterfaceAccount validation overhead
-    pub origin_mint: UncheckedAccount<'info>,
     /// Proof vault for storing prepared operations
     /// CHECK: Validated manually in handler (PDA derivation and owner)
     #[account(mut)]

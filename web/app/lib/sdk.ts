@@ -1854,21 +1854,21 @@ export async function executeShield(params: ExecuteShieldParams): Promise<string
     operation_id: operationIdHexToArray(params.operationId)
   });
 
-  // CRITICAL FIX: Restore working structure from before gas optimization refactor
-  // ExecuteShield struct has 7 accounts: pool_state, commitment_tree, payer, origin_mint, proof_vault, system_program, rent
-  // This matches the working version from commit 1d077d3
+  // CRITICAL FIX: Reduced to 4 accounts to prevent stack overflow (matching ExecuteTransfer pattern)
+  // ExecuteShield struct now has 4 accounts: payer, proof_vault, system_program, rent
+  // pool_state, commitment_tree, and origin_mint are moved to remaining_accounts to reduce stack usage
   const shieldKeys = [
-    { pubkey: poolState, isSigner: false, isWritable: true }, // pool_state (FIRST in struct)
-    { pubkey: commitmentTreeKey, isSigner: false, isWritable: true }, // commitment_tree (SECOND in struct)
-    { pubkey: wallet.publicKey!, isSigner: true, isWritable: true }, // payer (THIRD in struct)
-    { pubkey: actualShieldMint, isSigner: false, isWritable: false }, // origin_mint (FOURTH in struct)
-    { pubkey: proofVault, isSigner: false, isWritable: true }, // proof_vault (FIFTH in struct)
-    { pubkey: SystemProgram.programId, isSigner: false, isWritable: false }, // system_program (SIXTH in struct)
-    { pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false }, // rent (SEVENTH in struct)
+    { pubkey: wallet.publicKey!, isSigner: true, isWritable: true }, // payer (FIRST in struct)
+    { pubkey: proofVault, isSigner: false, isWritable: true }, // proof_vault (SECOND in struct)
+    { pubkey: SystemProgram.programId, isSigner: false, isWritable: false }, // system_program (THIRD in struct)
+    { pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false }, // rent (FOURTH in struct)
   ];
 
-  // Remaining accounts - all other accounts go here
+  // Remaining accounts - pool_state, commitment_tree, origin_mint moved here to reduce stack usage
   const remainingAccounts = [
+    { pubkey: poolState, isSigner: false, isWritable: true }, // pool_state (moved from struct)
+    { pubkey: commitmentTreeKey, isSigner: false, isWritable: true }, // commitment_tree (moved from struct)
+    { pubkey: actualShieldMint, isSigner: false, isWritable: false }, // origin_mint (moved from struct)
     { pubkey: hookConfig, isSigner: false, isWritable: false },
     { pubkey: hookWhitelist, isSigner: false, isWritable: true },
     { pubkey: nullifierSet, isSigner: false, isWritable: true },
