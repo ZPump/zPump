@@ -1901,13 +1901,44 @@ export async function executeShield(params: ExecuteShieldParams): Promise<string
   // CRITICAL: shieldKeys now contains all struct accounts in IDL order:
   // 1. pool_state, 2. commitment_tree, 3. payer, 4. origin_mint, 5. proof_vault, 6. system_program, 7. rent, 8. clock
   // remainingAccounts contains all accounts after the struct accounts
-  const allShieldKeys = [...shieldKeys, ...remainingAccounts];
+  // CRITICAL: Try using Anchor's Program interface instead of manual instruction building
+  // This might handle account validation differently and bypass the access violation
+  let shieldInstruction: TransactionInstruction;
   
-  const shieldInstruction = new TransactionInstruction({
-    programId: POOL_PROGRAM_ID,
-    keys: allShieldKeys,
-    data: shieldData
-  });
+  try {
+    // Create Anchor provider and program
+    const provider = new AnchorProvider(connection, wallet as any, {});
+    const program = new Program(poolIdl as Idl, POOL_PROGRAM_ID, provider);
+    
+    // Try using program.methods which might handle account validation differently
+    const shieldIx = await program.methods
+      .executeShield(operationIdHexToArray(params.operationId))
+      .accounts({
+        payer: wallet.publicKey!,
+        proofVault: proofVault,
+        systemProgram: SystemProgram.programId,
+        rent: SYSVAR_RENT_PUBKEY,
+      })
+      .remainingAccounts(remainingAccounts.map(acc => ({
+        pubkey: acc.pubkey,
+        isSigner: false,
+        isWritable: acc.isWritable,
+      })))
+      .instruction();
+    
+    // Use the instruction from Program interface
+    shieldInstruction = shieldIx;
+    console.log('[executeShield] Using Anchor Program interface for instruction building');
+  } catch (programError) {
+    // Fallback to manual instruction building if Program interface fails
+    console.warn('[executeShield] Program interface failed, using manual instruction building:', programError);
+    const allShieldKeys = [...shieldKeys, ...remainingAccounts];
+    shieldInstruction = new TransactionInstruction({
+      programId: POOL_PROGRAM_ID,
+      keys: allShieldKeys,
+      data: shieldData
+    });
+  }
 
   // Add finalize_ledger instruction to the same transaction as shield (required for security)
   const finalizeLedgerKeys = [
