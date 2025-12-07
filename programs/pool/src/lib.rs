@@ -2176,57 +2176,42 @@ pub mod ptf_pool {
     }
 
     // Proof Account Abstraction: Execute Shield
-    // CRITICAL: Mark as #[inline(never)] to prevent inlining and reduce stack usage
-    #[inline(never)]
+    // CRITICAL: Match execute_transfer pattern exactly (no #[inline(never)])
     pub fn execute_shield<'info>(
-        ctx: Context<'_, '_, 'info, 'info, ExecuteShield<'info>>,
+        mut ctx: Context<'_, '_, 'info, 'info, ExecuteShield<'info>>,
         operation_id: [u8; 32],
     ) -> Result<()> {
-        // CRITICAL: Add debug log at the very start to see if we reach this point
-        msg!("execute_shield: ENTRY POINT REACHED");
-        msg!("execute_shield: using clock from context (avoiding Clock::get() stack overflow)");
-        let clock = &ctx.accounts.clock;
-        msg!("execute_shield: clock obtained from context successfully");
-        msg!("execute_shield: about to access ctx.accounts.payer (now Signer type)");
-        // CRITICAL: Signer is zero-sized and doesn't require to_account_info() - just get key directly
-        let payer_key = ctx.accounts.payer.key();
-        msg!("execute_shield: payer_key obtained: {}", payer_key);
-        // Get AccountInfo for later use (Signer.to_account_info() is safe)
+        // CRITICAL: Match execute_transfer pattern EXACTLY - call Clock::get() first
+        let clock = Clock::get()?;
+        msg!("execute_shield: start");
+
+        // Validate payer manually (must be signer) - matching ExecuteTransfer pattern
         let payer_info = ctx.accounts.payer.to_account_info();
-        msg!("execute_shield: payer_info obtained successfully");
-        
-        msg!("execute_shield: step 1e - validating system_program");
+        require!(payer_info.is_signer, PoolError::Unauthorized);
+        let payer_key = payer_info.key();
+        msg!("execute_shield: validated payer, key={}", payer_key);
+
+        // Validate system_program manually
         require_keys_eq!(
             ctx.accounts.system_program.key(),
             system_program::ID,
             PoolError::InvalidAccountOwner
         );
-        msg!("execute_shield: step 1f - validating rent");
+
+        // Validate rent sysvar manually
         require_keys_eq!(
             ctx.accounts.rent.key(),
             anchor_lang::solana_program::sysvar::rent::ID,
             PoolError::InvalidAccountOwner
         );
-        msg!("execute_shield: step 1g - getting origin_mint key");
-        
-        // Validate origin_mint
-        let origin_mint_key = ctx.accounts.origin_mint.key();
-        msg!("execute_shield: step 1h - origin_mint key obtained");
-        let origin_mint_info_ref = &ctx.accounts.origin_mint.to_account_info();
-        require_keys_eq!(
-            *origin_mint_info_ref.owner,
-            anchor_spl::token::ID,
-            PoolError::InvalidAccountOwner
-        );
-        require!(
-            origin_mint_info_ref.data_len() >= 82,
-            PoolError::AccountDataTooShort
-        );
-        
-        msg!("execute_shield: step 1i - getting proof_vault AccountInfo");
-        // Validate proof_vault
+
+        // Validate proof_vault manually
+        msg!("execute_shield: validating proof_vault");
+        msg!("execute_shield: step 1 - getting account info");
+        // CRITICAL FIX: Store proof_vault account info in a variable that lives for the entire function
+        // This is critical - the variable must live for the entire function scope
         let proof_vault_account_info = ctx.accounts.proof_vault.to_account_info();
-        msg!("execute_shield: step 1j - proof_vault AccountInfo obtained");
+        msg!("execute_shield: step 2 - got account info, getting key");
         let proof_vault_key = proof_vault_account_info.key();
         let (expected_vault, _) = derive_proof_vault(&payer_key, ctx.program_id);
         require_keys_eq!(
@@ -2241,21 +2226,22 @@ pub mod ptf_pool {
         );
         
         // CRITICAL: Create proof_vault_info_ref in main function so it lives for entire function scope
-        // Store in a variable that lives for the entire function to prevent access violations
-        // Keep AccountInfo alive for the entire function scope
-        msg!("execute_shield: step 2 - creating proof_vault_info_ref");
-        let _keep_alive_proof_vault = &proof_vault_account_info;
         let proof_vault_info_ref: &'info AccountInfo<'info> = unsafe { mem::transmute(&proof_vault_account_info) };
-        msg!("execute_shield: step 2b - proof_vault_info_ref created");
         
-        // CRITICAL FIX: Validate pool_state PDA manually and load it
-        msg!("execute_shield: step 3 - validating pool_state PDA");
-        // Extract origin_mint from remaining_accounts (moved from struct to reduce account count)
-        let origin_mint_info = ctx.remaining_accounts.iter()
-            .find(|acc| {
-                // Find the account that's owned by token program and has mint discriminator
-                acc.owner == &anchor_spl::token::ID && acc.data_len() >= 82
-            })
+        // Extract accounts from remaining_accounts (matching ExecuteTransfer pattern)
+        // Order: pool_state, commitment_tree, origin_mint, then all other accounts
+        msg!("execute_shield: extracting accounts from remaining_accounts (len={})", ctx.remaining_accounts.len());
+        
+        // First account should be pool_state
+        let pool_state_info = ctx.remaining_accounts.get(0)
+            .ok_or(PoolError::AccountDataTooShort)?;
+        
+        // Second account should be commitment_tree
+        let commitment_tree_info = ctx.remaining_accounts.get(1)
+            .ok_or(PoolError::AccountDataTooShort)?;
+        
+        // Third account should be origin_mint
+        let origin_mint_info = ctx.remaining_accounts.get(2)
             .ok_or(PoolError::AccountDataTooShort)?;
         let origin_mint_key = origin_mint_info.key();
         
@@ -2271,10 +2257,7 @@ pub mod ptf_pool {
         );
         
         // Validate pool_state PDA manually
-        // CRITICAL: Store AccountInfo in a variable that lives for the entire function scope
-        let pool_state_account_info = ctx.accounts.pool_state.to_account_info();
-        let _keep_alive_pool_state_info = &pool_state_account_info; // Keep AccountInfo alive
-        let pool_state_info_ref: &'info AccountInfo<'info> = unsafe { mem::transmute(&pool_state_account_info) };
+        let pool_state_info_ref: &'info AccountInfo<'info> = unsafe { mem::transmute(pool_state_info) };
         let (expected_pool_state, _expected_bump) = Pubkey::find_program_address(
             &[seeds::POOL, origin_mint_key.as_ref()],
             ctx.program_id,
@@ -2298,8 +2281,6 @@ pub mod ptf_pool {
             origin_mint_key,
             PoolError::OriginMintMismatch,
         );
-        msg!("execute_shield: validated pool_state.origin_mint={} matches origin_mint={}", 
-             pool_state_origin_mint, origin_mint_key);
         
         // Keep pool_state_loader alive for later use
         let pool_state_loader_box = Box::new(pool_state_loader);
@@ -2414,7 +2395,7 @@ pub mod ptf_pool {
                     ],
                 )?;
             }
-            let pool_state_key = ctx.accounts.pool_state.key();
+            let pool_state_key = pool_state_info_ref.key();
             let (_, claim_bump_for_init) = AddressDeriver::derive_shield_claim(&pool_state_key, ctx.program_id);
             let claim_seeds: &[&[u8]] = &[seeds::CLAIM, pool_state_key.as_ref(), &[claim_bump_for_init]];
             invoke_signed(
@@ -2505,9 +2486,10 @@ pub mod ptf_pool {
             .map_err(|_| PoolError::AccountDataCorrupt)?;
         require_keys_eq!(depositor_token_mint, origin_mint_key, PoolError::OriginMintMismatch);
         drop(depositor_token_data);
+        msg!("execute_shield: step 4a - token accounts validated");
         
         // Validate hook_whitelist
-        msg!("execute_shield: checking hook_whitelist, data_len={}", hook_whitelist_info.data_len());
+        msg!("execute_shield: step 4b - checking hook_whitelist, data_len={}", hook_whitelist_info.data_len());
         require!(
             hook_whitelist_info.data_len() >= HookWhitelist::SPACE,
             PoolError::AccountDataTooShort
@@ -2517,6 +2499,7 @@ pub mod ptf_pool {
             *ctx.program_id,
             PoolError::InvalidAccountOwner
         );
+        msg!("execute_shield: step 4c - hook_whitelist validated");
         
         // Create typed wrappers using helper function
         // This reduces stack usage by moving large local variables into a separate function scope
@@ -2535,19 +2518,20 @@ pub mod ptf_pool {
             extracted.twin_mint_info,
             mint_mapping_info,
         )?;
+        msg!("execute_shield: step 5a - wrappers created");
         
         // CRITICAL FIX: pool_state_loader_ref is already created above after manual PDA validation
         // No need to recreate it - use the existing pool_state_loader_ref that was created at line 2293
         
         // Create AccountLoader wrapper for commitment_tree using helper function
         // CRITICAL: Store AccountInfo in variables that live for the entire function
-        let commitment_tree_account_info = ctx.accounts.commitment_tree.to_account_info();
-        let commitment_tree_info_ref: &'info AccountInfo<'info> = unsafe { mem::transmute(&commitment_tree_account_info) };
+        let commitment_tree_info_ref: &'info AccountInfo<'info> = unsafe { mem::transmute(commitment_tree_info) };
         let commitment_tree_loader_box: Box<AccountLoader<'info, CommitmentTree>> = Box::new(AccountLoader::try_from(commitment_tree_info_ref)
             .map_err(|_| PoolError::AccountDataTooShort)?);
         let commitment_tree_loader: &'info AccountLoader<'info, CommitmentTree> = unsafe { mem::transmute(commitment_tree_loader_box.as_ref()) };
+        msg!("execute_shield: step 5b - commitment_tree_loader created");
         
-        msg!("execute_shield: calling execute_shield_impl");
+        msg!("execute_shield: step 6a - creating payer_wrapper");
         
         // Create Signer and InterfaceAccount wrappers with 'info lifetime
         // CRITICAL FIX: Use scoped blocks so AccountInfo clones drop immediately
@@ -2564,12 +2548,12 @@ pub mod ptf_pool {
             let payer_wrapper_box = Box::new(payer_wrapper_temp);
             unsafe { mem::transmute(payer_wrapper_box.as_ref()) }
         };
+        msg!("execute_shield: step 6b - payer_wrapper created");
         
         // CRITICAL FIX: Store origin_mint AccountInfo separately for deposit CPI
         // The InterfaceAccount wrapper's internal AccountInfo might become invalid after raw invoke
-        let origin_mint_account_info_stable = ctx.accounts.origin_mint.to_account_info();
-        let origin_mint_info_ref: &'info AccountInfo<'info> = unsafe { mem::transmute(&origin_mint_account_info_stable) };
-        let _keep_alive_origin_mint_info = origin_mint_account_info_stable;
+        let origin_mint_info_ref: &'info AccountInfo<'info> = unsafe { mem::transmute(origin_mint_info) };
+        let _keep_alive_origin_mint_info = origin_mint_info;
         
         let origin_mint_wrapper: &'info InterfaceAccount<'info, Mint> = {
             let origin_mint_info_static: &'static AccountInfo<'static> = unsafe { mem::transmute(origin_mint_info_ref) };
@@ -2578,6 +2562,7 @@ pub mod ptf_pool {
             let origin_mint_wrapper_box = Box::new(origin_mint_wrapper_temp);
             unsafe { mem::transmute(origin_mint_wrapper_box.as_ref()) }
         };
+        msg!("execute_shield: step 6c - origin_mint_wrapper created");
         
         // CRITICAL FIX: Use remaining_accounts_stored and filter out shield_claim_info
         // This ensures all AccountInfo references are from the same Vec
@@ -2594,6 +2579,7 @@ pub mod ptf_pool {
         // Handle twin_mint conversion from Option<Box<...>> to &Option<...>
         // UncheckedAccount is zero-sized, so we can safely transmute to create a copy
         let twin_mint_opt = wrappers.twin_mint_wrapper.as_ref().map(|w| unsafe { mem::transmute::<&UncheckedAccount<'info>, UncheckedAccount<'info>>(w.as_ref()) });
+        msg!("execute_shield: step 7a - twin_mint_opt created, about to call execute_shield_impl");
         let result = execute_shield_impl(
             program_id_ref,
             pool_state_loader_ref, // Use the manually validated pool_state_loader_ref created above
@@ -5744,59 +5730,7 @@ struct ShieldValidation {
     origin_mint_key: Pubkey,
 }
 
-// Helper function to validate basic accounts
-// Marked as #[inline(never)] to prevent inlining and reduce stack usage
-#[inline(never)]
-fn validate_shield_basic_accounts<'info>(
-    ctx: &Context<'_, '_, 'info, 'info, ExecuteShield<'info>>,
-) -> Result<ShieldValidation> {
-    let payer_info = ctx.accounts.payer.to_account_info();
-    require!(payer_info.is_signer, PoolError::Unauthorized);
-    let payer_key = payer_info.key();
-    
-    require_keys_eq!(
-        ctx.accounts.system_program.key(),
-        system_program::ID,
-        PoolError::InvalidAccountOwner
-    );
-    
-    require_keys_eq!(
-        ctx.accounts.rent.key(),
-        anchor_lang::solana_program::sysvar::rent::ID,
-        PoolError::InvalidAccountOwner
-    );
-    
-    let origin_mint_info_ref = &ctx.accounts.origin_mint.to_account_info();
-    require_keys_eq!(
-        *origin_mint_info_ref.owner,
-        anchor_spl::token::ID,
-        PoolError::InvalidAccountOwner
-    );
-    require!(
-        origin_mint_info_ref.data_len() >= 82,
-        PoolError::AccountDataTooShort
-    );
-    let origin_mint_key = origin_mint_info_ref.key();
-    
-    let proof_vault_account_info = ctx.accounts.proof_vault.to_account_info();
-    let proof_vault_key = proof_vault_account_info.key();
-    let (expected_vault, _) = derive_proof_vault(&payer_key, ctx.program_id);
-    require_keys_eq!(
-        proof_vault_key,
-        expected_vault,
-        PoolError::Unauthorized
-    );
-    require_keys_eq!(
-        *proof_vault_account_info.owner,
-        *ctx.program_id,
-        PoolError::Unauthorized
-    );
-    
-    Ok(ShieldValidation {
-        payer_key,
-        origin_mint_key,
-    })
-}
+// NOTE: validate_shield_basic_accounts function removed - not used, validation is done inline in execute_shield
 
 // Helper struct to hold derived addresses
 struct ShieldAddresses {
@@ -6286,7 +6220,7 @@ fn execute_shield_impl<'info, 'accs>(
     // CRITICAL FIX: Use raw invoke to bypass CPI macro AccountInfo to Account conversion
     // The CPI macro fails when converting AccountInfo to Account for PDA constraint validation
     msg!("execute_shield_impl: using raw invoke to bypass CPI macro");
-    let verifier_program_info = verifier_program.to_account_info();
+    let _verifier_program_info = verifier_program.to_account_info();
     
     // Build instruction data: discriminator + manually serialized args
     // verify_groth16 discriminator: [228, 26, 135, 7, 19, 253, 172, 97] (from IDL)
@@ -8204,34 +8138,17 @@ pub struct PrepareBatchTransferFrom<'info> {
 // Using UncheckedAccount for pool_state and commitment_tree to avoid init_if_needed overhead
 #[derive(Accounts)]
 pub struct ExecuteShield<'info> {
-    /// CRITICAL FIX: Use UncheckedAccount and validate PDA manually to avoid Anchor's PDA validation
-    /// The PDA constraint `seeds = [seeds::POOL, origin_mint.key().as_ref()]` causes Anchor to call origin_mint.key()
-    /// during validation, which might be causing the access violation at 0x200005f28
-    /// We validate the PDA manually in the handler instead
-    #[account(mut)]
-    pub pool_state: UncheckedAccount<'info>,
-    /// CHECK: Validated and initialized manually in handler to avoid init_if_needed stack overhead
-    /// CRITICAL FIX: Remove #[account(mut)] to avoid Anchor's mut validation overhead
-    /// Mutability is handled manually in the handler - accounts are marked writable in instruction
-    pub commitment_tree: UncheckedAccount<'info>,
-    /// CRITICAL FIX: Use Signer instead of UncheckedAccount to avoid access violation
-    /// Signer is a zero-sized type that doesn't cause stack issues like UncheckedAccount.to_account_info()
-    #[account(mut)]
-    pub payer: Signer<'info>,
-    /// CHECK: Validated manually in handler to avoid InterfaceAccount validation overhead
-    pub origin_mint: UncheckedAccount<'info>,
+    /// CHECK: Validated manually in handler (must be signer)
+    /// CRITICAL: Removed #[account(mut)] to test if Anchor validation bug is mut-specific
+    pub payer: UncheckedAccount<'info>,
     /// Proof vault for storing prepared operations
     /// CHECK: Validated manually in handler (PDA derivation and owner)
-    /// CRITICAL FIX: Remove #[account(mut)] to avoid Anchor's mut validation overhead
-    /// Mutability is handled manually in the handler - accounts are marked writable in instruction
+    /// CRITICAL: Removed #[account(mut)] to test if Anchor validation bug is mut-specific
     pub proof_vault: UncheckedAccount<'info>,
-    /// CRITICAL: Use Program type for system_program to avoid UncheckedAccount stack issues
-    pub system_program: Program<'info, System>,
-    /// CRITICAL: Use Sysvar type for rent to avoid UncheckedAccount stack issues
-    pub rent: Sysvar<'info, Rent>,
-    /// CHECK: Clock sysvar for timestamp checks
-    /// CRITICAL: Add Clock to struct to avoid Clock::get() stack overflow
-    pub clock: Sysvar<'info, Clock>,
+    /// CHECK: Validated manually in handler (must be System Program)
+    pub system_program: UncheckedAccount<'info>,
+    /// CHECK: Validated manually in handler (must be Rent sysvar)
+    pub rent: UncheckedAccount<'info>,
 }
 
 // Proof Account Abstraction: Execute Unshield
@@ -11187,18 +11104,19 @@ mod idl_build_impls {
     use super::*;
     
     // Use anchor-lang-idl crate directly when idl-build feature is enabled
+    // NOTE: This is a minimal stub - the IDL is manually maintained in web/app/idl/ptf_pool.json
     #[cfg(feature = "idl-build")]
     impl anchor_lang::IdlBuild for PendingShield {
-        fn insert_types(_types: &mut std::collections::BTreeMap<String, anchor_lang_idl::types::IdlTypeDefinition>) {
+        fn insert_types(_types: &mut std::collections::BTreeMap<String, anchor_lang::idl::types::IdlTypeDef>) {
             // PendingShield is nested in PoolState, serialized as part of PoolState
+            // IDL is manually maintained, so this is a no-op
         }
         fn get_full_path() -> String {
             "PendingShield".to_string()
         }
-        fn create_type() -> anchor_lang::idl::types::IdlType {
-            anchor_lang::idl::types::IdlType::Defined {
-                name: "PendingShield".to_string(),
-            }
+        fn create_type() -> Option<anchor_lang::idl::types::IdlTypeDef> {
+            // Return None to skip automatic IDL generation - IDL is manually maintained
+            None
         }
     }
 }

@@ -1859,16 +1859,17 @@ export async function executeShield(params: ExecuteShieldParams): Promise<string
   // pool_state, commitment_tree, and origin_mint are in remaining_accounts
   // CRITICAL: Account order must match ExecuteShield struct exactly
   // ExecuteShield struct order: payer, proof_vault, system_program, rent, clock
+  // CRITICAL: Match ExecuteTransfer minimal pattern - only 4 accounts in struct:
+  // 1. payer, 2. proof_vault, 3. system_program, 4. rent
+  // All other accounts go in remaining_accounts
   const shieldKeys = [
     { pubkey: wallet.publicKey!, isSigner: true, isWritable: true }, // payer (Signer, mut)
-    { pubkey: proofVault, isSigner: false, isWritable: true }, // proof_vault (Account, mut)
-    { pubkey: SystemProgram.programId, isSigner: false, isWritable: false }, // system_program (Program)
-    { pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false }, // rent (Sysvar)
-    { pubkey: SYSVAR_CLOCK_PUBKEY, isSigner: false, isWritable: false }, // clock (Sysvar) - CRITICAL: Avoids Clock::get() stack overflow
+    { pubkey: proofVault, isSigner: false, isWritable: true }, // proof_vault (mut)
+    { pubkey: SystemProgram.programId, isSigner: false, isWritable: false }, // system_program
+    { pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false }, // rent
   ];
 
-  // CRITICAL: pool_state, commitment_tree, and origin_mint must be FIRST in remaining_accounts
-  // Then all other accounts follow (in the order they're expected by the handler)
+  // Remaining accounts - order: pool_state, commitment_tree, origin_mint, then all others
   const remainingAccounts = [
     { pubkey: poolState, isSigner: false, isWritable: true }, // pool_state (FIRST in remaining_accounts)
     { pubkey: commitmentTreeKey, isSigner: false, isWritable: true }, // commitment_tree (SECOND in remaining_accounts)
@@ -1896,12 +1897,14 @@ export async function executeShield(params: ExecuteShieldParams): Promise<string
     { pubkey: tokenProgramId, isSigner: false, isWritable: false }
   );
 
-  // Combine main accounts and remaining accounts
-  shieldKeys.push(...remainingAccounts);
-
+  // CRITICAL: shieldKeys now contains all struct accounts in IDL order:
+  // 1. pool_state, 2. commitment_tree, 3. payer, 4. origin_mint, 5. proof_vault, 6. system_program, 7. rent, 8. clock
+  // remainingAccounts contains all accounts after the struct accounts
+  const allShieldKeys = [...shieldKeys, ...remainingAccounts];
+  
   const shieldInstruction = new TransactionInstruction({
     programId: POOL_PROGRAM_ID,
-    keys: shieldKeys,
+    keys: allShieldKeys,
     data: shieldData
   });
 
@@ -1953,24 +1956,26 @@ export async function executeShield(params: ExecuteShieldParams): Promise<string
 
   // Lookup tables removed - addresses are now derived programmatically by the program
 
-  // Use mintMapping already fetched above to check if ALT is available
+  // CRITICAL: Force regular Transaction (matching executeTransfer pattern) to avoid access violation
+  // VersionedTransaction might be causing issues with Anchor's account validation
   let lookupTableAddress: PublicKey | null = null;
   let lookupTableAccount: any = null;
   
-  if (mintMapping.lookupTable) {
-    lookupTableAddress = mintMapping.lookupTable;
-    try {
-      const lookupTableResult = await connection.getAddressLookupTable(lookupTableAddress);
-      if (lookupTableResult.value) {
-        lookupTableAccount = lookupTableResult.value;
-      }
-    } catch (error) {
-      console.warn(`[wrap] Failed to fetch lookup table ${lookupTableAddress.toBase58()}:`, error instanceof Error ? error.message : String(error));
-      // Continue without lookup table - will use regular Transaction
-      lookupTableAddress = null;
-      lookupTableAccount = null;
-    }
-  }
+  // Temporarily disable lookup table to match executeTransfer pattern
+  // if (mintMapping.lookupTable) {
+  //   lookupTableAddress = mintMapping.lookupTable;
+  //   try {
+  //     const lookupTableResult = await connection.getAddressLookupTable(lookupTableAddress);
+  //     if (lookupTableResult.value) {
+  //       lookupTableAccount = lookupTableResult.value;
+  //     }
+  //   } catch (error) {
+  //     console.warn(`[wrap] Failed to fetch lookup table ${lookupTableAddress.toBase58()}:`, error instanceof Error ? error.message : String(error));
+  //     // Continue without lookup table - will use regular Transaction
+  //     lookupTableAddress = null;
+  //     lookupTableAccount = null;
+  //   }
+  // }
 
   let latestBlockhash = await connection.getLatestBlockhash('confirmed');
   
@@ -1989,7 +1994,8 @@ export async function executeShield(params: ExecuteShieldParams): Promise<string
     try {
       let shieldTransaction: Transaction | VersionedTransaction | null = null;
       
-      if (lookupTableAccount && lookupTableAddress) {
+      // CRITICAL: Force regular Transaction to match executeTransfer pattern and avoid access violation
+      if (false && lookupTableAccount && lookupTableAddress) {
         // Use VersionedTransaction with ALT to reduce transaction size
         const altAddresses = lookupTableAccount.state.addresses;
         const altAddressMap = new Map(altAddresses.map((addr: PublicKey, idx: number) => [addr.toBase58(), idx]));

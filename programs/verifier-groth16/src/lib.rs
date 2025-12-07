@@ -1,7 +1,7 @@
 use anchor_lang::prelude::*;
 use sha3::{Digest, Keccak256};
 
-declare_id!("2V5XN9rpubXdK3cdWBBjZwjxMpMzQBKTaN3moEJ59a8K");
+declare_id!("CruPD16nnF8B9xW3kso3LES8QHMgEkauYkYGhqBTUGpM");
 
 // CRITICAL FIX: Factory program ID is now stored in VerifierConfig account
 // This allows factory upgrades and multi-factory support

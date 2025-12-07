@@ -1111,19 +1111,8 @@
       ],
       "accounts": [
         {
-          "name": "pool_state",
-          "writable": true
-        },
-        {
-          "name": "commitment_tree",
-          "writable": true
-        },
-        {
           "name": "payer",
           "writable": true
-        },
-        {
-          "name": "origin_mint"
         },
         {
           "name": "proof_vault",
@@ -6887,6 +6876,75 @@
       }
     },
     {
+      "name": "PendingShield",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "active",
+            "type": "u8"
+          },
+          {
+            "name": "_padding1",
+            "type": {
+              "array": [
+                "u8",
+                7
+              ]
+            }
+          },
+          {
+            "name": "old_root",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "new_root",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "commitment",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "amount_commit",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "depositor",
+            "type": "pubkey"
+          },
+          {
+            "name": "amount",
+            "type": "u64"
+          },
+          {
+            "name": "next_index",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
       "name": "PreparedOperation",
       "type": {
         "kind": "enum",
@@ -7671,75 +7729,6 @@
             "type": {
               "option": "i64"
             }
-          }
-        ]
-      }
-    },
-    {
-      "name": "PendingShield",
-      "type": {
-        "kind": "struct",
-        "fields": [
-          {
-            "name": "active",
-            "type": "u8"
-          },
-          {
-            "name": "_padding1",
-            "type": {
-              "array": [
-                "u8",
-                7
-              ]
-            }
-          },
-          {
-            "name": "old_root",
-            "type": {
-              "array": [
-                "u8",
-                32
-              ]
-            }
-          },
-          {
-            "name": "new_root",
-            "type": {
-              "array": [
-                "u8",
-                32
-              ]
-            }
-          },
-          {
-            "name": "commitment",
-            "type": {
-              "array": [
-                "u8",
-                32
-              ]
-            }
-          },
-          {
-            "name": "amount_commit",
-            "type": {
-              "array": [
-                "u8",
-                32
-              ]
-            }
-          },
-          {
-            "name": "depositor",
-            "type": "pubkey"
-          },
-          {
-            "name": "amount",
-            "type": "u64"
-          },
-          {
-            "name": "next_index",
-            "type": "u64"
           }
         ]
       }
