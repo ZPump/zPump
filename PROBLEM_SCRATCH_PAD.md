@@ -123,8 +123,12 @@ Most E2E tests are failing with generic "Simulation failed" errors without detai
 18. 🔴 **AccountNotSigner error for payer** - Payer account position shifts when twin_mint is skipped
    - **Result:** When `twin_mint` is skipped, payer moves from position 13 to 12, but Anchor expects it at position 13
    - **Date:** 2024-12-07
-   - **Issue:** Anchor matches accounts by position, and skipping optional accounts causes position shifts
-   - **Next:** Need to ensure transaction signing works correctly, or use Anchor's instruction builder instead of manual building
+   - **Issue:** Anchor matches accounts by position based on struct definition. When optional accounts are skipped, subsequent accounts shift positions, but Anchor still expects them at original positions
+   - **Attempts:**
+     - Tried including placeholder for optional account → Causes `TwinMintMismatch` (program expects `None` but gets `Some(placeholder)`)
+     - Tried skipping optional account → Causes `AccountNotSigner` (payer position shifts)
+   - **Root Cause:** Anchor's `Option<>` type expects accounts to be omitted when `None`, but this causes position shifts that break account matching
+   - **Next:** Use Anchor's Program interface to build instruction (handles optional accounts automatically), or find a way to make Anchor accept the position shift
 
 ### Hypotheses
 

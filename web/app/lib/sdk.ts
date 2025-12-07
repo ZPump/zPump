@@ -998,6 +998,7 @@ function buildInitializePoolInstruction(args: {
         // Anchor's Option<> type works by presence/absence - if account is in instruction, it's Some(...), if not, it's None
         // The bootstrap script also skips optional accounts (see buildAccountMetas line 200: return;)
         // This matches Anchor's expected behavior for Option<> types
+        // Note: This causes account positions to shift, but Anchor handles this correctly for Option<> types
         console.log(`[buildInitializePoolInstruction] Skipping optional account ${account.name} (not provided)`);
         continue;
       }
