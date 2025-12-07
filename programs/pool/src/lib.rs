@@ -2176,11 +2176,16 @@ pub mod ptf_pool {
     }
 
     // Proof Account Abstraction: Execute Shield
+    // CRITICAL: Mark as #[inline(never)] to prevent inlining and reduce stack usage
+    #[inline(never)]
     pub fn execute_shield<'info>(
         ctx: Context<'_, '_, 'info, 'info, ExecuteShield<'info>>,
         operation_id: [u8; 32],
     ) -> Result<()> {
+        // CRITICAL: Add debug log at the very start to see if we reach this point
+        msg!("execute_shield: ENTRY POINT REACHED");
         let clock = Clock::get()?;
+        msg!("execute_shield: got clock");
         msg!("execute_shield: start");
         
         // Validate basic accounts using helper function

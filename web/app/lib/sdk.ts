@@ -1836,15 +1836,17 @@ export async function executeShield(params: ExecuteShieldParams): Promise<string
   // CRITICAL FIX: Account order must match new minimal ExecuteShield struct
   // ExecuteShield now has only: pool_state, commitment_tree, payer, origin_mint, proof_vault (optional), system_program, rent
   // All other accounts go as remaining_accounts
+  // CRITICAL: Account order must match ExecuteShield struct exactly
+  // ExecuteShield struct order: pool_state, commitment_tree, payer, origin_mint, proof_vault, system_program, rent
+  // All accounts are UncheckedAccount, so Anchor does minimal validation, but order still matters
   const shieldKeys = [
-    // Minimal ExecuteShield struct accounts (in IDL order)
-    { pubkey: poolState, isSigner: false, isWritable: true }, // pool_state
-    { pubkey: commitmentTreeKey, isSigner: false, isWritable: true }, // commitment_tree
-    { pubkey: wallet.publicKey, isSigner: true, isWritable: true }, // payer
-    { pubkey: actualShieldMint, isSigner: false, isWritable: false }, // origin_mint (use actualShieldMint - wSOL if SOL)
-    { pubkey: proofVault, isSigner: false, isWritable: true }, // proof_vault (now required, not optional)
-    { pubkey: SystemProgram.programId, isSigner: false, isWritable: false }, // system_program
-    { pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false }, // rent
+    { pubkey: poolState, isSigner: false, isWritable: true }, // pool_state (UncheckedAccount, mut)
+    { pubkey: commitmentTreeKey, isSigner: false, isWritable: true }, // commitment_tree (UncheckedAccount, mut)
+    { pubkey: wallet.publicKey!, isSigner: true, isWritable: true }, // payer (UncheckedAccount, mut, signer)
+    { pubkey: actualShieldMint, isSigner: false, isWritable: false }, // origin_mint (UncheckedAccount)
+    { pubkey: proofVault, isSigner: false, isWritable: true }, // proof_vault (UncheckedAccount, mut)
+    { pubkey: SystemProgram.programId, isSigner: false, isWritable: false }, // system_program (UncheckedAccount)
+    { pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false }, // rent (UncheckedAccount)
   ];
 
   // All other accounts go as remaining_accounts (in the order they're expected by the handler)

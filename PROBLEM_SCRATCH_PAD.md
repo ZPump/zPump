@@ -32,6 +32,11 @@ After fixing `AccountNotSigner`, pool initialization succeeds, but `ExecuteShiel
    - **Result:** ❌ Failed - Access violation persists
    - **Date:** 2024-12-07
 
+2. ✅ **Added #[inline(never)] and debug logs** - Added `#[inline(never)]` to `execute_shield` and debug logs at entry point
+   - **Result:** ❌ Failed - Access violation persists, debug logs not visible (error happens before our code runs)
+   - **Date:** 2024-12-07
+   - **Analysis:** Error occurs in Anchor's account validation before our function code executes
+
 ### Hypotheses
 
 1. **Stack overflow in Anchor account validation** - The access violation happens before our code runs, possibly in Anchor's account validation
