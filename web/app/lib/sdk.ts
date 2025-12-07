@@ -17,6 +17,7 @@ import {
   PublicKey,
   SYSVAR_INSTRUCTIONS_PUBKEY,
   SYSVAR_RENT_PUBKEY,
+  SYSVAR_CLOCK_PUBKEY,
   SystemProgram,
   Transaction,
   TransactionInstruction,
@@ -1867,6 +1868,7 @@ export async function executeShield(params: ExecuteShieldParams): Promise<string
     { pubkey: proofVault, isSigner: false, isWritable: true }, // proof_vault (UncheckedAccount, mut)
     { pubkey: SystemProgram.programId, isSigner: false, isWritable: false }, // system_program (UncheckedAccount)
     { pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false }, // rent (UncheckedAccount)
+    { pubkey: SYSVAR_CLOCK_PUBKEY, isSigner: false, isWritable: false }, // clock (Sysvar) - CRITICAL: Avoids Clock::get() stack overflow
   ];
 
   // All other accounts go as remaining_accounts (in the order they're expected by the handler)

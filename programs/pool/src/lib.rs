@@ -2184,9 +2184,9 @@ pub mod ptf_pool {
     ) -> Result<()> {
         // CRITICAL: Add debug log at the very start to see if we reach this point
         msg!("execute_shield: ENTRY POINT REACHED");
-        msg!("execute_shield: about to get clock");
-        let clock = Clock::get()?;
-        msg!("execute_shield: got clock successfully");
+        msg!("execute_shield: using clock from context (avoiding Clock::get() stack overflow)");
+        let clock = &ctx.accounts.clock;
+        msg!("execute_shield: clock obtained from context successfully");
         msg!("execute_shield: about to access ctx.accounts.payer");
         
         // Validate basic accounts inline (replacing validate_shield_basic_accounts to avoid unused variable)
@@ -8230,6 +8230,9 @@ pub struct ExecuteShield<'info> {
     /// CHECK: Validated manually in handler (must be Rent sysvar)
     /// NOTE: Rent sysvar is never writable, so no mut needed
     pub rent: UncheckedAccount<'info>,
+    /// CHECK: Clock sysvar for timestamp checks
+    /// CRITICAL: Add Clock to struct to avoid Clock::get() stack overflow
+    pub clock: Sysvar<'info, Clock>,
 }
 
 // Proof Account Abstraction: Execute Unshield
