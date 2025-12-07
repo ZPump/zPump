@@ -16,9 +16,9 @@ For each problem:
 
 ## Problem: Access Violation in ExecuteShield
 
-**Status:** 🔴 ACTIVE - Access violation inside execute_shield function  
+**Status:** 🔴 ACTIVE - Access violation in Anchor validation before function runs  
 **Date Started:** 2024-12-07  
-**Last Attempt:** 2024-12-07 - Fixed factory/verifier program IDs, bootstrap succeeded, wSOL registered, but access violation persists at 0x2000057e8
+**Last Attempt:** 2024-12-07 - Reduced struct to 4 accounts (matching ExecuteTransfer), moved large accounts to remaining_accounts, but access violation persists at 0x200005880
 
 ### Description
 After fixing `AccountNotSigner`, pool initialization succeeds, but `ExecuteShield` fails with:
