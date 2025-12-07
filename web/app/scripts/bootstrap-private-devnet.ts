@@ -37,7 +37,7 @@ import { resolveRepoPath } from '../lib/server/paths';
 ensureFetchPolyfill();
 
 const PROGRAM_IDS = {
-  factory: new PublicKey('94XEJsvLbTNYit4mXowjhqkDpwqtnXnKs2KtF3PNW2oK'),
+  factory: new PublicKey('2vYEqzgPNSxGxnQCEGqJb8vqZKSs2h183NtzCzW1i4LW'),
   vault: new PublicKey('AuFnb2FWz1W8ozcpSGc9RYbgSaon7bwtB5w9bPJnHkqH'),
   pool: new PublicKey('ESbKkBQ9P7pavvFPejBXhguBY3BSLtf1LyEQqBNRDHqb'),
   verifier: new PublicKey('2V5XN9rpubXdK3cdWBBjZwjxMpMzQBKTaN3moEJ59a8K')

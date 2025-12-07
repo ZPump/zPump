@@ -1,7 +1,7 @@
 import { PublicKey } from '@solana/web3.js';
 import { AddressLookupTableProgram } from '@solana/web3.js';
 
-export const FACTORY_PROGRAM_ID = new PublicKey('94XEJsvLbTNYit4mXowjhqkDpwqtnXnKs2KtF3PNW2oK');
+export const FACTORY_PROGRAM_ID = new PublicKey('2vYEqzgPNSxGxnQCEGqJb8vqZKSs2h183NtzCzW1i4LW');
 export const POOL_PROGRAM_ID = new PublicKey('Av2D8ADegRt1zTfqEABidkcMH2zzusrDLwAeDFgfdQ1k');
 export const VAULT_PROGRAM_ID = new PublicKey('7Wr9XMjYfPm6HTN3ZV7r4wHnoV2zospvNN5A1xgoER8m');
 export const VERIFIER_PROGRAM_ID = new PublicKey('2V5XN9rpubXdK3cdWBBjZwjxMpMzQBKTaN3moEJ59a8K');

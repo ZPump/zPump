@@ -120,17 +120,16 @@ Most E2E tests are failing with generic "Simulation failed" errors without detai
    - **Date:** 2024-12-07
    - **Fix:** Changed `buildInitializePoolInstruction` to skip optional accounts when not provided, instead of including placeholders
 
-18. 🔴 **AccountNotSigner error for payer** - Payer account position shifts when twin_mint is skipped
-   - **Result:** When `twin_mint` is skipped, payer moves from position 14 to 13, but Anchor expects it at position 14
+18. ✅ **AccountNotSigner error for payer** - RESOLVED by accepting placeholder accounts
+   - **Result:** ✅ RESOLVED - Pool initialization now succeeds
    - **Date:** 2024-12-07
-   - **Issue:** Anchor matches accounts by position based on struct definition. When optional accounts are skipped, subsequent accounts shift positions, but Anchor still expects them at original positions
-   - **Attempts:**
-     - Tried including placeholder for optional account → Causes `TwinMintMismatch` (program expects `None` but gets `Some(placeholder)`)
-     - Tried skipping optional account → Causes `AccountNotSigner` (payer position shifts from 14 to 13)
-     - Tried using Anchor's Program interface → Error: "Cannot read properties of undefined (reading 'size')" (likely AnchorProvider setup issue)
-   - **Root Cause:** Anchor's `Option<>` type expects accounts to be omitted when `None`, but this causes position shifts that break account matching. Anchor matches accounts by position, not by name.
-   - **Next:** Investigate how bootstrap script handles this (it also skips optional accounts but may work differently), or find a way to make Anchor accept the position shift
-   - **Key Finding:** Payer appears at position 0 (as authority) and position 13 (as payer). When twin_mint is skipped, payer is at position 13, but Anchor's Signer constraint checks position 14 (the original position in struct definition). This is a fundamental limitation of Anchor's position-based account matching.
+   - **Solution:** Modified program to accept placeholder accounts (SystemProgram.programId or payer's account) for optional `twin_mint` when `has_ptkn` is false. This preserves account positions while treating the placeholder as `None` functionally.
+   - **Changes Made:**
+     1. Modified `programs/pool/src/lib.rs` to accept placeholder accounts in `initialize_pool` when `has_ptkn` is false
+     2. Modified `web/app/lib/sdk.ts` to include placeholder for optional `twin_mint` account (using payer's account for writable accounts)
+     3. Fixed factory program ID mismatch - updated SDK and bootstrap script to use `2vYEqzgPNSxGxnQCEGqJb8vqZKSs2h183NtzCzW1i4LW`
+     4. Redeployed factory program and re-registered wSOL
+   - **Current Status:** Pool initialization succeeds. New issue: "Access violation in stack frame 5" during `ExecuteShield` (separate issue, not related to AccountNotSigner)
 
 ### Hypotheses
 

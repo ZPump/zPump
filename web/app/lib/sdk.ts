@@ -995,12 +995,21 @@ function buildInitializePoolInstruction(args: {
     const pubkey = poolAccounts[account.name];
     if (!pubkey) {
       if (account.optional) {
-        // CRITICAL FIX: For Option<UncheckedAccount<'info>>, skip the account entirely when not provided
-        // Anchor's Option<> type works by presence/absence - if account is in instruction, it's Some(...), if not, it's None
-        // The bootstrap script also skips optional accounts (see buildAccountMetas line 200: return;)
-        // This matches Anchor's expected behavior for Option<> types
-        // Note: This causes account positions to shift, but Anchor handles this correctly for Option<> types
-        console.log(`[buildInitializePoolInstruction] Skipping optional account ${account.name} (not provided)`);
+        // CRITICAL FIX: Include placeholder for optional accounts to preserve positions
+        // Anchor matches accounts by position, so skipping optional accounts causes position shifts
+        // that break Anchor's Signer constraint validation. By including a placeholder account,
+        // we preserve positions while the program treats it as None.
+        // For #[account(mut)] optional accounts, the placeholder must also be writable.
+        // Use payer's account as placeholder for writable optional accounts (it's already writable and in transaction)
+        console.log(`[buildInitializePoolInstruction] Including placeholder for optional account ${account.name} to preserve positions`);
+        const placeholderPubkey = account.writable 
+          ? args.wallet.publicKey! // Use payer for writable optional accounts (matches bootstrap pattern)
+          : SystemProgram.programId; // Use system program for non-writable optional accounts
+        keys.push({ 
+          pubkey: placeholderPubkey, 
+          isSigner: false, 
+          isWritable: account.writable ?? false // Must match the account's mutability requirement (twin_mint is mut)
+        });
         continue;
       }
       throw new Error(`Missing account mapping for ${account.name}`);

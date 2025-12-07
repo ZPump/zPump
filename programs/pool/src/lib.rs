@@ -438,12 +438,30 @@ pub mod ptf_pool {
             pool_state.twin_mint = twin_mint_info.key();
             pool_state.twin_mint_enabled = true;
         } else {
-            require!(
-                ctx.accounts.twin_mint.is_none(),
-                PoolError::TwinMintMismatch,
-            );
-            pool_state.twin_mint = Pubkey::default();
-            pool_state.twin_mint_enabled = false;
+            // CRITICAL FIX: Accept placeholder account (SystemProgram or payer) as None to preserve account positions
+            // Anchor matches accounts by position, so when twin_mint is optional and omitted,
+            // subsequent accounts shift positions, breaking Anchor's Signer constraint validation.
+            // By accepting SystemProgram.programId or payer's account as a placeholder for None, we preserve positions
+            // while still treating it as None functionally.
+            if let Some(twin_mint_info) = ctx.accounts.twin_mint.as_ref() {
+                // If twin_mint is provided, check if it's a placeholder
+                // Accept SystemProgram or payer's account as placeholder to preserve account positions
+                let is_placeholder = twin_mint_info.key() == anchor_lang::solana_program::system_program::ID
+                    || twin_mint_info.key() == ctx.accounts.payer.key();
+                
+                if is_placeholder {
+                    // Placeholder account - treat as None
+                    pool_state.twin_mint = Pubkey::default();
+                    pool_state.twin_mint_enabled = false;
+                } else {
+                    // Real twin_mint provided when has_ptkn is false - error
+                    return Err(PoolError::TwinMintMismatch.into());
+                }
+            } else {
+                // No twin_mint provided - treat as None
+                pool_state.twin_mint = Pubkey::default();
+                pool_state.twin_mint_enabled = false;
+            }
         }
         pool_state.pending_shield = PendingShield::inactive();
         msg!("init_pool stage: pool_state_init_complete");
