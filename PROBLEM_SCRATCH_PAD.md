@@ -16,15 +16,16 @@ For each problem:
 
 ## Problem: Access Violation in ExecuteShield
 
-**Status:** 🔴 Active  
+**Status:** 🟡 Progress - Entry Point Reached  
 **Date Started:** 2024-12-07
 
 ### Description
 After fixing `AccountNotSigner`, pool initialization succeeds, but `ExecuteShield` fails with:
-- "Access violation in stack frame 5 at address 0x200005f28 of size 8"
-- Error occurs immediately after "Instruction: ExecuteShield" is logged
-- No debug logs from `execute_shield` function are visible, suggesting error happens before first `msg!` call
-- Program consumes ~8260 compute units before failing
+- "Access violation in stack frame 5 at address 0x200005b28 of size 8" (was 0x200005f28)
+- **BREAKTHROUGH:** Debug log "execute_shield: ENTRY POINT REACHED" is now visible!
+- This means we're past Anchor's validation and into our function code
+- Error occurs after entry point log, suggesting it's in our function code, not Anchor's validation
+- Program consumes ~8287 compute units before failing (slightly more than before)
 
 ### Attempts Made
 

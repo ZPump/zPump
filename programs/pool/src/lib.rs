@@ -2261,19 +2261,22 @@ pub mod ptf_pool {
         );
         
         // Validate pool_state PDA manually
-        let pool_state_info = ctx.accounts.pool_state.to_account_info();
-        let (expected_pool_state, expected_bump) = Pubkey::find_program_address(
+        // CRITICAL: Store AccountInfo in a variable that lives for the entire function scope
+        let pool_state_account_info = ctx.accounts.pool_state.to_account_info();
+        let _keep_alive_pool_state_info = &pool_state_account_info; // Keep AccountInfo alive
+        let pool_state_info_ref: &'info AccountInfo<'info> = unsafe { mem::transmute(&pool_state_account_info) };
+        let (expected_pool_state, _expected_bump) = Pubkey::find_program_address(
             &[seeds::POOL, origin_mint_key.as_ref()],
             ctx.program_id,
         );
         require_keys_eq!(
-            pool_state_info.key(),
+            pool_state_info_ref.key(),
             expected_pool_state,
             PoolError::Unauthorized
         );
         
         // Load pool_state and validate origin_mint matches
-        let pool_state_loader: AccountLoader<'info, PoolState> = AccountLoader::try_from(&pool_state_info)
+        let pool_state_loader: AccountLoader<'info, PoolState> = AccountLoader::try_from(pool_state_info_ref)
             .map_err(|_| PoolError::AccountDataTooShort)?;
         let pool_state = pool_state_loader.load()?;
         let pool_state_origin_mint = pool_state.origin_mint;
@@ -2296,7 +2299,7 @@ pub mod ptf_pool {
         let operation_data = extract_shield_operation(proof_vault_info_ref, operation_id, &clock)?;
         
         // Derive expected addresses using helper function
-        let pool_state_key = pool_state_info.key();
+        let pool_state_key = pool_state_info_ref.key();
         let addresses = derive_shield_addresses(&origin_mint_key, &pool_state_key, ctx.program_id)?;
         
         msg!(
