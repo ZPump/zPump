@@ -2273,7 +2273,7 @@ pub mod ptf_pool {
         );
         
         // Load pool_state and validate origin_mint matches
-        let pool_state_loader = AccountLoader::try_from(&pool_state_info)
+        let pool_state_loader: AccountLoader<'info, PoolState> = AccountLoader::try_from(&pool_state_info)
             .map_err(|_| PoolError::AccountDataTooShort)?;
         let pool_state = pool_state_loader.load()?;
         let pool_state_origin_mint = pool_state.origin_mint;
@@ -2315,7 +2315,7 @@ pub mod ptf_pool {
             addresses.expected_factory_state,
             addresses.expected_verifying_key,
             addresses.expected_vault_token,
-            &origin_mint_key,
+            origin_mint_key, // Function expects Pubkey, not &Pubkey
         )?;
         
         // Validate all required accounts are present
@@ -2581,7 +2581,7 @@ pub mod ptf_pool {
         let twin_mint_opt = wrappers.twin_mint_wrapper.as_ref().map(|w| unsafe { mem::transmute::<&UncheckedAccount<'info>, UncheckedAccount<'info>>(w.as_ref()) });
         let result = execute_shield_impl(
             program_id_ref,
-            pool_state_loader,
+            pool_state_loader_ref, // Use the manually validated pool_state_loader_ref created above
             wrappers.hook_config_wrapper.as_ref(),
             wrappers.hook_whitelist_account.as_ref(),
             wrappers.nullifier_set_wrapper.as_ref(),
