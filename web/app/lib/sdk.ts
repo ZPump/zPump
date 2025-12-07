@@ -1862,9 +1862,10 @@ export async function executeShield(params: ExecuteShieldParams): Promise<string
   // CRITICAL: Match ExecuteTransfer minimal pattern - only 4 accounts in struct:
   // 1. payer, 2. proof_vault, 3. system_program, 4. rent
   // All other accounts go in remaining_accounts
+  // CRITICAL: Match ExecuteTransfer pattern exactly - both have #[account(mut)] on payer and proof_vault
   const shieldKeys = [
-    { pubkey: wallet.publicKey!, isSigner: true, isWritable: true }, // payer (Signer, mut)
-    { pubkey: proofVault, isSigner: false, isWritable: true }, // proof_vault (mut)
+    { pubkey: wallet.publicKey!, isSigner: true, isWritable: true }, // payer (mut in struct, matches ExecuteTransfer)
+    { pubkey: proofVault, isSigner: false, isWritable: true }, // proof_vault (mut in struct, matches ExecuteTransfer)
     { pubkey: SystemProgram.programId, isSigner: false, isWritable: false }, // system_program
     { pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false }, // rent
   ];

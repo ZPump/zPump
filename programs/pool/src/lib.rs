@@ -8139,11 +8139,13 @@ pub struct PrepareBatchTransferFrom<'info> {
 #[derive(Accounts)]
 pub struct ExecuteShield<'info> {
     /// CHECK: Validated manually in handler (must be signer)
-    /// CRITICAL: Removed #[account(mut)] to test if Anchor validation bug is mut-specific
+    /// CRITICAL: Restored #[account(mut)] to match IDL and ExecuteTransfer exactly
+    #[account(mut)]
     pub payer: UncheckedAccount<'info>,
     /// Proof vault for storing prepared operations
     /// CHECK: Validated manually in handler (PDA derivation and owner)
-    /// CRITICAL: Removed #[account(mut)] to test if Anchor validation bug is mut-specific
+    /// CRITICAL: Restored #[account(mut)] to match IDL and ExecuteTransfer exactly
+    #[account(mut)]
     pub proof_vault: UncheckedAccount<'info>,
     /// CHECK: Validated manually in handler (must be System Program)
     pub system_program: UncheckedAccount<'info>,
