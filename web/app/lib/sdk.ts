@@ -1867,7 +1867,7 @@ export async function executeShield(params: ExecuteShieldParams): Promise<string
   ];
 
   // All accounts in remaining_accounts: payer, proof_vault, rent, then all others
-  // Clock is obtained via Clock::get() in the program (matching execute_transfer_from pattern)
+  // Clock is obtained via Clock::get() in the program (matching execute_unshield pattern exactly)
   const remainingAccounts = [
     { pubkey: wallet.publicKey!, isSigner: true, isWritable: true }, // payer (FIRST in remaining_accounts)
     { pubkey: proofVault, isSigner: false, isWritable: true }, // proof_vault (SECOND in remaining_accounts)

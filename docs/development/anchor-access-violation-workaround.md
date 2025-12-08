@@ -61,11 +61,22 @@ We've reported this issue to Anchor GitHub. See `BUG_REPORT_ANCHOR.md` for detai
 - Instruction position in the program binary
 - Internal Anchor dispatch/validation state
 - Stack frame setup differences
+- Function signature or dispatch mechanism
+
+**Attempted Solutions (All Failed):**
+1. ✅ Raw instruction pattern (minimal struct) - Function reaches entry but fails after first `msg!()`
+2. ✅ Passing Clock as account instead of `Clock::get()` - Same access violation
+3. ✅ Removing all debug logs - Fails before function entry (back to dispatch issue)
+4. ✅ Matching `execute_unshield` pattern exactly - Still fails
+5. ✅ Instruction renaming (`execute_shield_v2`) - Same issue
+6. ✅ Isolated single-instruction transaction - Same issue
+7. ✅ Using `Clock::from_account_info()` - Same issue
 
 **Workaround:** Currently, `shield_execute` cannot be used. Consider:
 - Using `execute_unshield` pattern as reference for future instructions
 - Waiting for Anchor framework fix
 - Using alternative instruction names/patterns if needed
+- **Note:** Even identical patterns fail for this specific instruction, suggesting an Anchor internal issue
 
 ## The Workaround: Raw Instructions
 

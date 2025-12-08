@@ -2211,19 +2211,16 @@ pub mod ptf_pool {
         ctx: Context<'_, '_, 'info, 'info, ExecuteShield<'info>>,
         operation_id: [u8; 32],
     ) -> Result<()> {
-        msg!("execute_shield_v2: start - bypassing Anchor validation");
-        msg!("execute_shield_v2: step 1 - about to access remaining_accounts");
+        // EXACT MATCH: Copy execute_unshield pattern exactly - get clock first, no msg!() before
+        let clock = Clock::get()?;
         
         // Extract ALL accounts from remaining_accounts manually
         // Expected order: payer, proof_vault, rent, pool_state, commitment_tree, origin_mint, ...
         // Note: _phantom is system_program in struct, so remaining_accounts has: payer, proof_vault, rent, ...
-        let remaining_len = ctx.remaining_accounts.len();
-        msg!("execute_shield_v2: step 2 - remaining_accounts len={}", remaining_len);
         require!(
-            remaining_len >= 3,
+            ctx.remaining_accounts.len() >= 3,
             PoolError::InvalidAccountOwner
         );
-        msg!("execute_shield_v2: step 3 - remaining_accounts validation passed");
         
         // Extract first 3 accounts from remaining_accounts (payer, proof_vault, rent)
         let payer_info = &ctx.remaining_accounts[0];
@@ -2236,7 +2233,6 @@ pub mod ptf_pool {
         // Validate payer (must be signer)
         require!(payer_info.is_signer, PoolError::Unauthorized);
         let payer_key = payer_info.key();
-        msg!("execute_shield_v2: validated payer, key={}", payer_key);
         
         // Validate system_program (from _phantom)
         require_keys_eq!(
@@ -2268,19 +2264,6 @@ pub mod ptf_pool {
         // Extract remaining accounts (pool_state, commitment_tree, origin_mint, and all others)
         // Skip first 3: payer, proof_vault, rent
         let remaining_for_extraction = &ctx.remaining_accounts[3..];
-        
-        msg!(
-            "shield_execute: extracting accounts from remaining_accounts (total_len={}, remaining_len={})",
-            ctx.remaining_accounts.len(),
-            remaining_for_extraction.len()
-        );
-        
-        // Get clock right before we need it (after account extraction to reduce stack pressure)
-        // CRITICAL: Calling Clock::get() at function start causes access violation
-        // Moving it here after account extraction to reduce early stack pressure
-        msg!("execute_shield_v2: getting clock before extract_shield_operation");
-        let clock = Clock::get()?;
-        msg!("execute_shield_v2: clock obtained");
         
         // Extract shield operation using helper function
         let proof_vault_info_ref: &'info AccountInfo<'info> = unsafe { mem::transmute(proof_vault_info) };

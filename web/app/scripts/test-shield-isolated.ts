@@ -13,7 +13,8 @@ import {
   SystemProgram,
   Transaction,
   TransactionInstruction,
-  SYSVAR_RENT_PUBKEY
+  SYSVAR_RENT_PUBKEY,
+  SYSVAR_CLOCK_PUBKEY
 } from '@solana/web3.js';
 import {
   prepareShield,
@@ -190,9 +191,9 @@ async function testShieldIsolated() {
     ];
     
     const remainingAccounts = [
-      { pubkey: keypair.publicKey, isSigner: true, isWritable: true }, // payer
-      { pubkey: proofVault, isSigner: false, isWritable: true }, // proof_vault
-      { pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false }, // rent
+      { pubkey: keypair.publicKey, isSigner: true, isWritable: true }, // payer (FIRST)
+      { pubkey: proofVault, isSigner: false, isWritable: true }, // proof_vault (SECOND)
+      { pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false }, // rent (THIRD)
       { pubkey: poolState, isSigner: false, isWritable: true }, // pool_state
       { pubkey: commitmentTreeKey, isSigner: false, isWritable: true }, // commitment_tree
       { pubkey: testMint, isSigner: false, isWritable: false }, // origin_mint

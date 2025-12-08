@@ -98,8 +98,17 @@ This is an Anchor framework bug that cannot be worked around with:
 - Isolated single-instruction transactions
 - Instruction renaming
 - Matching working instruction patterns exactly
+- Passing Clock as account instead of `Clock::get()`
+- Removing debug logs
+- Using `Clock::from_account_info()`
 
-The function reaches our code (bypassing Anchor's dispatch), but fails immediately after the first `msg!()` call. This appears to be an Anchor internal issue specific to this instruction's position or internal state.
+**Behavior is inconsistent:**
+- Sometimes function reaches entry point but fails after first `msg!()` call
+- Sometimes fails before function entry (in Anchor's dispatch)
+- Same code pattern works for `execute_unshield` but fails for `shield_execute`
+- Even removing all logs causes it to fail in dispatch again
+
+This appears to be an Anchor internal issue specific to this instruction's position, signature, or internal dispatch state. No workaround has been successful.
 
 ### Critical Finding (2024-12-08)
 
