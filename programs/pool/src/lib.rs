@@ -2203,13 +2203,14 @@ pub mod ptf_pool {
 
     // Proof Account Abstraction: Execute Shield
     // CRITICAL: Match execute_transfer pattern exactly (no #[inline(never)])
-    pub fn execute_shield<'info>(
+    // WORKAROUND TEST: Renamed from execute_shield to shield_execute to test if instruction name causes access violation
+    pub fn shield_execute<'info>(
         mut ctx: Context<'_, '_, 'info, 'info, ExecuteShield<'info>>,
         operation_id: [u8; 32],
     ) -> Result<()> {
         // CRITICAL: Match execute_transfer pattern EXACTLY - call Clock::get() first
         let clock = Clock::get()?;
-        msg!("execute_shield: start");
+        msg!("shield_execute: start");
 
         // Validate payer manually (must be signer) - matching ExecuteTransfer pattern
         let payer_info = ctx.accounts.payer.to_account_info();

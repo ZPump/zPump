@@ -1850,7 +1850,8 @@ export async function executeShield(params: ExecuteShieldParams): Promise<string
   const finalizeTreeData = poolCoder.instruction.encode('shield_finalize_tree', {});
   const finalizeLedgerData = poolCoder.instruction.encode('shield_finalize_ledger', {});
   const checkInvariantData = poolCoder.instruction.encode('shield_check_invariant', {});
-  const shieldData = poolCoder.instruction.encode('execute_shield', {
+  // WORKAROUND TEST: Renamed from execute_shield to shield_execute to test if instruction name causes access violation
+  const shieldData = poolCoder.instruction.encode('shield_execute', {
     operation_id: operationIdHexToArray(params.operationId)
   });
 
