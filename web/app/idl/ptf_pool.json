@@ -3269,6 +3269,35 @@
       ]
     },
     {
+      "name": "shield_execute_raw",
+      "discriminator": [
+        6,
+        92,
+        148,
+        95,
+        130,
+        132,
+        83,
+        184
+      ],
+      "accounts": [
+        {
+          "name": "_phantom"
+        }
+      ],
+      "args": [
+        {
+          "name": "operation_id",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        }
+      ]
+    },
+    {
       "name": "shield_finalize_ledger",
       "discriminator": [
         85,
@@ -7693,12 +7722,7 @@
           },
           {
             "name": "new_root",
-            "type": {
-              "array": [
-                "u8",
-                32
-              ]
-            }
+            "type": "pubkey"
           },
           {
             "name": "commitment",

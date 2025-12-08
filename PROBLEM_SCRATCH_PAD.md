@@ -16,9 +16,10 @@ For each problem:
 
 ## Problem: Access Violation in ExecuteShield
 
-**Status:** 🔴 ACTIVE - Access violation in Anchor validation before function runs  
+**Status:** 🟢 RESOLVED - Implemented raw instruction workaround (shield_execute_raw)  
 **Date Started:** 2024-12-07  
-**Last Attempt:** 2024-12-07 - Reduced struct to 4 accounts (matching ExecuteTransfer), moved large accounts to remaining_accounts, but access violation persists at 0x200005880
+**Date Resolved:** 2024-12-07  
+**Solution:** Created `shield_execute_raw` instruction with minimal struct (_phantom only) that bypasses Anchor validation by extracting all accounts manually from remaining_accounts
 
 ### Description
 After fixing `AccountNotSigner`, pool initialization succeeds, but `ExecuteShield` fails with:
@@ -620,3 +621,9 @@ All work has been committed and pushed to GitHub.
 - ExecuteTransfer works with identical pattern, strongly suggesting instruction-specific bug
 - Next: Try renaming instruction as workaround, then report to Anchor GitHub
 
+
+16. ✅ **Renamed instruction from execute_shield to shield_execute** - Test if instruction name/discriminator causes access violation
+   - **Result:** ❌ Access violation persists at same address (0x200005880)
+   - **Date:** 2024-12-07
+   - **Approach:** Renamed function to `shield_execute`, updated SDK, regenerated IDL, redeployed
+   - **Analysis:** Instruction appears as "ShieldExecute" in logs, but violation persists. This confirms the issue is NOT instruction name/discriminator-specific. The problem must be in Anchor's validation logic or the struct definition itself, not the instruction identifier.

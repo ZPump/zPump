@@ -1850,26 +1850,26 @@ export async function executeShield(params: ExecuteShieldParams): Promise<string
   const finalizeTreeData = poolCoder.instruction.encode('shield_finalize_tree', {});
   const finalizeLedgerData = poolCoder.instruction.encode('shield_finalize_ledger', {});
   const checkInvariantData = poolCoder.instruction.encode('shield_check_invariant', {});
-  // WORKAROUND TEST: Renamed from execute_shield to shield_execute to test if instruction name causes access violation
-  const shieldData = poolCoder.instruction.encode('shield_execute', {
+  // WORKAROUND: Use shield_execute_raw to bypass Anchor validation that causes access violation
+  // This instruction uses an empty struct and extracts all accounts manually
+  const shieldData = poolCoder.instruction.encode('shield_execute_raw', {
     operation_id: operationIdHexToArray(params.operationId)
   });
 
-  // CRITICAL FIX: Reduced to 4 accounts to prevent stack overflow (matching ExecuteTransfer pattern)
-  // ExecuteShield struct now has 4 accounts: payer, proof_vault, system_program, rent
-  // pool_state, commitment_tree, and origin_mint are moved to remaining_accounts to reduce stack usage
+  // WORKAROUND: shield_execute_raw uses minimal struct with just _phantom (system_program)
+  // All accounts go in remaining_accounts to bypass Anchor validation bug
   const shieldKeys = [
-    { pubkey: wallet.publicKey!, isSigner: true, isWritable: true }, // payer (FIRST in struct)
-    { pubkey: proofVault, isSigner: false, isWritable: true }, // proof_vault (SECOND in struct)
-    { pubkey: SystemProgram.programId, isSigner: false, isWritable: false }, // system_program (THIRD in struct)
-    { pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false }, // rent (FOURTH in struct)
+    { pubkey: SystemProgram.programId, isSigner: false, isWritable: false }, // _phantom (system_program in struct)
   ];
 
-  // Remaining accounts - pool_state, commitment_tree, origin_mint moved here to reduce stack usage
+  // All accounts in remaining_accounts: payer, proof_vault, rent, then all others
   const remainingAccounts = [
-    { pubkey: poolState, isSigner: false, isWritable: true }, // pool_state (moved from struct)
-    { pubkey: commitmentTreeKey, isSigner: false, isWritable: true }, // commitment_tree (moved from struct)
-    { pubkey: actualShieldMint, isSigner: false, isWritable: false }, // origin_mint (moved from struct)
+    { pubkey: wallet.publicKey!, isSigner: true, isWritable: true }, // payer (FIRST in remaining_accounts)
+    { pubkey: proofVault, isSigner: false, isWritable: true }, // proof_vault (SECOND in remaining_accounts)
+    { pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false }, // rent (THIRD in remaining_accounts)
+    { pubkey: poolState, isSigner: false, isWritable: true }, // pool_state
+    { pubkey: commitmentTreeKey, isSigner: false, isWritable: true }, // commitment_tree
+    { pubkey: actualShieldMint, isSigner: false, isWritable: false }, // origin_mint
     { pubkey: hookConfig, isSigner: false, isWritable: false },
     { pubkey: hookWhitelist, isSigner: false, isWritable: true },
     { pubkey: nullifierSet, isSigner: false, isWritable: true },
