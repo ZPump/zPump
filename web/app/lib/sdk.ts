@@ -1119,7 +1119,10 @@ export async function preparePool(params: PreparePoolParams): Promise<PreparePoo
   const vaultState = deriveVaultState(originMintKey);
   const mintMappingKey = deriveMintMapping(originMintKey);
   const factoryState = deriveFactoryState();
-  const verifyingKey = deriveVerifyingKey();
+  // CRITICAL FIX: Use unshield verifying key for pool initialization
+  // This ensures unshield operations can use the pool (unshield checks verifying_key_hash)
+  // Shield operations check verifying_key address, not hash, so they'll still work
+  const verifyingKey = deriveVerifyingKey(CIRCUIT_TAGS.unshield);
 
   const [poolAccount, vaultAccount, commitmentTreeAccount, mintAccount] = await Promise.all([
     connection.getAccountInfo(poolState, 'confirmed'),
@@ -1852,17 +1855,19 @@ export async function executeShield(params: ExecuteShieldParams): Promise<string
   const checkInvariantData = poolCoder.instruction.encode('shield_check_invariant', {});
   // WORKAROUND: Use shield_execute_raw to bypass Anchor validation that causes access violation
   // This instruction uses an empty struct and extracts all accounts manually
-  const shieldData = poolCoder.instruction.encode('shield_execute_raw', {
+  // TESTING: Using execute_shield_v2 to test if instruction name causes access violation
+  const shieldData = poolCoder.instruction.encode('execute_shield_v2', {
     operation_id: operationIdHexToArray(params.operationId)
   });
 
-  // WORKAROUND: shield_execute_raw uses minimal struct with just _phantom (system_program)
+  // WORKAROUND: shield_execute uses minimal struct with just _phantom (system_program)
   // All accounts go in remaining_accounts to bypass Anchor validation bug
   const shieldKeys = [
     { pubkey: SystemProgram.programId, isSigner: false, isWritable: false }, // _phantom (system_program in struct)
   ];
 
   // All accounts in remaining_accounts: payer, proof_vault, rent, then all others
+  // Clock is obtained via Clock::get() in the program (matching execute_transfer_from pattern)
   const remainingAccounts = [
     { pubkey: wallet.publicKey!, isSigner: true, isWritable: true }, // payer (FIRST in remaining_accounts)
     { pubkey: proofVault, isSigner: false, isWritable: true }, // proof_vault (SECOND in remaining_accounts)
@@ -2845,33 +2850,26 @@ export async function executeUnshield(params: ExecuteUnshieldParams): Promise<st
     );
   }
 
-  // CRITICAL: Account order must match IDL exactly:
-  // 1. pool_state (writable)
-  // 2. payer (writable, signer)
-  // 3. proof_vault (writable)
-  // 4. system_program
-  // 5. rent
-  // Then remaining_accounts in the order expected by the program
+  // CRITICAL: Account order must match ExecuteUnshield struct exactly:
+  // Struct accounts (in order): pool_state, hook_config, hook_whitelist, note_ledger, mint_mapping, 
+  // verifier_program, verifying_key, vault_state, vault_token_account, destination_token_account,
+  // twin_mint (optional), vault_program, factory_state, factory_program, token_program, 
+  // system_program, payer, rent, proof_vault
+  // Remaining accounts: nullifier_set, commitment_tree (removed from struct to bypass Anchor validation)
   const keys: { pubkey: PublicKey; isSigner: boolean; isWritable: boolean }[] = [
     { pubkey: poolStateKey, isSigner: false, isWritable: true }, // 1. pool_state
-    { pubkey: wallet.publicKey, isSigner: true, isWritable: true }, // 2. payer
-    { pubkey: proofVault, isSigner: false, isWritable: true }, // 3. proof_vault
-    { pubkey: SystemProgram.programId, isSigner: false, isWritable: false }, // 4. system_program
-    { pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false }, // 5. rent
-    // Remaining accounts (remaining_accounts)
-    { pubkey: hookConfigKey, isSigner: false, isWritable: false },
-    { pubkey: hookWhitelistKey, isSigner: false, isWritable: false },
-    { pubkey: nullifierSetKey, isSigner: false, isWritable: true },
-    { pubkey: commitmentTreeKey, isSigner: false, isWritable: true },
-    { pubkey: noteLedgerKey, isSigner: false, isWritable: true },
-    { pubkey: mintMappingKey, isSigner: false, isWritable: false },
-    { pubkey: VERIFIER_PROGRAM_ID, isSigner: false, isWritable: false },
-    { pubkey: verifyingKey, isSigner: false, isWritable: false },
-    { pubkey: vaultStateKey, isSigner: false, isWritable: true },
-    { pubkey: vaultTokenAccount, isSigner: false, isWritable: true },
-    { pubkey: destinationTokenAccount, isSigner: false, isWritable: true }
+    { pubkey: hookConfigKey, isSigner: false, isWritable: false }, // 2. hook_config
+    { pubkey: hookWhitelistKey, isSigner: false, isWritable: true }, // 3. hook_whitelist
+    { pubkey: noteLedgerKey, isSigner: false, isWritable: true }, // 4. note_ledger
+    { pubkey: mintMappingKey, isSigner: false, isWritable: false }, // 5. mint_mapping
+    { pubkey: VERIFIER_PROGRAM_ID, isSigner: false, isWritable: false }, // 6. verifier_program
+    { pubkey: verifyingKey, isSigner: false, isWritable: false }, // 7. verifying_key
+    { pubkey: vaultStateKey, isSigner: false, isWritable: true }, // 8. vault_state
+    { pubkey: vaultTokenAccount, isSigner: false, isWritable: true }, // 9. vault_token_account
+    { pubkey: destinationTokenAccount, isSigner: false, isWritable: true }, // 10. destination_token_account
   ];
 
+  // 11. twin_mint (optional) or POOL_PROGRAM_ID placeholder
   if (redeemToTwin && twinMintKey) {
     keys.push({
       pubkey: twinMintKey,
@@ -2883,20 +2881,70 @@ export async function executeUnshield(params: ExecuteUnshieldParams): Promise<st
   }
 
   keys.push(
-    { pubkey: VAULT_PROGRAM_ID, isSigner: false, isWritable: false },
-    { pubkey: factoryStateKey, isSigner: false, isWritable: false },
-    { pubkey: FACTORY_PROGRAM_ID, isSigner: false, isWritable: false },
-    { pubkey: originTokenProgram, isSigner: false, isWritable: false }
+    { pubkey: VAULT_PROGRAM_ID, isSigner: false, isWritable: false }, // 12. vault_program
+    { pubkey: factoryStateKey, isSigner: false, isWritable: false }, // 13. factory_state
+    { pubkey: FACTORY_PROGRAM_ID, isSigner: false, isWritable: false }, // 14. factory_program
+    { pubkey: originTokenProgram, isSigner: false, isWritable: false }, // 15. token_program
+    { pubkey: SystemProgram.programId, isSigner: false, isWritable: false }, // 16. system_program
+    { pubkey: wallet.publicKey, isSigner: true, isWritable: true }, // 17. payer
+    { pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false }, // 18. rent
+    { pubkey: proofVault, isSigner: false, isWritable: true }, // 19. proof_vault
+    // Remaining accounts (remaining_accounts): nullifier_set, commitment_tree
+    { pubkey: nullifierSetKey, isSigner: false, isWritable: true }, // nullifier_set
+    { pubkey: commitmentTreeKey, isSigner: false, isWritable: true }, // commitment_tree
+  );
+
+  // WORKAROUND: Use execute_unshield_raw to bypass Anchor validation that causes access violation
+  // This instruction uses an empty struct and extracts all accounts manually
+  const unshieldData = poolCoder.instruction.encode('execute_unshield', {
+    operation_id: operationIdHexToArray(params.operationId),
+    mode: mode === 'ptkn' ? { Twin: {} } : { Origin: {} }
+  });
+
+  // WORKAROUND: execute_unshield uses minimal struct with just _phantom (system_program)
+  // All accounts go in remaining_accounts to bypass Anchor validation bug
+  // Order: _phantom (system_program), then remaining_accounts: payer, proof_vault, rent, pool_state, ...
+  const unshieldKeys = [
+    { pubkey: SystemProgram.programId, isSigner: false, isWritable: false }, // _phantom (system_program in struct)
+    { pubkey: wallet.publicKey, isSigner: true, isWritable: true }, // payer (remaining_accounts[0])
+    { pubkey: proofVault, isSigner: false, isWritable: true }, // proof_vault (remaining_accounts[1])
+    { pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false }, // rent (remaining_accounts[2])
+    { pubkey: poolStateKey, isSigner: false, isWritable: true }, // pool_state (remaining_accounts[3])
+    { pubkey: commitmentTreeKey, isSigner: false, isWritable: true }, // commitment_tree
+    { pubkey: hookConfigKey, isSigner: false, isWritable: false }, // hook_config
+    { pubkey: hookWhitelistKey, isSigner: false, isWritable: true }, // hook_whitelist
+    { pubkey: nullifierSetKey, isSigner: false, isWritable: true }, // nullifier_set
+    { pubkey: noteLedgerKey, isSigner: false, isWritable: true }, // note_ledger
+    { pubkey: mintMappingKey, isSigner: false, isWritable: false }, // mint_mapping
+    { pubkey: VERIFIER_PROGRAM_ID, isSigner: false, isWritable: false }, // verifier_program
+    { pubkey: verifyingKey, isSigner: false, isWritable: false }, // verifying_key
+    { pubkey: vaultStateKey, isSigner: false, isWritable: true }, // vault_state
+    { pubkey: vaultTokenAccount, isSigner: false, isWritable: true }, // vault_token_account
+    { pubkey: destinationTokenAccount, isSigner: false, isWritable: true }, // destination_token_account
+  ];
+
+  // twin_mint (optional)
+  if (redeemToTwin && twinMintKey) {
+    unshieldKeys.push({
+      pubkey: twinMintKey,
+      isSigner: false,
+      isWritable: true
+    });
+  }
+
+  // Remaining program accounts
+  unshieldKeys.push(
+    { pubkey: VAULT_PROGRAM_ID, isSigner: false, isWritable: false }, // vault_program
+    { pubkey: factoryStateKey, isSigner: false, isWritable: false }, // factory_state
+    { pubkey: FACTORY_PROGRAM_ID, isSigner: false, isWritable: false }, // factory_program
+    { pubkey: originTokenProgram, isSigner: false, isWritable: false }, // token_program
   );
 
   instructions.push(
     new TransactionInstruction({
       programId: POOL_PROGRAM_ID,
-      keys,
-      data: poolCoder.instruction.encode('execute_unshield', {
-        operation_id: operationIdHexToArray(params.operationId),
-        mode: mode === 'ptkn' ? { Twin: {} } : { Origin: {} }
-      })
+      keys: unshieldKeys,
+      data: unshieldData
     })
   );
 
@@ -3292,7 +3340,7 @@ export async function executeTransferFrom(params: ExecuteTransferFromParams): Pr
   const commitmentTreeKey = deriveCommitmentTree(originMintKey);
   const nullifierSetKey = deriveNullifierSet(originMintKey);
   const noteLedgerKey = deriveNoteLedger(originMintKey);
-  const verifyingKey = deriveVerifyingKey();
+  const verifyingKey = deriveVerifyingKey(CIRCUIT_TAGS.transfer);
   const { key: mintMappingKey, decoded: mintMapping } = await fetchMintMappingAccount(
     connection,
     originMintKey
@@ -3334,36 +3382,39 @@ export async function executeTransferFrom(params: ExecuteTransferFromParams): Pr
     }
   }
 
-  // Build execute_transfer_from instruction
-  // Account order matches ExecuteTransferFrom struct: spender, proof_vault, system_program, rent
-  // All other accounts go in remaining_accounts
-  const instructionKeys = [
-    { pubkey: spender, isSigner: true, isWritable: true },
-        { pubkey: proofVault, isSigner: false, isWritable: true },
-        { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
-        { pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false }
+  // WORKAROUND: Use execute_transfer_from_raw to bypass Anchor validation that causes access violation
+  // This instruction uses an empty struct and extracts all accounts manually
+  const transferFromData = poolCoder.instruction.encode('execute_transfer_from', {
+    operation_id: operationIdHexToArray(params.operationId)
+  });
+
+  // WORKAROUND: execute_transfer_from uses minimal struct with just _phantom (system_program)
+  // All accounts go in remaining_accounts to bypass Anchor validation bug
+  const transferFromKeys = [
+    { pubkey: SystemProgram.programId, isSigner: false, isWritable: false }, // _phantom (system_program in struct)
   ];
-  
-  // Add remaining accounts (pool_state, nullifier_set, commitment_tree, note_ledger, mint_mapping, verifier_program, verifying_key, allowance, allowance_owner)
-  instructionKeys.push(
-        { pubkey: poolStateKey, isSigner: false, isWritable: true },
-        { pubkey: nullifierSetKey, isSigner: false, isWritable: true },
-        { pubkey: commitmentTreeKey, isSigner: false, isWritable: true },
-        { pubkey: noteLedgerKey, isSigner: false, isWritable: true },
-        { pubkey: mintMappingKey, isSigner: false, isWritable: false },
-        { pubkey: VERIFIER_PROGRAM_ID, isSigner: false, isWritable: false },
-        { pubkey: verifyingKey, isSigner: false, isWritable: false },
-    { pubkey: allowanceKey, isSigner: false, isWritable: true },
-    { pubkey: allowanceOwner, isSigner: false, isWritable: false }
-  );
+
+  // All accounts in remaining_accounts: spender, proof_vault, rent, then all others
+  const remainingAccounts = [
+    { pubkey: spender, isSigner: true, isWritable: true }, // spender (FIRST in remaining_accounts)
+    { pubkey: proofVault, isSigner: false, isWritable: true }, // proof_vault (SECOND in remaining_accounts)
+    { pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false }, // rent (THIRD in remaining_accounts)
+    { pubkey: poolStateKey, isSigner: false, isWritable: true }, // pool_state
+    { pubkey: nullifierSetKey, isSigner: false, isWritable: true }, // nullifier_set
+    { pubkey: commitmentTreeKey, isSigner: false, isWritable: true }, // commitment_tree
+    { pubkey: noteLedgerKey, isSigner: false, isWritable: true }, // note_ledger
+    { pubkey: mintMappingKey, isSigner: false, isWritable: false }, // mint_mapping
+    { pubkey: VERIFIER_PROGRAM_ID, isSigner: false, isWritable: false }, // verifier_program
+    { pubkey: verifyingKey, isSigner: false, isWritable: false }, // verifying_key
+    { pubkey: allowanceKey, isSigner: false, isWritable: true }, // allowance
+    { pubkey: allowanceOwner, isSigner: false, isWritable: false }, // allowance_owner
+  ];
 
   instructions.push(
     new TransactionInstruction({
       programId: POOL_PROGRAM_ID,
-      keys: instructionKeys,
-      data: poolCoder.instruction.encode('execute_transfer_from', {
-        operation_id: operationIdHexToArray(params.operationId)
-      })
+      keys: [...transferFromKeys, ...remainingAccounts],
+      data: transferFromData
     })
   );
 

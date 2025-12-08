@@ -1184,6 +1184,35 @@
       ]
     },
     {
+      "name": "execute_transfer_from",
+      "discriminator": [
+        1,
+        252,
+        219,
+        34,
+        105,
+        215,
+        119,
+        223
+      ],
+      "accounts": [
+        {
+          "name": "_phantom"
+        }
+      ],
+      "args": [
+        {
+          "name": "operation_id",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        }
+      ]
+    },
+    {
       "name": "execute_unshield",
       "discriminator": [
         203,
@@ -1197,344 +1226,9 @@
       ],
       "accounts": [
         {
-          "name": "pool_state",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  112,
-                  111,
-                  111,
-                  108
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "pool_state"
-              }
-            ]
-          }
-        },
-        {
-          "name": "hook_config",
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  104,
-                  111,
-                  111,
-                  107,
-                  115
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "pool_state"
-              }
-            ]
-          }
-        },
-        {
-          "name": "hook_whitelist",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  104,
-                  111,
-                  111,
-                  107,
-                  45,
-                  119,
-                  104,
-                  105,
-                  116,
-                  101,
-                  108,
-                  105,
-                  115,
-                  116
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "pool_state"
-              }
-            ]
-          }
-        },
-        {
-          "name": "nullifier_set",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  110,
-                  117,
-                  108,
-                  108,
-                  115
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "pool_state"
-              }
-            ]
-          }
-        },
-        {
-          "name": "commitment_tree",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  116,
-                  114,
-                  101,
-                  101
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "pool_state"
-              }
-            ]
-          }
-        },
-        {
-          "name": "note_ledger",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  110,
-                  111,
-                  116,
-                  101,
-                  115
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "pool_state"
-              }
-            ]
-          }
-        },
-        {
-          "name": "mint_mapping",
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  109,
-                  97,
-                  112
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "pool_state"
-              }
-            ],
-            "program": {
-              "kind": "const",
-              "value": [
-                119,
-                196,
-                107,
-                27,
-                136,
-                67,
-                157,
-                99,
-                182,
-                37,
-                119,
-                22,
-                250,
-                215,
-                193,
-                106,
-                226,
-                199,
-                111,
-                56,
-                151,
-                240,
-                174,
-                177,
-                245,
-                161,
-                161,
-                234,
-                61,
-                184,
-                54,
-                186
-              ]
-            }
-          }
-        },
-        {
-          "name": "verifier_program",
-          "address": "2V5XN9rpubXdK3cdWBBjZwjxMpMzQBKTaN3moEJ59a8K"
-        },
-        {
-          "name": "verifying_key"
-        },
-        {
-          "name": "vault_state",
-          "writable": true
-        },
-        {
-          "name": "vault_token_account",
-          "writable": true
-        },
-        {
-          "name": "destination_token_account",
-          "writable": true
-        },
-        {
-          "name": "twin_mint",
-          "writable": true,
-          "optional": true
-        },
-        {
-          "name": "vault_program"
-        },
-        {
-          "name": "factory_state",
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  102,
-                  97,
-                  99,
-                  116,
-                  111,
-                  114,
-                  121
-                ]
-              },
-              {
-                "kind": "const",
-                "value": [
-                  119,
-                  196,
-                  107,
-                  27,
-                  136,
-                  67,
-                  157,
-                  99,
-                  182,
-                  37,
-                  119,
-                  22,
-                  250,
-                  215,
-                  193,
-                  106,
-                  226,
-                  199,
-                  111,
-                  56,
-                  151,
-                  240,
-                  174,
-                  177,
-                  245,
-                  161,
-                  161,
-                  234,
-                  61,
-                  184,
-                  54,
-                  186
-                ]
-              }
-            ],
-            "program": {
-              "kind": "const",
-              "value": [
-                119,
-                196,
-                107,
-                27,
-                136,
-                67,
-                157,
-                99,
-                182,
-                37,
-                119,
-                22,
-                250,
-                215,
-                193,
-                106,
-                226,
-                199,
-                111,
-                56,
-                151,
-                240,
-                174,
-                177,
-                245,
-                161,
-                161,
-                234,
-                61,
-                184,
-                54,
-                186
-              ]
-            }
-          }
-        },
-        {
-          "name": "factory_program"
-        },
-        {
-          "name": "token_program"
-        },
-        {
-          "name": "system_program",
-          "address": "11111111111111111111111111111111"
-        },
-        {
-          "name": "payer",
-          "writable": true,
-          "signer": true
-        },
-        {
-          "name": "rent",
-          "address": "SysvarRent111111111111111111111111111111111"
-        },
-        {
-          "name": "proof_vault",
-          "docs": [
-            "Proof vault for storing prepared operations"
-          ],
-          "writable": true
+          "name": "_phantom",
+          "writable": false,
+          "signer": false
         }
       ],
       "args": [
@@ -3239,21 +2933,7 @@
       ],
       "accounts": [
         {
-          "name": "payer",
-          "writable": true
-        },
-        {
-          "name": "proof_vault",
-          "docs": [
-            "Proof vault for storing prepared operations"
-          ],
-          "writable": true
-        },
-        {
-          "name": "system_program"
-        },
-        {
-          "name": "rent"
+          "name": "_phantom"
         }
       ],
       "args": [
@@ -3269,16 +2949,16 @@
       ]
     },
     {
-      "name": "shield_execute_raw",
+      "name": "execute_shield_v2",
       "discriminator": [
-        6,
-        92,
-        148,
-        95,
-        130,
-        132,
-        83,
-        184
+        89,
+        21,
+        117,
+        157,
+        78,
+        121,
+        134,
+        40
       ],
       "accounts": [
         {
@@ -7699,20 +7379,7 @@
         "kind": "struct",
         "fields": [
           {
-            "name": "active",
-            "type": "u8"
-          },
-          {
-            "name": "_padding1",
-            "type": {
-              "array": [
-                "u8",
-                7
-              ]
-            }
-          },
-          {
-            "name": "old_root",
+            "name": "operation_id",
             "type": {
               "array": [
                 "u8",
@@ -7721,8 +7388,8 @@
             }
           },
           {
-            "name": "new_root",
-            "type": "pubkey"
+            "name": "prepared_at",
+            "type": "i64"
           },
           {
             "name": "commitment",
@@ -7734,25 +7401,12 @@
             }
           },
           {
-            "name": "amount_commit",
-            "type": {
-              "array": [
-                "u8",
-                32
-              ]
-            }
-          },
-          {
-            "name": "depositor",
-            "type": "pubkey"
-          },
-          {
             "name": "amount",
             "type": "u64"
           },
           {
-            "name": "next_index",
-            "type": "u64"
+            "name": "mint",
+            "type": "pubkey"
           }
         ]
       }

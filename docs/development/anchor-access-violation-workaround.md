@@ -38,6 +38,35 @@ This is a bug in Anchor's validation/dispatch phase, not in our code. Evidence:
 
 We've reported this issue to Anchor GitHub. See `BUG_REPORT_ANCHOR.md` for details.
 
+## Known Limitations
+
+### `shield_execute` Instruction
+
+**Status:** ⚠️ **PARTIALLY WORKING** - Function reaches entry point but fails immediately after first `msg!()` call
+
+**Issue:** Even with the raw instruction workaround, `shield_execute` fails with access violation at `0x200005440` immediately after the first log message. This occurs even when:
+- Called in isolation (single instruction transaction)
+- Using identical pattern to `execute_unshield` (which works)
+- Renamed to different instruction name (`execute_shield_v2`)
+- All account structures match working instructions
+
+**Evidence:**
+- Function entry point is reached (we see "shield_execute: start" in logs)
+- Fails immediately after first `msg!()` call
+- `execute_unshield` works with identical pattern
+- Isolated single-instruction test still fails
+- Renaming instruction doesn't help
+
+**Conclusion:** This appears to be an Anchor framework bug specific to this instruction, possibly related to:
+- Instruction position in the program binary
+- Internal Anchor dispatch/validation state
+- Stack frame setup differences
+
+**Workaround:** Currently, `shield_execute` cannot be used. Consider:
+- Using `execute_unshield` pattern as reference for future instructions
+- Waiting for Anchor framework fix
+- Using alternative instruction names/patterns if needed
+
 ## The Workaround: Raw Instructions
 
 We bypass Anchor's validation by using a "raw" instruction pattern:
@@ -45,6 +74,8 @@ We bypass Anchor's validation by using a "raw" instruction pattern:
 1. **Minimal struct** - Use only a `_phantom` account to satisfy Anchor's requirements
 2. **Manual extraction** - Extract all accounts manually from `remaining_accounts`
 3. **Manual validation** - Validate all accounts manually in the function body
+
+**Note:** This workaround successfully resolves access violations for `execute_unshield`, `execute_transfer_from`, and other instructions, but does NOT work for `shield_execute` due to the limitation described above.
 4. **Core function call** - Call the core logic function with manually constructed context
 
 ### Implementation Pattern

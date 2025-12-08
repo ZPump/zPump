@@ -446,8 +446,46 @@ async function testPrepareExecuteUnshield() {
     });
     console.log(`   ✓ Shield prepared: ${prepareShieldSig}`);
     
+    // Ensure vault token account exists before executeShield
+    console.log('3.5. Ensuring vault token account exists...');
+    const { deriveVaultState } = await import('../lib/onchain/pdas');
+    const vaultState = deriveVaultState(testMint);
+    const { isNativeSol, NATIVE_SOL_MINT } = await import('../lib/solWrapping');
+    const actualShieldMint = isNativeSol(testMint) ? NATIVE_SOL_MINT : testMint;
+    const tokenProgramId = TOKEN_PROGRAM_ID;
+    const vaultTokenAccount = await getAssociatedTokenAddress(
+      actualShieldMint,
+      vaultState,
+      true, // allowOwnerOffCurve
+      tokenProgramId,
+      ASSOCIATED_TOKEN_PROGRAM_ID
+    );
+    const vaultTokenAccountInfo = await connection.getAccountInfo(vaultTokenAccount, 'confirmed');
+    if (!vaultTokenAccountInfo) {
+      console.log('   Creating vault token account...');
+      const createVaultTx = new Transaction().add(
+        createAssociatedTokenAccountInstruction(
+          keypair.publicKey,
+          vaultTokenAccount,
+          vaultState,
+          actualShieldMint,
+          tokenProgramId,
+          ASSOCIATED_TOKEN_PROGRAM_ID
+        )
+      );
+      createVaultTx.feePayer = keypair.publicKey;
+      const createVaultBlockhash = await connection.getLatestBlockhash('confirmed');
+      createVaultTx.recentBlockhash = createVaultBlockhash.blockhash;
+      createVaultTx.sign(keypair);
+      const createVaultSig = await connection.sendRawTransaction(createVaultTx.serialize(), { skipPreflight: false });
+      await connection.confirmTransaction(createVaultSig, 'confirmed');
+      console.log(`   ✓ Vault token account created: ${createVaultSig}`);
+    } else {
+      console.log('   ✓ Vault token account already exists');
+    }
+    
     // Execute shield (using executeShield directly, not wrap)
-    console.log('   Executing shield...');
+    console.log('4. Executing shield...');
     const executeShieldSig = await executeShield({
       wallet,
       connection,
@@ -753,10 +791,18 @@ async function testPrepareExecuteTransfer() {
     
     // Prepare transfer
     console.log('   Preparing transfer...');
-    // Convert Uint8Array[] to hex strings for prepareTransfer
-    const nullifiersHex = transferProof.nullifiers.map(n => Buffer.from(n).toString('hex'));
-    const outputCommitmentsHex = transferProof.outputCommitments.map(c => Buffer.from(c).toString('hex'));
-    const outputAmountCommitmentsHex = transferProof.outputAmountCommitments.map(c => Buffer.from(c).toString('hex'));
+    // CRITICAL FIX: Use nullifiers and output commitments directly from proof.publicInputs
+    // The proof.publicInputs format is: [oldRoot, newRoot, nullifier0, nullifier1, output0, output1, mint, pool]
+    // Extract nullifiers and commitments directly from publicInputs to ensure they match what the program expects
+    const nullifiersHex = transferProof.publicInputs.slice(2, 4); // nullifier0, nullifier1
+    const outputCommitmentsHex = transferProof.publicInputs.slice(4, 6); // output0, output1
+    // For outputAmountCommitments, use the computed values from transferProof (they're not in publicInputs)
+    const { canonicalizeHex } = await import('../lib/onchain/utils');
+    const outputAmountCommitmentsHex = transferProof.outputAmountCommitments.map(c => {
+      // Convert Uint8Array to hex string, then canonicalize to ensure consistency
+      const hex = Buffer.from(c).toString('hex');
+      return canonicalizeHex(hex);
+    });
     const { operationId: transferOpId, signature: prepareTransferSig } = await prepareTransfer({
       wallet,
       connection,

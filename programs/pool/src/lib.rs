@@ -2202,25 +2202,28 @@ pub mod ptf_pool {
     }
 
     // Proof Account Abstraction: Execute Shield
-    // CRITICAL: Match execute_transfer pattern exactly (no #[inline(never)])
     // WORKAROUND: Raw instruction handler that bypasses Anchor validation
     // Uses empty struct to avoid access violation in Anchor's validation phase
-    pub fn shield_execute<'info>(
+    // Marked as #[inline(never)] to reduce stack pressure (matching execute_unshield_core pattern)
+    // TESTING: Renamed from shield_execute to execute_shield_v2 to test if instruction name causes the issue
+    #[inline(never)]
+    pub fn execute_shield_v2<'info>(
         ctx: Context<'_, '_, 'info, 'info, ExecuteShield<'info>>,
         operation_id: [u8; 32],
     ) -> Result<()> {
-        msg!("shield_execute: start - bypassing Anchor validation");
-        
-        // Get clock first (matching execute_transfer_from pattern)
-        let clock = Clock::get()?;
+        msg!("execute_shield_v2: start - bypassing Anchor validation");
+        msg!("execute_shield_v2: step 1 - about to access remaining_accounts");
         
         // Extract ALL accounts from remaining_accounts manually
         // Expected order: payer, proof_vault, rent, pool_state, commitment_tree, origin_mint, ...
         // Note: _phantom is system_program in struct, so remaining_accounts has: payer, proof_vault, rent, ...
+        let remaining_len = ctx.remaining_accounts.len();
+        msg!("execute_shield_v2: step 2 - remaining_accounts len={}", remaining_len);
         require!(
-            ctx.remaining_accounts.len() >= 3,
+            remaining_len >= 3,
             PoolError::InvalidAccountOwner
         );
+        msg!("execute_shield_v2: step 3 - remaining_accounts validation passed");
         
         // Extract first 3 accounts from remaining_accounts (payer, proof_vault, rent)
         let payer_info = &ctx.remaining_accounts[0];
@@ -2233,7 +2236,7 @@ pub mod ptf_pool {
         // Validate payer (must be signer)
         require!(payer_info.is_signer, PoolError::Unauthorized);
         let payer_key = payer_info.key();
-        msg!("shield_execute: validated payer, key={}", payer_key);
+        msg!("execute_shield_v2: validated payer, key={}", payer_key);
         
         // Validate system_program (from _phantom)
         require_keys_eq!(
@@ -2272,10 +2275,17 @@ pub mod ptf_pool {
             remaining_for_extraction.len()
         );
         
+        // Get clock right before we need it (after account extraction to reduce stack pressure)
+        // CRITICAL: Calling Clock::get() at function start causes access violation
+        // Moving it here after account extraction to reduce early stack pressure
+        msg!("execute_shield_v2: getting clock before extract_shield_operation");
+        let clock = Clock::get()?;
+        msg!("execute_shield_v2: clock obtained");
+        
         // Extract shield operation using helper function
         let proof_vault_info_ref: &'info AccountInfo<'info> = unsafe { mem::transmute(proof_vault_info) };
         let operation_data = extract_shield_operation(proof_vault_info_ref, operation_id, &clock)?;
-        msg!("shield_execute: shield operation extracted");
+        msg!("execute_shield_v2: shield operation extracted");
         
         // Find origin_mint (token program owner, data_len >= 82)
         let mut origin_mint_info: Option<&'info AccountInfo<'info>> = None;
@@ -2290,7 +2300,7 @@ pub mod ptf_pool {
         
         let origin_mint_account_info = origin_mint_info.ok_or(PoolError::InvalidAccountOwner)?;
         let origin_mint_key = origin_mint_account_info.key();
-        msg!("shield_execute: found origin_mint, key={}", origin_mint_key);
+        msg!("execute_shield_v2: found origin_mint, key={}", origin_mint_key);
         
         // Find pool_state by trying to load it
         let mut pool_state_info: Option<&'info AccountInfo<'info>> = None;
@@ -2312,7 +2322,7 @@ pub mod ptf_pool {
         
         let pool_state_account_info = pool_state_info.ok_or(PoolError::InvalidAccountOwner)?;
         let pool_state_key = pool_state_account_info.key();
-        msg!("shield_execute: found pool_state, key={}", pool_state_key);
+        msg!("execute_shield_v2: found pool_state, key={}", pool_state_key);
         
         // Derive expected addresses using helper function
         let addresses = derive_shield_addresses(&origin_mint_key, &pool_state_key, ctx.program_id)?;
@@ -2329,7 +2339,7 @@ pub mod ptf_pool {
             addresses.expected_vault_token,
             origin_mint_key,
         )?;
-        msg!("shield_execute: extract_shield_accounts completed");
+        msg!("execute_shield_v2: extract_shield_accounts completed");
         
         // Validate all required accounts are present
         let hook_config_info = extracted.hook_config_info.ok_or(PoolError::InvalidAccountOwner)?;
@@ -2390,14 +2400,14 @@ pub mod ptf_pool {
             extracted.twin_mint_info,
             mint_mapping_info,
         )?;
-        msg!("shield_execute: wrappers created");
+        msg!("execute_shield_v2: wrappers created");
         
         // Create AccountLoader wrappers for pool_state and commitment_tree
         let (pool_state_loader_box, commitment_tree_loader_box) = create_shield_loaders(
             pool_state_account_info,
             commitment_tree_account_info,
         )?;
-        msg!("shield_execute: loaders created");
+        msg!("execute_shield_v2: loaders created");
         
         // Create Shield struct from wrappers (using same pattern as execute_unshield)
         // Use unsafe transmute to extend lifetimes to 'static for struct construction
@@ -2474,7 +2484,7 @@ pub mod ptf_pool {
         
         // Initialize shield_claim if needed
         if shield_claim_info.owner == &system_program::ID {
-            msg!("shield_execute: initializing shield_claim account");
+            msg!("execute_shield_v2: initializing shield_claim account");
             let rent = Rent::get()?;
             let required_lamports = rent.minimum_balance(ShieldClaim::SPACE);
             let current_lamports = shield_claim_info.lamports();
@@ -2563,9 +2573,9 @@ pub mod ptf_pool {
         };
         
         // Call execute_shield_core
-        msg!("shield_execute: calling execute_shield_core");
+        msg!("execute_shield_v2: calling execute_shield_core");
         execute_shield_core(core_ctx, &operation_data.shield_args)?;
-        msg!("shield_execute: execute_shield_core completed");
+        msg!("execute_shield_v2: execute_shield_core completed");
         
         // Mark operation as completed
         let proof_vault_info_ref_final: &'info AccountInfo<'info> = unsafe { mem::transmute(proof_vault_info) };
@@ -2583,7 +2593,7 @@ pub mod ptf_pool {
         }
         proof_vault_account_final.last_used = clock.unix_timestamp;
         
-        msg!("shield_execute: completed successfully");
+        msg!("execute_shield_v2: completed successfully");
         Ok(())
     }
 
