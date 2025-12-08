@@ -14,12 +14,51 @@ For each problem:
 
 ---
 
+## Problem: ExecuteUnshield nullifier_set Account Ownership Validation
+
+**Status:** 🟢 RESOLVED - Removed nullifier_set from struct and IDL  
+**Date Started:** 2024-12-08  
+**Date Resolved:** 2024-12-08  
+**Solution:** Removed `nullifier_set` from `ExecuteUnshield` struct and manually extracted it from `remaining_accounts` in the function. Also manually removed it from IDL since `anchor build` failed to regenerate it.
+
+### Description
+`ExecuteUnshield` was failing with `AccountOwnedByWrongProgram` error for `nullifier_set` because:
+- Anchor validates accounts BEFORE the instruction code runs
+- `nullifier_set` might not exist yet (needs `init_if_needed`)
+- Anchor's validation fails when account doesn't exist (owner is `NativeLoader`)
+
+### Solution Applied
+1. ✅ Removed `nullifier_set` from `ExecuteUnshield` struct definition
+2. ✅ Updated `execute_unshield` function to manually extract `nullifier_set` from `remaining_accounts`
+3. ✅ Manually removed `nullifier_set` from IDL (21 accounts -> 20 accounts)
+4. ✅ Fixed `PendingShield` type in IDL (changed `publicKey` to `pubkey`)
+
+### Key Finding
+**Why Anchor still included nullifier_set in IDL:**
+- `anchor build` failed due to factory compilation issues (`ptf_verifier_groth16` incompatible rustc version)
+- IDL wasn't regenerated, so it still had the old structure
+- Manually editing the IDL is a temporary workaround until build succeeds
+
+---
+
 ## Problem: Access Violation in ExecuteShield
 
-**Status:** 🟢 RESOLVED - Implemented raw instruction workaround (shield_execute_raw)  
+**Status:** 🟡 IN PROGRESS - Raw instruction workaround implemented, full restoration needed  
 **Date Started:** 2024-12-07  
-**Date Resolved:** 2024-12-07  
-**Solution:** Created `shield_execute_raw` instruction with minimal struct (_phantom only) that bypasses Anchor validation by extracting all accounts manually from remaining_accounts
+**Date Last Updated:** 2024-12-08  
+**Solution:** Created raw instruction pattern with minimal struct (_phantom only) that bypasses Anchor validation. Currently in minimal test mode - needs full implementation restoration.
+
+### Critical Finding (2024-12-08)
+
+**Minimal test confirms Anchor bug:** Even a function that just returns `Ok(())` fails with access violation before function code runs. This definitively proves the issue is in Anchor's dispatch/validation phase, not our code.
+
+**Evidence:**
+- Function with only `msg!("test"); Ok(())` fails
+- We see "Program log: Instruction: ShieldExecute" (Anchor's log) but not our function log
+- Access violation at `0x2000059c0` in stack frame 5
+- Same issue as previously reported (address `0x200005880` - slight difference due to binary size)
+
+**This is the same bug we already reported to Anchor GitHub.**
 
 ### Description
 After fixing `AccountNotSigner`, pool initialization succeeds, but `ExecuteShield` fails with:
