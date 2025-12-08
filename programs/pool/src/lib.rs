@@ -2205,13 +2205,13 @@ pub mod ptf_pool {
     // CRITICAL: Match execute_transfer pattern exactly (no #[inline(never)])
     // WORKAROUND: Raw instruction handler that bypasses Anchor validation
     // Uses empty struct to avoid access violation in Anchor's validation phase
-    pub fn shield_execute_raw<'info>(
-        ctx: Context<'_, '_, 'info, 'info, ExecuteShieldRaw<'info>>,
+    pub fn shield_execute<'info>(
+        ctx: Context<'_, '_, 'info, 'info, ExecuteShield<'info>>,
         operation_id: [u8; 32],
     ) -> Result<()> {
-        msg!("shield_execute_raw: start - bypassing Anchor validation");
+        msg!("shield_execute: start - bypassing Anchor validation");
         
-        // Get clock first
+        // Get clock first (matching execute_transfer_from pattern)
         let clock = Clock::get()?;
         
         // Extract ALL accounts from remaining_accounts manually
@@ -2233,7 +2233,7 @@ pub mod ptf_pool {
         // Validate payer (must be signer)
         require!(payer_info.is_signer, PoolError::Unauthorized);
         let payer_key = payer_info.key();
-        msg!("shield_execute_raw: validated payer, key={}", payer_key);
+        msg!("shield_execute: validated payer, key={}", payer_key);
         
         // Validate system_program (from _phantom)
         require_keys_eq!(
@@ -2263,15 +2263,22 @@ pub mod ptf_pool {
         );
         
         // Extract remaining accounts (pool_state, commitment_tree, origin_mint, and all others)
+        // Skip first 3: payer, proof_vault, rent
         let remaining_for_extraction = &ctx.remaining_accounts[3..];
         
-        // Extract pool_state, commitment_tree, and origin_mint from remaining accounts
-        msg!("shield_execute_raw: extracting pool_state, commitment_tree, origin_mint from remaining_accounts");
-        let mut pool_state_info: Option<&'info AccountInfo<'info>> = None;
-        let mut commitment_tree_info: Option<&'info AccountInfo<'info>> = None;
-        let mut origin_mint_info: Option<&'info AccountInfo<'info>> = None;
+        msg!(
+            "shield_execute: extracting accounts from remaining_accounts (total_len={}, remaining_len={})",
+            ctx.remaining_accounts.len(),
+            remaining_for_extraction.len()
+        );
+        
+        // Extract shield operation using helper function
+        let proof_vault_info_ref: &'info AccountInfo<'info> = unsafe { mem::transmute(proof_vault_info) };
+        let operation_data = extract_shield_operation(proof_vault_info_ref, operation_id, &clock)?;
+        msg!("shield_execute: shield operation extracted");
         
         // Find origin_mint (token program owner, data_len >= 82)
+        let mut origin_mint_info: Option<&'info AccountInfo<'info>> = None;
         for account in remaining_for_extraction.iter() {
             if account.owner == &anchor_spl::token::ID || account.owner == &anchor_spl::token_2022::ID {
                 if account.data_len() >= 82 {
@@ -2283,57 +2290,32 @@ pub mod ptf_pool {
         
         let origin_mint_account_info = origin_mint_info.ok_or(PoolError::InvalidAccountOwner)?;
         let origin_mint_key = origin_mint_account_info.key();
-        msg!("shield_execute_raw: found origin_mint, key={}", origin_mint_key);
+        msg!("shield_execute: found origin_mint, key={}", origin_mint_key);
         
-        // Derive pool addresses
-        let pool_addresses = ptf_common::addresses::PoolAddresses::derive_all(
-            &origin_mint_key,
-            ctx.program_id,
-        );
-        
-        // Extract pool_state and commitment_tree
+        // Find pool_state by trying to load it
+        let mut pool_state_info: Option<&'info AccountInfo<'info>> = None;
         for account in remaining_for_extraction.iter() {
-            let key = account.key();
-            if key == pool_addresses.pool_state {
-                pool_state_info = Some(account);
-            } else if key == pool_addresses.commitment_tree {
-                commitment_tree_info = Some(account);
+            if *account.owner == *ctx.program_id && account.data_len() >= 8 + 32 {
+                let account_ref: &'info AccountInfo<'info> = unsafe { mem::transmute(account) };
+                if let Ok(loader) = AccountLoader::<PoolState>::try_from(account_ref) {
+                    if let Ok(state) = loader.load() {
+                        if state.origin_mint == origin_mint_key {
+                            pool_state_info = Some(account);
+                            drop(state);
+                            break;
+                        }
+                        drop(state);
+                    }
+                }
             }
         }
         
         let pool_state_account_info = pool_state_info.ok_or(PoolError::InvalidAccountOwner)?;
         let pool_state_key = pool_state_account_info.key();
-        msg!("shield_execute_raw: found pool_state, key={}", pool_state_key);
-        
-        // Load pool_state and validate origin_mint matches
-        let pool_state_info_ref: &'info AccountInfo<'info> = unsafe { mem::transmute(pool_state_account_info) };
-        let pool_state_loader_box: Box<AccountLoader<'info, PoolState>> = Box::new(AccountLoader::try_from(pool_state_info_ref)
-            .map_err(|_| PoolError::AccountDataTooShort)?);
-        let pool_state = pool_state_loader_box.load()?;
-        let pool_state_origin_mint = pool_state.origin_mint;
-        drop(pool_state);
-        
-        // CRITICAL VALIDATION: Ensure pool_state.origin_mint matches the origin_mint account
-        require_keys_eq!(
-            pool_state_origin_mint,
-            origin_mint_key,
-            PoolError::OriginMintMismatch,
-        );
-        
-        // Keep pool_state_loader alive for later use
-        let pool_state_loader_ref: &'info AccountLoader<'info, PoolState> = unsafe { mem::transmute(pool_state_loader_box.as_ref()) };
-        
-        // Extract shield operation using helper function
-        let proof_vault_info_ref: &'info AccountInfo<'info> = unsafe { mem::transmute(proof_vault_info) };
-        let operation_data = extract_shield_operation(proof_vault_info_ref, operation_id, &clock)?;
+        msg!("shield_execute: found pool_state, key={}", pool_state_key);
         
         // Derive expected addresses using helper function
         let addresses = derive_shield_addresses(&origin_mint_key, &pool_state_key, ctx.program_id)?;
-        
-        msg!(
-            "shield_execute_raw: extracting accounts from remaining_accounts (len={})",
-            remaining_for_extraction.len()
-        );
         
         // Extract accounts from remaining_accounts using helper function
         let extracted = extract_shield_accounts(
@@ -2347,12 +2329,9 @@ pub mod ptf_pool {
             addresses.expected_vault_token,
             origin_mint_key,
         )?;
-        msg!("shield_execute_raw: step 6b - extract_shield_accounts completed");
+        msg!("shield_execute: extract_shield_accounts completed");
         
         // Validate all required accounts are present
-        msg!("shield_execute_raw: step 7 - validating account presence");
-        
-        // Unwrap extracted accounts
         let hook_config_info = extracted.hook_config_info.ok_or(PoolError::InvalidAccountOwner)?;
         let hook_whitelist_info = extracted.hook_whitelist_info.ok_or(PoolError::InvalidAccountOwner)?;
         let nullifier_set_info = extracted.nullifier_set_info.ok_or(PoolError::InvalidAccountOwner)?;
@@ -2362,13 +2341,21 @@ pub mod ptf_pool {
         let depositor_token_account_info = extracted.depositor_token_account_info.ok_or(PoolError::InvalidAccountOwner)?;
         let verifier_program_info = extracted.verifier_program_info.ok_or(PoolError::InvalidAccountOwner)?;
         let verifying_key_info = extracted.verifying_key_info.ok_or(PoolError::InvalidAccountOwner)?;
-        let verifying_key_info_stable: &'info AccountInfo<'info> = unsafe { mem::transmute(verifying_key_info) };
-        let _keep_alive_info = verifying_key_info;
-        let shield_claim_info_stable = extracted.shield_claim_info.ok_or(PoolError::InvalidAccountOwner)?;
+        let shield_claim_info = extracted.shield_claim_info.ok_or(PoolError::InvalidAccountOwner)?;
         let mint_mapping_info = extracted.mint_mapping_info.ok_or(PoolError::InvalidAccountOwner)?;
         let factory_state_info = extracted.factory_state_info.ok_or(PoolError::InvalidAccountOwner)?;
         let vault_program_info = extracted.vault_program_info.ok_or(PoolError::InvalidAccountOwner)?;
         let token_program_info = extracted.token_program_info.ok_or(PoolError::InvalidAccountOwner)?;
+        
+        // Find commitment_tree
+        let mut commitment_tree_info: Option<&'info AccountInfo<'info>> = None;
+        for account in remaining_for_extraction.iter() {
+            if account.key() == addresses.pool_addresses.commitment_tree {
+                commitment_tree_info = Some(account);
+                break;
+            }
+        }
+        let commitment_tree_account_info = commitment_tree_info.ok_or(PoolError::InvalidAccountOwner)?;
         
         // Validate PDAs
         require_keys_eq!(hook_config_info.key(), addresses.pool_addresses.hook_config, PoolError::InvalidAccountOwner);
@@ -2376,63 +2363,7 @@ pub mod ptf_pool {
         require_keys_eq!(nullifier_set_info.key(), addresses.pool_addresses.nullifier_set, PoolError::InvalidAccountOwner);
         require_keys_eq!(note_ledger_info.key(), addresses.pool_addresses.note_ledger, PoolError::InvalidAccountOwner);
         require_keys_eq!(vault_state_info.key(), addresses.expected_vault_state, PoolError::InvalidAccountOwner);
-        require_keys_eq!(shield_claim_info_stable.key(), addresses.expected_shield_claim, PoolError::ShieldClaimMismatch);
-        
-        // Initialize shield_claim account if needed
-        if shield_claim_info_stable.owner == &system_program::ID {
-            msg!("shield_execute_raw: initializing shield_claim account");
-            let rent = Rent::get()?;
-            let required_lamports = rent.minimum_balance(ShieldClaim::SPACE);
-            let current_lamports = shield_claim_info_stable.lamports();
-            if required_lamports > current_lamports {
-                let lamports_needed = required_lamports - current_lamports;
-                invoke(
-                    &anchor_lang::solana_program::system_instruction::transfer(
-                        &payer_info.key(),
-                        shield_claim_info_stable.key,
-                        lamports_needed,
-                    ),
-                    &[
-                        payer_info.clone(),
-                        shield_claim_info_stable.clone(),
-                        system_program_info.clone(),
-                    ],
-                )?;
-            }
-            let (_, claim_bump_for_init) = AddressDeriver::derive_shield_claim(&pool_state_key, ctx.program_id);
-            let claim_seeds: &[&[u8]] = &[seeds::CLAIM, pool_state_key.as_ref(), &[claim_bump_for_init]];
-            invoke_signed(
-                &anchor_lang::solana_program::system_instruction::allocate(
-                    shield_claim_info_stable.key,
-                    ShieldClaim::SPACE as u64,
-                ),
-                &[
-                    shield_claim_info_stable.clone(),
-                    system_program_info.clone(),
-                ],
-                &[claim_seeds],
-            )?;
-            invoke_signed(
-                &anchor_lang::solana_program::system_instruction::assign(
-                    shield_claim_info_stable.key,
-                    ctx.program_id,
-                ),
-                &[
-                    shield_claim_info_stable.clone(),
-                    system_program_info.clone(),
-                ],
-                &[claim_seeds],
-            )?;
-            {
-                let mut data = shield_claim_info_stable.try_borrow_mut_data()?;
-                for byte in data.iter_mut() {
-                    *byte = 0;
-                }
-                let disc = ShieldClaim::DISCRIMINATOR;
-                data[..disc.len()].copy_from_slice(&disc);
-            }
-        }
-        
+        require_keys_eq!(shield_claim_info.key(), addresses.expected_shield_claim, PoolError::ShieldClaimMismatch);
         require_keys_eq!(mint_mapping_info.key(), addresses.expected_mint_mapping, PoolError::OriginMintMismatch);
         require_keys_eq!(factory_state_info.key(), addresses.expected_factory_state, PoolError::InvalidAccountOwner);
         require_keys_eq!(verifying_key_info.key(), addresses.expected_verifying_key, PoolError::InvalidAccountOwner);
@@ -2443,31 +2374,6 @@ pub mod ptf_pool {
         require!(vault_program_info.executable, PoolError::InvalidAccountOwner);
         require!(token_program_info.executable, PoolError::InvalidAccountOwner);
         
-        // Validate token accounts
-        require_keys_eq!(*vault_token_account_info.owner, anchor_spl::token::ID, PoolError::InvalidAccountOwner);
-        require_keys_eq!(*depositor_token_account_info.owner, anchor_spl::token::ID, PoolError::InvalidAccountOwner);
-        
-        // Deserialize token accounts to validate mint matches
-        let vault_token_data = vault_token_account_info.try_borrow_data()?;
-        require!(vault_token_data.len() >= 165, PoolError::AccountDataTooShort);
-        let vault_token_mint = Pubkey::try_from(&vault_token_data[0..32])
-            .map_err(|_| PoolError::AccountDataCorrupt)?;
-        require_keys_eq!(vault_token_mint, origin_mint_key, PoolError::OriginMintMismatch);
-        drop(vault_token_data);
-        
-        let depositor_token_data = depositor_token_account_info.try_borrow_data()?;
-        require!(depositor_token_data.len() >= 165, PoolError::AccountDataTooShort);
-        let depositor_token_mint = Pubkey::try_from(&depositor_token_data[0..32])
-            .map_err(|_| PoolError::AccountDataCorrupt)?;
-        require_keys_eq!(depositor_token_mint, origin_mint_key, PoolError::OriginMintMismatch);
-        drop(depositor_token_data);
-        msg!("shield_execute_raw: step 4a - token accounts validated");
-        
-        // Validate hook_whitelist
-        require!(hook_whitelist_info.data_len() >= HookWhitelist::SPACE, PoolError::AccountDataTooShort);
-        require_keys_eq!(*hook_whitelist_info.owner, *ctx.program_id, PoolError::InvalidAccountOwner);
-        msg!("shield_execute_raw: step 4c - hook_whitelist validated");
-        
         // Create typed wrappers using helper function
         let wrappers = create_shield_wrappers(
             hook_config_info,
@@ -2484,126 +2390,257 @@ pub mod ptf_pool {
             extracted.twin_mint_info,
             mint_mapping_info,
         )?;
-        msg!("shield_execute_raw: step 5a - wrappers created");
+        msg!("shield_execute: wrappers created");
         
-        // Create AccountLoader wrapper for commitment_tree
-        let commitment_tree_account_info = commitment_tree_info.ok_or(PoolError::InvalidAccountOwner)?;
-        let commitment_tree_info_ref: &'info AccountInfo<'info> = unsafe { mem::transmute(commitment_tree_account_info) };
-        let commitment_tree_loader_box: Box<AccountLoader<'info, CommitmentTree>> = Box::new(AccountLoader::try_from(commitment_tree_info_ref)
-            .map_err(|_| PoolError::AccountDataTooShort)?);
-        let commitment_tree_loader: &'info AccountLoader<'info, CommitmentTree> = unsafe { mem::transmute(commitment_tree_loader_box.as_ref()) };
-        msg!("shield_execute_raw: step 5b - commitment_tree_loader created");
+        // Create AccountLoader wrappers for pool_state and commitment_tree
+        let (pool_state_loader_box, commitment_tree_loader_box) = create_shield_loaders(
+            pool_state_account_info,
+            commitment_tree_account_info,
+        )?;
+        msg!("shield_execute: loaders created");
         
-        // Create payer wrapper
-        let payer_info_ref: &'info AccountInfo<'info> = unsafe { mem::transmute(payer_info) };
-        let payer_wrapper: &'info Signer<'info> = {
-            let payer_info_static: &'static AccountInfo<'static> = unsafe { mem::transmute(payer_info_ref) };
-            let payer_wrapper_temp: Signer<'_> = Signer::try_from(payer_info_static)
-            .map_err(|_| PoolError::Unauthorized)?;
-            let payer_wrapper_box = Box::new(payer_wrapper_temp);
-            unsafe { mem::transmute(payer_wrapper_box.as_ref()) }
-        };
-        msg!("shield_execute_raw: step 6b - payer_wrapper created");
-        
-        // Create origin_mint wrapper
-        let origin_mint_info_ref: &'info AccountInfo<'info> = unsafe { mem::transmute(origin_mint_account_info) };
-        let origin_mint_wrapper: &'info InterfaceAccount<'info, Mint> = {
-            let origin_mint_info_static: &'static AccountInfo<'static> = unsafe { mem::transmute(origin_mint_info_ref) };
-            let origin_mint_wrapper_temp: InterfaceAccount<'_, Mint> = InterfaceAccount::try_from(origin_mint_info_static)
+        // Create Shield struct from wrappers (using same pattern as execute_unshield)
+        // Use unsafe transmute to extend lifetimes to 'static for struct construction
+        let pool_state_loader_temp: AccountLoader<'_, PoolState> = AccountLoader::try_from(pool_state_account_info)
             .map_err(|_| PoolError::AccountDataTooShort)?;
-            let origin_mint_wrapper_box = Box::new(origin_mint_wrapper_temp);
-            unsafe { mem::transmute(origin_mint_wrapper_box.as_ref()) }
-        };
-        msg!("shield_execute_raw: step 6c - origin_mint_wrapper created");
+        let pool_state_loader: AccountLoader<'static, PoolState> = unsafe { mem::transmute(pool_state_loader_temp) };
         
-        // Ensure program_id has 'info lifetime
-        let program_id_ref: &'info Pubkey = unsafe { mem::transmute(ctx.program_id) };
+        let commitment_tree_loader_temp: AccountLoader<'_, CommitmentTree> = AccountLoader::try_from(commitment_tree_account_info)
+            .map_err(|_| PoolError::AccountDataTooShort)?;
+        let commitment_tree_loader: AccountLoader<'static, CommitmentTree> = unsafe { mem::transmute(commitment_tree_loader_temp) };
         
-        // Handle twin_mint conversion
-        let twin_mint_opt = wrappers.twin_mint_wrapper.as_ref().map(|w| unsafe { mem::transmute::<&UncheckedAccount<'info>, UncheckedAccount<'info>>(w.as_ref()) });
-        msg!("shield_execute_raw: step 7a - twin_mint_opt created, about to call execute_shield_impl");
+        let hook_config_wrapper_temp: UncheckedAccount<'_> = *wrappers.hook_config_wrapper;
+        let hook_config_wrapper: UncheckedAccount<'static> = unsafe { mem::transmute(hook_config_wrapper_temp) };
         
-        // Call execute_shield_impl with all validated accounts
-        let result = execute_shield_impl(
-            program_id_ref,
-            pool_state_loader_ref,
-            wrappers.hook_config_wrapper.as_ref(),
-            wrappers.hook_whitelist_account.as_ref(),
-            wrappers.nullifier_set_wrapper.as_ref(),
-            commitment_tree_loader,
-            wrappers.note_ledger_wrapper.as_ref(),
-            wrappers.vault_state_wrapper.as_ref(),
-            wrappers.vault_token_account_wrapper.as_ref(),
-            wrappers.depositor_token_account_wrapper.as_ref(),
-            &twin_mint_opt,
-            wrappers.verifier_program.as_ref(),
-            verifying_key_info_stable,
-            shield_claim_info_stable,
-            payer_wrapper,
-            payer_info_ref,
-            origin_mint_wrapper,
-            origin_mint_info_ref,
-            wrappers.mint_mapping_account.as_ref(),
-            wrappers.factory_state_wrapper.as_ref(),
-            wrappers.vault_program_wrapper.as_ref(),
-            wrappers.token_program_wrapper.as_ref(),
-            remaining_for_extraction,
-            &operation_data.shield_args,
-        );
+        let hook_whitelist_account_temp: Account<'_, HookWhitelist> = *wrappers.hook_whitelist_account;
+        let hook_whitelist_account: Account<'static, HookWhitelist> = unsafe { mem::transmute(hook_whitelist_account_temp) };
         
-        // Update proof_vault operation status
-        if result.is_ok() {
-            let mut proof_vault_account: Account<'info, UserProofVault> = Account::try_from(proof_vault_info_ref)?;
-            if let Some(op) = proof_vault_account.prepared_operations.iter_mut().find(|op| matches!(op, PreparedOperation::Shield { operation_id: id, .. } if *id == operation_id)) {
-                if let PreparedOperation::Shield { status, .. } = op {
-                    *status = OperationStatus::Completed;
-                }
+        let nullifier_set_wrapper_temp: UncheckedAccount<'_> = *wrappers.nullifier_set_wrapper;
+        let nullifier_set_wrapper: UncheckedAccount<'static> = unsafe { mem::transmute(nullifier_set_wrapper_temp) };
+        
+        let note_ledger_wrapper_temp: UncheckedAccount<'_> = *wrappers.note_ledger_wrapper;
+        let note_ledger_wrapper: UncheckedAccount<'static> = unsafe { mem::transmute(note_ledger_wrapper_temp) };
+        
+        let vault_state_wrapper_temp: UncheckedAccount<'_> = *wrappers.vault_state_wrapper;
+        let vault_state_wrapper: UncheckedAccount<'static> = unsafe { mem::transmute(vault_state_wrapper_temp) };
+        
+        let vault_token_account_wrapper_temp: InterfaceAccount<'_, TokenAccount> = *wrappers.vault_token_account_wrapper;
+        let vault_token_account_wrapper: InterfaceAccount<'static, TokenAccount> = unsafe { mem::transmute(vault_token_account_wrapper_temp) };
+        
+        let depositor_token_account_wrapper_temp: InterfaceAccount<'_, TokenAccount> = *wrappers.depositor_token_account_wrapper;
+        let depositor_token_account_wrapper: InterfaceAccount<'static, TokenAccount> = unsafe { mem::transmute(depositor_token_account_wrapper_temp) };
+        
+        let twin_mint_wrapper: Option<UncheckedAccount<'static>> = wrappers.twin_mint_wrapper.map(|w| {
+            let temp: UncheckedAccount<'_> = *w;
+            unsafe { mem::transmute(temp) }
+        });
+        
+        let verifier_program_wrapper_temp: UncheckedAccount<'_> = UncheckedAccount::try_from(verifier_program_info);
+        let verifier_program_wrapper: UncheckedAccount<'static> = unsafe { mem::transmute(verifier_program_wrapper_temp) };
+        
+        let verifying_key_wrapper_temp: UncheckedAccount<'_> = UncheckedAccount::try_from(verifying_key_info);
+        let verifying_key_wrapper: UncheckedAccount<'static> = unsafe { mem::transmute(verifying_key_wrapper_temp) };
+        
+        let mint_mapping_account_temp: Account<'_, MintMapping> = *wrappers.mint_mapping_account;
+        let mint_mapping_account: Account<'static, MintMapping> = unsafe { mem::transmute(mint_mapping_account_temp) };
+        
+        let factory_state_wrapper_temp: UncheckedAccount<'_> = *wrappers.factory_state_wrapper;
+        let factory_state_wrapper: UncheckedAccount<'static> = unsafe { mem::transmute(factory_state_wrapper_temp) };
+        
+        let vault_program_wrapper_temp: Program<'_, PtfVault> = *wrappers.vault_program_wrapper;
+        let vault_program_wrapper: Program<'static, PtfVault> = unsafe { mem::transmute(vault_program_wrapper_temp) };
+        
+        let token_program_wrapper_temp: Interface<'_, TokenInterface> = *wrappers.token_program_wrapper;
+        let token_program_wrapper: Interface<'static, TokenInterface> = unsafe { mem::transmute(token_program_wrapper_temp) };
+        
+        let system_program_info_static: &'static AccountInfo<'static> = unsafe { mem::transmute(&system_program_info) };
+        let system_program_wrapper_temp: Program<'_, System> = Program::try_from(system_program_info_static)
+            .map_err(|_| PoolError::AccountDataTooShort)?;
+        let system_program_wrapper: Program<'static, System> = unsafe { mem::transmute(system_program_wrapper_temp) };
+        
+        let payer_info_static: &'static AccountInfo<'static> = unsafe { mem::transmute(payer_info) };
+        let payer_wrapper_temp: Signer<'_> = Signer::try_from(payer_info_static)
+            .map_err(|_| PoolError::Unauthorized)?;
+        let payer_wrapper: Signer<'static> = unsafe { mem::transmute(payer_wrapper_temp) };
+        
+        let origin_mint_info_static: &'static AccountInfo<'static> = unsafe { mem::transmute(origin_mint_account_info) };
+        let origin_mint_wrapper_temp: InterfaceAccount<'_, Mint> = InterfaceAccount::try_from(origin_mint_info_static)
+            .map_err(|_| PoolError::AccountDataTooShort)?;
+        let origin_mint_wrapper: InterfaceAccount<'static, Mint> = unsafe { mem::transmute(origin_mint_wrapper_temp) };
+        
+        let rent_info_static: &'static AccountInfo<'static> = unsafe { mem::transmute(rent_info) };
+        let rent_wrapper: Sysvar<'static, Rent> = Sysvar::from_account_info(rent_info_static)
+            .map_err(|_| PoolError::AccountDataTooShort)?;
+        
+        // Initialize shield_claim if needed
+        if shield_claim_info.owner == &system_program::ID {
+            msg!("shield_execute: initializing shield_claim account");
+            let rent = Rent::get()?;
+            let required_lamports = rent.minimum_balance(ShieldClaim::SPACE);
+            let current_lamports = shield_claim_info.lamports();
+            if required_lamports > current_lamports {
+                let lamports_needed = required_lamports - current_lamports;
+                invoke(
+                    &anchor_lang::solana_program::system_instruction::transfer(
+                        &payer_info.key(),
+                        shield_claim_info.key,
+                        lamports_needed,
+                    ),
+                    &[
+                        payer_info.clone(),
+                        shield_claim_info.clone(),
+                        system_program_info.clone(),
+                    ],
+                )?;
             }
-            proof_vault_account.last_used = clock.unix_timestamp;
+            let (_, claim_bump_for_init) = AddressDeriver::derive_shield_claim(&pool_state_key, ctx.program_id);
+            let claim_seeds: &[&[u8]] = &[seeds::CLAIM, pool_state_key.as_ref(), &[claim_bump_for_init]];
+            invoke_signed(
+                &anchor_lang::solana_program::system_instruction::allocate(
+                    shield_claim_info.key,
+                    ShieldClaim::SPACE as u64,
+                ),
+                &[
+                    shield_claim_info.clone(),
+                    system_program_info.clone(),
+                ],
+                &[claim_seeds],
+            )?;
+            invoke_signed(
+                &anchor_lang::solana_program::system_instruction::assign(
+                    shield_claim_info.key,
+                    ctx.program_id,
+                ),
+                &[
+                    shield_claim_info.clone(),
+                    system_program_info.clone(),
+                ],
+                &[claim_seeds],
+            )?;
+            {
+                let mut data = shield_claim_info.try_borrow_mut_data()?;
+                for byte in data.iter_mut() {
+                    *byte = 0;
+                }
+                let disc = ShieldClaim::DISCRIMINATOR;
+                data[..disc.len()].copy_from_slice(&disc);
+            }
         }
         
-        result
+        let shield_claim_account_temp: Account<'_, ShieldClaim> = Account::try_from(shield_claim_info)
+            .map_err(|_| PoolError::AccountDataTooShort)?;
+        let shield_claim_account: Account<'static, ShieldClaim> = unsafe { mem::transmute(shield_claim_account_temp) };
+        
+        let mut shield_accounts = Shield {
+            pool_state: pool_state_loader,
+            hook_config: hook_config_wrapper,
+            hook_whitelist: hook_whitelist_account,
+            nullifier_set: nullifier_set_wrapper,
+            commitment_tree: commitment_tree_loader,
+            note_ledger: note_ledger_wrapper,
+            vault_state: vault_state_wrapper,
+            vault_token_account: vault_token_account_wrapper,
+            depositor_token_account: depositor_token_account_wrapper,
+            twin_mint: twin_mint_wrapper,
+            verifier_program: verifier_program_wrapper,
+            verifying_key: verifying_key_wrapper,
+            shield_claim: shield_claim_account,
+            payer: payer_wrapper,
+            origin_mint: origin_mint_wrapper,
+            mint_mapping: mint_mapping_account,
+            factory_state: factory_state_wrapper,
+            vault_program: vault_program_wrapper,
+            token_program: token_program_wrapper,
+            system_program: system_program_wrapper,
+            rent: rent_wrapper,
+        };
+        
+        // Create CoreContext (keep shield_accounts in scope)
+        let core_ctx = CoreContext {
+            program_id: unsafe { mem::transmute(ctx.program_id) },
+            accounts: unsafe { mem::transmute(&mut shield_accounts) },
+            remaining_accounts: unsafe { mem::transmute(ctx.remaining_accounts) },
+        };
+        
+        // Call execute_shield_core
+        msg!("shield_execute: calling execute_shield_core");
+        execute_shield_core(core_ctx, &operation_data.shield_args)?;
+        msg!("shield_execute: execute_shield_core completed");
+        
+        // Mark operation as completed
+        let proof_vault_info_ref_final: &'info AccountInfo<'info> = unsafe { mem::transmute(proof_vault_info) };
+        let mut proof_vault_account_final: Account<'info, UserProofVault> = Account::try_from(proof_vault_info_ref_final)
+            .map_err(|_| PoolError::AccountDataTooShort)?;
+        let operation_idx_final = proof_vault_account_final
+            .prepared_operations
+            .iter()
+            .position(|op| matches!(op, PreparedOperation::Shield { operation_id: id, .. } if *id == operation_id))
+            .ok_or(PoolError::OperationNotFound)?;
+        if let Some(operation) = proof_vault_account_final.prepared_operations.get_mut(operation_idx_final) {
+            if let PreparedOperation::Shield { status, .. } = operation {
+                *status = OperationStatus::Completed;
+            }
+        }
+        proof_vault_account_final.last_used = clock.unix_timestamp;
+        
+        msg!("shield_execute: completed successfully");
+        Ok(())
     }
 
-    // WORKAROUND TEST: Renamed from execute_shield to shield_execute to test if instruction name causes access violation
-    // KEPT FOR REFERENCE - NOT USED (causes access violation)
-    #[allow(dead_code)]
-    pub fn shield_execute<'info>(
-        mut ctx: Context<'_, '_, 'info, 'info, ExecuteShield<'info>>,
-        operation_id: [u8; 32],
-    ) -> Result<()> {
-        // CRITICAL: Match execute_transfer pattern EXACTLY - call Clock::get() first
-        let clock = Clock::get()?;
-        msg!("shield_execute: start");
+    // OLD VERSION REMOVED - This function caused access violations in Anchor's validation phase
+    // The new shield_execute (formerly shield_execute_raw) uses minimal struct to bypass Anchor validation
 
-        // Validate payer manually (must be signer) - matching ExecuteTransfer pattern
-        let payer_info = ctx.accounts.payer.to_account_info();
+    // Proof Account Abstraction: Execute Unshield
+    // Uses empty struct to avoid access violation in Anchor's validation phase
+    pub fn execute_unshield<'info>(
+        ctx: Context<'_, '_, 'info, 'info, ExecuteUnshield<'info>>,
+        operation_id: [u8; 32],
+        mode: UnshieldMode,
+    ) -> Result<()> {
+        msg!("execute_unshield: start - bypassing Anchor validation");
+        
+        // Get clock first
+        let clock = Clock::get()?;
+        
+        // Extract ALL accounts from remaining_accounts manually
+        // Expected order: payer, proof_vault, rent, pool_state, commitment_tree, ...
+        // Note: _phantom is system_program in struct, so remaining_accounts has: payer, proof_vault, rent, ...
+        require!(
+            ctx.remaining_accounts.len() >= 3,
+            PoolError::InvalidAccountOwner
+        );
+        
+        // Extract first 3 accounts from remaining_accounts (payer, proof_vault, rent)
+        let payer_info = &ctx.remaining_accounts[0];
+        let proof_vault_info = &ctx.remaining_accounts[1];
+        let rent_info = &ctx.remaining_accounts[2];
+        
+        // Use _phantom as system_program (it's system_program in the struct)
+        let system_program_info = ctx.accounts._phantom.to_account_info();
+        
+        // Validate payer (must be signer)
         require!(payer_info.is_signer, PoolError::Unauthorized);
         let payer_key = payer_info.key();
-        msg!("execute_shield: validated payer, key={}", payer_key);
-
-        // Validate system_program manually
+        msg!("execute_unshield: validated payer, key={}", payer_key);
+        
+        // Validate system_program (from _phantom)
         require_keys_eq!(
-            ctx.accounts.system_program.key(),
+            system_program_info.key(),
             system_program::ID,
             PoolError::InvalidAccountOwner
         );
-
-        // Validate rent sysvar manually
+        
+        // Validate rent sysvar
         require_keys_eq!(
-            ctx.accounts.rent.key(),
+            rent_info.key(),
             anchor_lang::solana_program::sysvar::rent::ID,
             PoolError::InvalidAccountOwner
         );
-
-        // Validate proof_vault manually
-        msg!("execute_shield: validating proof_vault");
-        let proof_vault_account_info = ctx.accounts.proof_vault.to_account_info();
-        let proof_vault_info: &AccountInfo<'info> = unsafe { mem::transmute(&proof_vault_account_info) };
-        let proof_vault_key = proof_vault_info.key();
+        
+        // Validate proof_vault
         let (expected_vault, _) = derive_proof_vault(&payer_key, ctx.program_id);
         require_keys_eq!(
-            proof_vault_key,
+            proof_vault_info.key(),
             expected_vault,
             PoolError::Unauthorized
         );
@@ -2613,480 +2650,27 @@ pub mod ptf_pool {
             PoolError::Unauthorized
         );
         
-        // CRITICAL FIX: Extract pool_state, commitment_tree, and origin_mint from remaining_accounts
-        // This reduces stack usage by moving them out of the struct (matching ExecuteTransfer pattern)
-        msg!("execute_shield: extracting pool_state, commitment_tree, origin_mint from remaining_accounts");
-        let mut pool_state_info: Option<&'info AccountInfo<'info>> = None;
-        let mut commitment_tree_info: Option<&'info AccountInfo<'info>> = None;
-        let mut origin_mint_info: Option<&'info AccountInfo<'info>> = None;
-        
-        // Derive expected addresses first (we'll need origin_mint for this)
-        // We'll extract origin_mint from remaining_accounts by checking for token program owner
-        for account in ctx.remaining_accounts.iter() {
-            if account.owner == &anchor_spl::token::ID || account.owner == &anchor_spl::token_2022::ID {
-                if account.data_len() >= 82 { // Minimum mint account size
-                    origin_mint_info = Some(account);
-                    break;
-                }
-            }
-        }
-        
-        let origin_mint_account_info = origin_mint_info.ok_or(PoolError::InvalidAccountOwner)?;
-        let origin_mint_key = origin_mint_account_info.key();
-        msg!("execute_shield: found origin_mint, key={}", origin_mint_key);
-        
-        // Derive pool addresses
-        let pool_addresses = ptf_common::addresses::PoolAddresses::derive_all(
-            &origin_mint_key,
-            ctx.program_id,
-        );
-        
-        // Extract pool_state and commitment_tree
-        for account in ctx.remaining_accounts.iter() {
-            let key = account.key();
-            if key == pool_addresses.pool_state {
-                pool_state_info = Some(account);
-            } else if key == pool_addresses.commitment_tree {
-                commitment_tree_info = Some(account);
-            }
-        }
-        
-        let pool_state_account_info = pool_state_info.ok_or(PoolError::InvalidAccountOwner)?;
-        let pool_state_key = pool_state_account_info.key();
-        msg!("execute_shield: found pool_state, key={}", pool_state_key);
-        
-        // Load pool_state and validate origin_mint matches
-        let pool_state_info_ref: &'info AccountInfo<'info> = unsafe { mem::transmute(pool_state_account_info) };
-        let pool_state_loader_box: Box<AccountLoader<'info, PoolState>> = Box::new(AccountLoader::try_from(pool_state_info_ref)
-            .map_err(|_| PoolError::AccountDataTooShort)?);
-        let pool_state = pool_state_loader_box.load()?;
-        let pool_state_origin_mint = pool_state.origin_mint;
-        drop(pool_state);
-        
-        // CRITICAL VALIDATION: Ensure pool_state.origin_mint matches the origin_mint account
-        require_keys_eq!(
-            pool_state_origin_mint,
-            origin_mint_key,
-            PoolError::OriginMintMismatch,
-        );
-        
-        // Keep pool_state_loader alive for later use
-        let pool_state_loader_ref: &'info AccountLoader<'info, PoolState> = unsafe { mem::transmute(pool_state_loader_box.as_ref()) };
-        
-        // Extract shield operation using helper function
-        let proof_vault_info_ref: &'info AccountInfo<'info> = unsafe { mem::transmute(&proof_vault_account_info) };
-        let operation_data = extract_shield_operation(proof_vault_info_ref, operation_id, &clock)?;
-        
-        // Derive expected addresses using helper function
-        let addresses = derive_shield_addresses(&origin_mint_key, &pool_state_key, ctx.program_id)?;
+        // Extract remaining accounts (pool_state, commitment_tree, and all others)
+        // remaining_accounts[0] = payer, [1] = proof_vault, [2] = rent, [3+] = pool_state and others
+        let remaining_for_extraction = &ctx.remaining_accounts[3..];
         
         msg!(
-            "execute_shield: extracting accounts from remaining_accounts (len={})",
-            ctx.remaining_accounts.len()
+            "execute_unshield: extracting accounts from remaining_accounts (total_len={}, remaining_len={})",
+            ctx.remaining_accounts.len(),
+            remaining_for_extraction.len()
         );
         
-        // Extract accounts from remaining_accounts using helper function
-        // This reduces stack usage by moving large local variables into a separate function scope
-        let extracted = extract_shield_accounts(
-            ctx.remaining_accounts,
-            &addresses.pool_addresses,
-            addresses.expected_vault_state,
-            addresses.expected_shield_claim,
-            addresses.expected_mint_mapping,
-            addresses.expected_factory_state,
-            addresses.expected_verifying_key,
-            addresses.expected_vault_token,
-            origin_mint_key, // Function expects Pubkey, not &Pubkey
-        )?;
-        msg!("execute_shield: step 6b - extract_shield_accounts completed");
-        
-        // Validate all required accounts are present
-        msg!("execute_shield: step 7 - validating account presence");
-        msg!(
-            "execute_shield: account presence hook_config={} hook_whitelist={} nullifier_set={} note_ledger={} vault_state={} vault_token={} depositor_token={} verifier_program={} verifying_key={} shield_claim={} mint_mapping={} factory_state={} vault_program={} token_program={}",
-            extracted.hook_config_info.is_some(),
-            extracted.hook_whitelist_info.is_some(),
-            extracted.nullifier_set_info.is_some(),
-            extracted.note_ledger_info.is_some(),
-            extracted.vault_state_info.is_some(),
-            extracted.vault_token_account_info.is_some(),
-            extracted.depositor_token_account_info.is_some(),
-            extracted.verifier_program_info.is_some(),
-            extracted.verifying_key_info.is_some(),
-            extracted.shield_claim_info.is_some(),
-            extracted.mint_mapping_info.is_some(),
-            extracted.factory_state_info.is_some(),
-            extracted.vault_program_info.is_some(),
-            extracted.token_program_info.is_some(),
-        );
-        
-        // If vault_token_account is missing, log what we're looking for
-        if extracted.vault_token_account_info.is_none() {
-            msg!("execute_shield: ERROR - vault_token_account not found! Expected: {}", addresses.expected_vault_token);
-            msg!("execute_shield: Searched through {} remaining_accounts", ctx.remaining_accounts.len());
-        }
-        
-        // Unwrap extracted accounts
-        let hook_config_info = extracted.hook_config_info.ok_or(PoolError::InvalidAccountOwner)?;
-        let hook_whitelist_info = extracted.hook_whitelist_info.ok_or(PoolError::InvalidAccountOwner)?;
-        let nullifier_set_info = extracted.nullifier_set_info.ok_or(PoolError::InvalidAccountOwner)?;
-        let note_ledger_info = extracted.note_ledger_info.ok_or(PoolError::InvalidAccountOwner)?;
-        let vault_state_info = extracted.vault_state_info.ok_or(PoolError::InvalidAccountOwner)?;
-        let vault_token_account_info = extracted.vault_token_account_info.ok_or(PoolError::InvalidAccountOwner)?;
-        let depositor_token_account_info = extracted.depositor_token_account_info.ok_or(PoolError::InvalidAccountOwner)?;
-        let verifier_program_info = extracted.verifier_program_info.ok_or(PoolError::InvalidAccountOwner)?;
-        let verifying_key_info = extracted.verifying_key_info.ok_or(PoolError::InvalidAccountOwner)?;
-        // CRITICAL FIX: Pass AccountInfo directly to execute_shield_impl, create Account right before CPI call
-        // Store AccountInfo in local variable to ensure it lives long enough
-        let verifying_key_info_stable: &'info AccountInfo<'info> = unsafe { mem::transmute(verifying_key_info) };
-        let _keep_alive_info = verifying_key_info;
-        let shield_claim_info_stable = extracted.shield_claim_info.ok_or(PoolError::InvalidAccountOwner)?;
-        let mint_mapping_info = extracted.mint_mapping_info.ok_or(PoolError::InvalidAccountOwner)?;
-        let factory_state_info = extracted.factory_state_info.ok_or(PoolError::InvalidAccountOwner)?;
-        let vault_program_info = extracted.vault_program_info.ok_or(PoolError::InvalidAccountOwner)?;
-        let token_program_info = extracted.token_program_info.ok_or(PoolError::InvalidAccountOwner)?;
-        
-        // Validate PDAs
-        msg!("execute_shield: hook_config {} expected {}", hook_config_info.key(), addresses.pool_addresses.hook_config);
-        require_keys_eq!(hook_config_info.key(), addresses.pool_addresses.hook_config, PoolError::InvalidAccountOwner);
-        msg!("execute_shield: hook_whitelist {} expected {}", hook_whitelist_info.key(), addresses.pool_addresses.hook_whitelist);
-        require_keys_eq!(hook_whitelist_info.key(), addresses.pool_addresses.hook_whitelist, PoolError::InvalidAccountOwner);
-        msg!("execute_shield: nullifier_set {} expected {}", nullifier_set_info.key(), addresses.pool_addresses.nullifier_set);
-        require_keys_eq!(nullifier_set_info.key(), addresses.pool_addresses.nullifier_set, PoolError::InvalidAccountOwner);
-        msg!("execute_shield: note_ledger {} expected {}", note_ledger_info.key(), addresses.pool_addresses.note_ledger);
-        require_keys_eq!(note_ledger_info.key(), addresses.pool_addresses.note_ledger, PoolError::InvalidAccountOwner);
-        msg!("execute_shield: vault_state {} expected {}", vault_state_info.key(), addresses.expected_vault_state);
-        require_keys_eq!(vault_state_info.key(), addresses.expected_vault_state, PoolError::InvalidAccountOwner);
-        msg!("execute_shield: shield_claim {} expected {}", shield_claim_info_stable.key(), addresses.expected_shield_claim);
-        require_keys_eq!(shield_claim_info_stable.key(), addresses.expected_shield_claim, PoolError::ShieldClaimMismatch);
-        // Initialize shield_claim account if it's still owned by the system program (lazy init)
-        if shield_claim_info_stable.owner == &system_program::ID {
-            msg!("execute_shield: initializing shield_claim account");
-            let rent = Rent::get()?;
-            let required_lamports = rent.minimum_balance(ShieldClaim::SPACE);
-            let payer_info = ctx.accounts.payer.to_account_info();
-            let system_program_info = ctx.accounts.system_program.to_account_info();
-            let current_lamports = shield_claim_info_stable.lamports();
-            if required_lamports > current_lamports {
-                let lamports_needed = required_lamports - current_lamports;
-                invoke(
-                    &anchor_lang::solana_program::system_instruction::transfer(
-                        &payer_info.key(),
-                        shield_claim_info_stable.key,
-                        lamports_needed,
-                    ),
-                    &[
-                        payer_info.clone(),
-                        shield_claim_info_stable.clone(),
-                        system_program_info.clone(),
-                    ],
-                )?;
-            }
-            let (_, claim_bump_for_init) = AddressDeriver::derive_shield_claim(&pool_state_key, ctx.program_id);
-            let claim_seeds: &[&[u8]] = &[seeds::CLAIM, pool_state_key.as_ref(), &[claim_bump_for_init]];
-            invoke_signed(
-                &anchor_lang::solana_program::system_instruction::allocate(
-                    shield_claim_info_stable.key,
-                    ShieldClaim::SPACE as u64,
-                ),
-                &[
-                    shield_claim_info_stable.clone(),
-                    system_program_info.clone(),
-                ],
-                &[claim_seeds],
-            )?;
-            invoke_signed(
-                &anchor_lang::solana_program::system_instruction::assign(
-                    shield_claim_info_stable.key,
-                    ctx.program_id,
-                ),
-                &[
-                    shield_claim_info_stable.clone(),
-                    system_program_info.clone(),
-                ],
-                &[claim_seeds],
-            )?;
-            // Initialize discriminator and zero the rest of the account data
-            {
-                let mut data = shield_claim_info_stable.try_borrow_mut_data()?;
-                for byte in data.iter_mut() {
-                    *byte = 0;
-                }
-                let disc = ShieldClaim::DISCRIMINATOR;
-                data[..disc.len()].copy_from_slice(&disc);
-            }
-        }
-        msg!("execute_shield: mint_mapping {} expected {}", mint_mapping_info.key(), addresses.expected_mint_mapping);
-        require_keys_eq!(mint_mapping_info.key(), addresses.expected_mint_mapping, PoolError::OriginMintMismatch);
-        msg!("execute_shield: factory_state {} expected {}", factory_state_info.key(), addresses.expected_factory_state);
-        require_keys_eq!(factory_state_info.key(), addresses.expected_factory_state, PoolError::InvalidAccountOwner);
-        msg!("execute_shield: verifying_key {} expected {}", verifying_key_info.key(), addresses.expected_verifying_key);
-        require_keys_eq!(verifying_key_info.key(), addresses.expected_verifying_key, PoolError::InvalidAccountOwner);
-        
-        // Validate program accounts
-        msg!("execute_shield: verifier_program {} expected {}", verifier_program_info.key(), ptf_verifier_groth16::ID);
-        require_keys_eq!(verifier_program_info.key(), ptf_verifier_groth16::ID, PoolError::VerifierMismatch);
-        msg!("execute_shield: vault_program {} expected {}", vault_program_info.key(), ptf_vault::ID);
-        require_keys_eq!(vault_program_info.key(), ptf_vault::ID, PoolError::InvalidAccountOwner);
-        require_keys_eq!(
-            token_program_info.key(),
-            anchor_spl::token::ID,
-            PoolError::InvalidAccountOwner
-        );
-        require!(
-            verifier_program_info.executable,
-            PoolError::InvalidAccountOwner
-        );
-        require!(
-            vault_program_info.executable,
-            PoolError::InvalidAccountOwner
-        );
-        require!(
-            token_program_info.executable,
-            PoolError::InvalidAccountOwner
-        );
-        
-        // Validate token accounts
-        require_keys_eq!(
-            *vault_token_account_info.owner,
-            anchor_spl::token::ID,
-            PoolError::InvalidAccountOwner
-        );
-        require_keys_eq!(
-            *depositor_token_account_info.owner,
-            anchor_spl::token::ID,
-            PoolError::InvalidAccountOwner
-        );
-        
-        // Deserialize token accounts to validate mint matches
-        let vault_token_data = vault_token_account_info.try_borrow_data()?;
-        require!(vault_token_data.len() >= 165, PoolError::AccountDataTooShort);
-        let vault_token_mint = Pubkey::try_from(&vault_token_data[0..32])
-            .map_err(|_| PoolError::AccountDataCorrupt)?;
-        require_keys_eq!(vault_token_mint, origin_mint_key, PoolError::OriginMintMismatch);
-        drop(vault_token_data);
-        
-        let depositor_token_data = depositor_token_account_info.try_borrow_data()?;
-        require!(depositor_token_data.len() >= 165, PoolError::AccountDataTooShort);
-        let depositor_token_mint = Pubkey::try_from(&depositor_token_data[0..32])
-            .map_err(|_| PoolError::AccountDataCorrupt)?;
-        require_keys_eq!(depositor_token_mint, origin_mint_key, PoolError::OriginMintMismatch);
-        drop(depositor_token_data);
-        msg!("execute_shield: step 4a - token accounts validated");
-        
-        // Validate hook_whitelist
-        msg!("execute_shield: step 4b - checking hook_whitelist, data_len={}", hook_whitelist_info.data_len());
-        require!(
-            hook_whitelist_info.data_len() >= HookWhitelist::SPACE,
-            PoolError::AccountDataTooShort
-        );
-        require_keys_eq!(
-            *hook_whitelist_info.owner,
-            *ctx.program_id,
-            PoolError::InvalidAccountOwner
-        );
-        msg!("execute_shield: step 4c - hook_whitelist validated");
-        
-        // Create typed wrappers using helper function
-        // This reduces stack usage by moving large local variables into a separate function scope
-        let wrappers = create_shield_wrappers(
-            hook_config_info,
-            hook_whitelist_info,
-            nullifier_set_info,
-            note_ledger_info,
-            vault_state_info,
-            verifier_program_info,
-            factory_state_info,
-            vault_token_account_info,
-            depositor_token_account_info,
-            vault_program_info,
-            token_program_info,
-            extracted.twin_mint_info,
-            mint_mapping_info,
-        )?;
-        msg!("execute_shield: step 5a - wrappers created");
-        
-        // CRITICAL FIX: pool_state_loader_ref is already created above after manual PDA validation
-        // No need to recreate it - use the existing pool_state_loader_ref that was created above
-        
-        // Create AccountLoader wrapper for commitment_tree from extracted account
-        // CRITICAL: Use commitment_tree extracted from remaining_accounts (reduces stack usage)
-        let commitment_tree_account_info = commitment_tree_info.ok_or(PoolError::InvalidAccountOwner)?;
-        let commitment_tree_info_ref: &'info AccountInfo<'info> = unsafe { mem::transmute(commitment_tree_account_info) };
-        let commitment_tree_loader_box: Box<AccountLoader<'info, CommitmentTree>> = Box::new(AccountLoader::try_from(commitment_tree_info_ref)
-            .map_err(|_| PoolError::AccountDataTooShort)?);
-        let commitment_tree_loader: &'info AccountLoader<'info, CommitmentTree> = unsafe { mem::transmute(commitment_tree_loader_box.as_ref()) };
-        msg!("execute_shield: step 5b - commitment_tree_loader created");
-        
-        msg!("execute_shield: step 6a - creating payer_wrapper");
-        
-        // Create Signer and InterfaceAccount wrappers with 'info lifetime
-        // CRITICAL FIX: Use scoped blocks so AccountInfo clones drop immediately
-        // CRITICAL FIX: Store payer AccountInfo separately for deposit CPI
-        // The Signer wrapper's internal AccountInfo might become invalid after raw invoke
-        let payer_account_info_stable = ctx.accounts.payer.to_account_info();
-        let payer_info_ref: &'info AccountInfo<'info> = unsafe { mem::transmute(&payer_account_info_stable) };
-        let _keep_alive_payer_info = payer_account_info_stable;
-        
-        let payer_wrapper: &'info Signer<'info> = {
-            let payer_info_static: &'static AccountInfo<'static> = unsafe { mem::transmute(payer_info_ref) };
-            let payer_wrapper_temp: Signer<'_> = Signer::try_from(payer_info_static)
-            .map_err(|_| PoolError::Unauthorized)?;
-            let payer_wrapper_box = Box::new(payer_wrapper_temp);
-            unsafe { mem::transmute(payer_wrapper_box.as_ref()) }
-        };
-        msg!("execute_shield: step 6b - payer_wrapper created");
-        
-        // CRITICAL FIX: Store origin_mint AccountInfo separately for deposit CPI
-        // The InterfaceAccount wrapper's internal AccountInfo might become invalid after raw invoke
-        // Use origin_mint extracted from remaining_accounts
-        let origin_mint_info_ref: &'info AccountInfo<'info> = unsafe { mem::transmute(origin_mint_account_info) };
-        
-        let origin_mint_wrapper: &'info InterfaceAccount<'info, Mint> = {
-            let origin_mint_info_static: &'static AccountInfo<'static> = unsafe { mem::transmute(origin_mint_info_ref) };
-            let origin_mint_wrapper_temp: InterfaceAccount<'_, Mint> = InterfaceAccount::try_from(origin_mint_info_static)
-            .map_err(|_| PoolError::AccountDataTooShort)?;
-            let origin_mint_wrapper_box = Box::new(origin_mint_wrapper_temp);
-            unsafe { mem::transmute(origin_mint_wrapper_box.as_ref()) }
-        };
-        msg!("execute_shield: step 6c - origin_mint_wrapper created");
-        
-        // CRITICAL FIX: Use remaining_accounts_stored and filter out shield_claim_info
-        // This ensures all AccountInfo references are from the same Vec
-        let remaining_accounts_for_impl = ctx.remaining_accounts;
-        
-        // Call execute_shield_impl with validated accounts
-        // execute_shield_impl accepts 'info lifetimes, so we can pass references directly
-        // All wrappers are now using 'info lifetime instead of 'static to avoid access violations
-        
-        // Ensure program_id has 'info lifetime
-        let program_id_ref: &'info Pubkey = unsafe { mem::transmute(ctx.program_id) };
-        
-        // CRITICAL FIX: Pass references directly from boxed wrappers
-        // Handle twin_mint conversion from Option<Box<...>> to &Option<...>
-        // UncheckedAccount is zero-sized, so we can safely transmute to create a copy
-        let twin_mint_opt = wrappers.twin_mint_wrapper.as_ref().map(|w| unsafe { mem::transmute::<&UncheckedAccount<'info>, UncheckedAccount<'info>>(w.as_ref()) });
-        msg!("execute_shield: step 7a - twin_mint_opt created, about to call execute_shield_impl");
-        let result = execute_shield_impl(
-            program_id_ref,
-            pool_state_loader_ref, // Use the manually validated pool_state_loader_ref created above
-            wrappers.hook_config_wrapper.as_ref(),
-            wrappers.hook_whitelist_account.as_ref(),
-            wrappers.nullifier_set_wrapper.as_ref(),
-            commitment_tree_loader,
-            wrappers.note_ledger_wrapper.as_ref(),
-            wrappers.vault_state_wrapper.as_ref(),
-            wrappers.vault_token_account_wrapper.as_ref(),
-            wrappers.depositor_token_account_wrapper.as_ref(),
-            &twin_mint_opt,
-            wrappers.verifier_program.as_ref(), // Use Program wrapper
-            verifying_key_info_stable, // Pass AccountInfo directly, create Account right before CPI call
-            shield_claim_info_stable, // Stable reference to shield_claim_info (filtered out of remaining_accounts)
-            payer_wrapper,
-            payer_info_ref, // Pass payer AccountInfo separately for deposit CPI
-            origin_mint_wrapper,
-            origin_mint_info_ref, // Pass origin_mint AccountInfo separately (InterfaceAccount has invalid internal reference)
-            wrappers.mint_mapping_account.as_ref(),
-            wrappers.factory_state_wrapper.as_ref(),
-            wrappers.vault_program_wrapper.as_ref(),
-            wrappers.token_program_wrapper.as_ref(),
-            remaining_accounts_for_impl, // Filtered to exclude shield_claim_info
-            &operation_data.shield_args,
-        );
-        
-        // Update vault status after execution
-        {
-            let mut proof_vault_account_mut: Account<'info, UserProofVault> =
-                Account::try_from(proof_vault_info_ref)?;
-            if let Some(operation) = proof_vault_account_mut.prepared_operations.get_mut(operation_data.operation_idx) {
-                if let PreparedOperation::Shield { status, .. } = operation {
-                    *status = match &result {
-                        Ok(_) => OperationStatus::Completed,
-                        Err(_) => OperationStatus::Failed,
-                    };
-                }
-            }
-            if result.is_ok() {
-                proof_vault_account_mut.last_used = clock.unix_timestamp;
-            }
-        }
-        
-        result
-    }
-
-    // Proof Account Abstraction: Execute Unshield
-    pub fn execute_unshield<'info>(
-        mut ctx: Context<'_, '_, 'info, 'info, ExecuteUnshield<'info>>,
-        operation_id: [u8; 32],
-        mode: UnshieldMode,
-    ) -> Result<()> {
-        let clock = Clock::get()?;
-        msg!("execute_unshield: start");
-        
-        // Validate payer manually (must be signer)
-        let payer_info = ctx.accounts.payer.to_account_info();
-        require!(
-            payer_info.is_signer,
-            PoolError::Unauthorized
-        );
-        let payer_key = payer_info.key();
-        
-        // Validate system_program manually
-        require_keys_eq!(
-            ctx.accounts.system_program.key(),
-            system_program::ID,
-            PoolError::InvalidAccountOwner
-        );
-        
-        // Validate rent sysvar manually
-        require_keys_eq!(
-            ctx.accounts.rent.key(),
-            anchor_lang::solana_program::sysvar::rent::ID,
-            PoolError::InvalidAccountOwner
-        );
-        
-        // Validate proof_vault manually
-        msg!("execute_unshield: validating proof_vault");
-        msg!("execute_unshield: step 1 - getting account info");
-        // CRITICAL FIX: Store proof_vault account info in a variable that lives for the entire function
-        // This is critical - the variable must live for the entire function scope
-        let proof_vault_account_info = ctx.accounts.proof_vault.to_account_info();
-        msg!("execute_unshield: step 2 - got account info, getting key");
-        let proof_vault_key = proof_vault_account_info.key();
-        msg!("execute_unshield: step 3 - got key, deriving expected vault");
-        let (expected_vault, _) = derive_proof_vault(&payer_key, ctx.program_id);
-        msg!("execute_unshield: step 4 - derived expected vault, checking key match");
-        require_keys_eq!(
-            proof_vault_key,
-            expected_vault,
-            PoolError::Unauthorized
-        );
-        msg!("execute_unshield: step 5 - key matched, checking owner");
-        require_keys_eq!(
-            *proof_vault_account_info.owner,
-            *ctx.program_id,
-            PoolError::Unauthorized
-        );
-        msg!("execute_unshield: step 6 - owner matched, creating transmuted ref");
-        
-        // CRITICAL: proof_vault_account_info must live for the entire function scope
-        // Use unsafe transmute to extend lifetime to 'info, matching the function signature
-        let proof_vault_info_ref: &AccountInfo<'info> = unsafe { mem::transmute(&proof_vault_account_info) };
-        msg!("execute_unshield: step 7 - transmuted ref created");
-        msg!("execute_unshield: step 8 - deserializing proof_vault account");
-        // CRITICAL: Use mut Account like execute_transfer_from does - this allows direct mutation
+        // Extract proof_vault operation
+        let proof_vault_info_ref: &'info AccountInfo<'info> = unsafe { mem::transmute(proof_vault_info) };
         let mut proof_vault_account: Account<'info, UserProofVault> = Account::try_from(proof_vault_info_ref)
             .map_err(|_| PoolError::AccountDataTooShort)?;
-        msg!("execute_unshield: step 9 - proof_vault account deserialized");
         
         // Find operation and extract args
-        msg!("execute_unshield: step 10 - finding operation");
         let operation_idx = proof_vault_account
-                .prepared_operations
-                .iter()
-                .position(|op| matches!(op, PreparedOperation::Unshield { operation_id: id, .. } if *id == operation_id))
-                .ok_or(PoolError::OperationNotFound)?;
-        msg!("execute_unshield: step 10b - found operation at idx={}", operation_idx);
+            .prepared_operations
+            .iter()
+            .position(|op| matches!(op, PreparedOperation::Unshield { operation_id: id, .. } if *id == operation_id))
+            .ok_or(PoolError::OperationNotFound)?;
         
         let unshield_args = {
             let operation = &proof_vault_account.prepared_operations[operation_idx];
@@ -3100,215 +2684,244 @@ pub mod ptf_pool {
             }
         };
         
-        // Mark as executing - use the mutable Account directly (like execute_transfer_from)
-        msg!("execute_unshield: step 11 - marking as executing");
+        // Mark as executing
         if let Some(operation) = proof_vault_account.prepared_operations.get_mut(operation_idx) {
             if let PreparedOperation::Unshield { status, .. } = operation {
                 *status = OperationStatus::Executing;
             }
         }
-        msg!("execute_unshield: step 12 - operation marked as executing");
-        msg!("execute_unshield: operation found at idx={}", operation_idx);
         
-        // CRITICAL FIX: Use accounts directly from Anchor context - no extraction needed!
-        // All accounts are now properly typed in ExecuteUnshield struct
-        // Convert UncheckedAccount fields to proper types and create Unshield struct
-        msg!("execute_unshield: using accounts directly from Anchor context");
-        
-        // Extract program_id and remaining_accounts before any other borrows
-        // These are references, so we can copy them without borrowing ctx
-        let program_id_val = ctx.program_id;
-        let remaining_accounts_val = ctx.remaining_accounts;
-        
-        // Convert UncheckedAccount fields to proper types before unsafe block
-        // CRITICAL: Use unsafe to extend lifetimes to 'info to match function signature
-        let vault_state_account: Account<'info, ptf_vault::VaultState> = unsafe {
-            let vault_state_info_temp = ctx.accounts.vault_state.to_account_info();
-            let vault_state_info: &'info AccountInfo<'info> = mem::transmute(&vault_state_info_temp);
-            let account = Account::try_from(vault_state_info).map_err(|_| PoolError::AccountDataTooShort)?;
-            let _keep_alive = &vault_state_info_temp; // Keep AccountInfo alive
-            account
-        };
-        let vault_token_account_wrapper: InterfaceAccount<'info, TokenAccount> = unsafe {
-            let vault_token_info_temp = ctx.accounts.vault_token_account.to_account_info();
-            let vault_token_info: &'info AccountInfo<'info> = mem::transmute(&vault_token_info_temp);
-            let account = InterfaceAccount::try_from(vault_token_info).map_err(|_| PoolError::AccountDataTooShort)?;
-            let _keep_alive = &vault_token_info_temp; // Keep AccountInfo alive
-            account
-        };
-        let destination_token_account_wrapper: InterfaceAccount<'info, TokenAccount> = unsafe {
-            let dest_token_info_temp = ctx.accounts.destination_token_account.to_account_info();
-            let dest_token_info: &'info AccountInfo<'info> = mem::transmute(&dest_token_info_temp);
-            let account = InterfaceAccount::try_from(dest_token_info).map_err(|_| PoolError::AccountDataTooShort)?;
-            let _keep_alive = &dest_token_info_temp; // Keep AccountInfo alive
-            account
-        };
-        
-        // Create AccountInfo for program accounts before unsafe block
-        let vault_program_info = ctx.accounts.vault_program.to_account_info();
-        let factory_program_info = ctx.accounts.factory_program.to_account_info();
-        let token_program_info = ctx.accounts.token_program.to_account_info();
-        
-        // Extract twin_mint AccountInfo before unsafe block (if it exists)
-        let twin_mint_info_opt = ctx.accounts.twin_mint.as_ref().map(|mint| mint.to_account_info());
-        
-        // CRITICAL FIX: Initialize hook_whitelist if it was just created by init_if_needed
-        // Check if account was just initialized (authority is default means it was just created)
-        let pool_state_loaded = ctx.accounts.pool_state.load()?;
-        if ctx.accounts.hook_whitelist.authority == Pubkey::default() {
-            // Account was just created - initialize it manually
-            ctx.accounts.hook_whitelist.authority = pool_state_loaded.authority;
-            ctx.accounts.hook_whitelist.allowed_programs = Vec::new();
-            // Get the bump from the PDA derivation
-            let (_, hook_whitelist_bump) = Pubkey::find_program_address(
-                &[b"hook-whitelist", pool_state_loaded.origin_mint.as_ref()],
-                ctx.program_id
-            );
-            ctx.accounts.hook_whitelist.bump = hook_whitelist_bump;
-        }
-        
-        // Extract all account references before unsafe block to avoid lifetime issues
-        let pool_state_ref = &ctx.accounts.pool_state;
-        let hook_config_ref = &ctx.accounts.hook_config;
-        let hook_whitelist_ref = &ctx.accounts.hook_whitelist;
-        let nullifier_set_ref = &ctx.accounts.nullifier_set;
-        let commitment_tree_ref = &ctx.accounts.commitment_tree;
-        let note_ledger_ref = &ctx.accounts.note_ledger;
-        let mint_mapping_ref = &ctx.accounts.mint_mapping;
-        let verifier_program_ref = &ctx.accounts.verifier_program;
-        let verifying_key_ref = &ctx.accounts.verifying_key;
-        let factory_state_ref = &ctx.accounts.factory_state;
-        let system_program_ref = &ctx.accounts.system_program;
-        let payer_ref = &ctx.accounts.payer;
-        let rent_ref = &ctx.accounts.rent;
-        
-        // Create Unshield struct with converted types
-        // CRITICAL: Use std::ptr::read to copy fields we can't move
-        // CRITICAL: Create struct with all 'info lifetimes first, then transmute entire struct to 'static
-        // CRITICAL: All AccountInfo are created before this block, so ctx is no longer borrowed immutably
-        let result = unsafe {
-            // Extend AccountInfo lifetimes to 'static
-            let vault_program_info_static: &'static AccountInfo<'static> = mem::transmute(&vault_program_info);
-            let factory_program_info_static: &'static AccountInfo<'static> = mem::transmute(&factory_program_info);
-            let token_program_info_static: &'static AccountInfo<'static> = mem::transmute(&token_program_info);
-            
-            // Create program wrappers from static AccountInfo references
-            let vault_program_wrapper: Program<'static, PtfVault> = Program::try_from(vault_program_info_static)
-            .map_err(|_| PoolError::AccountDataTooShort)?;
-        
-            let factory_program_wrapper: Program<'static, PtfFactory> = Program::try_from(factory_program_info_static)
-            .map_err(|_| PoolError::AccountDataTooShort)?;
-        
-            let token_program_wrapper: Interface<'static, TokenInterface> = Interface::try_from(token_program_info_static)
-            .map_err(|_| PoolError::AccountDataTooShort)?;
-            
-            // Transmute the 'info wrappers to 'static to match program wrappers
-            let vault_state_account_static: Account<'static, ptf_vault::VaultState> = mem::transmute(vault_state_account);
-            let vault_token_account_wrapper_static: InterfaceAccount<'static, TokenAccount> = mem::transmute(vault_token_account_wrapper);
-            let destination_token_account_wrapper_static: InterfaceAccount<'static, TokenAccount> = mem::transmute(destination_token_account_wrapper);
-            
-            // Handle optional twin_mint using AccountInfo extracted before unsafe block
-            // CRITICAL: Extend AccountInfo lifetime to 'static
-            let twin_mint_wrapper_static: Option<InterfaceAccount<'static, Mint>> = if let Some(ref mint_info) = twin_mint_info_opt {
-                let mint_info_static: &'static AccountInfo<'static> = mem::transmute(mint_info);
-                let wrapper: InterfaceAccount<'static, Mint> = InterfaceAccount::try_from(mint_info_static)
-                    .map_err(|_| PoolError::AccountDataTooShort)?;
-                Some(wrapper)
-            } else {
-                None
-            };
-            
-            // Keep AccountInfo alive until after struct is created and used
-            let _keep_alive_twin_mint_info = &twin_mint_info_opt;
-            
-            // Transmute all fields from account references to 'static before creating struct
-            let pool_state_static: AccountLoader<'static, PoolState> = mem::transmute(std::ptr::read(pool_state_ref));
-            let hook_config_static: UncheckedAccount<'static> = mem::transmute(std::ptr::read(hook_config_ref));
-            let hook_whitelist_static: Account<'static, HookWhitelist> = mem::transmute(std::ptr::read(hook_whitelist_ref));
-            let nullifier_set_static: Account<'static, NullifierSet> = mem::transmute(std::ptr::read(nullifier_set_ref));
-            let commitment_tree_static: AccountLoader<'static, CommitmentTree> = mem::transmute(std::ptr::read(commitment_tree_ref));
-            let note_ledger_static: AccountLoader<'static, NoteLedger> = mem::transmute(std::ptr::read(note_ledger_ref));
-            let mint_mapping_static: Account<'static, MintMapping> = mem::transmute(std::ptr::read(mint_mapping_ref));
-            let verifier_program_static: Program<'static, PtfVerifierGroth16> = mem::transmute(std::ptr::read(verifier_program_ref));
-            let verifying_key_static: Account<'static, VerifyingKeyAccount> = mem::transmute(std::ptr::read(verifying_key_ref));
-            let factory_state_static: Account<'static, ptf_factory::FactoryState> = mem::transmute(std::ptr::read(factory_state_ref));
-            let system_program_static: Program<'static, System> = mem::transmute(std::ptr::read(system_program_ref));
-            let payer_static: Signer<'static> = mem::transmute(std::ptr::read(payer_ref));
-            let rent_static: Sysvar<'static, Rent> = mem::transmute(std::ptr::read(rent_ref));
-        
-            // Create struct with all 'static lifetimes
-            let unshield_static = Unshield {
-                pool_state: pool_state_static,
-                hook_config: hook_config_static,
-                hook_whitelist: hook_whitelist_static,
-                nullifier_set: nullifier_set_static,
-                commitment_tree: commitment_tree_static,
-                note_ledger: note_ledger_static,
-                mint_mapping: mint_mapping_static,
-                verifier_program: verifier_program_static,
-                verifying_key: verifying_key_static,
-                vault_state: vault_state_account_static,
-                vault_token_account: vault_token_account_wrapper_static,
-                destination_token_account: destination_token_account_wrapper_static,
-                twin_mint: twin_mint_wrapper_static,
-            vault_program: vault_program_wrapper,
-                factory_state: factory_state_static,
-            factory_program: factory_program_wrapper,
-            token_program: token_program_wrapper,
-                system_program: system_program_static,
-                payer: payer_static,
-                rent: rent_static,
-        };
-            // Transmute to 'static (extracted before unsafe block)
-            let program_id_static: &'static Pubkey = mem::transmute(program_id_val);
-            let remaining_accounts_static: &'static [AccountInfo<'static>] = mem::transmute(remaining_accounts_val);
-            
-            // Create a boxed struct and leak it to get a 'static mutable reference
-            // This ensures the struct lives for the entire instruction execution
-            let unshield_box = Box::new(unshield_static);
-            let unshield_mut: &'static mut Unshield<'static> = Box::leak(unshield_box);
-            
-            msg!("execute_unshield: calling execute_unshield_core");
-            let result = execute_unshield_core(
-                UnshieldCoreContext {
-                    program_id: program_id_static,
-                    accounts: unshield_mut,
-                    remaining_accounts: remaining_accounts_static,
-                },
-                &unshield_args,
-                mode
-            );
-            msg!("execute_unshield: execute_unshield_core returned");
-            
-            // Box is leaked - memory will be reclaimed when instruction completes
-            // This is safe because Solana programs run in isolated environments
-            
-            result
-        };
-        
-        // Keep AccountInfo alive until after result is used
-        let _keep_alive_account_infos = (vault_program_info, factory_program_info, token_program_info);
-        
-        // Update vault status after execution - use the mutable Account directly (same pattern as execute_transfer_from)
-        // CRITICAL: proof_vault_account_info must live for the entire function scope
-        let proof_vault_account_info_for_update = ctx.accounts.proof_vault.to_account_info();
-        let proof_vault_info_ref_for_update: &'info AccountInfo<'info> = unsafe { mem::transmute(&proof_vault_account_info_for_update) };
-        let mut proof_vault_account_for_update: Account<'info, UserProofVault> = Account::try_from(proof_vault_info_ref_for_update)
-            .map_err(|_| PoolError::AccountDataTooShort)?;
-        
-        if let Some(operation) = proof_vault_account_for_update.prepared_operations.get_mut(operation_idx) {
-                if let PreparedOperation::Unshield { status, .. } = operation {
-                    *status = match &result {
-                        Ok(_) => OperationStatus::Completed,
-                        Err(_) => OperationStatus::Failed,
-                    };
+        // Extract pool_state first to get origin_mint and verifying_key
+        msg!("execute_unshield: searching for pool_state in {} remaining accounts", remaining_for_extraction.len());
+        let mut pool_state_info: Option<&AccountInfo> = None;
+        for (idx, account) in remaining_for_extraction.iter().enumerate() {
+            let key = account.key();
+            let owner = account.owner;
+            let data_len = account.data_len();
+            msg!("execute_unshield: remaining[{}]={} owner={} data_len={}", idx, key, owner, data_len);
+            if *account.owner == *ctx.program_id && account.data_len() >= 8 + 32 {
+                // Could be pool_state - try to load it
+                msg!("execute_unshield: candidate pool_state found at idx={}, trying to load", idx);
+                let account_ref: &'info AccountInfo<'info> = unsafe { mem::transmute(account) };
+                if let Ok(loader) = AccountLoader::<PoolState>::try_from(account_ref) {
+                    if let Ok(state) = loader.load() {
+                        // This looks like a pool_state - use it
+                        msg!("execute_unshield: successfully loaded pool_state at idx={}", idx);
+                        pool_state_info = Some(account);
+                        drop(state);
+                        break;
+                    } else {
+                        msg!("execute_unshield: failed to load state from account at idx={}", idx);
+                    }
+                } else {
+                    msg!("execute_unshield: failed to create AccountLoader from account at idx={}", idx);
                 }
             }
-            if result.is_ok() {
-            proof_vault_account_for_update.last_used = clock.unix_timestamp;
         }
         
-        result
+        let pool_state_account_info = pool_state_info.ok_or_else(|| {
+            msg!("execute_unshield: ERROR - pool_state not found in remaining_accounts");
+            msg!("execute_unshield: searched {} accounts", remaining_for_extraction.len());
+            for (idx, acc) in remaining_for_extraction.iter().enumerate() {
+                msg!("execute_unshield: remaining[{}]={} owner={} data_len={}", idx, acc.key(), acc.owner, acc.data_len());
+            }
+            PoolError::InvalidAccountOwner
+        })?;
+        let pool_state_info_ref: &'info AccountInfo<'info> = unsafe { mem::transmute(pool_state_account_info) };
+        let pool_state_loader: AccountLoader<'info, PoolState> = AccountLoader::try_from(pool_state_info_ref)
+            .map_err(|_| PoolError::AccountDataTooShort)?;
+        let pool_state = pool_state_loader.load()?;
+        let origin_mint_key = pool_state.origin_mint;
+        let expected_verifying_key = pool_state.verifying_key;
+        drop(pool_state);
+        
+        msg!("execute_unshield: found pool_state, origin_mint={}", origin_mint_key);
+        
+        // Derive pool addresses
+        let pool_addresses = ptf_common::addresses::PoolAddresses::derive_all(
+            &origin_mint_key,
+            ctx.program_id,
+        );
+        
+        msg!(
+            "execute_unshield: extracting accounts from remaining_accounts (len={})",
+            remaining_for_extraction.len()
+        );
+        
+        // Extract accounts from remaining_accounts using helper function
+        let extracted = extract_unshield_accounts(
+            remaining_for_extraction,
+            &pool_addresses,
+            expected_verifying_key,
+            origin_mint_key,
+        )?;
+        msg!("execute_unshield: extract_unshield_accounts completed");
+        
+        // Validate all required accounts are present
+        let pool_state_info = extracted.pool_state_info.ok_or(PoolError::InvalidAccountOwner)?;
+        let commitment_tree_info = extracted.commitment_tree_info.ok_or(PoolError::InvalidAccountOwner)?;
+        let hook_config_info = extracted.hook_config_info.ok_or(PoolError::InvalidAccountOwner)?;
+        let hook_whitelist_info = extracted.hook_whitelist_info.ok_or(PoolError::InvalidAccountOwner)?;
+        let nullifier_set_info = extracted.nullifier_set_info.ok_or(PoolError::InvalidAccountOwner)?;
+        let note_ledger_info = extracted.note_ledger_info.ok_or(PoolError::InvalidAccountOwner)?;
+        let mint_mapping_info = extracted.mint_mapping_info.ok_or(PoolError::InvalidAccountOwner)?;
+        let verifier_program_info = extracted.verifier_program_info.ok_or(PoolError::InvalidAccountOwner)?;
+        let verifying_key_info = extracted.verifying_key_info.ok_or(PoolError::InvalidAccountOwner)?;
+        let vault_state_info = extracted.vault_state_info.ok_or(PoolError::InvalidAccountOwner)?;
+        let vault_token_account_info = extracted.vault_token_account_info.ok_or(PoolError::InvalidAccountOwner)?;
+        let destination_token_account_info = extracted.destination_token_account_info.ok_or(PoolError::InvalidAccountOwner)?;
+        let vault_program_info = extracted.vault_program_info.ok_or(PoolError::InvalidAccountOwner)?;
+        let factory_state_info = extracted.factory_state_info.ok_or(PoolError::InvalidAccountOwner)?;
+        let factory_program_info = extracted.factory_program_info.ok_or(PoolError::InvalidAccountOwner)?;
+        let token_program_info = extracted.token_program_info.ok_or(PoolError::InvalidAccountOwner)?;
+        
+        // Create typed wrappers
+        let wrappers = create_unshield_wrappers(
+            pool_state_info,
+            commitment_tree_info,
+            hook_config_info,
+            hook_whitelist_info,
+            nullifier_set_info,
+            note_ledger_info,
+            mint_mapping_info,
+            verifier_program_info,
+            verifying_key_info,
+            vault_state_info,
+            vault_token_account_info,
+            destination_token_account_info,
+            extracted.twin_mint_info,
+            vault_program_info,
+            factory_state_info,
+            factory_program_info,
+            token_program_info,
+        )?;
+        msg!("execute_unshield: wrappers created");
+        
+        // Create Unshield struct from wrappers (using same pattern as execute_transfer_from)
+        // Use unsafe transmute to extend lifetimes to 'static for struct construction
+        let pool_state_loader_temp: AccountLoader<'_, PoolState> = AccountLoader::try_from(pool_state_info)
+            .map_err(|_| PoolError::AccountDataTooShort)?;
+        let pool_state_loader: AccountLoader<'static, PoolState> = unsafe { mem::transmute(pool_state_loader_temp) };
+        
+        let commitment_tree_loader_temp: AccountLoader<'_, CommitmentTree> = AccountLoader::try_from(commitment_tree_info)
+            .map_err(|_| PoolError::AccountDataTooShort)?;
+        let commitment_tree_loader: AccountLoader<'static, CommitmentTree> = unsafe { mem::transmute(commitment_tree_loader_temp) };
+        
+        let note_ledger_loader_temp: AccountLoader<'_, NoteLedger> = AccountLoader::try_from(note_ledger_info)
+            .map_err(|_| PoolError::AccountDataTooShort)?;
+        let note_ledger_loader: AccountLoader<'static, NoteLedger> = unsafe { mem::transmute(note_ledger_loader_temp) };
+        
+        let hook_config_wrapper_temp: UncheckedAccount<'_> = *wrappers.hook_config_wrapper;
+        let hook_config_wrapper: UncheckedAccount<'static> = unsafe { mem::transmute(hook_config_wrapper_temp) };
+        
+        let hook_whitelist_account_temp: Account<'_, HookWhitelist> = *wrappers.hook_whitelist_account;
+        let hook_whitelist_account: Account<'static, HookWhitelist> = unsafe { mem::transmute(hook_whitelist_account_temp) };
+        
+        let nullifier_set_account_temp: Account<'_, NullifierSet> = *wrappers.nullifier_set_account;
+        let nullifier_set_account: Account<'static, NullifierSet> = unsafe { mem::transmute(nullifier_set_account_temp) };
+        
+        let mint_mapping_account_temp: Account<'_, MintMapping> = *wrappers.mint_mapping_account;
+        let mint_mapping_account: Account<'static, MintMapping> = unsafe { mem::transmute(mint_mapping_account_temp) };
+        
+        let verifier_program_temp: Program<'_, PtfVerifierGroth16> = *wrappers.verifier_program;
+        let verifier_program: Program<'static, PtfVerifierGroth16> = unsafe { mem::transmute(verifier_program_temp) };
+        
+        let verifying_key_account_temp: Account<'_, VerifyingKeyAccount> = *wrappers.verifying_key_account;
+        let verifying_key_account: Account<'static, VerifyingKeyAccount> = unsafe { mem::transmute(verifying_key_account_temp) };
+        
+        let vault_state_account_temp: Account<'_, ptf_vault::VaultState> = *wrappers.vault_state_account;
+        let vault_state_account: Account<'static, ptf_vault::VaultState> = unsafe { mem::transmute(vault_state_account_temp) };
+        
+        let vault_token_account_wrapper_temp: InterfaceAccount<'_, TokenAccount> = *wrappers.vault_token_account_wrapper;
+        let vault_token_account_wrapper: InterfaceAccount<'static, TokenAccount> = unsafe { mem::transmute(vault_token_account_wrapper_temp) };
+        
+        let destination_token_account_wrapper_temp: InterfaceAccount<'_, TokenAccount> = *wrappers.destination_token_account_wrapper;
+        let destination_token_account_wrapper: InterfaceAccount<'static, TokenAccount> = unsafe { mem::transmute(destination_token_account_wrapper_temp) };
+        
+        let twin_mint_wrapper: Option<InterfaceAccount<'static, Mint>> = wrappers.twin_mint_wrapper.map(|w| {
+            let temp: InterfaceAccount<'_, Mint> = *w;
+            unsafe { mem::transmute(temp) }
+        });
+        
+        let vault_program_wrapper_temp: Program<'_, PtfVault> = *wrappers.vault_program_wrapper;
+        let vault_program_wrapper: Program<'static, PtfVault> = unsafe { mem::transmute(vault_program_wrapper_temp) };
+        
+        let factory_state_account_temp: Account<'_, ptf_factory::FactoryState> = *wrappers.factory_state_account;
+        let factory_state_account: Account<'static, ptf_factory::FactoryState> = unsafe { mem::transmute(factory_state_account_temp) };
+        
+        let factory_program_wrapper_temp: Program<'_, PtfFactory> = *wrappers.factory_program_wrapper;
+        let factory_program_wrapper: Program<'static, PtfFactory> = unsafe { mem::transmute(factory_program_wrapper_temp) };
+        
+        let token_program_wrapper_temp: Interface<'_, TokenInterface> = *wrappers.token_program_wrapper;
+        let token_program_wrapper: Interface<'static, TokenInterface> = unsafe { mem::transmute(token_program_wrapper_temp) };
+        
+        let system_program_info_static: &'static AccountInfo<'static> = unsafe { mem::transmute(&system_program_info) };
+        let system_program_wrapper_temp: Program<'_, System> = Program::try_from(system_program_info_static)
+            .map_err(|_| PoolError::AccountDataTooShort)?;
+        let system_program_wrapper: Program<'static, System> = unsafe { mem::transmute(system_program_wrapper_temp) };
+        
+        let payer_info_static: &'static AccountInfo<'static> = unsafe { mem::transmute(payer_info) };
+        let payer_wrapper_temp: Signer<'_> = Signer::try_from(payer_info_static)
+            .map_err(|_| PoolError::Unauthorized)?;
+        let payer_wrapper: Signer<'static> = unsafe { mem::transmute(payer_wrapper_temp) };
+        
+        let rent_info_static: &'static AccountInfo<'static> = unsafe { mem::transmute(rent_info) };
+        let rent_wrapper: Sysvar<'static, Rent> = Sysvar::from_account_info(rent_info_static)
+            .map_err(|_| PoolError::AccountDataTooShort)?;
+        
+        let mut unshield_accounts = Unshield {
+            pool_state: pool_state_loader,
+            hook_config: hook_config_wrapper,
+            hook_whitelist: hook_whitelist_account,
+            nullifier_set: nullifier_set_account,
+            commitment_tree: commitment_tree_loader,
+            note_ledger: note_ledger_loader,
+            mint_mapping: mint_mapping_account,
+            verifier_program,
+            verifying_key: verifying_key_account,
+            vault_state: vault_state_account,
+            vault_token_account: vault_token_account_wrapper,
+            destination_token_account: destination_token_account_wrapper,
+            twin_mint: twin_mint_wrapper,
+            vault_program: vault_program_wrapper,
+            factory_state: factory_state_account,
+            factory_program: factory_program_wrapper,
+            token_program: token_program_wrapper,
+            system_program: system_program_wrapper,
+            payer: payer_wrapper,
+            rent: rent_wrapper,
+        };
+        
+        // Create CoreContext (keep unshield_accounts in scope)
+        let core_ctx = CoreContext {
+            program_id: unsafe { mem::transmute(ctx.program_id) },
+            accounts: unsafe { mem::transmute(&mut unshield_accounts) },
+            remaining_accounts: unsafe { mem::transmute(ctx.remaining_accounts) },
+        };
+        
+        // Call execute_unshield_core
+        msg!("execute_unshield: calling execute_unshield_core");
+        execute_unshield_core(core_ctx, &unshield_args, mode)?;
+        msg!("execute_unshield: execute_unshield_core completed");
+        
+        // Mark operation as completed (re-extract proof_vault_account to mark as completed)
+        let proof_vault_info_ref_final: &'info AccountInfo<'info> = unsafe { mem::transmute(proof_vault_info) };
+        let mut proof_vault_account_final: Account<'info, UserProofVault> = Account::try_from(proof_vault_info_ref_final)
+            .map_err(|_| PoolError::AccountDataTooShort)?;
+        // Find operation again to mark as completed
+        let operation_idx_final = proof_vault_account_final
+            .prepared_operations
+            .iter()
+            .position(|op| matches!(op, PreparedOperation::Unshield { operation_id: id, .. } if *id == operation_id))
+            .ok_or(PoolError::OperationNotFound)?;
+        if let Some(operation) = proof_vault_account_final.prepared_operations.get_mut(operation_idx_final) {
+            if let PreparedOperation::Unshield { status, .. } = operation {
+                *status = OperationStatus::Completed;
+            }
+        }
+        
+        msg!("execute_unshield: completed successfully");
+        Ok(())
     }
 
     pub fn execute_transfer<'info>(
@@ -3700,56 +3313,80 @@ pub mod ptf_pool {
         result
     }
 
+    // OLD VERSION REMOVED - This function caused access violations in Anchor's validation phase
+    // The new execute_transfer_from (formerly execute_transfer_from_raw) uses minimal struct to bypass Anchor validation
+    // REMOVED: execute_transfer_from_old function - it was causing compilation errors
+
+    // WORKAROUND: Raw instruction to bypass Anchor validation that causes access violation
+    // Uses empty struct to avoid access violation in Anchor's validation phase
     pub fn execute_transfer_from<'info>(
-        mut ctx: Context<'_, '_, '_, 'info, ExecuteTransferFrom<'info>>,
+        ctx: Context<'_, '_, 'info, 'info, ExecuteTransferFrom<'info>>,
         operation_id: [u8; 32],
     ) -> Result<()> {
+        msg!("execute_transfer_from: start - bypassing Anchor validation");
+        
+        // Get clock first
         let clock = Clock::get()?;
-        msg!("execute_transfer_from: start");
-
-        // Validate spender manually (must be signer)
-        let spender_info = ctx.accounts.spender.to_account_info();
+        
+        // Extract ALL accounts from remaining_accounts manually
+        // Expected order: spender, proof_vault, rent, pool_state, ...
+        // Note: _phantom is system_program in struct, so remaining_accounts has: spender, proof_vault, rent, ...
+        require!(
+            ctx.remaining_accounts.len() >= 3,
+            PoolError::InvalidAccountOwner
+        );
+        
+        // Extract first 3 accounts from remaining_accounts (spender, proof_vault, rent)
+        let spender_info = &ctx.remaining_accounts[0];
+        let proof_vault_info = &ctx.remaining_accounts[1];
+        let rent_info = &ctx.remaining_accounts[2];
+        
+        // Use _phantom as system_program (it's system_program in the struct)
+        let system_program_info = ctx.accounts._phantom.to_account_info();
+        
         require!(spender_info.is_signer, PoolError::Unauthorized);
         let spender_key = spender_info.key();
         msg!("execute_transfer_from: validated spender, key={}", spender_key);
 
-        // Validate system_program manually
+        // Validate system_program (from _phantom)
         require_keys_eq!(
-            ctx.accounts.system_program.key(),
+            system_program_info.key(),
             system_program::ID,
             PoolError::InvalidAccountOwner
         );
 
-        // Validate rent sysvar manually
+        // Validate rent sysvar
         require_keys_eq!(
-            ctx.accounts.rent.key(),
+            rent_info.key(),
             anchor_lang::solana_program::sysvar::rent::ID,
             PoolError::InvalidAccountOwner
         );
 
-        // Validate proof_vault manually
-        msg!("execute_transfer_from: validating proof_vault");
-        // CRITICAL FIX: Store proof_vault account info in a variable that lives for the entire function
-        // This is critical - the variable must live for the entire function scope
-        let proof_vault_account_info = ctx.accounts.proof_vault.to_account_info();
-        let proof_vault_key = proof_vault_account_info.key();
+        // Validate proof_vault
         let (expected_vault, _) = derive_proof_vault(&spender_key, ctx.program_id);
         require_keys_eq!(
-            proof_vault_key,
+            proof_vault_info.key(),
             expected_vault,
             PoolError::Unauthorized
         );
         require_keys_eq!(
-            *proof_vault_account_info.owner,
+            *proof_vault_info.owner,
             *ctx.program_id,
             PoolError::Unauthorized
         );
         
-        // Use unsafe transmute to extend lifetime to 'info, matching the function signature
-        // CRITICAL: proof_vault_account_info must live for the entire function scope
-        let proof_vault_info_ref: &AccountInfo<'info> = unsafe { mem::transmute(&proof_vault_account_info) };
+        // Extract remaining accounts (pool_state, commitment_tree, and all others)
+        // remaining_accounts[0] = spender, [1] = proof_vault, [2] = rent, [3+] = pool_state and others
+        let remaining_for_extraction = &ctx.remaining_accounts[3..];
         
-        // Deserialize proof_vault using Account<'info, UserProofVault> for mutable access
+        msg!(
+            "execute_transfer_from: extracting accounts from remaining_accounts (total_len={}, remaining_len={})",
+            ctx.remaining_accounts.len(),
+            remaining_for_extraction.len()
+        );
+        
+        // Extract proof_vault operation
+        let proof_vault_info_ref: &'info AccountInfo<'info> = unsafe { mem::transmute(proof_vault_info) };
         let mut proof_vault_account: Account<'info, UserProofVault> = Account::try_from(proof_vault_info_ref)
             .map_err(|_| PoolError::AccountDataTooShort)?;
 
@@ -3760,17 +3397,17 @@ pub mod ptf_pool {
                 .position(|op| matches!(op, PreparedOperation::TransferFrom { operation_id: id, .. } if *id == operation_id))
                 .ok_or(PoolError::OperationNotFound)?;
 
-            let transfer_args = {
+        let transfer_from_args = {
             let operation = &proof_vault_account.prepared_operations[operation_idx];
-                match operation {
-                    PreparedOperation::TransferFrom { transfer_from_args, status, expires_at, .. } => {
-                        require!(clock.unix_timestamp < *expires_at, PoolError::OperationExpired);
-                        require!(*status == OperationStatus::Prepared, PoolError::InvalidOperationStatus);
-                        transfer_from_args.clone()
-                    }
+            match operation {
+                PreparedOperation::TransferFrom { transfer_from_args, status, expires_at, .. } => {
+                    require!(clock.unix_timestamp < *expires_at, PoolError::OperationExpired);
+                    require!(*status == OperationStatus::Prepared, PoolError::InvalidOperationStatus);
+                    transfer_from_args.clone()
+                }
                 _ => return err!(PoolError::OperationNotFound),
             }
-            };
+        };
 
         // Mark as executing - use the mutable Account directly
         if let Some(operation) = proof_vault_account.prepared_operations.get_mut(operation_idx) {
@@ -3780,21 +3417,8 @@ pub mod ptf_pool {
         }
         msg!("execute_transfer_from: operation found at idx={}", operation_idx);
 
-        // Extract and validate accounts from remaining_accounts
+        // Extract accounts from remaining_accounts (similar to execute_unshield)
         // TransferFrom needs: pool_state, nullifier_set, commitment_tree, note_ledger, mint_mapping, verifier_program, verifying_key, allowance, allowance_owner
-        // spender, system_program, rent are already in ExecuteTransferFrom struct
-        
-        // CRITICAL FIX: Store all AccountInfo references from remaining_accounts in variables that live for entire function
-        // This ensures the references remain valid when we create wrappers and use them later
-        let remaining_accounts_stored: Vec<AccountInfo<'info>> = ctx.remaining_accounts.iter().map(|a| a.clone()).collect();
-        
-        msg!(
-            "execute_transfer_from: extracting accounts from remaining_accounts (len={})",
-            remaining_accounts_stored.len()
-        );
-
-        // Similar to execute_transfer, but also need to extract allowance and allowance_owner
-        // First, identify pool_state to get origin_mint for deriving other addresses
         let mut pool_state_info: Option<&AccountInfo> = None;
         let mut nullifier_set_info: Option<&AccountInfo> = None;
         let mut commitment_tree_info: Option<&AccountInfo> = None;
@@ -3805,10 +3429,12 @@ pub mod ptf_pool {
         let mut allowance_info: Option<&AccountInfo> = None;
         let mut allowance_owner_info: Option<&AccountInfo> = None;
 
-        let verifier_program_in_list = remaining_accounts_stored.iter().any(|a| a.key() == ptf_verifier_groth16::ID);
+        // First pass: identify accounts by owner
+        msg!("execute_transfer_from: starting first pass");
+        let verifier_program_in_list = remaining_for_extraction.iter().any(|a| a.key() == ptf_verifier_groth16::ID);
         msg!("execute_transfer_from: verifier_program_in_list={}", verifier_program_in_list);
 
-        for account in remaining_accounts_stored.iter() {
+        for account in remaining_for_extraction.iter() {
             let key = account.key();
             let account_static: &'static AccountInfo = unsafe { mem::transmute(account) };
 
@@ -3899,7 +3525,7 @@ pub mod ptf_pool {
         verifying_key_info = None; // Reset to find by key in second pass
         allowance_info = None;
         
-        for account in remaining_accounts_stored.iter() {
+        for account in remaining_for_extraction.iter() {
             let key = account.key();
             let account_static: &'static AccountInfo = unsafe { mem::transmute(account) };
             
@@ -4026,21 +3652,18 @@ pub mod ptf_pool {
             .map_err(|_| PoolError::AccountDataTooShort)?;
         let allowance_account: Account<'static, AllowanceAccount> = unsafe { mem::transmute(allowance_account_temp) };
         
-        // Get spender AccountInfo from context
-        let spender_info_ref = &ctx.accounts.spender.to_account_info();
-        let spender_info_static: &'static AccountInfo<'static> = unsafe { mem::transmute(spender_info_ref) };
+        // Get spender, system_program, and rent from extracted accounts
+        let spender_info_static: &'static AccountInfo<'static> = unsafe { mem::transmute(spender_info) };
         let spender_wrapper_temp: Signer<'_> = Signer::try_from(spender_info_static)
             .map_err(|_| PoolError::Unauthorized)?;
         let spender_wrapper: Signer<'static> = unsafe { mem::transmute(spender_wrapper_temp) };
         
-        let system_program_info = ctx.accounts.system_program.to_account_info();
         let system_program_info_static: &'static AccountInfo<'static> = unsafe { mem::transmute(&system_program_info) };
         let system_program_wrapper_temp: Program<'_, System> = Program::try_from(system_program_info_static)
             .map_err(|_| PoolError::AccountDataTooShort)?;
         let system_program_wrapper: Program<'static, System> = unsafe { mem::transmute(system_program_wrapper_temp) };
         
-        let rent_info = ctx.accounts.rent.to_account_info();
-        let rent_info_static: &'static AccountInfo<'static> = unsafe { mem::transmute(&rent_info) };
+        let rent_info_static: &'static AccountInfo<'static> = unsafe { mem::transmute(rent_info) };
         let rent_wrapper: Sysvar<'static, Rent> = Sysvar::from_account_info(rent_info_static)
             .map_err(|_| PoolError::AccountDataTooShort)?;
 
@@ -4085,7 +3708,7 @@ pub mod ptf_pool {
                     accounts: transfer_from_mut,
                     remaining_accounts: remaining_accounts_static,
                 },
-                &transfer_args,
+                &transfer_from_args,
             );
 
             drop(Box::from_raw(transfer_from_ptr));
@@ -6472,6 +6095,208 @@ fn create_shield_loaders<'info>(
     Ok((pool_state_loader, commitment_tree_loader))
 }
 
+// Helper struct to hold extracted unshield account infos
+#[derive(Default)]
+struct ExtractedUnshieldAccounts<'info> {
+    pool_state_info: Option<&'info AccountInfo<'info>>,
+    commitment_tree_info: Option<&'info AccountInfo<'info>>,
+    hook_config_info: Option<&'info AccountInfo<'info>>,
+    hook_whitelist_info: Option<&'info AccountInfo<'info>>,
+    nullifier_set_info: Option<&'info AccountInfo<'info>>,
+    note_ledger_info: Option<&'info AccountInfo<'info>>,
+    mint_mapping_info: Option<&'info AccountInfo<'info>>,
+    verifier_program_info: Option<&'info AccountInfo<'info>>,
+    verifying_key_info: Option<&'info AccountInfo<'info>>,
+    vault_state_info: Option<&'info AccountInfo<'info>>,
+    vault_token_account_info: Option<&'info AccountInfo<'info>>,
+    destination_token_account_info: Option<&'info AccountInfo<'info>>,
+    twin_mint_info: Option<&'info AccountInfo<'info>>,
+    vault_program_info: Option<&'info AccountInfo<'info>>,
+    factory_state_info: Option<&'info AccountInfo<'info>>,
+    factory_program_info: Option<&'info AccountInfo<'info>>,
+    token_program_info: Option<&'info AccountInfo<'info>>,
+}
+
+// Helper function to extract unshield accounts from remaining_accounts
+// Marked as #[inline(never)] to prevent inlining and reduce stack usage
+#[inline(never)]
+fn extract_unshield_accounts<'info>(
+    remaining_accounts: &'info [AccountInfo<'info>],
+    pool_addresses: &ptf_common::addresses::PoolAddresses,
+    expected_verifying_key: Pubkey,
+    origin_mint_key: Pubkey,
+) -> Result<ExtractedUnshieldAccounts<'info>> {
+    msg!("extract_unshield_accounts: start, remaining_accounts len={}", remaining_accounts.len());
+    let mut extracted = ExtractedUnshieldAccounts::default();
+    
+    for account in remaining_accounts.iter() {
+        let key = account.key();
+        
+        if key == pool_addresses.pool_state {
+            extracted.pool_state_info = Some(account);
+        } else if key == pool_addresses.commitment_tree {
+            extracted.commitment_tree_info = Some(account);
+        } else if key == pool_addresses.hook_config {
+            extracted.hook_config_info = Some(account);
+        } else if key == pool_addresses.hook_whitelist {
+            extracted.hook_whitelist_info = Some(account);
+        } else if key == pool_addresses.nullifier_set {
+            extracted.nullifier_set_info = Some(account);
+        } else if key == pool_addresses.note_ledger {
+            extracted.note_ledger_info = Some(account);
+        } else if account.owner == &ptf_factory::ID {
+            // Could be mint_mapping (derived separately)
+            if extracted.mint_mapping_info.is_none() {
+                extracted.mint_mapping_info = Some(account);
+            }
+        } else if key == expected_verifying_key {
+            extracted.verifying_key_info = Some(account);
+        } else if key == ptf_verifier_groth16::ID {
+            extracted.verifier_program_info = Some(account);
+        } else if key == ptf_vault::ID {
+            extracted.vault_program_info = Some(account);
+        } else if key == ptf_factory::ID {
+            extracted.factory_program_info = Some(account);
+        } else if key == anchor_spl::token::ID || key == anchor_spl::token_2022::ID {
+            extracted.token_program_info = Some(account);
+        } else if account.owner == &ptf_vault::ID {
+            if extracted.vault_state_info.is_none() {
+                extracted.vault_state_info = Some(account);
+            }
+        } else if account.owner == &anchor_spl::token::ID || account.owner == &anchor_spl::token_2022::ID {
+            if account.data_len() >= 165 {
+                let account_data = account.try_borrow_data()?;
+                if account_data.len() >= 64 {
+                    let mint_bytes = &account_data[0..32];
+                    let mint_pubkey = Pubkey::try_from(mint_bytes).ok();
+                    if mint_pubkey == Some(origin_mint_key) {
+                        if extracted.vault_token_account_info.is_none() {
+                            extracted.vault_token_account_info = Some(account);
+                        } else if extracted.destination_token_account_info.is_none() {
+                            extracted.destination_token_account_info = Some(account);
+                        }
+                    } else {
+                        // Could be twin_mint or destination_token_account
+                        if extracted.twin_mint_info.is_none() && account.owner == &anchor_spl::token::ID {
+                            // Check if it's a mint account (smaller size)
+                            if account.data_len() < 165 {
+                                extracted.twin_mint_info = Some(account);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    msg!("extract_unshield_accounts: completed, returning extracted accounts");
+    Ok(extracted)
+}
+
+// Helper struct to hold typed wrappers for unshield
+struct UnshieldWrappers<'info> {
+    pool_state_loader: Box<AccountLoader<'info, PoolState>>,
+    commitment_tree_loader: Box<AccountLoader<'info, CommitmentTree>>,
+    hook_config_wrapper: Box<UncheckedAccount<'info>>,
+    hook_whitelist_account: Box<Account<'info, HookWhitelist>>,
+    nullifier_set_account: Box<Account<'info, NullifierSet>>,
+    note_ledger_loader: Box<AccountLoader<'info, NoteLedger>>,
+    mint_mapping_account: Box<Account<'info, MintMapping>>,
+    verifier_program: Box<Program<'info, PtfVerifierGroth16>>,
+    verifying_key_account: Box<Account<'info, VerifyingKeyAccount>>,
+    vault_state_account: Box<Account<'info, ptf_vault::VaultState>>,
+    vault_token_account_wrapper: Box<InterfaceAccount<'info, TokenAccount>>,
+    destination_token_account_wrapper: Box<InterfaceAccount<'info, TokenAccount>>,
+    twin_mint_wrapper: Option<Box<InterfaceAccount<'info, Mint>>>,
+    vault_program_wrapper: Box<Program<'info, PtfVault>>,
+    factory_state_account: Box<Account<'info, ptf_factory::FactoryState>>,
+    factory_program_wrapper: Box<Program<'info, PtfFactory>>,
+    token_program_wrapper: Box<Interface<'info, TokenInterface>>,
+}
+
+// Helper function to create typed wrappers for unshield
+// Marked as #[inline(never)] to prevent inlining and reduce stack usage
+#[inline(never)]
+fn create_unshield_wrappers<'info>(
+    pool_state_info: &'info AccountInfo<'info>,
+    commitment_tree_info: &'info AccountInfo<'info>,
+    hook_config_info: &'info AccountInfo<'info>,
+    hook_whitelist_info: &'info AccountInfo<'info>,
+    nullifier_set_info: &'info AccountInfo<'info>,
+    note_ledger_info: &'info AccountInfo<'info>,
+    mint_mapping_info: &'info AccountInfo<'info>,
+    verifier_program_info: &'info AccountInfo<'info>,
+    verifying_key_info: &'info AccountInfo<'info>,
+    vault_state_info: &'info AccountInfo<'info>,
+    vault_token_account_info: &'info AccountInfo<'info>,
+    destination_token_account_info: &'info AccountInfo<'info>,
+    twin_mint_info: Option<&'info AccountInfo<'info>>,
+    vault_program_info: &'info AccountInfo<'info>,
+    factory_state_info: &'info AccountInfo<'info>,
+    factory_program_info: &'info AccountInfo<'info>,
+    token_program_info: &'info AccountInfo<'info>,
+) -> Result<UnshieldWrappers<'info>> {
+    msg!("create_unshield_wrappers: start");
+    let pool_state_loader = Box::new(AccountLoader::try_from(pool_state_info)
+        .map_err(|_| PoolError::AccountDataTooShort)?);
+    let commitment_tree_loader = Box::new(AccountLoader::try_from(commitment_tree_info)
+        .map_err(|_| PoolError::AccountDataTooShort)?);
+    let hook_config_wrapper = Box::new(UncheckedAccount::try_from(hook_config_info));
+    let hook_whitelist_account = Box::new(Account::try_from(hook_whitelist_info)
+        .map_err(|_| PoolError::AccountDataTooShort)?);
+    let nullifier_set_account = Box::new(Account::try_from(nullifier_set_info)
+        .map_err(|_| PoolError::AccountDataTooShort)?);
+    let note_ledger_loader = Box::new(AccountLoader::try_from(note_ledger_info)
+        .map_err(|_| PoolError::AccountDataTooShort)?);
+    let mint_mapping_account = Box::new(Account::try_from(mint_mapping_info)
+        .map_err(|_| PoolError::AccountDataTooShort)?);
+    let verifier_program = Box::new(Program::try_from(verifier_program_info)
+        .map_err(|_| PoolError::AccountDataTooShort)?);
+    let verifying_key_account = Box::new(Account::try_from(verifying_key_info)
+        .map_err(|_| PoolError::AccountDataTooShort)?);
+    let vault_state_account = Box::new(Account::try_from(vault_state_info)
+        .map_err(|_| PoolError::AccountDataTooShort)?);
+    let vault_token_account_wrapper = Box::new(InterfaceAccount::try_from(vault_token_account_info)
+        .map_err(|_| PoolError::AccountDataTooShort)?);
+    let destination_token_account_wrapper = Box::new(InterfaceAccount::try_from(destination_token_account_info)
+        .map_err(|_| PoolError::AccountDataTooShort)?);
+    let twin_mint_wrapper = twin_mint_info.and_then(|info| {
+        InterfaceAccount::try_from(info)
+            .map(|acc| Box::new(acc))
+            .map_err(|_| PoolError::AccountDataTooShort)
+            .ok()
+    });
+    let vault_program_wrapper = Box::new(Program::try_from(vault_program_info)
+        .map_err(|_| PoolError::AccountDataTooShort)?);
+    let factory_state_account = Box::new(Account::try_from(factory_state_info)
+        .map_err(|_| PoolError::AccountDataTooShort)?);
+    let factory_program_wrapper = Box::new(Program::try_from(factory_program_info)
+        .map_err(|_| PoolError::AccountDataTooShort)?);
+    let token_program_wrapper = Box::new(Interface::try_from(token_program_info)
+        .map_err(|_| PoolError::AccountDataTooShort)?);
+    msg!("create_unshield_wrappers: all wrappers created, returning");
+    
+    Ok(UnshieldWrappers {
+        pool_state_loader,
+        commitment_tree_loader,
+        hook_config_wrapper,
+        hook_whitelist_account,
+        nullifier_set_account,
+        note_ledger_loader,
+        mint_mapping_account,
+        verifier_program,
+        verifying_key_account,
+        vault_state_account,
+        vault_token_account_wrapper,
+        destination_token_account_wrapper,
+        twin_mint_wrapper,
+        vault_program_wrapper,
+        factory_state_account,
+        factory_program_wrapper,
+        token_program_wrapper,
+    })
+}
+
 // Internal implementation that accepts individual account references
 // This avoids unsafe transmute when called from execute_shield with flattened ExecuteShield accounts
 fn execute_shield_impl<'info, 'accs>(
@@ -6614,12 +6439,14 @@ fn execute_shield_impl<'info, 'accs>(
     let verify_discriminator: [u8; 8] = [228, 26, 135, 7, 19, 253, 172, 97];
     
     // Manually serialize args in Anchor/Borsh format
-    // verifying_key_id: [u8; 32] - just the bytes
+    // verifying_key_id: [u8; 32] - just the bytes (from verifying_key account, not pool_state)
     // proof: Vec<u8> - length (u32, little-endian) + bytes
     // public_inputs: Vec<u8> - length (u32, little-endian) + bytes
     let mut instruction_data = Vec::new();
     instruction_data.extend_from_slice(&verify_discriminator);
-    instruction_data.extend_from_slice(&pool_state.verifying_key_id);
+    // CRITICAL FIX: Use verifying_key_id from the verifying_key account, not from pool_state
+    // pool_state.verifying_key_id might be for a different circuit (e.g., unshield vs shield)
+    instruction_data.extend_from_slice(&verifying_key_account.verifying_key_id);
     
     // Serialize proof: Vec<u8>
     let proof_len = args.proof.len() as u32;
@@ -8538,117 +8365,18 @@ pub struct PrepareBatchTransferFrom<'info> {
 // All accounts will be extracted manually from remaining_accounts
 // Using system_program as phantom since it's always present and non-signer
 #[derive(Accounts)]
-pub struct ExecuteShieldRaw<'info> {
+pub struct ExecuteShield<'info> {
     /// CHECK: Phantom account to satisfy struct requirements - all real accounts in remaining_accounts
     pub _phantom: UncheckedAccount<'info>,
 }
 
-// Keep old struct for reference (not used, but kept for IDL compatibility)
-#[derive(Accounts)]
-pub struct ExecuteShield<'info> {
-    /// CHECK: Validated manually in handler (must be signer)
-    #[account(mut)]
-    pub payer: UncheckedAccount<'info>,
-    /// Proof vault for storing prepared operations
-    /// CHECK: Validated manually in handler (PDA derivation and owner)
-    #[account(mut)]
-    pub proof_vault: UncheckedAccount<'info>,
-    /// CHECK: Validated manually in handler (must be System Program)
-    pub system_program: UncheckedAccount<'info>,
-    /// CHECK: Validated manually in handler (must be Rent sysvar)
-    pub rent: UncheckedAccount<'info>,
-}
-
-// Proof Account Abstraction: Execute Unshield
-// Minimal struct to avoid stack overflow from nested Unshield validation
+// WORKAROUND: Minimal struct to bypass Anchor validation that causes access violation
+// All accounts will be extracted manually from remaining_accounts
+// Using system_program as phantom since it's always present and non-signer
 #[derive(Accounts)]
 pub struct ExecuteUnshield<'info> {
-    #[account(
-        mut,
-        seeds = [seeds::POOL, pool_state.load()?.origin_mint.as_ref()],
-        bump
-    )]
-    pub pool_state: AccountLoader<'info, PoolState>,
-    /// CHECK: Validated manually in instruction to reduce stack usage
-    #[account(
-        seeds = [seeds::HOOKS, pool_state.load()?.origin_mint.as_ref()],
-        bump = pool_state.load()?.hook_config_bump,
-    )]
-    pub hook_config: UncheckedAccount<'info>,
-    #[account(
-        init_if_needed,
-        payer = payer,
-        seeds = [b"hook-whitelist", pool_state.load()?.origin_mint.as_ref()],
-        bump,
-        space = HookWhitelist::SPACE,
-    )]
-    pub hook_whitelist: Account<'info, HookWhitelist>,
-    #[account(
-        mut,
-        seeds = [seeds::NULLIFIERS, pool_state.load()?.origin_mint.as_ref()],
-        bump = nullifier_set.bump
-    )]
-    pub nullifier_set: Account<'info, NullifierSet>,
-    #[account(
-        mut,
-        seeds = [seeds::TREE, pool_state.load()?.origin_mint.as_ref()],
-        bump = commitment_tree.load()?.bump,
-        constraint = commitment_tree.load()?.pool == pool_state.key() @ PoolError::CommitmentTreeMismatch
-    )]
-    pub commitment_tree: AccountLoader<'info, CommitmentTree>,
-    #[account(
-        mut,
-        seeds = [seeds::NOTES, pool_state.load()?.origin_mint.as_ref()],
-        bump = pool_state.load()?.note_ledger_bump,
-        constraint = note_ledger.key() == pool_state.load()?.note_ledger @ PoolError::NoteLedgerMismatch,
-        constraint = note_ledger.load()?.pool == pool_state.key() @ PoolError::NoteLedgerMismatch,
-    )]
-    pub note_ledger: AccountLoader<'info, NoteLedger>,
-    #[account(
-        seeds = [seeds::MINT_MAPPING, pool_state.load()?.origin_mint.as_ref()],
-        bump = mint_mapping.bump,
-        seeds::program = ptf_factory::ID,
-        constraint = mint_mapping.origin_mint == pool_state.load()?.origin_mint @ PoolError::OriginMintMismatch,
-    )]
-    pub mint_mapping: Account<'info, MintMapping>,
-    pub verifier_program: Program<'info, PtfVerifierGroth16>,
-    #[account(
-        address = pool_state.load()?.verifying_key,
-        constraint = verifying_key.hash == pool_state.load()?.verifying_key_hash @ PoolError::VerifyingKeyHashMismatch,
-    )]
-    pub verifying_key: Account<'info, VerifyingKeyAccount>,
-    /// CHECK: Validated manually to reduce stack usage
-    #[account(mut)]
-    pub vault_state: UncheckedAccount<'info>,
-    /// CHECK: Validated manually to reduce stack usage
-    #[account(mut)]
-    pub vault_token_account: UncheckedAccount<'info>,
-    /// CHECK: Validated manually to reduce stack usage
-    #[account(mut)]
-    pub destination_token_account: UncheckedAccount<'info>,
-    /// CHECK: Validated manually to reduce stack usage (optional)
-    #[account(mut)]
-    pub twin_mint: Option<UncheckedAccount<'info>>,
-    /// CHECK: Validated manually to reduce stack usage
-    pub vault_program: UncheckedAccount<'info>,
-    #[account(
-        seeds = [seeds::FACTORY, ptf_factory::ID.as_ref()],
-        bump = factory_state.bump,
-        seeds::program = ptf_factory::ID
-    )]
-    pub factory_state: Account<'info, ptf_factory::FactoryState>,
-    /// CHECK: Validated manually to reduce stack usage
-    pub factory_program: UncheckedAccount<'info>,
-    /// CHECK: Validated manually to reduce stack usage
-    pub token_program: UncheckedAccount<'info>,
-    pub system_program: Program<'info, System>,
-    #[account(mut)]
-    pub payer: Signer<'info>,
-    pub rent: Sysvar<'info, Rent>,
-    /// Proof vault for storing prepared operations
-    /// CHECK: Validated manually in handler (PDA derivation and owner)
-    #[account(mut)]
-    pub proof_vault: UncheckedAccount<'info>,
+    /// CHECK: Phantom account to satisfy struct requirements - all real accounts in remaining_accounts
+    pub _phantom: UncheckedAccount<'info>,
 }
     
 // Proof Account Abstraction: Execute Transfer
@@ -8668,22 +8396,17 @@ pub struct ExecuteTransfer<'info> {
     pub rent: UncheckedAccount<'info>,
 }
 
-// Proof Account Abstraction: Execute Transfer From
-// Minimal struct to avoid stack overflow from nested TransferFrom validation
+// WORKAROUND: Minimal struct to bypass Anchor validation that causes access violation
+// All accounts will be extracted manually from remaining_accounts
+// Using system_program as phantom since it's always present and non-signer
 #[derive(Accounts)]
 pub struct ExecuteTransferFrom<'info> {
-    /// CHECK: Validated manually in handler (must be signer - this is the spender)
-    #[account(mut)]
-    pub spender: UncheckedAccount<'info>,
-    /// Proof vault for storing prepared operations
-    /// CHECK: Validated manually in handler (PDA derivation and owner)
-    #[account(mut)]
-    pub proof_vault: UncheckedAccount<'info>,
-    /// CHECK: Validated manually in handler (must be System Program)
-    pub system_program: UncheckedAccount<'info>,
-    /// CHECK: Validated manually in handler (must be Rent sysvar)
-    pub rent: UncheckedAccount<'info>,
+    /// CHECK: Phantom account to satisfy struct requirements - all real accounts in remaining_accounts
+    pub _phantom: UncheckedAccount<'info>,
 }
+
+// OLD VERSION REMOVED - This struct caused access violations in Anchor's validation phase
+// The new ExecuteTransferFrom uses minimal struct to bypass Anchor validation
 
 // Proof Account Abstraction: Execute Batch Transfer
 // Minimal struct to avoid stack overflow from nested BatchPrivateTransfer validation
