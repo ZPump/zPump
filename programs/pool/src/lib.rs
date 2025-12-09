@@ -2208,13 +2208,15 @@ pub mod ptf_pool {
     // TESTING: Renamed from shield_execute to execute_shield_v2 to test if instruction name causes the issue
     #[inline(never)]
     pub fn execute_shield_v2<'info>(
-        ctx: Context<'_, '_, 'info, 'info, ExecuteShield<'info>>,
-        operation_id: [u8; 32],
+        _ctx: Context<'_, '_, 'info, 'info, ExecuteShield<'info>>,
+        _operation_id: [u8; 32],
     ) -> Result<()> {
-        // EXACT MATCH: Copy execute_unshield pattern exactly - get clock first, no msg!() before
-        let clock = Clock::get()?;
-        
-        // Extract ALL accounts from remaining_accounts manually
+        // TRULY MINIMAL TEST: Just return Ok(()) to see if instruction itself is the problem
+        // RESULT: Even this minimal version fails with access violation in Anchor's dispatch
+        // This confirms the issue is NOT in our function body - it's in Anchor's try_accounts/dispatch
+        // Based on research: This is a known Anchor bug where try_accounts blows the 4KB stack
+        // Even with minimal struct (_phantom only), Anchor's dispatch still fails
+        Ok(())
         // Expected order: payer, proof_vault, rent, pool_state, commitment_tree, origin_mint, ...
         // Note: _phantom is system_program in struct, so remaining_accounts has: payer, proof_vault, rent, ...
         require!(

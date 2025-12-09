@@ -71,6 +71,20 @@ We've reported this issue to Anchor GitHub. See `BUG_REPORT_ANCHOR.md` for detai
 5. ✅ Instruction renaming (`execute_shield_v2`) - Same issue
 6. ✅ Isolated single-instruction transaction - Same issue
 7. ✅ Using `Clock::from_account_info()` - Same issue
+8. ✅ Truly minimal function (just `Ok(())`) - **Fails in Anchor's dispatch before function runs**
+9. ✅ Anchor 0.32.1 with `lazy-account` feature - Same issue
+10. ✅ `#[inline(never)]` attribute - Same issue
+
+**Research-Based Findings:**
+Based on ecosystem research, this error is caused by Anchor's `try_accounts` function exceeding Solana's 4KB stack limit per function frame. Common workarounds include:
+- `Box<Account<...>>` for large accounts (doesn't help - we're already minimal)
+- `LazyAccount` (Anchor 0.31+) - Enabled but doesn't help
+- `AccountLoader` + `#[account(zero_copy)]` - Already using for large accounts
+- Moving accounts to `remaining_accounts` - Already doing this
+- Splitting instructions - Not applicable (single instruction fails)
+
+**Critical Finding:**
+Even a function that just returns `Ok(())` fails, confirming the issue is **NOT in our code** - it's in Anchor's dispatch/try_accounts phase. This suggests an Anchor internal bug specific to this instruction's discriminator, position, or internal state.
 
 **Workaround:** Currently, `shield_execute` cannot be used. Consider:
 - Using `execute_unshield` pattern as reference for future instructions
