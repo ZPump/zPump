@@ -14,7 +14,7 @@ use ptf_common::security::patterns::validate_then_execute;
 
 declare_id!("Muko1fue2j1At1U6v2xJ7cuwas5uSUjZHVGppbpT8yq");
 
-const PTF_POOL_PROGRAM_ID: Pubkey = pubkey!("Av2D8ADegRt1zTfqEABidkcMH2zzusrDLwAeDFgfdQ1k");
+const PTF_POOL_PROGRAM_ID: Pubkey = pubkey!("BTjQKK2eqCuygoJZYPyydTfB2wvuWnJkmyg2y25HCrmU");
 // CRITICAL FIX: Timelock duration for authority changes (7 days)
 const TIMELOCK_DURATION_SECONDS: i64 = 7 * 24 * 60 * 60; // 7 days
 // CRITICAL FIX: Pending change expiration (30 days after execution time)

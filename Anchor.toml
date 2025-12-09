@@ -6,10 +6,10 @@ skip-lint = false
 
 [programs.localnet]
 ptf_dex = "2hktsrLk3f6EN7vHR3cYgoTHXJE9Hw4HsU5MRgXtAPZ8"
-ptf_factory = "GQhkApwhBSy65JGFNpKBfFSNkhxjuJG5g8oY2DQhDN5P"
-ptf_pool = "3aBs2hhifpWZnECCRACnBAHYokMKfGcMm4PxiF8E8zvE"
+ptf_factory = "HaPDYkR2CWsxfAwg6rT5G1ZZ9vPH14CNXZo9s6AyYKNK"
+ptf_pool = "BTjQKK2eqCuygoJZYPyydTfB2wvuWnJkmyg2y25HCrmU"
 ptf_vault = "Muko1fue2j1At1U6v2xJ7cuwas5uSUjZHVGppbpT8yq"
-ptf_verifier_groth16 = "9X9pUY6B828TVGwtwEqmmqkkCSUTt3zLr3dvKJzfWgin"
+ptf_verifier_groth16 = "AhSvt3Be9akJHhnWRD9XJcBrjs5uawosBdQdwgoANHcT"
 
 [registry]
 url = "https://anchor.projectserum.com"

@@ -1,12 +1,12 @@
 use anchor_lang::prelude::*;
 use sha3::{Digest, Keccak256};
 
-declare_id!("9X9pUY6B828TVGwtwEqmmqkkCSUTt3zLr3dvKJzfWgin");
+declare_id!("AhSvt3Be9akJHhnWRD9XJcBrjs5uawosBdQdwgoANHcT");
 
 // CRITICAL FIX: Factory program ID is now stored in VerifierConfig account
 // This allows factory upgrades and multi-factory support
 // The constant is kept as a fallback for initialization, but VerifierConfig should be used
-const PTF_FACTORY_PROGRAM_ID: Pubkey = pubkey!("4z618BY2dXGqAUiegqDt8omo3e81TSdXRHt64ikX1bTy");
+const PTF_FACTORY_PROGRAM_ID: Pubkey = pubkey!("CyhvttjBCatmWZjzTFbyfRtHAPfwCEuXYjiKyykAiJAB");
 
 /// Maximum Groth16 proof byte length (~10KB leaves plenty of headroom over 192-byte proofs)
 pub const MAX_PROOF_SIZE: usize = 10 * 1024;

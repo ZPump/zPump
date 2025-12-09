@@ -1,10 +1,10 @@
 import { PublicKey } from '@solana/web3.js';
 import { AddressLookupTableProgram } from '@solana/web3.js';
 
-export const FACTORY_PROGRAM_ID = new PublicKey('94XEJsvLbTNYit4mXowjhqkDpwqtnXnKs2KtF3PNW2oK');
-export const POOL_PROGRAM_ID = new PublicKey('3aBs2hhifpWZnECCRACnBAHYokMKfGcMm4PxiF8E8zvE');
-export const VAULT_PROGRAM_ID = new PublicKey('7Wr9XMjYfPm6HTN3ZV7r4wHnoV2zospvNN5A1xgoER8m');
-export const VERIFIER_PROGRAM_ID = new PublicKey('2V5XN9rpubXdK3cdWBBjZwjxMpMzQBKTaN3moEJ59a8K');
+export const FACTORY_PROGRAM_ID = new PublicKey('HaPDYkR2CWsxfAwg6rT5G1ZZ9vPH14CNXZo9s6AyYKNK');
+export const POOL_PROGRAM_ID = new PublicKey('BTjQKK2eqCuygoJZYPyydTfB2wvuWnJkmyg2y25HCrmU');
+export const VAULT_PROGRAM_ID = new PublicKey('Muko1fue2j1At1U6v2xJ7cuwas5uSUjZHVGppbpT8yq');
+export const VERIFIER_PROGRAM_ID = new PublicKey('AhSvt3Be9akJHhnWRD9XJcBrjs5uawosBdQdwgoANHcT');
 export const DEX_PROGRAM_ID = new PublicKey('4HKwSSZXkVMo5JKk92sMNhhUfcHCWzXYG8eVj6aPymar');
 
 export const TOKEN_PROGRAM_ID = new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA');

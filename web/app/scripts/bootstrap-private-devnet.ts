@@ -36,11 +36,12 @@ import { resolveRepoPath } from '../lib/server/paths';
 
 ensureFetchPolyfill();
 
+const VERIFIER_PUBKEY = process.env.VERIFIER_PROGRAM_ID || 'AhSvt3Be9akJHhnWRD9XJcBrjs5uawosBdQdwgoANHcT';
 const PROGRAM_IDS = {
-  factory: new PublicKey('94XEJsvLbTNYit4mXowjhqkDpwqtnXnKs2KtF3PNW2oK'),
-  vault: new PublicKey('7Wr9XMjYfPm6HTN3ZV7r4wHnoV2zospvNN5A1xgoER8m'),
-  pool: new PublicKey('Av2D8ADegRt1zTfqEABidkcMH2zzusrDLwAeDFgfdQ1k'),
-  verifier: new PublicKey('2V5XN9rpubXdK3cdWBBjZwjxMpMzQBKTaN3moEJ59a8K')
+  factory: new PublicKey('HaPDYkR2CWsxfAwg6rT5G1ZZ9vPH14CNXZo9s6AyYKNK'),
+  vault: new PublicKey('Muko1fue2j1At1U6v2xJ7cuwas5uSUjZHVGppbpT8yq'),
+  pool: new PublicKey('BTjQKK2eqCuygoJZYPyydTfB2wvuWnJkmyg2y25HCrmU'),
+  verifier: new PublicKey(VERIFIER_PUBKEY)
 } as const;
 
 const FEATURE_PRIVATE_TRANSFER_ENABLED = 0x01;
@@ -665,7 +666,9 @@ async function ensureVerifyingKey(
       hash: hashBytes,
       version,
       verifying_key_data: Buffer.from(binary)
-    }
+    },
+    [],
+    [ComputeBudgetProgram.setComputeUnitLimit({ units: 1_400_000 })]
   );
   console.log(`Registered verifying key for circuit ${circuit} -> ${verifierState.toBase58()}`);
   return { verifierState, verifyingKeyId: hashBytes, hash: hashBytes };
