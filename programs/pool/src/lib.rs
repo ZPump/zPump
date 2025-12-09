@@ -14833,22 +14833,275 @@ fn execute_transfer_from_raw_handler(
 /// This instruction doesn't have access violation issues, so could use Anchor's try_accounts
 /// but requires proper bumps struct creation
 fn dispatch_approve_allowance(
-    _program_id: &Pubkey,
-    _accounts: &[AccountInfo],
-    _instruction_data: &[u8],
+    program_id: &Pubkey,
+    accounts: &[AccountInfo],
+    instruction_data: &[u8],
 ) -> SolanaProgramResult {
-    msg!("dispatch_approve_allowance: manual dispatch not yet fully implemented");
-    msg!("NOTE: approve_allowance needs manual Context creation with bumps struct");
-    Err(anchor_lang::solana_program::program_error::ProgramError::InvalidInstructionData)
+    // Deserialize arguments (after 8-byte discriminator)
+    // approve_allowance takes: ApproveAllowanceArgs { amount: u64, expires_at: Option<i64> }
+    // Option<i64> is serialized as: 1 byte (Some/None) + 8 bytes (i64 if Some)
+    if instruction_data.len() < 8 + 8 {
+        return Err(anchor_lang::solana_program::program_error::ProgramError::InvalidInstructionData);
+    }
+    
+    let amount = u64::from_le_bytes(
+        instruction_data[8..8+8].try_into()
+            .map_err(|_| anchor_lang::solana_program::program_error::ProgramError::InvalidInstructionData)?
+    );
+    
+    let expires_at = if instruction_data.len() >= 8 + 8 + 1 {
+        match instruction_data[8+8] {
+            0 => None, // None
+            1 => {
+                if instruction_data.len() < 8 + 8 + 1 + 8 {
+                    return Err(anchor_lang::solana_program::program_error::ProgramError::InvalidInstructionData);
+                }
+                Some(i64::from_le_bytes(
+                    instruction_data[8+8+1..8+8+1+8].try_into()
+                        .map_err(|_| anchor_lang::solana_program::program_error::ProgramError::InvalidInstructionData)?
+                ))
+            }
+            _ => return Err(anchor_lang::solana_program::program_error::ProgramError::InvalidInstructionData),
+        }
+    } else {
+        None
+    };
+    
+    let args = crate::ApproveAllowanceArgs {
+        amount,
+        expires_at,
+    };
+    
+    msg!("dispatch_approve_allowance: amount={}, expires_at={:?}", amount, expires_at);
+    
+    // Call raw handler
+    approve_allowance_raw_handler(program_id, accounts, args)
+}
+
+/// Raw handler for approve_allowance that bypasses Anchor's dispatch
+#[inline(never)]
+fn approve_allowance_raw_handler(
+    program_id: &Pubkey,
+    accounts: &[AccountInfo],
+    args: ApproveAllowanceArgs,
+) -> SolanaProgramResult {
+    use anchor_lang::solana_program::program_error::ProgramError;
+    
+    // SECURITY: Validate minimum account count
+    // ManageAllowance needs: pool_state, allowance, owner, spender, origin_mint, system_program
+    // Expected order: pool_state, allowance, owner, spender, origin_mint, system_program
+    if accounts.len() < 6 {
+        return Err(ProgramError::NotEnoughAccountKeys);
+    }
+    
+    // Extract accounts manually
+    let pool_state_info = &accounts[0];
+    let allowance_info = &accounts[1];
+    let owner_info = &accounts[2];
+    let spender_info = &accounts[3];
+    let origin_mint_info = &accounts[4];
+    let system_program_info = &accounts[5];
+    
+    // SECURITY: Validate owner is signer
+    if !owner_info.is_signer {
+        return Err(ProgramError::MissingRequiredSignature);
+    }
+    
+    // SECURITY: Validate system_program
+    if system_program_info.key() != anchor_lang::solana_program::system_program::ID {
+        return Err(ProgramError::IncorrectProgramId);
+    }
+    
+    // Call core extraction and execution logic
+    approve_allowance_core_from_raw(
+        program_id,
+        pool_state_info,
+        allowance_info,
+        owner_info,
+        spender_info,
+        origin_mint_info,
+        system_program_info,
+        args,
+    )
+}
+
+/// Core execution logic for approve_allowance that works with raw AccountInfo
+#[inline(never)]
+fn approve_allowance_core_from_raw(
+    program_id: &Pubkey,
+    pool_state_info: &AccountInfo,
+    allowance_info: &AccountInfo,
+    owner_info: &AccountInfo,
+    spender_info: &AccountInfo,
+    origin_mint_info: &AccountInfo,
+    _system_program_info: &AccountInfo, // Not directly used in core, but passed for consistency
+    args: ApproveAllowanceArgs,
+) -> SolanaProgramResult {
+    use std::mem;
+    use anchor_lang::prelude::*;
+
+    // CRITICAL FIX: Validate maximum allowance limit
+    if args.amount > crate::AllowanceAccount::MAX_ALLOWANCE {
+        return Err(anchor_lang::solana_program::program_error::ProgramError::Custom(crate::PoolError::AllowanceTooLarge as u32));
+    }
+    
+    // CRITICAL FIX: Validate expiration if provided
+    if let Some(expires_at) = args.expires_at {
+        let clock = Clock::get()?;
+        if expires_at <= clock.unix_timestamp {
+            return Err(anchor_lang::solana_program::program_error::ProgramError::Custom(crate::PoolError::InvalidExpiration as u32));
+        }
+    }
+
+    // Create typed wrappers
+    let pool_state_info_static: &'static AccountInfo<'static> = unsafe { mem::transmute(pool_state_info) };
+    let pool_state_loader_temp: AccountLoader<'static, PoolState> = AccountLoader::try_from(pool_state_info_static)
+        .map_err(|_| anchor_lang::solana_program::program_error::ProgramError::Custom(crate::PoolError::AccountDataTooShort as u32))?;
+    let pool_state_loader: AccountLoader<'static, PoolState> = unsafe { mem::transmute(pool_state_loader_temp) };
+    
+    let allowance_info_static: &'static AccountInfo<'static> = unsafe { mem::transmute(allowance_info) };
+    let allowance_account_temp: Account<'static, AllowanceAccount> = Account::try_from(allowance_info_static)
+        .map_err(|_| anchor_lang::solana_program::program_error::ProgramError::Custom(crate::PoolError::AccountDataTooShort as u32))?;
+    let mut allowance_account: Account<'static, AllowanceAccount> = unsafe { mem::transmute(allowance_account_temp) };
+    
+    // Derive expected allowance PDA to get bump
+    let pool_state = pool_state_loader.load()?;
+    let pool_state_key = pool_state_loader.key();
+    let origin_mint_key = pool_state.origin_mint;
+    drop(pool_state);
+    
+    // Validate origin_mint matches
+    // Use same pattern as execute_transfer: &Pubkey == Pubkey (automatic deref)
+    if origin_mint_info.key() != origin_mint_key {
+        return Err(anchor_lang::solana_program::program_error::ProgramError::Custom(crate::PoolError::OriginMintMismatch as u32));
+    }
+    
+    let (expected_allowance, allowance_bump) = Pubkey::find_program_address(
+        &[
+            crate::seeds::ALLOWANCE,
+            pool_state_key.as_ref(),
+            owner_info.key().as_ref(),
+            spender_info.key().as_ref(),
+        ],
+        program_id,
+    );
+    
+    // Validate allowance PDA
+    // Use same pattern as execute_transfer: &Pubkey == Pubkey (automatic deref)
+    if allowance_info.key() != expected_allowance {
+        return Err(anchor_lang::solana_program::program_error::ProgramError::Custom(crate::PoolError::InvalidAccountOwner as u32));
+    }
+
+    // Call write_allowance directly
+    // write_allowance expects Pubkey, but key() returns &Pubkey
+    // We need to clone the Pubkey values
+    let owner_key = owner_info.key().clone();
+    let spender_key = spender_info.key().clone();
+    crate::write_allowance(
+        &pool_state_loader,
+        &mut allowance_account,
+        owner_key,
+        spender_key,
+        origin_mint_key,
+        allowance_bump,
+        args.amount,
+        args.expires_at,
+    ).map_err(|e| -> anchor_lang::solana_program::program_error::ProgramError {
+        match e {
+            anchor_lang::error::Error::AnchorError(anchor_err) => {
+                anchor_lang::solana_program::program_error::ProgramError::Custom(anchor_err.error_code_number)
+            }
+            anchor_lang::error::Error::ProgramError(_prog_err) => {
+                anchor_lang::solana_program::program_error::ProgramError::Custom(crate::PoolError::InvalidAccountOwner as u32)
+            }
+            _ => anchor_lang::solana_program::program_error::ProgramError::Custom(crate::PoolError::InvalidAccountOwner as u32),
+        }
+    })
 }
 
 /// Manual dispatch for execute_batch_transfer instruction
 fn dispatch_execute_batch_transfer(
-    _program_id: &Pubkey,
-    _accounts: &[AccountInfo],
-    _instruction_data: &[u8],
+    program_id: &Pubkey,
+    accounts: &[AccountInfo],
+    instruction_data: &[u8],
 ) -> SolanaProgramResult {
-    msg!("dispatch_execute_batch_transfer: manual dispatch not yet implemented");
+    // Deserialize arguments (after 8-byte discriminator)
+    // execute_batch_transfer takes: operation_id: [u8; 32]
+    if instruction_data.len() < 8 + 32 {
+        return Err(anchor_lang::solana_program::program_error::ProgramError::InvalidInstructionData);
+    }
+    
+    let mut operation_id = [0u8; 32];
+    operation_id.copy_from_slice(&instruction_data[8..8+32]);
+    
+    msg!("dispatch_execute_batch_transfer: operation_id={:?}", hex::encode(operation_id));
+    
+    // Call raw handler
+    execute_batch_transfer_raw_handler(program_id, accounts, operation_id)
+}
+
+/// Raw handler for execute_batch_transfer that bypasses Anchor's dispatch
+/// Similar to execute_transfer_raw_handler - extracts accounts manually and calls core function
+#[inline(never)]
+fn execute_batch_transfer_raw_handler(
+    program_id: &Pubkey,
+    accounts: &[AccountInfo],
+    operation_id: [u8; 32],
+) -> SolanaProgramResult {
+    use anchor_lang::solana_program::program_error::ProgramError;
+    
+    // SECURITY: Validate minimum account count
+    // Expected: payer + proof_vault + rent + system_program + all others
+    // accounts[0] = payer (first in remaining_accounts)
+    // accounts[1] = proof_vault (second in remaining_accounts)  
+    // accounts[2] = rent (third in remaining_accounts)
+    // accounts[3] = system_program (fourth in remaining_accounts)
+    // accounts[4..] = all other accounts
+    if accounts.len() < 4 {
+        return Err(ProgramError::NotEnoughAccountKeys);
+    }
+    
+    // Extract accounts manually (matching execute_batch_transfer pattern exactly)
+    let payer_info = &accounts[0];
+    let proof_vault_info = &accounts[1];
+    let rent_info = &accounts[2];
+    let system_program_info = &accounts[3];
+    let remaining_for_extraction = &accounts[4..];
+    
+    // SECURITY: Validate payer is signer
+    if !payer_info.is_signer {
+        return Err(ProgramError::MissingRequiredSignature);
+    }
+    
+    let payer_key = payer_info.key();
+    
+    // SECURITY: Validate rent sysvar
+    if rent_info.key() != anchor_lang::solana_program::sysvar::rent::ID {
+        return Err(ProgramError::InvalidAccountData);
+    }
+    
+    // SECURITY: Validate system_program
+    if system_program_info.key() != anchor_lang::solana_program::system_program::ID {
+        return Err(ProgramError::IncorrectProgramId);
+    }
+    
+    // SECURITY: Validate proof_vault PDA and ownership
+    let (expected_vault, _) = crate::derive_proof_vault(
+        &payer_key,
+        program_id,
+    );
+    if proof_vault_info.key() != expected_vault {
+        return Err(anchor_lang::solana_program::program_error::ProgramError::Custom(crate::PoolError::Unauthorized as u32));
+    }
+    if proof_vault_info.owner != program_id {
+        return Err(anchor_lang::solana_program::program_error::ProgramError::Custom(crate::PoolError::Unauthorized as u32));
+    }
+    
+    // Call core extraction and execution logic
+    // NOTE: execute_batch_transfer_core_from_raw is very complex - it needs to handle two pools
+    // For now, return error indicating it needs implementation
+    // TODO: Implement execute_batch_transfer_core_from_raw following the same pattern as execute_transfer_core_from_raw
+    msg!("execute_batch_transfer_raw_handler: batch transfer core implementation pending - very complex (handles 2 pools)");
     Err(anchor_lang::solana_program::program_error::ProgramError::InvalidInstructionData)
 }
 
