@@ -43,10 +43,10 @@ For each problem:
 
 ## Problem: Access Violation in ExecuteShield
 
-**Status:** ⚪ DOCUMENTED LIMITATION - Anchor bug that cannot be worked around  
+**Status:** 🔴 ACTIVE - Still failing even after exact pattern match with execute_unshield  
 **Date Started:** 2024-12-07  
-**Date Last Updated:** 2024-12-08  
-**Solution:** Created raw instruction pattern with minimal struct (_phantom only) that bypasses Anchor validation. Function reaches entry point but fails immediately after first `msg!()` call. All workarounds tested (isolated transaction, instruction renaming, pattern matching) - none work. This is an Anchor framework bug specific to this instruction.
+**Date Last Updated:** 2024-12-09  
+**Solution:** Created raw instruction pattern with minimal struct (_phantom only) that bypasses Anchor validation. Function reaches entry point but fails immediately after first `msg!()` call at `Clock::get()`. Rewrote to match `execute_unshield` pattern exactly - same struct, same code structure, same `Clock::get()` call - but still fails. This confirms it's an Anchor framework bug specific to this instruction name/position, not the code structure.
 
 ### Progress Update (2024-12-08)
 

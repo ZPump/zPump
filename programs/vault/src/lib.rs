@@ -12,7 +12,7 @@ use ptf_common::security::{
 use ptf_common::security::events::{emit_security_event, SecurityEventType, SecuritySeverity};
 use ptf_common::security::patterns::validate_then_execute;
 
-declare_id!("7Wr9XMjYfPm6HTN3ZV7r4wHnoV2zospvNN5A1xgoER8m");
+declare_id!("Muko1fue2j1At1U6v2xJ7cuwas5uSUjZHVGppbpT8yq");
 
 const PTF_POOL_PROGRAM_ID: Pubkey = pubkey!("Av2D8ADegRt1zTfqEABidkcMH2zzusrDLwAeDFgfdQ1k");
 // CRITICAL FIX: Timelock duration for authority changes (7 days)

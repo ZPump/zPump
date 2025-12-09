@@ -40,11 +40,11 @@ We've reported this issue to Anchor GitHub. See `BUG_REPORT_ANCHOR.md` for detai
 
 ## Known Limitations
 
-### `shield_execute` Instruction
+### `execute_shield_v2` Instruction
 
-**Status:** ⚠️ **PARTIALLY WORKING** - Function reaches entry point but fails immediately after first `msg!()` call
+**Status:** 🔴 **NOT WORKING** - Access violation persists despite all workarounds
 
-**Issue:** Even with the raw instruction workaround, `shield_execute` fails with access violation at `0x200005440` immediately after the first log message. This occurs even when:
+**Issue:** Even with the raw instruction workaround, `execute_shield_v2` fails with access violation at `0x200005480` immediately after the first log message. This occurs even when:
 - Called in isolation (single instruction transaction)
 - Using identical pattern to `execute_unshield` (which works)
 - Renamed to different instruction name (`execute_shield_v2`)
