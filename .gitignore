@@ -40,6 +40,11 @@ target/
 *.so
 *.dylib
 
+# Test ledger files (large, generated)
+test-ledger/
+*.sst
+*.tar.zst
+
 # Misc
 *.tsbuildinfo
 
