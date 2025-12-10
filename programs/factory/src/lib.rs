@@ -32,7 +32,7 @@ const MIN_TIMELOCK_SECONDS: i64 = 24 * 60 * 60; // 86400 seconds = 24 hours
 const AUTHORITY_CHANGE_TIMELOCK_SECONDS: i64 = 7 * 24 * 60 * 60; // 604800 seconds = 7 days
 const TIMELOCK_STALE_GRACE_SECONDS: i64 = 30 * 24 * 60 * 60; // 30 days
 
-declare_id!("HaPDYkR2CWsxfAwg6rT5G1ZZ9vPH14CNXZo9s6AyYKNK");
+declare_id!("GoeeSg56B2WVNjLWANJ6LkqVwk45ynJ8wRQXY7pohrUX");
 
 #[program]
 pub mod ptf_factory {

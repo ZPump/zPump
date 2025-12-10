@@ -18,35 +18,56 @@ For each problem:
 
 ## Current Active Problems
 
-### Problem: prepare_shield Error 0x0
+### Problem: execute_shield_v2 AccountDataTooShort Error (0x19)
 
 **Status:** 🔴 Active  
 **Date Started:** 2024-12-09
 
 ### Description
-`prepare_shield` instruction fails with `custom program error: 0x0` after account creation. The system program call succeeds, but the program fails immediately after.
+`execute_shield_v2` instruction fails with `custom program error: 0x19` (AccountDataTooShort) when trying to deserialize the `UserProofVault` account using `Account::try_from`. The discriminator is correct (`[130, 2, 224, 154, 38, 129, 158, 160]`), but deserialization fails with "AccountDidNotDeserialize" error.
 
 ### Symptoms
-- Error occurs after `invoke_signed` creates account successfully
-- System program call succeeds (`Program 11111111111111111111111111111111 success`)
-- No logs from `prepare_shield_core_from_raw` appear
-- Error code `0x0` (generic Anchor error)
+- Error occurs at `Account::try_from` for `proof_vault` account in `execute_shield_v2_core_from_raw`
+- Discriminator is correct (matches expected `UserProofVault` discriminator)
+- Account data length is 10069 bytes (reasonable size)
+- Account owner is correct (`guKkNcvnhiKPPK9e2qwYWWPZWdLfk78QwFcVEL4hAbu`)
+- Error: `AnchorError { error_name: "AccountDidNotDeserialize", error_code_number: 3003 }`
+- Bytes 8-15 show the discriminator repeated (might be a logging artifact)
 
 ### Attempts Made
 
-1. ✅ **Added account discriminator** - Set discriminator when creating account
-   - **Result:** Still fails with error 0x0
+1. ✅ **Tried Account::try_from** - Used standard Anchor deserialization (like other functions)
+   - **Result:** Failed with "AccountDidNotDeserialize"
    - **Date:** 2024-12-09
 
-2. ✅ **Added detailed logging** - Added logs throughout `prepare_shield_core_from_raw`
-   - **Result:** No logs appear, suggesting error occurs before function runs
+2. ✅ **Tried manual deserialization with try_from_slice** - Manually deserialized using `UserProofVault::try_from_slice`
+   - **Result:** Failed with "Unexpected variant index: 138" (enum deserialization error)
+   - **Date:** 2024-12-09
+
+3. ✅ **Added detailed logging** - Logged discriminator, first 20 bytes, and bytes 8-100
+   - **Result:** Discriminator is correct, but deserialization still fails
    - **Date:** 2024-12-09
 
 ### Hypotheses
 
-1. **Account discriminator not set correctly** - Discriminator might be wrong or not set at right time
-   - **Test:** Verify discriminator matches expected value
+1. **Account data structure mismatch** - The account might have been created with a different version of the struct or corrupted
+   - **Test:** Check how `prepare_shield` creates the account and verify the serialization format
    - **Priority:** High
+
+2. **Vec<PreparedOperation> deserialization issue** - The `Vec` field might not be deserializing correctly
+   - **Test:** Try deserializing the account manually, field by field
+   - **Priority:** Medium
+
+3. **Account created incorrectly** - `prepare_shield` might not be creating the account correctly
+   - **Test:** Verify `prepare_shield` is creating the account with the correct structure
+   - **Priority:** High
+
+### Next Steps
+
+1. Check how `prepare_shield` creates the account (via `init_if_needed` or manual creation)
+2. Verify the account structure matches what Anchor expects
+3. Try deserializing the account manually, field by field, to identify which field is causing the issue
+4. Check if there's a version mismatch between how the account was created and how it's being deserialized
 
 2. **Account serialization issue** - `try_serialize` might be failing
    - **Test:** Check if serialization succeeds

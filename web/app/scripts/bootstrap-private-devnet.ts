@@ -36,11 +36,11 @@ import { resolveRepoPath } from '../lib/server/paths';
 
 ensureFetchPolyfill();
 
-const VERIFIER_PUBKEY = process.env.VERIFIER_PROGRAM_ID || 'AhSvt3Be9akJHhnWRD9XJcBrjs5uawosBdQdwgoANHcT';
+const VERIFIER_PUBKEY = process.env.VERIFIER_PROGRAM_ID || '29Ma1tESp3ehhBFU4dNNPQW2YDAFQNfPAudvaou4kfZC';
 const PROGRAM_IDS = {
-  factory: new PublicKey('HaPDYkR2CWsxfAwg6rT5G1ZZ9vPH14CNXZo9s6AyYKNK'),
-  vault: new PublicKey('Muko1fue2j1At1U6v2xJ7cuwas5uSUjZHVGppbpT8yq'),
-  pool: new PublicKey('BTjQKK2eqCuygoJZYPyydTfB2wvuWnJkmyg2y25HCrmU'),
+  factory: new PublicKey('GoeeSg56B2WVNjLWANJ6LkqVwk45ynJ8wRQXY7pohrUX'),
+  vault: new PublicKey('2FqT4DWhPhRc2ubFoDXmh64dPEwXdonEPRMFQzyC5hkk'),
+  pool: new PublicKey('guKkNcvnhiKPPK9e2qwYWWPZWdLfk78QwFcVEL4hAbu'),
   verifier: new PublicKey(VERIFIER_PUBKEY)
 } as const;
 

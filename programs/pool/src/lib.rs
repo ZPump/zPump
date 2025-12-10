@@ -38,7 +38,7 @@ use ptf_verifier_groth16::{self, VerifyingKeyAccount};
 
 mod poseidon;
 
-declare_id!("BTjQKK2eqCuygoJZYPyydTfB2wvuWnJkmyg2y25HCrmU");
+declare_id!("guKkNcvnhiKPPK9e2qwYWWPZWdLfk78QwFcVEL4hAbu");
 
 const DEFAULT_CANOPY_DEPTH: u8 = 8;
 // CRITICAL SECURITY: Maximum amounts to prevent overflow in calculations
@@ -13183,10 +13183,39 @@ fn execute_shield_v2_core_from_raw(
     // Let's implement it step by step
     
     // First, extract proof_vault operation (same as execute_shield_v2)
+    // Validate proof_vault account exists and has data
+    if proof_vault_info.data_len() < 8 {
+        return Err(anchor_lang::solana_program::program_error::ProgramError::Custom(crate::PoolError::AccountDataTooShort as u32));
+    }
+    
+    // Extract and deserialize proof_vault (matching execute_transfer_core_from_raw pattern exactly)
     let proof_vault_info_ref: &'static AccountInfo<'static> = unsafe { mem::transmute(proof_vault_info) };
-    let mut proof_vault_account: Account<'static, UserProofVault> = 
+    
+    // Verify discriminator first
+    let expected_discriminator_hash = hashv(&[b"account:UserProofVault"]);
+    let expected_discriminator = &expected_discriminator_hash.to_bytes()[0..8];
+    let proof_vault_data_check = proof_vault_info.try_borrow_data()
+        .map_err(|_| anchor_lang::solana_program::program_error::ProgramError::Custom(crate::PoolError::AccountDataTooShort as u32))?;
+    if proof_vault_data_check.len() < 8 {
+        return Err(anchor_lang::solana_program::program_error::ProgramError::Custom(crate::PoolError::AccountDataTooShort as u32));
+    }
+    let actual_discriminator = &proof_vault_data_check[0..8];
+    if actual_discriminator != expected_discriminator {
+        msg!("execute_shield_v2: discriminator mismatch - expected={:?}, actual={:?}", expected_discriminator, actual_discriminator);
+        return Err(anchor_lang::solana_program::program_error::ProgramError::Custom(crate::PoolError::AccountDataTooShort as u32));
+    }
+    // Log bytes after discriminator to understand structure
+    if proof_vault_data_check.len() >= 100 {
+        msg!("execute_shield_v2: bytes 8-100: {:?}", &proof_vault_data_check[8..100]);
+    }
+    drop(proof_vault_data_check);
+    
+    let mut proof_vault_account: Account<'static, UserProofVault> =
         Account::try_from(proof_vault_info_ref)
-            .map_err(|_| anchor_lang::solana_program::program_error::ProgramError::Custom(crate::PoolError::AccountDataTooShort as u32))?;
+            .map_err(|e| {
+                msg!("execute_shield_v2: Account::try_from failed: {:?}, data_len={}, owner={:?}", e, proof_vault_info.data_len(), proof_vault_info.owner);
+                anchor_lang::solana_program::program_error::ProgramError::Custom(crate::PoolError::AccountDataTooShort as u32)
+            })?;
     
     // Find operation
     let operation_idx = proof_vault_account
@@ -13217,12 +13246,14 @@ fn execute_shield_v2_core_from_raw(
         }
     };
     
-    // Mark as executing
+    // Mark as executing (Account wrapper handles serialization automatically)
     if let Some(operation) = proof_vault_account.prepared_operations.get_mut(operation_idx) {
         if let crate::PreparedOperation::Shield { status, .. } = operation {
             *status = crate::OperationStatus::Executing;
         }
     }
+    
+    let proof_vault_info_static: &'static AccountInfo<'static> = unsafe { mem::transmute(proof_vault_info) };
     
     // Now we need to extract all other accounts and call execute_shield_core
     // This is the same logic as in execute_shield_v2, but we need to work with raw AccountInfo
@@ -13739,7 +13770,7 @@ fn initialize_pool_core_from_raw(
                     // ProgramErrorWithOrigin doesn't expose the inner error directly
                     anchor_lang::solana_program::program_error::ProgramError::InvalidAccountData
                 }
-                _ => anchor_lang::solana_program::program_error::ProgramError::Custom(PoolError::InvalidAccountOwner as u32),
+                _ => anchor_lang::solana_program::program_error::ProgramError::Custom(crate::PoolError::InvalidAccountOwner as u32),
             }
         })?;
     msg!("initialize_pool_core_from_raw: fee_bps validation passed");
@@ -13786,6 +13817,10 @@ fn initialize_pool_core_from_raw(
     let verifier_program_info = &accounts[12];
     let verifying_key_info = &accounts[13];
     let payer_info = &accounts[14];
+    
+    // CRITICAL DEBUG: Log verifying_key account details
+    msg!("initialize_pool_core_from_raw: verifying_key at position 13: key={}, owner={}, data_len={}, executable={}", 
+         verifying_key_info.key(), verifying_key_info.owner, verifying_key_info.data_len(), verifying_key_info.executable);
     let system_program_info = &accounts[15];
     let token_program_info = &accounts[16];
     
@@ -14104,44 +14139,72 @@ fn initialize_pool_core_from_raw(
     msg!("initialize_pool_core_from_raw: verifying_key ownership validated");
     
     // Validate system_program and token_program
+    msg!("initialize_pool_core_from_raw: validating system_program and token_program");
     if system_program_info_static.key() != anchor_lang::solana_program::system_program::ID {
+        msg!("initialize_pool_core_from_raw: ERROR - system_program mismatch");
         return Err(anchor_lang::solana_program::program_error::ProgramError::Custom(PoolError::InvalidAccountOwner as u32));
     }
     if token_program_info_static.key() != anchor_spl::token::spl_token::ID {
+        msg!("initialize_pool_core_from_raw: ERROR - token_program mismatch");
         return Err(anchor_lang::solana_program::program_error::ProgramError::Custom(PoolError::InvalidAccountOwner as u32));
     }
+    msg!("initialize_pool_core_from_raw: system_program and token_program validated");
     
     // Check if pool_state is already initialized
+    msg!("initialize_pool_core_from_raw: checking if pool_state is already initialized, data_len={}", pool_state_info_static.data_len());
     if pool_state_info_static.data_len() >= 8 {
-        let data = pool_state_info_static.try_borrow_data()?;
+        msg!("initialize_pool_core_from_raw: pool_state has data, checking discriminator");
+        let data = pool_state_info_static.try_borrow_data()
+            .map_err(|e| {
+                msg!("initialize_pool_core_from_raw: ERROR - failed to borrow pool_state data: {:?}", e);
+                anchor_lang::solana_program::program_error::ProgramError::InvalidAccountData
+            })?;
         if data.len() >= 8 {
             let discriminator = &data[0..8];
             if discriminator.iter().any(|&b| b != 0) {
+                msg!("initialize_pool_core_from_raw: pool_state has non-zero discriminator, checking if already initialized");
                 drop(data);
                 // Try to load to check origin_mint
                 {
                     let pool_state_loader: AccountLoader<'static, PoolState> = AccountLoader::try_from(pool_state_info_static)
-                        .map_err(|_| anchor_lang::solana_program::program_error::ProgramError::Custom(PoolError::AccountDataTooShort as u32))?;
+                        .map_err(|e| {
+                            msg!("initialize_pool_core_from_raw: ERROR - failed to create AccountLoader: {:?}", e);
+                            anchor_lang::solana_program::program_error::ProgramError::Custom(PoolError::AccountDataTooShort as u32)
+                        })?;
                     let origin_mint_check = pool_state_loader.load().map(|s| s.origin_mint);
                     drop(pool_state_loader);
                     if let Ok(origin_mint) = origin_mint_check {
                         if origin_mint != Pubkey::default() {
+                            msg!("initialize_pool_core_from_raw: ERROR - pool_state already initialized with origin_mint={}", origin_mint);
                             return Err(anchor_lang::solana_program::program_error::ProgramError::Custom(PoolError::PoolAlreadyInitialized as u32));
                         }
                     }
                 }
             } else {
+                msg!("initialize_pool_core_from_raw: pool_state discriminator is all zeros, will initialize");
                 drop(data);
             }
         } else {
+            msg!("initialize_pool_core_from_raw: pool_state data too short, will initialize");
             drop(data);
         }
+    } else {
+        msg!("initialize_pool_core_from_raw: pool_state has no data, will initialize");
     }
     
     // Initialize pool_state (must not exist - init constraint)
+    msg!("initialize_pool_core_from_raw: initializing pool_state PDA");
     let rent = Rent::get()?;
+    msg!("initialize_pool_core_from_raw: rent obtained");
     let pool_state_lamports = rent.minimum_balance(PoolState::SPACE);
-    anchor_lang::solana_program::program::invoke_signed(
+    msg!("initialize_pool_core_from_raw: pool_state_lamports={}, SPACE={}", pool_state_lamports, PoolState::SPACE);
+    
+    // Derive pool_state_bump (needed for invoke_signed) - use the one already derived above
+    msg!("initialize_pool_core_from_raw: using pool_state_bump={} (already derived)", pool_state_bump);
+    msg!("initialize_pool_core_from_raw: calling invoke_signed to create pool_state account");
+    msg!("initialize_pool_core_from_raw: payer={}, pool_state={}, lamports={}, space={}", 
+         payer_info_static.key(), pool_state_info_static.key(), pool_state_lamports, PoolState::SPACE);
+    let create_account_result = anchor_lang::solana_program::program::invoke_signed(
         &anchor_lang::solana_program::system_instruction::create_account(
             &payer_info_static.key(),
             &pool_state_info_static.key(),
@@ -14155,12 +14218,63 @@ fn initialize_pool_core_from_raw(
             system_program_info_static.clone(),
         ],
         &[&[seeds::POOL, origin_mint_key.as_ref(), &[pool_state_bump]]],
-    )?;
+    );
+    match create_account_result {
+        Ok(_) => msg!("initialize_pool_core_from_raw: pool_state account created successfully"),
+        Err(e) => {
+            msg!("initialize_pool_core_from_raw: ERROR - invoke_signed failed: {:?}", e);
+            return Err(e);
+        }
+    }
     
     // Initialize pool_state data
+    msg!("initialize_pool_core_from_raw: loading pool_state account (data_len={}, writable={}, owner={})", 
+         pool_state_info_static.data_len(), pool_state_info_static.is_writable, pool_state_info_static.owner);
+    
+    // CRITICAL FIX: Since we just created the account, it should be empty (all zeros)
+    // But AccountLoader::try_from checks the discriminator, which will fail on an empty account
+    // We need to use load_init() which doesn't check the discriminator, but it's a method on AccountLoader
+    // The solution: Create AccountLoader using unsafe/new_unchecked or manually initialize the data
+    // Actually, we can use AccountLoader::try_from_unchecked or manually set discriminator first
+    
+    // CRITICAL FIX: Set discriminator manually, then use load() instead of load_init()
+    // This matches the prepare_shield pattern where we manually set the discriminator
+    msg!("initialize_pool_core_from_raw: setting PoolState discriminator manually");
+    let discriminator_hash = hashv(&[b"account:PoolState"]);
+    let discriminator = &discriminator_hash.to_bytes()[0..8];
+    {
+        let mut pool_state_data = pool_state_info_static.try_borrow_mut_data()
+            .map_err(|e| {
+                msg!("initialize_pool_core_from_raw: ERROR - failed to borrow_mut pool_state data: {:?}", e);
+                anchor_lang::solana_program::program_error::ProgramError::InvalidAccountData
+            })?;
+        if pool_state_data.len() < 8 {
+            msg!("initialize_pool_core_from_raw: ERROR - pool_state data too short: {}", pool_state_data.len());
+            return Err(anchor_lang::solana_program::program_error::ProgramError::Custom(PoolError::AccountDataTooShort as u32));
+        }
+        // Only set discriminator if it's not already set (all zeros)
+        if pool_state_data[0..8].iter().all(|&b| b == 0) {
+            pool_state_data[0..8].copy_from_slice(discriminator);
+            msg!("initialize_pool_core_from_raw: PoolState discriminator set");
+        } else {
+            msg!("initialize_pool_core_from_raw: PoolState discriminator already set, skipping");
+        }
+    }
+    
+    // Now use load() instead of load_init() since discriminator is set
     let pool_state_loader: AccountLoader<'static, PoolState> = AccountLoader::try_from(pool_state_info_static)
-        .map_err(|_| anchor_lang::solana_program::program_error::ProgramError::Custom(PoolError::AccountDataTooShort as u32))?;
-    let mut pool_state = pool_state_loader.load_init()?;
+        .map_err(|e| {
+            msg!("initialize_pool_core_from_raw: ERROR - AccountLoader::try_from failed: {:?}, data_len={}", e, pool_state_info_static.data_len());
+            anchor_lang::solana_program::program_error::ProgramError::Custom(PoolError::AccountDataTooShort as u32)
+        })?;
+    msg!("initialize_pool_core_from_raw: AccountLoader created, calling load()");
+    let mut pool_state = pool_state_loader.load_mut()
+        .map_err(|e| {
+            msg!("initialize_pool_core_from_raw: ERROR - load_mut() failed: {:?}", e);
+            e
+        })?;
+    msg!("initialize_pool_core_from_raw: pool_state loaded successfully");
+    msg!("initialize_pool_core_from_raw: setting pool_state fields");
     pool_state.origin_mint = vault_origin;
     pool_state.vault = vault_state_info_static.key();
     pool_state.verifier_program = verifier_program_info_static.key();
@@ -14184,6 +14298,7 @@ fn initialize_pool_core_from_raw(
     pool_state.hook_config = hook_config_info_static.key();
     pool_state.hook_config_present = false;
     pool_state.hook_config_bump = hook_config_bump;
+    msg!("initialize_pool_core_from_raw: pool_state fields set successfully");
     
     // Handle twin_mint
     if raw_has_ptkn {
@@ -14235,14 +14350,23 @@ fn initialize_pool_core_from_raw(
         }
     }
     pool_state.pending_shield = crate::PendingShield::inactive();
+    msg!("initialize_pool_core_from_raw: pending_shield set");
     
+    msg!("initialize_pool_core_from_raw: validating vault_pool_authority: expected={}, actual={}", 
+         pool_state_info_static.key(), vault_pool_authority);
     if vault_pool_authority != pool_state_info_static.key().clone() {
+        msg!("initialize_pool_core_from_raw: ERROR - vault_pool_authority mismatch");
         return Err(anchor_lang::solana_program::program_error::ProgramError::Custom(PoolError::MismatchedVaultAuthority as u32));
     }
+    msg!("initialize_pool_core_from_raw: vault_pool_authority validated");
     
     // Initialize hook_config (must not exist - init constraint)
+    msg!("initialize_pool_core_from_raw: initializing hook_config PDA, key={}, bump={}", 
+         hook_config_info_static.key(), hook_config_bump);
     let hook_config_lamports = rent.minimum_balance(HookConfig::SPACE);
-    anchor_lang::solana_program::program::invoke_signed(
+    msg!("initialize_pool_core_from_raw: hook_config_lamports={}, SPACE={}", hook_config_lamports, HookConfig::SPACE);
+    msg!("initialize_pool_core_from_raw: calling invoke_signed to create hook_config account");
+    let hook_config_result = anchor_lang::solana_program::program::invoke_signed(
         &anchor_lang::solana_program::system_instruction::create_account(
             &payer_info_static.key(),
             &hook_config_info_static.key(),
@@ -14256,24 +14380,96 @@ fn initialize_pool_core_from_raw(
             system_program_info_static.clone(),
         ],
         &[&[seeds::HOOKS, origin_mint_key.as_ref(), &[hook_config_bump]]],
-    )?;
+    );
+    match hook_config_result {
+        Ok(_) => msg!("initialize_pool_core_from_raw: hook_config account created successfully"),
+        Err(e) => {
+            msg!("initialize_pool_core_from_raw: ERROR - hook_config invoke_signed failed: {:?}", e);
+            return Err(e);
+        }
+    }
     
-    let hook_config_loader: AccountLoader<'static, HookConfig> = AccountLoader::try_from(hook_config_info_static)
-        .map_err(|_| anchor_lang::solana_program::program_error::ProgramError::Custom(PoolError::AccountDataTooShort as u32))?;
-    let mut hook_config = hook_config_loader.load_init()?;
-    hook_config.pool = pool_state_info_static.key();
-    hook_config.post_shield_program_id = Pubkey::default();
-    hook_config.post_shield_enabled = false;
-    hook_config.post_unshield_program_id = Pubkey::default();
-    hook_config.post_unshield_enabled = false;
-    crate::zero_hook_required_accounts(&mut hook_config.required_accounts);
-    hook_config.required_accounts_len = 0;
-    hook_config.mode = crate::HookAccountMode::Strict;
-    hook_config.bump = hook_config_bump;
+    msg!("initialize_pool_core_from_raw: loading hook_config account (data_len={})", hook_config_info_static.data_len());
+    // CRITICAL FIX: Don't set discriminator - use load_init() which will set it automatically
+    // But AccountLoader::try_from checks discriminator, so it will fail on empty account
+    // Solution: Use unsafe to create AccountLoader, bypassing discriminator check
+    
+    // Check if account is empty (all zeros) - if so, we need load_init()
+    let account_is_empty = {
+        let data = hook_config_info_static.try_borrow_data()
+            .map_err(|e| {
+                msg!("initialize_pool_core_from_raw: ERROR - failed to borrow hook_config data: {:?}", e);
+                anchor_lang::solana_program::program_error::ProgramError::InvalidAccountData
+            })?;
+        data.len() >= 8 && data[0..8].iter().all(|&b| b == 0)
+    };
+    
+    msg!("initialize_pool_core_from_raw: hook_config is_empty={}", account_is_empty);
+    
+    // CRITICAL: For empty accounts, we need to use load_init() which requires no discriminator
+    // But AccountLoader::try_from will fail. We need to create AccountLoader manually using unsafe
+    // Actually, Anchor doesn't expose a way to create AccountLoader without discriminator check
+    // So we'll manually initialize the account data structure, then use load()
+    
+    // BEST SOLUTION: Manually initialize the entire HookConfig struct in memory
+    // This is what load_init() does internally, but we're doing it manually
+    // Then we can use AccountLoader::try_from and load() normally
+    
+    // Actually, simpler: Just ensure discriminator is NOT set, create AccountLoader with unsafe workaround
+    // But since we can't easily do that, let's manually write the struct data
+    
+    // FINAL APPROACH: Don't set discriminator. Create AccountLoader by temporarily clearing discriminator check
+    // Since we can't do that, we'll manually write zero-initialized struct, set discriminator, then load()
+    
+    // Actually wait - the issue is that load() validates struct data. For a newly created account,
+    // the data is all zeros which should be valid (all fields at default values).
+    // But maybe HookConfig has a field that doesn't allow zeros? Let me check...
+    
+    // SIMPLEST: Use the same pattern as pool_state which worked - set discriminator, use load_mut()
+    // The difference might be in struct validation. Let's try load_mut() instead of load_init()
+    
+    // For HookConfig (ZeroCopy), use unsafe pointer manipulation to initialize struct directly
+    // This avoids issues with load_mut() on zero-initialized ZeroCopy structs
+    msg!("initialize_pool_core_from_raw: initializing HookConfig using unsafe pointer");
+    let hook_discriminator_hash = hashv(&[b"account:HookConfig"]);
+    let hook_discriminator = &hook_discriminator_hash.to_bytes()[0..8];
+    {
+        let mut hook_config_data = hook_config_info_static.try_borrow_mut_data()
+            .map_err(|e| {
+                msg!("initialize_pool_core_from_raw: ERROR - failed to borrow_mut hook_config data: {:?}", e);
+                anchor_lang::solana_program::program_error::ProgramError::InvalidAccountData
+            })?;
+        if hook_config_data.len() < HookConfig::SPACE {
+            msg!("initialize_pool_core_from_raw: ERROR - hook_config data too short: need={}, have={}", HookConfig::SPACE, hook_config_data.len());
+            return Err(anchor_lang::solana_program::program_error::ProgramError::Custom(PoolError::AccountDataTooShort as u32));
+        }
+        // Set discriminator
+        hook_config_data[0..8].copy_from_slice(hook_discriminator);
+        // Zero-initialize the rest (account is already zero-initialized, but ensure it)
+        hook_config_data[8..].fill(0);
+        // Use unsafe pointer to write HookConfig struct directly (ZeroCopy allows this)
+        let hook_config_ptr = unsafe { hook_config_data.as_mut_ptr().add(8) } as *mut HookConfig;
+        let hook_config = unsafe { &mut *hook_config_ptr };
+        // Initialize HookConfig fields
+        hook_config.pool = pool_state_info_static.key();
+        hook_config.post_shield_program_id = Pubkey::default();
+        hook_config.post_shield_enabled = false;
+        hook_config.post_unshield_program_id = Pubkey::default();
+        hook_config.post_unshield_enabled = false;
+        hook_config.required_accounts.fill([0u8; 32]);
+        hook_config.required_accounts_len = 0;
+        hook_config.mode = crate::HookAccountMode::Strict;
+        hook_config.bump = hook_config_bump;
+    }
+    msg!("initialize_pool_core_from_raw: hook_config initialized successfully");
+    
     
     // Initialize hook_whitelist (must not exist - init constraint)
+    msg!("initialize_pool_core_from_raw: initializing hook_whitelist PDA");
     let hook_whitelist_lamports = rent.minimum_balance(HookWhitelist::SPACE);
-    anchor_lang::solana_program::program::invoke_signed(
+    msg!("initialize_pool_core_from_raw: hook_whitelist_lamports={}, SPACE={}", hook_whitelist_lamports, HookWhitelist::SPACE);
+    msg!("initialize_pool_core_from_raw: calling invoke_signed to create hook_whitelist account");
+    let hook_whitelist_result = anchor_lang::solana_program::program::invoke_signed(
         &anchor_lang::solana_program::system_instruction::create_account(
             &payer_info_static.key(),
             &hook_whitelist_info_static.key(),
@@ -14287,24 +14483,66 @@ fn initialize_pool_core_from_raw(
             system_program_info_static.clone(),
         ],
         &[&[b"hook-whitelist", origin_mint_key.as_ref(), &[hook_whitelist_bump]]],
-    )?;
+    );
+    match hook_whitelist_result {
+        Ok(_) => msg!("initialize_pool_core_from_raw: hook_whitelist account created successfully"),
+        Err(e) => {
+            msg!("initialize_pool_core_from_raw: ERROR - hook_whitelist invoke_signed failed: {:?}", e);
+            return Err(e);
+        }
+    }
     
+    msg!("initialize_pool_core_from_raw: loading hook_whitelist account (data_len={})", hook_whitelist_info_static.data_len());
+    // CRITICAL FIX: Use same pattern as hook_config - set discriminator, then use AccountLoader
+    msg!("initialize_pool_core_from_raw: setting HookWhitelist discriminator manually");
+    let whitelist_discriminator_hash = hashv(&[b"account:HookWhitelist"]);
+    let whitelist_discriminator = &whitelist_discriminator_hash.to_bytes()[0..8];
+    {
+        let mut whitelist_data = hook_whitelist_info_static.try_borrow_mut_data()
+            .map_err(|e| {
+                msg!("initialize_pool_core_from_raw: ERROR - failed to borrow_mut hook_whitelist data: {:?}", e);
+                anchor_lang::solana_program::program_error::ProgramError::InvalidAccountData
+            })?;
+        if whitelist_data.len() < 8 {
+            msg!("initialize_pool_core_from_raw: ERROR - hook_whitelist data too short: {}", whitelist_data.len());
+            return Err(anchor_lang::solana_program::program_error::ProgramError::Custom(PoolError::AccountDataTooShort as u32));
+        }
+        if whitelist_data[0..8].iter().all(|&b| b == 0) {
+            whitelist_data[0..8].copy_from_slice(whitelist_discriminator);
+            msg!("initialize_pool_core_from_raw: HookWhitelist discriminator set");
+        }
+    }
+    
+    // CRITICAL FIX: HookWhitelist doesn't implement ZeroCopy, so use Account (not AccountLoader)
+    // But Account::try_from checks discriminator, so we need to ensure it's set first
+    msg!("initialize_pool_core_from_raw: creating HookWhitelist Account");
     let hook_whitelist_account: Account<'static, HookWhitelist> = Account::try_from(hook_whitelist_info_static)
-        .map_err(|_| anchor_lang::solana_program::program_error::ProgramError::Custom(PoolError::AccountDataTooShort as u32))?;
-    let mut hook_whitelist_data = hook_whitelist_info_static.try_borrow_mut_data()?;
+        .map_err(|e| {
+            msg!("initialize_pool_core_from_raw: ERROR - hook_whitelist Account::try_from failed: {:?}", e);
+            anchor_lang::solana_program::program_error::ProgramError::Custom(PoolError::AccountDataTooShort as u32)
+        })?;
+    msg!("initialize_pool_core_from_raw: hook_whitelist Account created");
+    
+    // Initialize hook_whitelist fields using unsafe pointer cast (HookWhitelist has Vec field)
+    msg!("initialize_pool_core_from_raw: initializing hook_whitelist fields");
+    let mut hook_whitelist_data = hook_whitelist_info_static.try_borrow_mut_data()
+        .map_err(|e| {
+            msg!("initialize_pool_core_from_raw: ERROR - failed to borrow_mut hook_whitelist data: {:?}", e);
+            anchor_lang::solana_program::program_error::ProgramError::InvalidAccountData
+        })?;
     let hook_whitelist_ptr = unsafe { hook_whitelist_data.as_mut_ptr().add(8) } as *mut HookWhitelist;
     let hook_whitelist = unsafe { &mut *hook_whitelist_ptr };
     hook_whitelist.authority = authority_info_static.key();
     hook_whitelist.allowed_programs = Vec::new();
     hook_whitelist.bump = hook_whitelist_bump;
     drop(hook_whitelist_data);
+    msg!("initialize_pool_core_from_raw: hook_whitelist initialized successfully");
     
-    // Initialize nullifier_set (init_if_needed)
-    let nullifier_set_data = nullifier_set_info_static.try_borrow_data()?;
-    let needs_nullifier_init = nullifier_set_data.is_empty() || nullifier_set_data.len() < 8;
-    drop(nullifier_set_data);
-    
-    if needs_nullifier_init {
+    // Initialize nullifier_set (init_if_needed) - use same pattern as commitment_tree
+    // Check if account needs initialization by comparing owner (same as commitment_tree pattern)
+    // Use *owner to dereference and compare with system_program::ID directly
+    let nullifier_needs_init = *nullifier_set_info_static.owner == anchor_lang::solana_program::system_program::ID;
+    if nullifier_needs_init {
         let nullifier_set_lamports = rent.minimum_balance(NullifierSet::BASE_SPACE);
         anchor_lang::solana_program::program::invoke_signed(
             &anchor_lang::solana_program::system_instruction::create_account(
@@ -14322,7 +14560,9 @@ fn initialize_pool_core_from_raw(
             &[&[seeds::NULLIFIERS, origin_mint_key.as_ref(), &[nullifier_set_bump]]],
         )?;
         
+        // Initialize the data structure (matching working pattern from initialize_pool at line 1317-1328)
         let mut nullifier_set_data = nullifier_set_info_static.try_borrow_mut_data()?;
+        // Create a new NullifierSet and initialize it
         let mut nullifier_set = NullifierSet {
             pool: Pubkey::default(),
             nullifiers: Vec::new(),
@@ -14330,12 +14570,17 @@ fn initialize_pool_core_from_raw(
         };
         nullifier_set.init(pool_state_info_static.key(), nullifier_set_bump);
         use anchor_lang::AnchorSerialize;
+        // Serialize to full slice (AnchorSerialize handles discriminator automatically for #[account] structs)
+        // This matches the working pattern at line 1326-1327
         let mut cursor = std::io::Cursor::new(&mut nullifier_set_data[..]);
         nullifier_set.serialize(&mut cursor)
             .map_err(|_| anchor_lang::solana_program::program_error::ProgramError::Custom(PoolError::NullifierSetMismatch as u32))?;
     }
+    msg!("nullifier_block_complete");
+    msg!("after_nullifier_check");
     
     // Initialize commitment_tree (init_if_needed)
+    msg!("before_commitment_tree_check");
     if commitment_tree_info_static.owner == &anchor_lang::solana_program::system_program::ID {
         let commitment_tree_lamports = rent.minimum_balance(CommitmentTree::SPACE);
         anchor_lang::solana_program::program::invoke_signed(
@@ -14354,15 +14599,36 @@ fn initialize_pool_core_from_raw(
             &[&[seeds::TREE, origin_mint_key.as_ref(), &[commitment_tree_bump]]],
         )?;
         
-        let commitment_tree_loader: AccountLoader<'static, CommitmentTree> = AccountLoader::try_from(commitment_tree_info_static)
-            .map_err(|_| anchor_lang::solana_program::program_error::ProgramError::Custom(PoolError::AccountDataTooShort as u32))?;
-        let mut tree = commitment_tree_loader.load_init()?;
-        tree.init(pool_state_info_static.key(), crate::DEFAULT_CANOPY_DEPTH, commitment_tree_bump)?;
-        pool_state.current_root = tree.current_root;
-        pool_state.roots_len = 1;
-        pool_state.recent_roots[0] = tree.current_root;
-        let clock = Clock::get()?;
-        pool_state.recent_roots_timestamps[0] = clock.unix_timestamp;
+        // Verify account was created with correct size
+        if commitment_tree_info_static.data_len() < CommitmentTree::SPACE {
+            return Err(anchor_lang::solana_program::program_error::ProgramError::Custom(PoolError::AccountDataTooShort as u32));
+        }
+        
+        // For CommitmentTree (ZeroCopy), use unsafe pointer manipulation like HookConfig
+        let commitment_tree_discriminator_hash = hashv(&[b"account:CommitmentTree"]);
+        let commitment_tree_discriminator = &commitment_tree_discriminator_hash.to_bytes()[0..8];
+        {
+            let mut commitment_tree_data = commitment_tree_info_static.try_borrow_mut_data()?;
+            // Set discriminator
+            commitment_tree_data[0..8].copy_from_slice(commitment_tree_discriminator);
+            // Zero-initialize the rest (account is already zero-initialized, but ensure it)
+            commitment_tree_data[8..].fill(0);
+            // Use unsafe pointer to write CommitmentTree struct directly (ZeroCopy allows this)
+            let tree_ptr = unsafe { commitment_tree_data.as_mut_ptr().add(8) } as *mut CommitmentTree;
+            let tree = unsafe { &mut *tree_ptr };
+            // Initialize CommitmentTree using init() method
+            tree.init(pool_state_info_static.key(), crate::DEFAULT_CANOPY_DEPTH, commitment_tree_bump)?;
+            // Store current_root directly from the tree before dropping the borrow
+            let current_root_val = tree.current_root;
+            drop(commitment_tree_data);
+            
+            // Update pool_state with the current_root
+            pool_state.current_root = current_root_val;
+            pool_state.roots_len = 1;
+            pool_state.recent_roots[0] = current_root_val;
+            let clock = Clock::get()?;
+            pool_state.recent_roots_timestamps[0] = clock.unix_timestamp;
+        }
     } else {
         let current_root_val = {
             let commitment_tree_loader: AccountLoader<'static, CommitmentTree> = AccountLoader::try_from(commitment_tree_info_static)
@@ -14388,7 +14654,7 @@ fn initialize_pool_core_from_raw(
         pool_state.recent_roots[0] = current_root_val;
     }
     
-    // Initialize note_ledger (init_if_needed)
+    // Initialize note_ledger (init_if_needed) - use unsafe pointer manipulation (ZeroCopy)
     if note_ledger_info_static.owner == &anchor_lang::solana_program::system_program::ID {
         let note_ledger_lamports = rent.minimum_balance(NoteLedger::SPACE);
         anchor_lang::solana_program::program::invoke_signed(
@@ -14407,25 +14673,44 @@ fn initialize_pool_core_from_raw(
             &[&[seeds::NOTES, origin_mint_key.as_ref(), &[note_ledger_bump]]],
         )?;
         
+        // For NoteLedger (ZeroCopy), use unsafe pointer manipulation like HookConfig
+        let note_ledger_discriminator_hash = hashv(&[b"account:NoteLedger"]);
+        let note_ledger_discriminator = &note_ledger_discriminator_hash.to_bytes()[0..8];
+        {
+            let mut note_ledger_data = note_ledger_info_static.try_borrow_mut_data()?;
+            if note_ledger_data.len() < NoteLedger::SPACE {
+                return Err(anchor_lang::solana_program::program_error::ProgramError::Custom(PoolError::AccountDataTooShort as u32));
+            }
+            // Set discriminator
+            note_ledger_data[0..8].copy_from_slice(note_ledger_discriminator);
+            // Zero-initialize the rest
+            note_ledger_data[8..].fill(0);
+            // Use unsafe pointer to write NoteLedger struct directly
+            let ledger_ptr = unsafe { note_ledger_data.as_mut_ptr().add(8) } as *mut NoteLedger;
+            let ledger = unsafe { &mut *ledger_ptr };
+            // Initialize NoteLedger
+            ledger.init(pool_state_info_static.key(), note_ledger_bump);
+        }
+    } else {
         let note_ledger_loader: AccountLoader<'static, NoteLedger> = AccountLoader::try_from(note_ledger_info_static)
             .map_err(|_| anchor_lang::solana_program::program_error::ProgramError::Custom(PoolError::AccountDataTooShort as u32))?;
-        let mut ledger = note_ledger_loader.load_init()?;
-        ledger.init(pool_state_info_static.key(), note_ledger_bump);
-    } else {
-        {
-            let note_ledger_loader: AccountLoader<'static, NoteLedger> = AccountLoader::try_from(note_ledger_info_static)
-                .map_err(|_| anchor_lang::solana_program::program_error::ProgramError::Custom(PoolError::AccountDataTooShort as u32))?;
-            let pool_check = note_ledger_loader.load().map(|l| l.pool);
-            match pool_check {
-                Ok(pool_key) => {
-                    if pool_key != pool_state_info_static.key().clone() {
-                        return Err(anchor_lang::solana_program::program_error::ProgramError::Custom(PoolError::NoteLedgerMismatch as u32));
-                    }
+        let pool_check = note_ledger_loader.load().map(|l| l.pool);
+        match pool_check {
+            Ok(pool_key) => {
+                if pool_key != pool_state_info_static.key().clone() {
+                    return Err(anchor_lang::solana_program::program_error::ProgramError::Custom(PoolError::NoteLedgerMismatch as u32));
                 }
-                Err(_) => {
-                    let mut ledger = note_ledger_loader.load_init()?;
-                    ledger.init(pool_state_info_static.key(), note_ledger_bump);
-                }
+            }
+            Err(_) => {
+                // Account exists but needs reinitialization - use unsafe pointer pattern
+                let note_ledger_discriminator_hash = hashv(&[b"account:NoteLedger"]);
+                let note_ledger_discriminator = &note_ledger_discriminator_hash.to_bytes()[0..8];
+                let mut note_ledger_data = note_ledger_info_static.try_borrow_mut_data()?;
+                note_ledger_data[0..8].copy_from_slice(note_ledger_discriminator);
+                note_ledger_data[8..].fill(0);
+                let ledger_ptr = unsafe { note_ledger_data.as_mut_ptr().add(8) } as *mut NoteLedger;
+                let ledger = unsafe { &mut *ledger_ptr };
+                ledger.init(pool_state_info_static.key(), note_ledger_bump);
             }
         }
     }
