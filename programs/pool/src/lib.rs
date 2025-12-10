@@ -13191,31 +13191,38 @@ fn execute_shield_v2_core_from_raw(
     // Extract and deserialize proof_vault (matching execute_transfer_core_from_raw pattern exactly)
     let proof_vault_info_ref: &'static AccountInfo<'static> = unsafe { mem::transmute(proof_vault_info) };
     
-    // Verify discriminator first
-    let expected_discriminator_hash = hashv(&[b"account:UserProofVault"]);
-    let expected_discriminator = &expected_discriminator_hash.to_bytes()[0..8];
-    let proof_vault_data_check = proof_vault_info.try_borrow_data()
-        .map_err(|_| anchor_lang::solana_program::program_error::ProgramError::Custom(crate::PoolError::AccountDataTooShort as u32))?;
-    if proof_vault_data_check.len() < 8 {
-        return Err(anchor_lang::solana_program::program_error::ProgramError::Custom(crate::PoolError::AccountDataTooShort as u32));
-    }
-    let actual_discriminator = &proof_vault_data_check[0..8];
-    if actual_discriminator != expected_discriminator {
-        msg!("execute_shield_v2: discriminator mismatch - expected={:?}, actual={:?}", expected_discriminator, actual_discriminator);
-        return Err(anchor_lang::solana_program::program_error::ProgramError::Custom(crate::PoolError::AccountDataTooShort as u32));
-    }
-    // Log bytes after discriminator to understand structure
-    if proof_vault_data_check.len() >= 100 {
-        msg!("execute_shield_v2: bytes 8-100: {:?}", &proof_vault_data_check[8..100]);
-    }
-    drop(proof_vault_data_check);
+    // Try Account::try_from first (standard Anchor deserialization)
+    let mut proof_vault_account_result = Account::<'static, UserProofVault>::try_from(proof_vault_info_ref);
     
-    let mut proof_vault_account: Account<'static, UserProofVault> =
-        Account::try_from(proof_vault_info_ref)
-            .map_err(|e| {
-                msg!("execute_shield_v2: Account::try_from failed: {:?}, data_len={}, owner={:?}", e, proof_vault_info.data_len(), proof_vault_info.owner);
-                anchor_lang::solana_program::program_error::ProgramError::Custom(crate::PoolError::AccountDataTooShort as u32)
-            })?;
+    let mut proof_vault_account: Account<'static, UserProofVault> = match proof_vault_account_result {
+        Ok(account) => account,
+        Err(e) => {
+            // Account::try_from failed - likely account was created with old Borsh format
+            // or account data is corrupted. Log error and return.
+            msg!("execute_shield_v2: Account::try_from failed: {:?}, data_len={}, owner={:?}", e, proof_vault_info.data_len(), proof_vault_info.owner);
+            
+            // Verify discriminator to confirm it's a UserProofVault account
+            let proof_vault_data_check = proof_vault_info.try_borrow_data()
+                .map_err(|_| anchor_lang::solana_program::program_error::ProgramError::Custom(crate::PoolError::AccountDataTooShort as u32))?;
+            if proof_vault_data_check.len() < 8 {
+                return Err(anchor_lang::solana_program::program_error::ProgramError::Custom(crate::PoolError::AccountDataTooShort as u32));
+            }
+            let expected_discriminator_hash = hashv(&[b"account:UserProofVault"]);
+            let expected_discriminator = &expected_discriminator_hash.to_bytes()[0..8];
+            let actual_discriminator = &proof_vault_data_check[0..8];
+            if actual_discriminator != expected_discriminator {
+                msg!("execute_shield_v2: discriminator mismatch");
+                return Err(anchor_lang::solana_program::program_error::ProgramError::Custom(crate::PoolError::AccountDataTooShort as u32));
+            }
+            drop(proof_vault_data_check);
+            
+            // Account has correct discriminator but deserialization failed
+            // This likely means the account was created with old Borsh format
+            // User needs to delete the account and recreate it, or we need to add migration logic
+            msg!("execute_shield_v2: account has correct discriminator but deserialization failed - account may need to be recreated");
+            return Err(anchor_lang::solana_program::program_error::ProgramError::Custom(crate::PoolError::AccountDataTooShort as u32));
+        }
+    };
     
     // Find operation
     let operation_idx = proof_vault_account
@@ -14822,30 +14829,111 @@ pub fn prepare_shield_core_from_raw(
     }
     
     // Initialize vault if needed (init_if_needed logic)
-    if proof_vault_info_static.lamports() == 0 {
-        // Account doesn't exist - create it using invoke_signed with PDA seeds
-        let rent = Rent::get()?;
-        let required_lamports = rent.minimum_balance(UserProofVault::SPACE);
+    // Also check if account exists but has wrong format (Borsh vs AnchorSerialize)
+    let needs_init = if proof_vault_info_static.lamports() == 0 {
+        true // Account doesn't exist
+    } else {
+        // Account exists - check if it can be deserialized correctly
+        // If it was created with old Borsh format, deserialization will fail
+        msg!("prepare_shield_core_from_raw: account exists, checking if it can be deserialized");
+        let test_deserialize = Account::<'static, UserProofVault>::try_from(proof_vault_info_static);
+        match test_deserialize {
+            Ok(_) => {
+                msg!("prepare_shield_core_from_raw: account exists and can be deserialized - no need to reinit");
+                false // Account exists and can be deserialized - no need to reinit
+            }
+            Err(e) => {
+                msg!("prepare_shield_core_from_raw: account exists but deserialization failed: {:?}", e);
+                // Account exists but deserialization failed - likely wrong format
+                // Verify it has correct discriminator before reinitializing
+                let data_check = proof_vault_info_static.try_borrow_data()
+                    .map_err(|_| anchor_lang::solana_program::program_error::ProgramError::Custom(crate::PoolError::AccountDataTooShort as u32))?;
+                if data_check.len() >= 8 {
+                    let expected_discriminator_hash = hashv(&[b"account:UserProofVault"]);
+                    let expected_discriminator = &expected_discriminator_hash.to_bytes()[0..8];
+                    let actual_discriminator = &data_check[0..8];
+                    msg!("prepare_shield_core_from_raw: discriminator check - expected={:?}, actual={:?}", expected_discriminator, actual_discriminator);
+                    if actual_discriminator == expected_discriminator {
+                        // Has correct discriminator but deserialization failed - wrong format, reinit
+                        msg!("prepare_shield_core_from_raw: account exists but has wrong format, reinitializing");
+                        drop(data_check);
+                        true
+                    } else {
+                        // Wrong discriminator - not a UserProofVault account
+                        msg!("prepare_shield_core_from_raw: wrong discriminator - not a UserProofVault account");
+                        drop(data_check);
+                        return Err(anchor_lang::solana_program::program_error::ProgramError::Custom(crate::PoolError::AccountDataTooShort as u32));
+                    }
+                } else {
+                    msg!("prepare_shield_core_from_raw: account data too short");
+                    drop(data_check);
+                    return Err(anchor_lang::solana_program::program_error::ProgramError::Custom(crate::PoolError::AccountDataTooShort as u32));
+                }
+            }
+        }
+    };
+    
+    if needs_init {
+        let account_exists = proof_vault_info_static.lamports() > 0;
         
-        // Use invoke_signed to create the PDA account
-        anchor_lang::solana_program::program::invoke_signed(
-            &anchor_lang::solana_program::system_instruction::create_account(
-                &payer_info_static.key(),
-                &proof_vault_info_static.key(),
-                required_lamports,
-                UserProofVault::SPACE as u64,
-                program_id,
-            ),
-            &[
-                payer_info_static.clone(),
-                proof_vault_info_static.clone(),
-                system_program_info_static.clone(),
-            ],
-            &[&[b"proof-vault", payer_key.as_ref(), &[vault_bump]]],
-        )?;
+        if !account_exists {
+            // Account doesn't exist - create it using invoke_signed with PDA seeds
+            let rent = Rent::get()?;
+            let required_lamports = rent.minimum_balance(UserProofVault::SPACE);
+            
+            // Use invoke_signed to create the PDA account
+            anchor_lang::solana_program::program::invoke_signed(
+                &anchor_lang::solana_program::system_instruction::create_account(
+                    &payer_info_static.key(),
+                    &proof_vault_info_static.key(),
+                    required_lamports,
+                    UserProofVault::SPACE as u64,
+                    program_id,
+                ),
+                &[
+                    payer_info_static.clone(),
+                    proof_vault_info_static.clone(),
+                    system_program_info_static.clone(),
+                ],
+                &[&[b"proof-vault", payer_key.as_ref(), &[vault_bump]]],
+            )?;
+        } else {
+            // Account exists but has wrong format - ensure it has enough space
+            let rent = Rent::get()?;
+            let current_space = proof_vault_info_static.data_len();
+            let required_space = UserProofVault::SPACE;
+            if current_space < required_space {
+                // Reallocate if needed
+                let required_lamports = rent.minimum_balance(required_space);
+                let current_lamports = proof_vault_info_static.lamports();
+                if required_lamports > current_lamports {
+                    let additional_lamports = required_lamports - current_lamports;
+                    anchor_lang::solana_program::program::invoke(
+                        &anchor_lang::solana_program::system_instruction::transfer(
+                            &payer_info_static.key(),
+                            &proof_vault_info_static.key(),
+                            additional_lamports,
+                        ),
+                        &[
+                            payer_info_static.clone(),
+                            proof_vault_info_static.clone(),
+                            system_program_info_static.clone(),
+                        ],
+                    )?;
+                }
+                proof_vault_info_static.realloc(required_space, false)?;
+            }
+            msg!("prepare_shield_core_from_raw: clearing existing account data for reinitialization");
+        }
         
-        // Initialize account data
+        // Initialize account data (either new account or reinitializing existing one)
         let mut account_data = proof_vault_info_static.try_borrow_mut_data()?;
+        
+        // CRITICAL: If reinitializing, clear all account data first
+        if account_exists {
+            msg!("prepare_shield_core_from_raw: zeroing account data for reinitialization");
+            account_data.fill(0); // Zero out all data
+        }
         
         // Set account discriminator (first 8 bytes) - Anchor requires this
         // The discriminator is the first 8 bytes of SHA256("account:UserProofVault")
@@ -14863,8 +14951,12 @@ pub fn prepare_shield_core_from_raw(
             last_used: clock.unix_timestamp,
             operation_count: 0,
         };
-        msg!("prepare_shield_core_from_raw: serializing vault struct");
-        match vault.try_serialize(&mut &mut account_data[8..]) {
+        msg!("prepare_shield_core_from_raw: serializing vault struct using AnchorSerialize");
+        // CRITICAL FIX: Use AnchorSerialize instead of Borsh (try_serialize)
+        // Anchor accounts must use AnchorSerialize format, not Borsh
+        use anchor_lang::AnchorSerialize;
+        let mut cursor = std::io::Cursor::new(&mut account_data[8..]);
+        match vault.serialize(&mut cursor) {
             Ok(_) => {
                 msg!("prepare_shield_core_from_raw: vault serialized successfully");
             }
