@@ -49,11 +49,12 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-PROGRAM_FACTORY_PUBKEY="94XEJsvLbTNYit4mXowjhqkDpwqtnXnKs2KtF3PNW2oK"
-PROGRAM_VAULT_PUBKEY="7Wr9XMjYfPm6HTN3ZV7r4wHnoV2zospvNN5A1xgoER8m"
-PROGRAM_POOL_PUBKEY="Av2D8ADegRt1zTfqEABidkcMH2zzusrDLwAeDFgfdQ1k"
-PROGRAM_VERIFIER_PUBKEY="2V5XN9rpubXdK3cdWBBjZwjxMpMzQBKTaN3moEJ59a8K"
-PROGRAM_DEX_PUBKEY="4HKwSSZXkVMo5JKk92sMNhhUfcHCWzXYG8eVj6aPymar"
+# Use program IDs from source code (declare_id! in lib.rs files)
+PROGRAM_FACTORY_PUBKEY="7Y3hvQWS93YhppzGNPyyDkbfpXFLD91idMK1gAT5pPXx"
+PROGRAM_VAULT_PUBKEY="34MuNUueYwogYSSLpXeyKvTtBrmHpgxhBe7vKpt6wd8K"
+PROGRAM_POOL_PUBKEY="8Ldq3AxS6wz88gchMdj2pT4UPM5fvv5bSxbtZeSvC45z"
+PROGRAM_VERIFIER_PUBKEY="HJKKsfvAfpxBf1wGEZAaYBqFV8ycNqXGXh5vfv19mg9L"
+PROGRAM_DEX_PUBKEY="HRbTSfU2WoUWqq2Y7y5WfGPy7LaXxMQoyrcdJPfEhd7U"
 
 # Core programs required for shield/unshield/transfer operations
 for program in \

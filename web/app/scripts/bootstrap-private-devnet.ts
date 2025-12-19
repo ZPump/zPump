@@ -36,12 +36,14 @@ import { resolveRepoPath } from '../lib/server/paths';
 
 ensureFetchPolyfill();
 
-const VERIFIER_PUBKEY = process.env.VERIFIER_PROGRAM_ID || '29Ma1tESp3ehhBFU4dNNPQW2YDAFQNfPAudvaou4kfZC';
+import { FACTORY_PROGRAM_ID, VAULT_PROGRAM_ID, POOL_PROGRAM_ID, VERIFIER_PROGRAM_ID } from '../lib/onchain/programIds';
+const VERIFIER_PUBKEY = process.env.VERIFIER_PROGRAM_ID || VERIFIER_PROGRAM_ID.toString();
+// Use program IDs from programIds.ts (which matches Anchor.toml and declare_id! in lib.rs files)
 const PROGRAM_IDS = {
-  factory: new PublicKey('GoeeSg56B2WVNjLWANJ6LkqVwk45ynJ8wRQXY7pohrUX'),
-  vault: new PublicKey('2FqT4DWhPhRc2ubFoDXmh64dPEwXdonEPRMFQzyC5hkk'),
-  pool: new PublicKey('guKkNcvnhiKPPK9e2qwYWWPZWdLfk78QwFcVEL4hAbu'),
-  verifier: new PublicKey(VERIFIER_PUBKEY)
+  factory: FACTORY_PROGRAM_ID,
+  vault: VAULT_PROGRAM_ID,
+  pool: POOL_PROGRAM_ID,
+  verifier: VERIFIER_PROGRAM_ID
 } as const;
 
 const FEATURE_PRIVATE_TRANSFER_ENABLED = 0x01;

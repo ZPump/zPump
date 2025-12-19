@@ -242,6 +242,26 @@ async function sendPrepareInstruction(
     latestBlockhash.lastValidBlockHeight
   );
 
+  // DEBUG: Get transaction logs to verify prepare_shield is hitting our program
+  try {
+    const txResult = await connection.getTransaction(signature, { commitment: 'confirmed', maxSupportedTransactionVersion: 0 });
+    if (txResult?.meta?.logMessages) {
+      const relevantLogs = txResult.meta.logMessages.filter(log => 
+        log.includes('prepare_shield') || log.includes('CUSTOM_ENTRYPOINT') || log.includes('FUNCTION CALLED')
+      );
+      if (relevantLogs.length > 0) {
+        console.log('[DEBUG] prepare_shield transaction logs:');
+        relevantLogs.forEach(log => console.log('  ', log));
+      } else {
+        console.log('[DEBUG] prepare_shield transaction succeeded but no relevant logs found');
+        console.log('[DEBUG] Total logs:', txResult.meta.logMessages.length);
+        console.log('[DEBUG] First 5 logs:', txResult.meta.logMessages.slice(0, 5));
+      }
+    }
+  } catch (e) {
+    console.log('[DEBUG] Could not fetch prepare_shield transaction logs:', e);
+  }
+
   const operationIdBytes = await fetchOperationIdFromReturnData(connection, signature);
   return { operationId: Buffer.from(operationIdBytes).toString('hex'), signature };
 }
@@ -1629,7 +1649,6 @@ export async function executeShield(params: ExecuteShieldParams): Promise<string
   const hookWhitelist = deriveHookWhitelist(actualShieldMint);
   const vaultState = deriveVaultState(actualShieldMint);
   const proofVault = deriveProofVault(wallet.publicKey!);
-  const verifyingKey = deriveVerifyingKey();
   const shieldClaim = deriveShieldClaim(poolState);
   const factoryState = deriveFactoryState(); // Needed for lazy initialization
   const twinMintKey = params.twinMint ? new PublicKey(params.twinMint) : null;
@@ -1673,6 +1692,67 @@ export async function executeShield(params: ExecuteShieldParams): Promise<string
   // We don't need to check if pool exists - shield handles initialization automatically.
   // However, we still check to provide better error messages if there are other issues.
   const poolAccountInfo = await connection.getAccountInfo(poolState, 'confirmed');
+  
+  // CRITICAL FIX: Get verifying_key from pool_state instead of deriving it
+  // The pool_state.verifying_key field contains the correct verifying key to use
+  // (which may be unshield key if pool was initialized with unshield key)
+  // Try multiple approaches: Anchor coder, then manual reading with different offsets
+  let verifyingKey: PublicKey;
+  if (poolAccountInfo) {
+    let found = false;
+    
+    // Approach 1: Try Anchor coder (handles discriminator if present)
+    try {
+      const decoded = poolCoder.accounts.decode('PoolState', poolAccountInfo.data) as any;
+      if (decoded && decoded.verifying_key) {
+        verifyingKey = typeof decoded.verifying_key === 'string' 
+          ? new PublicKey(decoded.verifying_key)
+          : decoded.verifying_key instanceof PublicKey
+          ? decoded.verifying_key
+          : new PublicKey(decoded.verifying_key);
+        console.log('[executeShield] Using verifying_key from pool_state (Anchor coder):', verifyingKey.toBase58());
+        found = true;
+      }
+    } catch (decodeError) {
+      // Decoding failed, try manual reading
+    }
+    
+    // Approach 2: Manual reading - try offset 136 (with 8-byte discriminator)
+    // PoolState has discriminator[8] + authority[32] + origin_mint[32] + vault[32] + verifier_program[32] + verifying_key[32]
+    // verifying_key is at offset 8 + 32 + 32 + 32 + 32 = 136
+    if (!found && poolAccountInfo.data.length >= 136 + 32) {
+      try {
+        const verifyingKeyBytes = poolAccountInfo.data.slice(136, 136 + 32);
+        verifyingKey = new PublicKey(verifyingKeyBytes);
+        console.log('[executeShield] Using verifying_key from pool_state (offset 136, with discriminator):', verifyingKey.toBase58());
+        found = true;
+      } catch (readError) {
+        // Reading failed
+      }
+    }
+    
+    // Approach 3: Try offset 128 (no discriminator, fallback)
+    if (!found && poolAccountInfo.data.length >= 128 + 32) {
+      try {
+        const verifyingKeyBytes = poolAccountInfo.data.slice(128, 128 + 32);
+        verifyingKey = new PublicKey(verifyingKeyBytes);
+        console.log('[executeShield] Using verifying_key from pool_state (offset 128, no discriminator):', verifyingKey.toBase58());
+        found = true;
+      } catch (readError) {
+        // Reading failed
+      }
+    }
+    
+    if (!found) {
+      // All approaches failed, fallback to deriving
+      verifyingKey = deriveVerifyingKey();
+      console.warn('[executeShield] Failed to read verifying_key from pool_state, falling back to derived key');
+    }
+  } else {
+    // Pool doesn't exist yet - use derived key (pool will be initialized with this key)
+    verifyingKey = deriveVerifyingKey();
+    console.log('[executeShield] Pool not initialized yet, using derived verifying_key:', verifyingKey.toBase58());
+  }
   const commitmentTreeAccount = await connection.getAccountInfo(commitmentTreeKey, 'confirmed');
   
   // If pool doesn't exist, shield will initialize it lazily via init_if_needed.
@@ -3242,13 +3322,24 @@ export async function executeTransfer(params: ExecuteTransferParams): Promise<st
     { pubkey: verifyingKey, isSigner: false, isWritable: false }
   );
 
+  // CRITICAL FIX: Manually construct instruction data to avoid IDL encoder issues
+  // The discriminator for 'execute_transfer' is [233, 126, 160, 184, 235, 206, 31, 119]
+  // execute_transfer takes: operation_id: [u8; 32]
+  const operationIdArray = operationIdHexToArray(params.operationId);
+  const instructionData = Buffer.concat([
+    Buffer.from([233, 126, 160, 184, 235, 206, 31, 119]), // execute_transfer discriminator
+    Buffer.from(operationIdArray) // operation_id: [u8; 32]
+  ]);
+  
+  console.log('[executeTransfer] Manual instruction data length:', instructionData.length);
+  console.log('[executeTransfer] Discriminator:', Array.from(instructionData.slice(0, 8)));
+  console.log('[executeTransfer] Expected: [233, 126, 160, 184, 235, 206, 31, 119]');
+  
   instructions.push(
     new TransactionInstruction({
       programId: POOL_PROGRAM_ID,
       keys: instructionKeys,
-      data: poolCoder.instruction.encode('execute_transfer', {
-        operation_id: operationIdHexToArray(params.operationId)
-      })
+      data: instructionData
     })
   );
   
@@ -3382,11 +3473,16 @@ export async function executeTransferFrom(params: ExecuteTransferFromParams): Pr
     }
   }
 
-  // WORKAROUND: Use execute_transfer_from_raw to bypass Anchor validation that causes access violation
-  // This instruction uses an empty struct and extracts all accounts manually
-  const transferFromData = poolCoder.instruction.encode('execute_transfer_from', {
-    operation_id: operationIdHexToArray(params.operationId)
-  });
+  // WORKAROUND: Manually construct execute_transfer_from instruction data to avoid IDL encoder issues
+  // Discriminator for execute_transfer_from (hash of "global:execute_transfer_from")
+  const EXECUTE_TRANSFER_FROM_DISCRIMINATOR = Buffer.from([200, 139, 86, 37, 184, 108, 25, 244]);
+  const transferFromData = Buffer.concat([
+    EXECUTE_TRANSFER_FROM_DISCRIMINATOR,
+    Buffer.from(operationIdHexToArray(params.operationId)) // operation_id: [u8; 32]
+  ]);
+  console.log('[executeTransferFrom] Manual instruction data length:', transferFromData.length);
+  console.log('[executeTransferFrom] Discriminator:', Array.from(transferFromData.slice(0, 8)));
+  console.log('[executeTransferFrom] Expected:', Array.from(EXECUTE_TRANSFER_FROM_DISCRIMINATOR));
 
   // WORKAROUND: execute_transfer_from uses minimal struct with just _phantom (system_program)
   // All accounts go in remaining_accounts to bypass Anchor validation bug

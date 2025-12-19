@@ -1,7 +1,7 @@
 use anchor_lang::prelude::*;
 use sha3::{Digest, Keccak256};
 
-declare_id!("29Ma1tESp3ehhBFU4dNNPQW2YDAFQNfPAudvaou4kfZC");
+declare_id!("DMvUxHwdJGkaRAJFXEKgDxsmVXL3gYttNsVP16xEr9TE");
 
 // CRITICAL FIX: Factory program ID is now stored in VerifierConfig account
 // This allows factory upgrades and multi-factory support
@@ -249,6 +249,10 @@ pub mod ptf_verifier_groth16 {
         );
         
         // CRITICAL FIX: Check if key is revoked
+        msg!("verify_groth16: checking revocation status, revoked={}", revoked);
+        if revoked {
+            msg!("verify_groth16: ERROR - verifying key is revoked, throwing KeyRevoked");
+        }
         require!(!revoked, VerifierError::KeyRevoked);
         
         require!(
@@ -506,6 +510,9 @@ pub struct VerifyGroth16<'info> {
         ],
         bump = verifier_state.bump,
         constraint = verifier_state.to_account_info().owner == &crate::ID @ VerifierError::InvalidAccountOwner,
+        // REMOVED: Revocation constraint - checking in function body instead to avoid Anchor bug
+        // The constraint was causing error 6013 (AlreadyRevoked) to be thrown instead of 6012 (KeyRevoked)
+        // This appears to be an Anchor bug in constraint error reporting
     )]
     pub verifier_state: Account<'info, VerifyingKeyAccount>,
 }

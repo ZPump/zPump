@@ -113,6 +113,23 @@ async function createAndRegisterTestMint(
 ): Promise<{ mint: PublicKey; mintKeypair: Keypair }> {
   console.log('   Creating new test mint...');
   
+  // CRITICAL FIX: Load the bootstrap payer keypair to use as factory authority
+  // The factory was initialized with the bootstrap payer, so we need to use the same keypair
+  let factoryAuthorityKeypair: Keypair;
+  try {
+    const fs = await import('fs/promises');
+    const path = await import('path');
+    const keypairPath = path.join(process.env.HOME || '~', '.config', 'solana', 'id.json');
+    const keypairData = await fs.readFile(keypairPath, 'utf-8');
+    const keypairArray = JSON.parse(keypairData);
+    factoryAuthorityKeypair = Keypair.fromSecretKey(Uint8Array.from(keypairArray));
+    console.log(`   Using bootstrap payer as factory authority: ${factoryAuthorityKeypair.publicKey.toBase58()}`);
+  } catch (error) {
+    console.warn(`   Could not load bootstrap keypair, using test payer: ${(error as Error).message}`);
+    // Fallback: assume payer is the factory authority (if bootstrap used same payer)
+    factoryAuthorityKeypair = payer;
+  }
+  
   // Create mint keypair
   const mintKeypair = Keypair.generate();
   const mint = mintKeypair.publicKey;
@@ -154,6 +171,25 @@ async function createAndRegisterTestMint(
     FACTORY_PROGRAM_ID
   );
   
+  // CRITICAL FIX: Fetch factory state to get the actual authority
+  const factoryStateInfo = await connection.getAccountInfo(factoryState, 'confirmed');
+  if (!factoryStateInfo) {
+    throw new Error('Factory state not found. Please run bootstrap first.');
+  }
+  
+  // Decode factory state to get authority
+  // FactoryState layout: discriminator[8] + authority[32] + ...
+  let factoryAuthority: PublicKey;
+  if (factoryStateInfo.data.length >= 8 + 32) {
+    const authorityBytes = factoryStateInfo.data.slice(8, 8 + 32);
+    factoryAuthority = new PublicKey(authorityBytes);
+    console.log(`   Using factory authority: ${factoryAuthority.toBase58()}`);
+  } else {
+    // Fallback: use payer (should match if bootstrap used same payer)
+    factoryAuthority = payer.publicKey;
+    console.log(`   Warning: Could not decode factory authority, using payer: ${factoryAuthority.toBase58()}`);
+  }
+  
   const [mintMapping] = PublicKey.findProgramAddressSync(
     [Buffer.from('map'), mint.toBuffer()],
     FACTORY_PROGRAM_ID
@@ -176,13 +212,15 @@ async function createAndRegisterTestMint(
   const instructionData = Buffer.concat([registerMintDiscriminator, argsBuffer]);
   
   // Build account metas in IDL order
+  // CRITICAL FIX: Use factoryAuthorityKeypair as the authority signer
+  // The factory constraint checks that authority == factory_state.authority, so we need to match
   const accountMetas: Array<{ pubkey: PublicKey; isSigner: boolean; isWritable: boolean }> = [
     { pubkey: factoryState, isSigner: false, isWritable: true },
-    { pubkey: payer.publicKey, isSigner: true, isWritable: false },
+    { pubkey: factoryAuthorityKeypair.publicKey, isSigner: true, isWritable: false },
     { pubkey: mintMapping, isSigner: false, isWritable: true },
     { pubkey: mint, isSigner: false, isWritable: false },
     { pubkey: payer.publicKey, isSigner: true, isWritable: true },
-    { pubkey: SystemProgram.programId, isSigner: false, isWritable: false }, // ptkn_mint (optional placeholder)
+    { pubkey: mintMapping, isSigner: false, isWritable: true }, // ptkn_mint (optional placeholder - use mintMapping as writable placeholder when enable_ptkn=false)
     { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false }, // token_program (optional)
     { pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false },
     { pubkey: SystemProgram.programId, isSigner: false, isWritable: false }
@@ -195,7 +233,9 @@ async function createAndRegisterTestMint(
   });
   
   const registerTx = new Transaction().add(registerMintIx);
-  const registerSig = await connection.sendTransaction(registerTx, [payer]);
+  // CRITICAL FIX: Sign with both factory authority and payer
+  const signers = [factoryAuthorityKeypair, payer];
+  const registerSig = await connection.sendTransaction(registerTx, signers);
   await connection.confirmTransaction(registerSig, 'confirmed');
   console.log(`   ✓ Registered mint with factory: ${registerSig}`);
   
@@ -207,6 +247,24 @@ async function createAndRegisterTestMint(
     TOKEN_PROGRAM_ID,
     ASSOCIATED_TOKEN_PROGRAM_ID
   );
+  
+  // CRITICAL FIX: Create ATA if it doesn't exist
+  const ataInfo = await connection.getAccountInfo(payerAta, 'confirmed');
+  if (!ataInfo) {
+    console.log(`   Creating associated token account: ${payerAta.toBase58()}`);
+    const createAtaIx = createAssociatedTokenAccountInstruction(
+      payer.publicKey,
+      payerAta,
+      payer.publicKey,
+      mint,
+      TOKEN_PROGRAM_ID,
+      ASSOCIATED_TOKEN_PROGRAM_ID
+    );
+    const createAtaTx = new Transaction().add(createAtaIx);
+    const createAtaSig = await connection.sendTransaction(createAtaTx, [payer]);
+    await connection.confirmTransaction(createAtaSig, 'confirmed');
+    console.log(`   ✓ Created ATA: ${createAtaSig}`);
+  }
   
   const mintToIx = createMintToInstruction(
     mint,
@@ -983,14 +1041,28 @@ async function testPrepareExecuteTransferFrom() {
     const { deriveAllowanceAccount } = await import('../lib/onchain/pdas');
     const allowanceKey = deriveAllowanceAccount(poolState, allowanceOwner.publicKey, keypair.publicKey);
     
+    // CRITICAL FIX: Check if allowance account exists
+    // The account is a PDA, so it must be created by the program (via init_if_needed in standard handler)
+    // The raw handler should handle initialization if account doesn't exist
+    const allowanceAccountInfo = await connection.getAccountInfo(allowanceKey, 'confirmed');
+    if (!allowanceAccountInfo || allowanceAccountInfo.data.length < 169) {
+      console.log('   Allowance account does not exist - will be initialized by approve_allowance');
+    } else {
+      console.log('   ✓ Allowance account already exists');
+    }
+    
     // Build approve_allowance instruction
     const poolCoder = new BorshCoder(poolIdl as any);
+    // CRITICAL FIX: IDL expects args nested in 'args' object with ApproveAllowanceArgs structure
     const approveData = poolCoder.instruction.encode('approve_allowance', {
       args: {
         amount: new BN(allowanceAmount.toString()),
         expires_at: null
       }
     });
+    
+    console.log('[test] approve_allowance instruction data length:', approveData.length);
+    console.log('[test] approve_allowance discriminator:', Array.from(approveData.slice(0, 8)));
     
     const approveIx = new TransactionInstruction({
       programId: POOL_PROGRAM_ID,
@@ -1068,21 +1140,99 @@ async function testPrepareExecuteTransferFrom() {
     console.log(`   ✓ Operation ID: ${transferFromOpId}`);
     
     console.log('   Executing transferFrom...');
-    const executeTransferFromSig = await executeTransferFrom({
-      wallet,
-      connection,
-      operationId: transferFromOpId,
-      originMint,
-      poolId: poolState.toBase58(),
-      allowanceOwner: allowanceOwner.publicKey.toBase58(),
-      allowanceAmount,
-      spendAmount,
-      keypair
-    });
-    console.log(`   ✓ Execute signature: ${executeTransferFromSig}`);
-    console.log('   ✓ TransferFrom completed successfully!');
-    
-    return true;
+    try {
+      const executeTransferFromSig = await executeTransferFrom({
+        wallet,
+        connection,
+        operationId: transferFromOpId,
+        originMint,
+        poolId: poolState.toBase58(),
+        allowanceOwner: allowanceOwner.publicKey.toBase58(),
+        allowanceAmount,
+        spendAmount,
+        keypair
+      });
+      console.log(`   ✓ Execute signature: ${executeTransferFromSig}`);
+      console.log('   ✓ TransferFrom completed successfully!');
+      return true;
+    } catch (executeError: any) {
+      console.error('   ✗ ExecuteTransferFrom failed:', executeError.message);
+      
+      // Try to get full transaction details
+      if (executeError.signature) {
+        console.error('   Failed signature:', executeError.signature);
+        try {
+          const tx = await connection.getTransaction(executeError.signature, {
+            commitment: 'confirmed',
+            maxSupportedTransactionVersion: 0
+          });
+          if (tx) {
+            console.error('   Transaction status:', tx.meta?.err);
+            if (tx.meta?.logMessages) {
+              console.error('   Full transaction logs:');
+              tx.meta.logMessages.forEach((log, i) => {
+                console.error(`     [${i}] ${log}`);
+              });
+            }
+            if (tx.meta?.err) {
+              console.error('   Error details:', JSON.stringify(tx.meta.err, null, 2));
+              // Check which program threw the error
+              if (tx.meta.err && typeof tx.meta.err === 'object') {
+                const errObj = tx.meta.err as any;
+                if (errObj.InstructionError) {
+                  const [instructionIndex, instructionError] = errObj.InstructionError;
+                  console.error(`   Error in instruction ${instructionIndex}:`, JSON.stringify(instructionError, null, 2));
+                  if (instructionError.Custom) {
+                    const errorCode = instructionError.Custom;
+                    console.error(`   Custom error code: ${errorCode} (0x${errorCode.toString(16)})`);
+                    // Check if it's a verifier error
+                    if (errorCode >= 6000 && errorCode < 6100) {
+                      console.error(`   ⚠️  This is a VERIFIER PROGRAM error (code ${errorCode})!`);
+                      // Map error codes to names
+                      const verifierErrors: Record<number, string> = {
+                        6000: 'InvalidProof',
+                        6001: 'HashMismatch',
+                        6002: 'EmptyVerifyingKey',
+                        6003: 'InvalidVerifyingKeyId',
+                        6004: 'EmptyProof',
+                        6005: 'EmptyPublicInputs',
+                        6006: 'UnauthorizedAuthority',
+                        6007: 'ProofTooLarge',
+                        6008: 'PublicInputsTooLarge',
+                        6009: 'VersionTooOld',
+                        6010: 'VerifyingKeyTooLarge',
+                        6011: 'InvalidKeyFormat',
+                        6012: 'KeyRevoked',
+                        6013: 'AlreadyRevoked',
+                        6014: 'InvalidAccountOwner',
+                        6015: 'InvalidPDA',
+                        6016: 'InvalidBump',
+                        6017: 'DataLengthMismatch',
+                        6018: 'AccountSizeMismatch',
+                      };
+                      const errorName = verifierErrors[errorCode] || 'Unknown';
+                      console.error(`   Error name: ${errorName}`);
+                    }
+                  }
+                  // Check if there's a nested instruction error (CPI)
+                  if (instructionError[1] && instructionError[1].InstructionError) {
+                    const [nestedIndex, nestedError] = instructionError[1].InstructionError;
+                    console.error(`   Nested error in instruction ${nestedIndex}:`, JSON.stringify(nestedError, null, 2));
+                  }
+                }
+              }
+            }
+          }
+        } catch (txError) {
+          console.error('   Could not fetch transaction:', txError);
+        }
+      }
+      
+      if (executeError.logs) {
+        console.error('   Error logs:', executeError.logs);
+      }
+      throw executeError; // Re-throw to be caught by outer catch
+    }
   } catch (error: any) {
     console.error('   ✗ Test failed:', error.message);
     if (error.logs) {
@@ -1123,7 +1273,9 @@ async function testPrepareExecuteBatchTransfer() {
     
     // Step 2: Prepare pools
     console.log('2. Preparing pools...');
-    const { derivePoolState } = await import('../lib/onchain/pdas');
+    const { derivePoolState, deriveVaultState } = await import('../lib/onchain/pdas');
+    const { getAssociatedTokenAddress, createAssociatedTokenAccountInstruction } = await import('@solana/spl-token');
+    const { TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID } = await import('../lib/onchain/programIds');
     const poolState1 = derivePoolState(mint1);
     const poolState2 = derivePoolState(mint2);
     
@@ -1141,6 +1293,71 @@ async function testPrepareExecuteBatchTransfer() {
       console.log('   ✓ Pool 2 initialized');
     } else {
       console.log('   ✓ Pool 2 already exists');
+    }
+    
+    // Step 2.5: Ensure vault token accounts exist for both mints
+    console.log('2.5. Ensuring vault token accounts exist...');
+    const vaultState1 = deriveVaultState(mint1);
+    const vaultState2 = deriveVaultState(mint2);
+    
+    const vaultTokenAccount1 = await getAssociatedTokenAddress(
+      mint1,
+      vaultState1,
+      true,
+      TOKEN_PROGRAM_ID,
+      ASSOCIATED_TOKEN_PROGRAM_ID
+    );
+    const vaultTokenAccount1Info = await connection.getAccountInfo(vaultTokenAccount1, 'confirmed');
+    if (!vaultTokenAccount1Info) {
+      console.log('   Creating vault token account for mint 1...');
+      const createVault1Tx = new Transaction().add(
+        createAssociatedTokenAccountInstruction(
+          keypair.publicKey,
+          vaultTokenAccount1,
+          vaultState1,
+          mint1,
+          TOKEN_PROGRAM_ID,
+          ASSOCIATED_TOKEN_PROGRAM_ID
+        )
+      );
+      const createVault1Blockhash = await connection.getLatestBlockhash('confirmed');
+      createVault1Tx.recentBlockhash = createVault1Blockhash.blockhash;
+      createVault1Tx.feePayer = keypair.publicKey;
+      const createVault1Sig = await wallet.sendTransaction(createVault1Tx, connection, { skipPreflight: false });
+      await connection.confirmTransaction(createVault1Sig, 'confirmed');
+      console.log('   ✓ Vault token account 1 created');
+    } else {
+      console.log('   ✓ Vault token account 1 already exists');
+    }
+    
+    const vaultTokenAccount2 = await getAssociatedTokenAddress(
+      mint2,
+      vaultState2,
+      true,
+      TOKEN_PROGRAM_ID,
+      ASSOCIATED_TOKEN_PROGRAM_ID
+    );
+    const vaultTokenAccount2Info = await connection.getAccountInfo(vaultTokenAccount2, 'confirmed');
+    if (!vaultTokenAccount2Info) {
+      console.log('   Creating vault token account for mint 2...');
+      const createVault2Tx = new Transaction().add(
+        createAssociatedTokenAccountInstruction(
+          keypair.publicKey,
+          vaultTokenAccount2,
+          vaultState2,
+          mint2,
+          TOKEN_PROGRAM_ID,
+          ASSOCIATED_TOKEN_PROGRAM_ID
+        )
+      );
+      const createVault2Blockhash = await connection.getLatestBlockhash('confirmed');
+      createVault2Tx.recentBlockhash = createVault2Blockhash.blockhash;
+      createVault2Tx.feePayer = keypair.publicKey;
+      const createVault2Sig = await wallet.sendTransaction(createVault2Tx, connection, { skipPreflight: false });
+      await connection.confirmTransaction(createVault2Sig, 'confirmed');
+      console.log('   ✓ Vault token account 2 created');
+    } else {
+      console.log('   ✓ Vault token account 2 already exists');
     }
     
     // Step 3: Shield tokens for both mints
@@ -1351,6 +1568,74 @@ async function testPrepareExecuteBatchTransferFrom() {
       console.log('   ✓ Pool 2 initialized');
     } else {
       console.log('   ✓ Pool 2 already exists');
+    }
+    
+    // Step 2.5: Ensure vault token accounts exist for both mints
+    console.log('2.5. Ensuring vault token accounts exist...');
+    const { deriveVaultState } = await import('../lib/onchain/pdas');
+    const { getAssociatedTokenAddress, createAssociatedTokenAccountInstruction } = await import('@solana/spl-token');
+    const { TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID } = await import('../lib/onchain/programIds');
+    const vaultState1 = deriveVaultState(mint1);
+    const vaultState2 = deriveVaultState(mint2);
+    
+    const vaultTokenAccount1 = await getAssociatedTokenAddress(
+      mint1,
+      vaultState1,
+      true,
+      TOKEN_PROGRAM_ID,
+      ASSOCIATED_TOKEN_PROGRAM_ID
+    );
+    const vaultTokenAccount1Info = await connection.getAccountInfo(vaultTokenAccount1, 'confirmed');
+    if (!vaultTokenAccount1Info) {
+      console.log('   Creating vault token account for mint 1...');
+      const createVault1Tx = new Transaction().add(
+        createAssociatedTokenAccountInstruction(
+          allowanceOwner.publicKey,
+          vaultTokenAccount1,
+          vaultState1,
+          mint1,
+          TOKEN_PROGRAM_ID,
+          ASSOCIATED_TOKEN_PROGRAM_ID
+        )
+      );
+      const createVault1Blockhash = await connection.getLatestBlockhash('confirmed');
+      createVault1Tx.recentBlockhash = createVault1Blockhash.blockhash;
+      createVault1Tx.feePayer = allowanceOwner.publicKey;
+      const createVault1Sig = await ownerWallet.sendTransaction(createVault1Tx, connection, { skipPreflight: false });
+      await connection.confirmTransaction(createVault1Sig, 'confirmed');
+      console.log('   ✓ Vault token account 1 created');
+    } else {
+      console.log('   ✓ Vault token account 1 already exists');
+    }
+    
+    const vaultTokenAccount2 = await getAssociatedTokenAddress(
+      mint2,
+      vaultState2,
+      true,
+      TOKEN_PROGRAM_ID,
+      ASSOCIATED_TOKEN_PROGRAM_ID
+    );
+    const vaultTokenAccount2Info = await connection.getAccountInfo(vaultTokenAccount2, 'confirmed');
+    if (!vaultTokenAccount2Info) {
+      console.log('   Creating vault token account for mint 2...');
+      const createVault2Tx = new Transaction().add(
+        createAssociatedTokenAccountInstruction(
+          allowanceOwner.publicKey,
+          vaultTokenAccount2,
+          vaultState2,
+          mint2,
+          TOKEN_PROGRAM_ID,
+          ASSOCIATED_TOKEN_PROGRAM_ID
+        )
+      );
+      const createVault2Blockhash = await connection.getLatestBlockhash('confirmed');
+      createVault2Tx.recentBlockhash = createVault2Blockhash.blockhash;
+      createVault2Tx.feePayer = allowanceOwner.publicKey;
+      const createVault2Sig = await ownerWallet.sendTransaction(createVault2Tx, connection, { skipPreflight: false });
+      await connection.confirmTransaction(createVault2Sig, 'confirmed');
+      console.log('   ✓ Vault token account 2 created');
+    } else {
+      console.log('   ✓ Vault token account 2 already exists');
     }
     
     // Step 3: Shield for allowance owner for both mints

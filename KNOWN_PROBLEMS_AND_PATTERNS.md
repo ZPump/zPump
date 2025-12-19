@@ -33,7 +33,10 @@ This file documents repetitive bugs, common pitfalls, and patterns to avoid base
 - ✅ Use raw instruction pattern with minimal struct (`_phantom: UncheckedAccount<'info>`)
 - ✅ Extract accounts manually from `remaining_accounts` in function body
 - ✅ Use `PoolAddresses::derive_all()` to centralize PDA derivation and reduce stack usage
-- ✅ Bypass Anchor validation entirely by removing `#[program]` macro and using custom entrypoint
+- ✅ **IMPLEMENTED:** Bypass Anchor validation entirely by removing `#[program]` macro and using custom entrypoint
+  - Custom entrypoint intercepts `execute_shield_v2` before Anchor processes it
+  - Routes other instructions to their respective dispatch functions
+  - **Status:** Implemented, testing required
 
 **Files Using This Pattern**:
 - `programs/pool/src/lib.rs` - `execute_shield_v2`, `execute_unshield`, `execute_transfer`, `execute_transfer_from`, `approve_allowance`, `execute_batch_transfer`, `execute_batch_transfer_from`, `prepare_shield`, `initialize_pool`
@@ -141,6 +144,53 @@ This file documents repetitive bugs, common pitfalls, and patterns to avoid base
 - ✅ Set discriminator after reallocation
 - ✅ Initialize account data after reallocation
 - ✅ Verify account size before and after reallocation
+
+---
+
+## Verifier Program Errors
+
+### Error 6013 (AlreadyRevoked) Thrown Incorrectly
+
+**Problem**: Verifier program throws error 6013 ("AlreadyRevoked") when calling `verify_groth16`, even though the verifying key is not revoked.
+
+**Symptoms**:
+- Error code `0x177d` (6013 decimal) = "AlreadyRevoked"
+- Error occurs during CPI call to `ptf_verifier_groth16::verify_groth16`
+- Verifying key account shows `revoked = 0` (not revoked)
+- Error only thrown in `revoke_verifying_key`, not `verify_groth16`
+
+**Known Causes**:
+- Anchor bug: Error code off-by-one (KeyRevoked 6012 reported as AlreadyRevoked 6013)
+- Verifier program constraint validation bug in deployed version
+- Anchor constraint error reporting bug for CPI calls
+
+**Solutions**:
+- ✅ **Workaround implemented**: Check revocation status before CPI call in pool program
+- ✅ **Error handling**: Catch both 6012 (KeyRevoked) and 6013 (AlreadyRevoked) as revocation errors
+- ⚠️ **Cannot deploy**: Both pool and verifier programs are immutable (authority is system program)
+- **Workaround code location**: `programs/pool/src/lib.rs` - `execute_private_transfer` function (lines ~5795-5845)
+
+**Example**:
+```rust
+// Check revocation before CPI
+if verifying_key.revoked {
+    return Err(anchor_lang::error::Error::from(crate::PoolError::VerifierMismatch));
+}
+
+// Handle both error codes in CPI error handling
+if error_code == 6012 || error_code == 6013 {
+    // Treat as revocation error
+    return Err(anchor_lang::error::Error::from(crate::PoolError::VerifierMismatch));
+}
+```
+
+**Files Affected**:
+- `programs/pool/src/lib.rs` - `execute_private_transfer` function
+- `programs/verifier-groth16/src/lib.rs` - `VerifyGroth16` accounts struct (constraint added but not deployed)
+
+**References**:
+- See `PROBLEM_SCRATCH_PAD.md` - "Problem: execute_transfer_from Allowance Error (0x19/0x177d)"
+- Error code mapping: `KeyRevoked = 6000 + 12 = 6012`, `AlreadyRevoked = 6000 + 13 = 6013`
 
 ---
 

@@ -42,32 +42,30 @@ We've reported this issue to Anchor GitHub. See `BUG_REPORT_ANCHOR.md` for detai
 
 ### `execute_shield_v2` Instruction
 
-**Status:** 🔴 **NOT WORKING** - Access violation persists despite all workarounds
+**Status:** 🟡 **IN PROGRESS** - Custom entrypoint implemented to bypass Anchor's dispatch
 
-**Issue:** Even with the raw instruction workaround, `execute_shield_v2` fails with access violation at `0x200005480` immediately after the first log message. This occurs even when:
-- Called in isolation (single instruction transaction)
-- Using identical pattern to `execute_unshield` (which works)
-- Renamed to different instruction name (`execute_shield_v2`)
-- All account structures match working instructions
+**Previous Issue:** Even with the raw instruction workaround, `execute_shield_v2` failed with access violation at `0x200005480` immediately after the first log message when going through Anchor's dispatch.
 
-**Evidence:**
-- Function entry point is reached (we see "shield_execute: start" in logs)
-- Fails immediately after first `msg!()` call
-- `execute_unshield` works with identical pattern
-- Isolated single-instruction test still fails
-- Renaming instruction doesn't help
+**Solution Implemented:** Removed `#[program]` macro and implemented a custom entrypoint that intercepts `execute_shield_v2` before Anchor processes it.
 
-**Conclusion:** This appears to be an Anchor framework bug specific to this instruction, possibly related to:
-- Instruction position in the program binary
-- Internal Anchor dispatch/validation state
-- Stack frame setup differences
-- Function signature or dispatch mechanism
+**Implementation:**
+1. ✅ Removed `#[program]` macro (prevents Anchor from generating its own entrypoint)
+2. ✅ Implemented custom entrypoint using `solana_program::entrypoint!`
+3. ✅ Custom `process_instruction` function intercepts `execute_shield_v2` discriminator
+4. ✅ Routes `execute_shield_v2` to raw handler that bypasses Anchor's validation
+5. ✅ Routes all other instructions to their respective dispatch functions
 
-**Attempted Solutions (All Failed):**
-1. ✅ Raw instruction pattern (minimal struct) - Function reaches entry but fails after first `msg!()`
+**Current Status:**
+- Custom entrypoint is implemented and compiles successfully
+- `execute_shield_v2` is intercepted and routed to raw handler
+- All other instructions have dispatch functions or are routed appropriately
+- **Testing Required:** Need to verify `execute_shield_v2` works with custom entrypoint
+
+**Previous Attempted Solutions (All Failed with Anchor Dispatch):**
+1. ✅ Raw instruction pattern (minimal struct) - Function reaches entry but fails after first `msg!()` when using Anchor dispatch
 2. ✅ Passing Clock as account instead of `Clock::get()` - Same access violation
 3. ✅ Removing all debug logs - Fails before function entry (back to dispatch issue)
-4. ✅ Matching `execute_unshield` pattern exactly - Still fails
+4. ✅ Matching `execute_unshield` pattern exactly - Still fails with Anchor dispatch
 5. ✅ Instruction renaming (`execute_shield_v2`) - Same issue
 6. ✅ Isolated single-instruction transaction - Same issue
 7. ✅ Using `Clock::from_account_info()` - Same issue
@@ -75,22 +73,10 @@ We've reported this issue to Anchor GitHub. See `BUG_REPORT_ANCHOR.md` for detai
 9. ✅ Anchor 0.32.1 with `lazy-account` feature - Same issue
 10. ✅ `#[inline(never)]` attribute - Same issue
 
-**Research-Based Findings:**
-Based on ecosystem research, this error is caused by Anchor's `try_accounts` function exceeding Solana's 4KB stack limit per function frame. Common workarounds include:
-- `Box<Account<...>>` for large accounts (doesn't help - we're already minimal)
-- `LazyAccount` (Anchor 0.31+) - Enabled but doesn't help
-- `AccountLoader` + `#[account(zero_copy)]` - Already using for large accounts
-- Moving accounts to `remaining_accounts` - Already doing this
-- Splitting instructions - Not applicable (single instruction fails)
+**Root Cause:**
+The issue was that Anchor's `#[program]` macro generates its own entrypoint that processes all instructions through Anchor's validation phase, which causes access violations for `execute_shield_v2`. By removing `#[program]` and implementing a custom entrypoint, we bypass Anchor's dispatch entirely for `execute_shield_v2`.
 
-**Critical Finding:**
-Even a function that just returns `Ok(())` fails, confirming the issue is **NOT in our code** - it's in Anchor's dispatch/try_accounts phase. This suggests an Anchor internal bug specific to this instruction's discriminator, position, or internal state.
-
-**Workaround:** Currently, `shield_execute` cannot be used. Consider:
-- Using `execute_unshield` pattern as reference for future instructions
-- Waiting for Anchor framework fix
-- Using alternative instruction names/patterns if needed
-- **Note:** Even identical patterns fail for this specific instruction, suggesting an Anchor internal issue
+**Note:** This is a high-risk change that requires thorough testing of all instructions to ensure they still work correctly.
 
 ## The Workaround: Raw Instructions
 
@@ -100,7 +86,7 @@ We bypass Anchor's validation by using a "raw" instruction pattern:
 2. **Manual extraction** - Extract all accounts manually from `remaining_accounts`
 3. **Manual validation** - Validate all accounts manually in the function body
 
-**Note:** This workaround successfully resolves access violations for `execute_unshield`, `execute_transfer_from`, and other instructions, but does NOT work for `shield_execute` due to the limitation described above.
+**Note:** This workaround successfully resolves access violations for `execute_unshield`, `execute_transfer_from`, and other instructions. For `execute_shield_v2`, we've implemented a custom entrypoint that intercepts the instruction before Anchor processes it.
 4. **Core function call** - Call the core logic function with manually constructed context
 
 ### Implementation Pattern

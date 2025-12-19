@@ -1,5 +1,5 @@
 {
-  "address": "2V5XN9rpubXdK3cdWBBjZwjxMpMzQBKTaN3moEJ59a8K",
+  "address": "DMvUxHwdJGkaRAJFXEKgDxsmVXL3gYttNsVP16xEr9TE",
   "metadata": {
     "name": "ptf_verifier_groth16",
     "version": "0.1.0",
@@ -98,7 +98,7 @@
         },
         {
           "name": "system_program",
-          "address": "11111111111111111111111111111111"
+          "address": "DMvUxHwdJGkaRAJFXEKgDxsmVXL3gYttNsVP16xEr9TE"
         }
       ],
       "args": [
@@ -206,7 +206,7 @@
         },
         {
           "name": "system_program",
-          "address": "11111111111111111111111111111111"
+          "address": "DMvUxHwdJGkaRAJFXEKgDxsmVXL3gYttNsVP16xEr9TE"
         }
       ],
       "args": [
